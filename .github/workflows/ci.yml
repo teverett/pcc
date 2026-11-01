@@ -32,58 +32,51 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Tried Ubuntu's own `libantlr4-runtime-dev` package here first
-      # (to skip building from source entirely) - it's 4.10, and
-      # 4.13.2-generated code (antlr4::internal::OnceFlag, added
-      # after 4.10) doesn't actually compile against it. No Ubuntu
-      # package currently ships a matching 4.13.x runtime, so this
-      # vendors the exact ANTLR_VERSION from source instead (via
-      # ci/antlr-runtime/ below) - same version as local/macOS dev
-      # (see that var's own comment).
+      # Tried Ubuntu's own `libantlr4-runtime-dev` package first (it's
+      # 4.10 - 4.13.2-generated code needs antlr4::internal::OnceFlag,
+      # added after 4.10, so that doesn't compile), then building the
+      # exact version from source with CMake (repeatedly got the job
+      # killed partway through, SIGTERM, even static-only/-O0 - this
+      # runtime's own build apparently just doesn't fit in whatever's
+      # killing it here). conda-forge's `antlr-cpp-runtime` package
+      # ships a genuine prebuilt 4.13.2 for linux-64 - no compiling
+      # anything, so no more timeout to hit.
       - name: Install build tools and target simulators
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              build-essential cmake default-jre-headless \
+              build-essential default-jre-headless \
               qemu-system-x86 netcat-openbsd simh
 
-      - name: Cache vendored ANTLR tool + C++ runtime
-        id: antlr-cache
-        uses: actions/cache@v4
+      - name: Install ANTLR C++ runtime (conda-forge, prebuilt, exact version)
+        uses: mamba-org/setup-micromamba@v2
         with:
-          path: ${{ runner.temp }}/antlr-vendor
-          key: antlr-vendor-linux-${{ env.ANTLR_VERSION }}-v2
+          environment-name: antlr
+          create-args: -c conda-forge antlr-cpp-runtime=${{ env.ANTLR_VERSION }}
 
-      # ci/antlr-runtime/ is a small standalone CMake project (not
-      # pcc's own build - see its own header comment) that fetches,
-      # builds and installs the runtime via ExternalProject_Add in
-      # one `cmake --build` - replaces the old hand-rolled `git
-      # clone` + separate `cmake -S/-B`/`--install` steps this job
-      # used to run inline here.
-      - name: Vendor ANTLR C++ runtime via CMake (ci/antlr-runtime/)
-        if: steps.antlr-cache.outputs.cache-hit != 'true'
+      - name: Download ANTLR tool jar
         run: |
-          set -eu
-          VENDOR="${{ runner.temp }}/antlr-vendor"
-          mkdir -p "$VENDOR"
-          curl -fsSL -o "$VENDOR/antlr-${ANTLR_VERSION}-complete.jar" \
+          curl -fsSL -o "${{ runner.temp }}/antlr-${ANTLR_VERSION}-complete.jar" \
               "https://www.antlr.org/download/antlr-${ANTLR_VERSION}-complete.jar"
-          cmake -S ci/antlr-runtime -B "${{ runner.temp }}/antlr4-build" \
-                -DANTLR_GIT_TAG="${ANTLR_VERSION}" \
-                -DANTLR_INSTALL_PREFIX="$VENDOR"
-          cmake --build "${{ runner.temp }}/antlr4-build" --parallel
 
+      # setup-micromamba activates the env via shell profile scripts,
+      # so later steps need a login shell (`-el`) to see $CONDA_PREFIX.
       - name: Build
+        shell: bash -el {0}
         run: |
-          VENDOR="${{ runner.temp }}/antlr-vendor"
-          make ANTLR="java -jar $VENDOR/antlr-${ANTLR_VERSION}-complete.jar" \
-               ANTLR4_RUNTIME_PREFIX="$VENDOR"
+          make ANTLR="java -jar ${{ runner.temp }}/antlr-${ANTLR_VERSION}-complete.jar" \
+               ANTLR4_RUNTIME_PREFIX="$CONDA_PREFIX"
 
       - name: Test
+        shell: bash -el {0}
         run: |
-          VENDOR="${{ runner.temp }}/antlr-vendor"
-          make test ANTLR="java -jar $VENDOR/antlr-${ANTLR_VERSION}-complete.jar" \
-                     ANTLR4_RUNTIME_PREFIX="$VENDOR"
+          # The conda package ships both a static and a shared lib;
+          # the Makefile's plain `-lantlr4-runtime` links the shared
+          # one (the linker's own default when both exist), so
+          # running the built pcc binary needs it on the loader path.
+          export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          make test ANTLR="java -jar ${{ runner.temp }}/antlr-${ANTLR_VERSION}-complete.jar" \
+                     ANTLR4_RUNTIME_PREFIX="$CONDA_PREFIX"
 
   windows:
     runs-on: windows-latest

@@ -16,11 +16,11 @@
 # doesn't reliably compile against another version's runtime (e.g.
 # 4.13.2's generated code needs antlr4::internal::OnceFlag, which
 # doesn't exist before 4.11), so this isn't just "any C++ runtime
-# will do": either build runtime/Cpp from the exact same git tag as
-# the jar (see .github/workflows/ci.yml's Linux job for the full
-# cmake invocation) or, if one happens to exist, a prebuilt package at
-# that exact version (Windows's job uses MSYS2's
-# mingw-w64-x86_64-antlr4-runtime-cpp, which happens to ship 4.13.2):
+# will do". See .github/workflows/ci.yml for two exact-version
+# prebuilt sources that work: conda-forge's `antlr-cpp-runtime`
+# package (Linux) and MSYS2's `mingw-w64-x86_64-antlr4-runtime-cpp`
+# (Windows) - both happen to ship 4.13.2 prebuilt, so neither job
+# compiles the runtime itself at all:
 #   make ANTLR="java -jar /path/to/antlr-4.13.2-complete.jar" \
 #        ANTLR4_RUNTIME_PREFIX=/path/to/matching-runtime-install
 
