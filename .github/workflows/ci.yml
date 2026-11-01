@@ -95,9 +95,12 @@ jobs:
             mingw-w64-ucrt-x86_64-make
             mingw-w64-ucrt-x86_64-antlr4-runtime-cpp
 
-      # MSYS2's UCRT64 packages install under /ucrt64.
+      # MSYS2's UCRT64 packages install under /ucrt64. The mingw-w64
+      # `make` package's binary is named mingw32-make.exe (not
+      # make.exe, even on 64-bit/ucrt64 - a legacy MinGW naming
+      # convention), confirmed by a real `make: command not found`.
       - name: Build
-        run: make CXX=g++ ANTLR4_RUNTIME_PREFIX=/ucrt64
+        run: mingw32-make CXX=g++ ANTLR4_RUNTIME_PREFIX=/ucrt64
 
       # tests/run_tests.sh needs the pdp7 (open-simh) and qemu-system-i386
       # hardware simulators, which aren't readily available on Windows
