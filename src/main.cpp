@@ -37,6 +37,7 @@
 #include "ir/IRBuilder.h"
 #include "ir/IRPrinter.h"
 #include "ir/IRValidator.h"
+#include "optimizers/ConstantFolding.h"
 #include "optimizers/DeadCodeElimination.h"
 #include "preprocessor/Preprocessor.h"
 #include "codegen/pdp7/Pdp7Codegen.h"
@@ -198,6 +199,12 @@ std::string compileOneFile(const std::string &srcPath, const std::map<std::strin
     // by construction, since instruction selection hasn't happened
     // yet.
     if (optimize) {
+        // Constant folding first - it often turns a once-variable
+        // initializer/condition into a literal DeadCodeElimination
+        // can then reason about (e.g. a now-dead LocalDecl's own
+        // initializer collapsing to a side-effect-free constant).
+        pcc::ConstantFolding cf;
+        cf.run(irProg);
         pcc::DeadCodeElimination dce;
         dce.run(irProg);
     }

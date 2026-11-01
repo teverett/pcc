@@ -32,51 +32,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build tools and target simulators
+      # Ubuntu's own `libantlr4-runtime-dev` (currently 4.10, in
+      # universe) instead of building the runtime from source - that
+      # repeatedly got the job killed partway through (SIGTERM) on
+      # this runner. It's a slightly older minor version than the
+      # ANTLR_VERSION jar below (matched to local/macOS dev instead -
+      # see that var's own comment), but the handful of C++ runtime
+      # APIs pcc's generated code actually calls (ANTLRInputStream,
+      # CommonTokenStream, the Lexer/Parser/error-listener base
+      # classes) have been stable across that whole range; the Test
+      # step below is exactly what would catch it if that ever
+      # stopped being true.
+      - name: Install ANTLR C++ runtime, build tools and target simulators
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              build-essential cmake default-jre-headless \
-              uuid-dev pkg-config \
+              build-essential default-jre-headless libantlr4-runtime-dev \
               qemu-system-x86 netcat-openbsd simh
 
-      - name: Cache vendored ANTLR tool + C++ runtime
-        id: antlr-cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/antlr-vendor
-          key: antlr-vendor-linux-${{ env.ANTLR_VERSION }}
-
-      - name: Vendor ANTLR tool jar + build C++ runtime from source
-        if: steps.antlr-cache.outputs.cache-hit != 'true'
+      - name: Download ANTLR tool jar
         run: |
-          set -eu
-          VENDOR="${{ runner.temp }}/antlr-vendor"
-          mkdir -p "$VENDOR"
-          curl -fsSL -o "$VENDOR/antlr-${ANTLR_VERSION}-complete.jar" \
+          curl -fsSL -o "${{ runner.temp }}/antlr-${ANTLR_VERSION}-complete.jar" \
               "https://www.antlr.org/download/antlr-${ANTLR_VERSION}-complete.jar"
-          git clone --branch "${ANTLR_VERSION}" --depth 1 \
-              https://github.com/antlr/antlr4.git "${{ runner.temp }}/antlr4-src"
-          cmake -S "${{ runner.temp }}/antlr4-src/runtime/Cpp" \
-                -B "${{ runner.temp }}/antlr4-build" \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_INSTALL_PREFIX="$VENDOR" \
-                -DANTLR_BUILD_CPP_TESTS=OFF \
-                -DANTLR_BUILD_SHARED=OFF
-          cmake --build "${{ runner.temp }}/antlr4-build" --parallel
-          cmake --install "${{ runner.temp }}/antlr4-build"
 
       - name: Build
         run: |
-          VENDOR="${{ runner.temp }}/antlr-vendor"
-          make ANTLR="java -jar $VENDOR/antlr-${ANTLR_VERSION}-complete.jar" \
-               ANTLR4_RUNTIME_PREFIX="$VENDOR"
+          make ANTLR="java -jar ${{ runner.temp }}/antlr-${ANTLR_VERSION}-complete.jar" \
+               ANTLR4_RUNTIME_PREFIX=/usr
 
       - name: Test
         run: |
-          VENDOR="${{ runner.temp }}/antlr-vendor"
-          make test ANTLR="java -jar $VENDOR/antlr-${ANTLR_VERSION}-complete.jar" \
-                     ANTLR4_RUNTIME_PREFIX="$VENDOR"
+          make test ANTLR="java -jar ${{ runner.temp }}/antlr-${ANTLR_VERSION}-complete.jar" \
+                     ANTLR4_RUNTIME_PREFIX=/usr
 
   windows:
     runs-on: windows-latest
@@ -86,49 +73,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # MSYS2 ships a prebuilt mingw-w64-x86_64-antlr4-runtime-cpp at
+      # exactly ANTLR_VERSION (4.13.2) - no from-source build needed
+      # here at all (unlike Linux's own libantlr4-runtime-dev, this
+      # one is an exact version match for the jar below).
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           update: true
           install: >-
             mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-cmake
             mingw-w64-x86_64-make
-            git
+            mingw-w64-x86_64-antlr4-runtime-cpp
             curl
 
-      - name: Cache vendored ANTLR tool + C++ runtime
-        id: antlr-cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/antlr-vendor
-          key: antlr-vendor-windows-${{ env.ANTLR_VERSION }}
-
-      - name: Vendor ANTLR tool jar + build C++ runtime from source
-        if: steps.antlr-cache.outputs.cache-hit != 'true'
+      - name: Download ANTLR tool jar
         run: |
-          set -eu
-          VENDOR="${{ runner.temp }}/antlr-vendor"
-          mkdir -p "$VENDOR"
-          curl -fsSL -o "$VENDOR/antlr-${ANTLR_VERSION}-complete.jar" \
+          curl -fsSL -o "${{ runner.temp }}/antlr-${ANTLR_VERSION}-complete.jar" \
               "https://www.antlr.org/download/antlr-${ANTLR_VERSION}-complete.jar"
-          git clone --branch "${ANTLR_VERSION}" --depth 1 \
-              https://github.com/antlr/antlr4.git "${{ runner.temp }}/antlr4-src"
-          cmake -G "MinGW Makefiles" -S "${{ runner.temp }}/antlr4-src/runtime/Cpp" \
-                -B "${{ runner.temp }}/antlr4-build" \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_INSTALL_PREFIX="$VENDOR" \
-                -DANTLR_BUILD_CPP_TESTS=OFF \
-                -DANTLR_BUILD_SHARED=OFF
-          cmake --build "${{ runner.temp }}/antlr4-build" --parallel
-          cmake --install "${{ runner.temp }}/antlr4-build"
 
       # The GitHub-hosted Windows runner ships its own JRE for `java`.
+      # MSYS2's MINGW64 packages install under /mingw64.
       - name: Build
         run: |
-          VENDOR="${{ runner.temp }}/antlr-vendor"
-          make CXX=g++ ANTLR="java -jar $VENDOR/antlr-${ANTLR_VERSION}-complete.jar" \
-               ANTLR4_RUNTIME_PREFIX="$VENDOR"
+          make CXX=g++ ANTLR="java -jar ${{ runner.temp }}/antlr-${ANTLR_VERSION}-complete.jar" \
+               ANTLR4_RUNTIME_PREFIX=/mingw64
 
       # tests/run_tests.sh needs the pdp7 (open-simh) and qemu-system-i386
       # hardware simulators, which aren't readily available on Windows

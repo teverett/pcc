@@ -10,6 +10,21 @@ namespace {
 [[noreturn]] void err(int line, const std::string &msg) {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
+
+// A PDP-7 word is 18 bits, and grammar/PccAsm.g4's own data-word
+// syntax (a bare NUMBER - see its own comment) has no unary minus:
+// unlike an *expression* (sign? atom, used in a real operand), a raw
+// data word written out by declareArray()/literalLabel()/the globals
+// loop below is just one token with no sign, so a negative compile-
+// time constant - previously only ever produced by e.g. a literal
+// global initializer, now also by ConstantFolding (see
+// optimizers/ConstantFolding.h) - has to be written out as its own
+// two's-complement 18-bit bit pattern instead of a signed decimal
+// string. That's exactly the bit pattern real PDP-7 hardware would
+// already compute for it at runtime, so every *read* of the word
+// (lac, comparisons, etc.) still sees the same value as before -
+// only how it's spelled in the generated assembly text changes.
+long pdp7Word(long v) { return v & 0777777; }
 }  // namespace
 
 std::string Pdp7Codegen::allocTemp() { return "T" + std::to_string(tempCounter_++); }
@@ -24,9 +39,9 @@ void Pdp7Codegen::declareArray(const std::string &label, const std::vector<long>
     // src-assem/tests/fork_test.s's "childmsg: <ch>; <il>; <d 012")
     // does - see that grammar's own header comment.
     if (values.empty()) return;
-    trailer_.push_back(label + ": " + std::to_string(values[0]));
+    trailer_.push_back(label + ": " + std::to_string(pdp7Word(values[0])));
     for (size_t i = 1; i < values.size(); i++) {
-        trailer_.push_back(std::to_string(values[i]));
+        trailer_.push_back(std::to_string(pdp7Word(values[i])));
     }
 }
 
@@ -35,7 +50,7 @@ std::string Pdp7Codegen::literalLabel(long value) {
     if (it != literalCache_.end()) return it->second;
     std::string lbl = "N" + std::to_string(litCounter_++);
     literalCache_[value] = lbl;
-    trailer_.push_back(lbl + ": " + std::to_string(value));
+    trailer_.push_back(lbl + ": " + std::to_string(pdp7Word(value)));
     return lbl;
 }
 
@@ -160,14 +175,14 @@ std::string Pdp7Codegen::generate(const ir::Program &prog, bool objectMode) {
             // for comments, not as a multi-statement-per-line
             // separator the way the historical as.s/as7 dialect does
             // - see that grammar's own header comment.
-            trailer_.push_back(label(slot.get()) + ": " + std::to_string(slot->arrayInit[0]) + "  ; " +
+            trailer_.push_back(label(slot.get()) + ": " + std::to_string(pdp7Word(slot->arrayInit[0])) + "  ; " +
                                 slot->sourceName);
             for (size_t i = 1; i < slot->arrayInit.size(); i++) {
-                trailer_.push_back(std::to_string(slot->arrayInit[i]));
+                trailer_.push_back(std::to_string(pdp7Word(slot->arrayInit[i])));
             }
         } else {
             long v = slot->hasInit ? slot->initValue : 0;
-            trailer_.push_back(label(slot.get()) + ": " + std::to_string(v) + "  ; " + slot->sourceName);
+            trailer_.push_back(label(slot.get()) + ": " + std::to_string(pdp7Word(v)) + "  ; " + slot->sourceName);
         }
         if (slot->hasAddress) trailer_.push_back(". = __saveloc");
         trailerRanges.push_back({slot->sourceFile, gTrailerStart, trailer_.size()});

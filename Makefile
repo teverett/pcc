@@ -10,11 +10,14 @@
 #   brew install antlr antlr4-cpp-runtime
 #   make
 #
-# Anywhere else (CI, or no Homebrew), vendor the runtime from source
-# exactly as ../pdp-assembler does:
-#   make -C ../pdp-assembler vendor
-#   make ANTLR="java -jar ../pdp-assembler/build/vendor/antlr-4.13.2-complete.jar" \
-#        ANTLR4_RUNTIME_PREFIX=../pdp-assembler/build/vendor
+# Anywhere else (no Homebrew), point ANTLR at a downloaded tool jar
+# and ANTLR4_RUNTIME_PREFIX at wherever that platform's own C++
+# runtime package puts its headers/lib - see .github/workflows/ci.yml
+# for the exact package + prefix this uses on Linux (apt's
+# libantlr4-runtime-dev, prefix /usr) and Windows (MSYS2's
+# mingw-w64-x86_64-antlr4-runtime-cpp, prefix /mingw64):
+#   make ANTLR="java -jar /path/to/antlr-4.13.2-complete.jar" \
+#        ANTLR4_RUNTIME_PREFIX=/usr
 
 ANTLR                  ?= antlr
 ANTLR4_RUNTIME_PREFIX  ?= $(shell brew --prefix antlr4-cpp-runtime 2>/dev/null || echo /usr/local)
@@ -89,6 +92,7 @@ HAND_SRCS := \
     $(IR_DIR)/IRBuilder.cpp \
     $(IR_DIR)/IRPrinter.cpp \
     $(IR_DIR)/IRValidator.cpp \
+    $(OPTIMIZERS_DIR)/ConstantFolding.cpp \
     $(OPTIMIZERS_DIR)/DeadCodeElimination.cpp \
     $(SRC_DIR)/codegen/pdp7/Pdp7Codegen.cpp \
     $(SRC_DIR)/codegen/pdp7/Pdp7Assembler.cpp \
