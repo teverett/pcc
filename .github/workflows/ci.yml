@@ -61,7 +61,8 @@ jobs:
                 -B "${{ runner.temp }}/antlr4-build" \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX="$VENDOR" \
-                -DANTLR_BUILD_CPP_TESTS=OFF
+                -DANTLR_BUILD_CPP_TESTS=OFF \
+                -DANTLR_BUILD_SHARED=OFF
           cmake --build "${{ runner.temp }}/antlr4-build" --parallel
           cmake --install "${{ runner.temp }}/antlr4-build"
 
@@ -117,7 +118,8 @@ jobs:
                 -B "${{ runner.temp }}/antlr4-build" \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX="$VENDOR" \
-                -DANTLR_BUILD_CPP_TESTS=OFF
+                -DANTLR_BUILD_CPP_TESTS=OFF \
+                -DANTLR_BUILD_SHARED=OFF
           cmake --build "${{ runner.temp }}/antlr4-build" --parallel
           cmake --install "${{ runner.temp }}/antlr4-build"
 

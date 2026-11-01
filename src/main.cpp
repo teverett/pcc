@@ -36,6 +36,8 @@
 #include "CommonTokenStream.h"
 #include "ir/IRBuilder.h"
 #include "ir/IRPrinter.h"
+#include "ir/IRValidator.h"
+#include "optimizers/DeadCodeElimination.h"
 #include "preprocessor/Preprocessor.h"
 #include "codegen/pdp7/Pdp7Codegen.h"
 #include "codegen/x86_8086/I8086Codegen.h"
@@ -69,7 +71,7 @@ class CountingErrorListener : public antlr4::BaseErrorListener {
 void usage(const char *argv0) {
     std::cerr << "Usage: " << argv0
               << " [--target=pdp7|8086] [--format=asm|<target-specific>] [--out file] [--assembler path]\n"
-                 "       [--dump-ir] [--dump-asm] file.c [file2.c ...]\n"
+                 "       [--optimize] [--dump-ir] [--dump-asm] file.c [file2.c ...]\n"
                  "   or: " << argv0
               << " --link [--target=pdp7|8086] --format=<target-native> [--out file] file1.o [file2.o ...]\n"
                  "\n"
@@ -185,11 +187,29 @@ void parseAndMergeFile(const std::string &srcPath, const std::string &source, pc
 // see IRBuilder.h), threaded straight through to both buildIR() and
 // Backend::generate()'s own `objectMode`.
 std::string compileOneFile(const std::string &srcPath, const std::map<std::string, std::string> &predefinedMacros,
-                             pcc::Backend &backend, bool allowExternal, bool dumpIr, bool dumpAsm) {
+                             pcc::Backend &backend, bool allowExternal, bool optimize, bool dumpIr, bool dumpAsm) {
     pcc::Program prog;
     parseAndMergeFile(srcPath, pcc::preprocess(srcPath, predefinedMacros), prog);
 
     pcc::ir::Program irProg = pcc::buildIR(prog, allowExternal);
+
+    // Every registered Optimizer (see optimizers/Optimizer.h) runs
+    // here, before any backend ever sees the IR - target-independent
+    // by construction, since instruction selection hasn't happened
+    // yet.
+    if (optimize) {
+        pcc::DeadCodeElimination dce;
+        dce.run(irProg);
+    }
+
+    // A self-check, not a user-facing feature: parses this program's
+    // own printed IR (see IRPrinter.h) against grammar/PccIRLexer.g4
+    // + grammar/PccIRParser.g4 on every compile, optimized or not, so
+    // a bug in an optimizer (or in the printer itself) that produces
+    // IR the grammar doesn't recognize is caught immediately instead
+    // of silently miscompiling. See IRValidator.h's own comment.
+    pcc::validateIRSyntax(irProg);
+
     if (dumpIr) writeToBuildDir(baseName(srcPath) + ".ir", pcc::printIR(irProg, srcPath));
 
     std::string asmText = backend.generate(irProg, /*objectMode=*/allowExternal);
@@ -274,6 +294,7 @@ int main(int argc, char **argv) {
     std::string assemblerPath;
     bool assemblerPathSet = false;
     std::vector<std::string> srcPaths;
+    bool optimize = false;
     bool dumpIr = false;
     bool dumpAsm = false;
     bool link = false;
@@ -294,6 +315,8 @@ int main(int argc, char **argv) {
         } else if (!(v = takeValue("--assembler=")).empty()) {
             assemblerPath = v;
             assemblerPathSet = true;
+        } else if (arg == "--optimize") {
+            optimize = true;
         } else if (arg == "--dump-ir") {
             dumpIr = true;
         } else if (arg == "--dump-asm") {
@@ -425,7 +448,7 @@ int main(int argc, char **argv) {
             for (const std::string &srcPath : srcPaths) {
                 std::unique_ptr<pcc::Backend> fileBackend = makeBackend(target);
                 std::string asmText =
-                    compileOneFile(srcPath, predefinedMacros, *fileBackend, allowExternal, dumpIr, dumpAsm);
+                    compileOneFile(srcPath, predefinedMacros, *fileBackend, allowExternal, optimize, dumpIr, dumpAsm);
                 std::string bytes = assembleOne(*fileBackend, asmText, format, assemblerPath);
                 writeToBuildDir(baseName(srcPath) + ".o", bytes, /*binary=*/true);
             }
@@ -440,7 +463,8 @@ int main(int argc, char **argv) {
     // with --out (or the default build/<name>.o if --out wasn't
     // given, same convention --dump-ir/--dump-asm already use).
     try {
-        std::string asmText = compileOneFile(srcPaths[0], predefinedMacros, *backend, allowExternal, dumpIr, dumpAsm);
+        std::string asmText =
+            compileOneFile(srcPaths[0], predefinedMacros, *backend, allowExternal, optimize, dumpIr, dumpAsm);
         std::string bytes = assembleOne(*backend, asmText, format, assemblerPath);
         if (format == "coff" && outPath.empty()) {
             writeToBuildDir(baseName(srcPaths[0]) + ".o", bytes, /*binary=*/true);

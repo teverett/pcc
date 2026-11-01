@@ -41,7 +41,7 @@ vendored (non-Homebrew) ANTLR tool + C++ runtime instead.
 
 ```
 pcc [--target=pdp7|8086] [--format=asm|<target-specific>] [--out=file]
-    [--assembler=path] [--dump-ir] [--dump-asm] file.c [file2.c ...]
+    [--assembler=path] [--optimize] [--dump-ir] [--dump-asm] file.c [file2.c ...]
 ```
 
 | Switch | Meaning |
@@ -50,6 +50,7 @@ pcc [--target=pdp7|8086] [--format=asm|<target-specific>] [--out=file]
 | `--format=<fmt>` | What to produce. `asm` (the default) means "just the generated assembly text, don't assemble it". Every other value is target-specific and gets handed to that target's own assembler: `pdp7` supports `a7out`, `list`, `ptr`, `rim`, `coff`; `8086` supports `bin`, `coff`. A non-`coff` format takes exactly one `.c` file. |
 | `--out=file` | Where to write the result. Omit it to write to stdout; with `--format=coff` and no `--out`, output instead goes to `build/<name>.o` (one per input file). |
 | `--assembler=path` | Path to the target's real external assembler, for formats that need one (not every target has an in-process assembler for every format). Defaults to each backend's own tool (`../pdp-assembler/build/bin/pdp7as` for pdp7, `nasm` for 8086). |
+| `--optimize` | Run every registered IR optimizer (see "Optimizers" below) before codegen. Off by default. |
 | `--dump-ir` | Also write each input file's intermediate representation to `build/<name>.ir`, for inspection. |
 | `--dump-asm` | Also write each input file's generated assembly to `build/<name><ext>` (`.s` for pdp7, `.asm` for 8086). |
 | `-h`, `--help` | Print usage and exit. |

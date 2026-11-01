@@ -42,7 +42,11 @@ GENERATED_SRCS := \
     $(GEN_DIR)/PccAsmLexer.cpp \
     $(GEN_DIR)/PccAsmParser.cpp \
     $(GEN_DIR)/PccAsmBaseVisitor.cpp \
-    $(GEN_DIR)/PccAsmVisitor.cpp
+    $(GEN_DIR)/PccAsmVisitor.cpp \
+    $(GEN_DIR)/PccIRLexer.cpp \
+    $(GEN_DIR)/PccIRParser.cpp \
+    $(GEN_DIR)/PccIRParserBaseVisitor.cpp \
+    $(GEN_DIR)/PccIRParserVisitor.cpp
 
 SPACE :=
 SPACE +=
@@ -64,6 +68,7 @@ COFF_DIR     := $(SRC_DIR)/coff
 LINKER_DIR   := $(SRC_DIR)/linker
 FORMAT_DIR   := $(LINKER_DIR)/format
 PREPROCESSOR_DIR := $(SRC_DIR)/preprocessor
+OPTIMIZERS_DIR    := $(SRC_DIR)/optimizers
 
 HAND_SRCS := \
     $(SRC_DIR)/main.cpp \
@@ -83,6 +88,8 @@ HAND_SRCS := \
     $(AST_DIR)/BuildAst.cpp \
     $(IR_DIR)/IRBuilder.cpp \
     $(IR_DIR)/IRPrinter.cpp \
+    $(IR_DIR)/IRValidator.cpp \
+    $(OPTIMIZERS_DIR)/DeadCodeElimination.cpp \
     $(SRC_DIR)/codegen/pdp7/Pdp7Codegen.cpp \
     $(SRC_DIR)/codegen/pdp7/Pdp7Assembler.cpp \
     $(SRC_DIR)/codegen/x86_8086/I8086Codegen.cpp \
@@ -91,7 +98,7 @@ HAND_SRCS := \
 ALL_SRCS := $(GENERATED_SRCS) $(HAND_SRCS)
 OBJS     := $(patsubst %,$(OBJ_DIR)/%.o,$(notdir $(ALL_SRCS)))
 
-vpath %.cpp $(GEN_DIR):$(SRC_DIR):$(AST_DIR):$(IR_DIR):$(COFF_DIR):$(LINKER_DIR):$(FORMAT_DIR):$(PREPROCESSOR_DIR):$(subst $(SPACE),:,$(BACKEND_DIRS))
+vpath %.cpp $(GEN_DIR):$(SRC_DIR):$(AST_DIR):$(IR_DIR):$(COFF_DIR):$(LINKER_DIR):$(FORMAT_DIR):$(PREPROCESSOR_DIR):$(OPTIMIZERS_DIR):$(subst $(SPACE),:,$(BACKEND_DIRS))
 
 .PHONY: all clean generate build test
 
@@ -123,6 +130,15 @@ $(GEN_DIR)/CLexer.cpp $(GEN_DIR)/CParser.cpp $(GEN_DIR)/CParserBaseVisitor.cpp $
 $(GEN_DIR)/PccAsmLexer.cpp $(GEN_DIR)/PccAsmParser.cpp $(GEN_DIR)/PccAsmBaseVisitor.cpp $(GEN_DIR)/PccAsmVisitor.cpp: $(GRAMMAR_DIR)/PccAsm.g4
 	@mkdir -p $(GEN_DIR)
 	$(ANTLR) -Dlanguage=Cpp -visitor -no-listener -o $(abspath $(GEN_DIR)) $(abspath $(GRAMMAR_DIR)/PccAsm.g4)
+
+# The grammar for IRPrinter.cpp's own output (see
+# grammar/PccIRLexer.g4's header comment and src/ir/IRValidator.h) -
+# split into a lexer/parser pair for the same `asm {...}`-raw-text-
+# mode reason as CLexer.g4/CParser.g4 above.
+$(GEN_DIR)/PccIRLexer.cpp $(GEN_DIR)/PccIRParser.cpp $(GEN_DIR)/PccIRParserBaseVisitor.cpp $(GEN_DIR)/PccIRParserVisitor.cpp: $(GRAMMAR_DIR)/PccIRLexer.g4 $(GRAMMAR_DIR)/PccIRParser.g4
+	@mkdir -p $(GEN_DIR)
+	$(ANTLR) -Dlanguage=Cpp -visitor -no-listener -o $(abspath $(GEN_DIR)) \
+	    $(abspath $(GRAMMAR_DIR)/PccIRLexer.g4) $(abspath $(GRAMMAR_DIR)/PccIRParser.g4)
 
 generate: $(GENERATED_SRCS)
 
