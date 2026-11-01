@@ -74,5 +74,41 @@ pcc --link [--target=pdp7|8086] --format=<target-native> [--out=file] file1.o [f
 | `--format=<fmt>` | Final linked output format. `pdp7` supports `a7out`, `list`, `ptr`, `rim`, `coff`, `aout`; `8086` supports `bin`, `coff`, `aout`. |
 | `--out=file` | Where to write the linked result. Omit it to write to stdout. |
 
-Every other flag (`--assembler`, `--dump-ir`, `--dump-asm`) applies
-only to compile mode.
+Every other flag (`--assembler`, `--optimize`, `--dump-ir`,
+`--dump-asm`) applies only to compile mode.
+
+## Optimizers
+
+`--optimize` runs a pipeline of target-independent IR-to-IR passes
+(`src/optimizers/`, each implementing the `Optimizer` interface in
+`src/optimizers/Optimizer.h`) between `IRBuilder` and whichever
+backend is selected — since every backend-specific decision
+(instruction selection, register/stack strategy) happens strictly
+after the IR exists, an optimizer written once benefits both targets.
+
+Today there's one:
+
+- **`DeadCodeElimination`** (`src/optimizers/DeadCodeElimination.cpp`)
+  — removes statements that can never run (anything after a `return`
+  in the same block, bare `;` statements) and local variables that
+  are declared but never read, written, or had their address taken,
+  dropping their storage entirely unless their own initializer has a
+  side effect (a call), in which case it's kept as a bare expression
+  statement instead.
+
+Not yet attempted, because they'd need a real control-flow graph
+and/or constant folding first: dead-*store* elimination, constant-
+condition `if`/`while` removal, and CSE.
+
+### IR grammar
+
+The IR's own printed text (what `--dump-ir` writes, and what every
+compile internally re-derives regardless of `--dump-ir` — see
+`src/ir/IRPrinter.h`) is a real, independently parseable language,
+described by `grammar/PccIRLexer.g4` + `grammar/PccIRParser.g4` (generated
+via ANTLR, same as the C frontend and the `PccAsm` grammar every
+backend's in-process assembler shares). `src/ir/IRValidator.h` parses
+every program's own printed IR against that generated parser on
+*every* compile — optimized or not — as a standing self-check that
+`IRPrinter.cpp` and the grammar describing it haven't drifted apart;
+a mismatch throws as an internal pcc bug, never a user source error.
