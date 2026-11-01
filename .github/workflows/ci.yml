@@ -42,7 +42,7 @@ jobs:
 
       - name: Cache vendored ANTLR tool + C++ runtime
         id: antlr-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/antlr-vendor
           key: antlr-vendor-linux-${{ env.ANTLR_VERSION }}
@@ -97,7 +97,7 @@ jobs:
 
       - name: Cache vendored ANTLR tool + C++ runtime
         id: antlr-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/antlr-vendor
           key: antlr-vendor-windows-${{ env.ANTLR_VERSION }}
