@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  # Keep in lockstep with the `antlr`/`antlr4-cpp-runtime` Homebrew
+  # formula versions used for local dev (see Makefile) - the ANTLR
+  # tool jar and the C++ runtime it links against must be the same
+  # version.
+  ANTLR_VERSION: "4.13.2"
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ANTLR, runtime and target simulators (Homebrew)
+        run: brew install antlr antlr4-cpp-runtime open-simh qemu
+
+      - name: Build
+        run: make
+
+      - name: Test
+        run: make test
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools and target simulators
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential cmake default-jre-headless \
+              uuid-dev pkg-config \
+              qemu-system-x86 netcat-openbsd simh
+
+      - name: Cache vendored ANTLR tool + C++ runtime
+        id: antlr-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/antlr-vendor
+          key: antlr-vendor-linux-${{ env.ANTLR_VERSION }}
+
+      - name: Vendor ANTLR tool jar + build C++ runtime from source
+        if: steps.antlr-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eu
+          VENDOR="${{ runner.temp }}/antlr-vendor"
+          mkdir -p "$VENDOR"
+          curl -fsSL -o "$VENDOR/antlr-${ANTLR_VERSION}-complete.jar" \
+              "https://www.antlr.org/download/antlr-${ANTLR_VERSION}-complete.jar"
+          git clone --branch "${ANTLR_VERSION}" --depth 1 \
+              https://github.com/antlr/antlr4.git "${{ runner.temp }}/antlr4-src"
+          cmake -S "${{ runner.temp }}/antlr4-src/runtime/Cpp" \
+                -B "${{ runner.temp }}/antlr4-build" \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INSTALL_PREFIX="$VENDOR"
+          cmake --build "${{ runner.temp }}/antlr4-build" --parallel
+          cmake --install "${{ runner.temp }}/antlr4-build"
+
+      - name: Build
+        run: |
+          VENDOR="${{ runner.temp }}/antlr-vendor"
+          make ANTLR="java -jar $VENDOR/antlr-${ANTLR_VERSION}-complete.jar" \
+               ANTLR4_RUNTIME_PREFIX="$VENDOR"
+
+      - name: Test
+        run: |
+          VENDOR="${{ runner.temp }}/antlr-vendor"
+          make test ANTLR="java -jar $VENDOR/antlr-${ANTLR_VERSION}-complete.jar" \
+                     ANTLR4_RUNTIME_PREFIX="$VENDOR"
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-make
+            git
+            curl
+
+      - name: Cache vendored ANTLR tool + C++ runtime
+        id: antlr-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/antlr-vendor
+          key: antlr-vendor-windows-${{ env.ANTLR_VERSION }}
+
+      - name: Vendor ANTLR tool jar + build C++ runtime from source
+        if: steps.antlr-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eu
+          VENDOR="${{ runner.temp }}/antlr-vendor"
+          mkdir -p "$VENDOR"
+          curl -fsSL -o "$VENDOR/antlr-${ANTLR_VERSION}-complete.jar" \
+              "https://www.antlr.org/download/antlr-${ANTLR_VERSION}-complete.jar"
+          git clone --branch "${ANTLR_VERSION}" --depth 1 \
+              https://github.com/antlr/antlr4.git "${{ runner.temp }}/antlr4-src"
+          cmake -G "MinGW Makefiles" -S "${{ runner.temp }}/antlr4-src/runtime/Cpp" \
+                -B "${{ runner.temp }}/antlr4-build" \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INSTALL_PREFIX="$VENDOR"
+          cmake --build "${{ runner.temp }}/antlr4-build" --parallel
+          cmake --install "${{ runner.temp }}/antlr4-build"
+
+      # The GitHub-hosted Windows runner ships its own JRE for `java`.
+      - name: Build
+        run: |
+          VENDOR="${{ runner.temp }}/antlr-vendor"
+          make CXX=g++ ANTLR="java -jar $VENDOR/antlr-${ANTLR_VERSION}-complete.jar" \
+               ANTLR4_RUNTIME_PREFIX="$VENDOR"
+
+      # tests/run_tests.sh needs the pdp7 (open-simh) and qemu-system-i386
+      # hardware simulators, which aren't readily available on Windows
+      # CI runners - so this job only verifies that pcc itself builds.

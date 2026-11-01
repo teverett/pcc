@@ -1,0 +1,328 @@
+#include "IRBuilder.h"
+
+#include <stdexcept>
+#include <unordered_map>
+
+namespace pcc {
+
+namespace {
+
+[[noreturn]] void err(int line, const std::string &msg) {
+    throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
+}
+
+class Builder {
+   public:
+    explicit Builder(bool allowExternal) : allowExternal_(allowExternal) {}
+
+    ir::Program build(const Program &prog) {
+        registerGlobalsAndFunctions(prog);
+        for (const auto &fn : prog.functions) {
+            if (!fn.body) continue;  // prototype only
+            ir::Function *irFn = funcByName_[fn.name];
+
+            pushScope();
+            for (ir::Slot *p : irFn->params) declareLocal(p->sourceName, p, fn.line);
+            ir::StmtPtr body = buildStmt(*fn.body);
+            popScope();
+
+            ir::FunctionBody fb;
+            fb.func = irFn;
+            fb.body = std::move(body);
+            fb.line = fn.line;
+            prog_.functionBodies.push_back(std::move(fb));
+        }
+        return std::move(prog_);
+    }
+
+   private:
+    void registerGlobalsAndFunctions(const Program &prog) {
+        for (const auto &g : prog.globals) {
+            if (globalByName_.count(g.name)) err(g.line, "redeclaration of global '" + g.name + "'");
+            ir::Slot *slot = allocSlot(ir::SlotKind::Global, g.name, g.arraySize);
+            slot->hasInit = g.hasInit;
+            slot->initValue = g.initValue;
+            slot->arrayInit = g.arrayInit;
+            slot->hasAddress = g.hasAddress;
+            slot->address = g.address;
+            slot->sourceFile = g.sourceFile;
+            globalByName_[g.name] = slot;
+        }
+        for (const auto &fn : prog.functions) {
+            if (funcByName_.count(fn.name)) err(fn.line, "redefinition of function '" + fn.name + "'");
+            auto irFn = std::make_unique<ir::Function>();
+            irFn->id = nextFuncId_++;
+            irFn->sourceName = fn.name;
+            irFn->hasAddress = fn.hasAddress;
+            irFn->address = fn.address;
+            irFn->sourceFile = fn.sourceFile;
+            for (size_t i = 0; i < fn.params.size(); i++) {
+                ir::Slot *p = allocSlot(ir::SlotKind::Param, fn.params[i].name);
+                p->ownerFunctionName = fn.name;
+                p->paramIndex = static_cast<int>(i);
+                irFn->params.push_back(p);
+            }
+            funcByName_[fn.name] = irFn.get();
+            prog_.functions.push_back(std::move(irFn));
+        }
+        // An object file (allowExternal_) never needs its own `main`
+        // - only a final, directly-runnable program does. If this
+        // file happens to define one anyway, its own signature is
+        // still checked, same as always.
+        if (!allowExternal_ && !funcByName_.count("main")) throw std::runtime_error("no 'main' function defined");
+        if (funcByName_.count("main") && !funcByName_["main"]->params.empty()) {
+            throw std::runtime_error("'main' must take no parameters");
+        }
+    }
+
+    // Looks up `name`, creating (and caching) an external one on a
+    // miss - only when allowExternal_ is set; otherwise `nullptr`,
+    // for the caller to turn into the usual "undefined" error. A
+    // repeat reference to the same unresolved name reuses the same
+    // external Function/Slot rather than creating a new one each time.
+    ir::Function *resolveExternalFunc(const std::string &name) {
+        if (!allowExternal_) return nullptr;
+        auto it = funcByName_.find(name);
+        if (it != funcByName_.end()) return it->second;
+        auto irFn = std::make_unique<ir::Function>();
+        irFn->id = nextFuncId_++;
+        irFn->sourceName = name;
+        irFn->isExternal = true;
+        ir::Function *raw = irFn.get();
+        funcByName_[name] = raw;
+        prog_.functions.push_back(std::move(irFn));
+        return raw;
+    }
+
+    ir::Slot *resolveExternalVar(const std::string &name) {
+        if (!allowExternal_) return nullptr;
+        auto it = globalByName_.find(name);
+        if (it != globalByName_.end()) return it->second;
+        ir::Slot *slot = allocSlot(ir::SlotKind::Global, name);
+        slot->isExternal = true;
+        globalByName_[name] = slot;
+        return slot;
+    }
+
+    ir::Slot *allocSlot(ir::SlotKind kind, const std::string &name, int arraySize = 0) {
+        auto slot = std::make_unique<ir::Slot>();
+        slot->id = nextSlotId_++;
+        slot->sourceName = name;
+        slot->kind = kind;
+        slot->arraySize = arraySize;
+        ir::Slot *raw = slot.get();
+        prog_.slots.push_back(std::move(slot));
+        return raw;
+    }
+
+    void pushScope() { scopes_.emplace_back(); }
+    void popScope() { scopes_.pop_back(); }
+
+    void declareLocal(const std::string &sourceName, ir::Slot *slot, int line) {
+        if (scopes_.empty()) err(line, "internal: no active scope for local declaration");
+        if (scopes_.back().count(sourceName)) err(line, "redeclaration of '" + sourceName + "' in the same block");
+        scopes_.back()[sourceName] = slot;
+    }
+
+    ir::Slot *resolveVar(const std::string &name, int line) {
+        for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+            auto found = it->find(name);
+            if (found != it->end()) return found->second;
+        }
+        auto git = globalByName_.find(name);
+        if (git != globalByName_.end()) return git->second;
+        if (ir::Slot *ext = resolveExternalVar(name)) return ext;
+        err(line, "undefined variable '" + name + "'");
+    }
+
+    ir::Function *resolveFunc(const std::string &name, size_t argc, int line) {
+        auto it = funcByName_.find(name);
+        if (it == funcByName_.end()) {
+            if (ir::Function *ext = resolveExternalFunc(name)) return ext;
+            err(line, "call to undefined function '" + name + "'");
+        }
+        ir::Function *fn = it->second;
+        // An external function has no real parameter list to check
+        // against (there's no other file's own signature left to see
+        // once compilation is really separate) - the call site's own
+        // argument count is trusted as-is.
+        if (!fn->isExternal && fn->params.size() != argc) {
+            err(line, "'" + name + "' expects " + std::to_string(fn->params.size()) + " argument(s), got " +
+                          std::to_string(argc));
+        }
+        return fn;
+    }
+
+    // An external global (real separate compilation - see
+    // resolveExternalVar) starts out shaped like a plain scalar
+    // (arraySize == 0): there's no declaration in this file to learn
+    // its real shape from - this C subset has no `extern int
+    // arr[9];` syntax to close that gap. Indexing it anywhere in this
+    // file is conclusive proof it's actually array-shaped (only an
+    // array can be indexed) - mark it so retroactively, since the
+    // first reference might come before or after any particular
+    // indexed one. The exact size is never needed outside the one
+    // file that actually *defines* it (only that file's own trailer-
+    // emitted storage cares); every other file only needs to know
+    // "is this array-shaped at all", to pick the right addressing
+    // mode (see Pdp7Codegen.cpp/I8086Codegen.cpp's own
+    // computeElementAddress) - so an arbitrary nonzero placeholder is
+    // enough. A bare `&name` (no subscript) never needs this: an
+    // array's own address and its Slot's own address are the same
+    // instruction either way, array-shaped or not.
+    void markIndexedIfExternal(ir::Slot *slot) {
+        if (slot->isExternal && slot->arraySize == 0) slot->arraySize = 1;
+    }
+
+    // Resolves a Var/Index operand without the "bare array" check
+    // below - used only for `&`, where a bare array name is exactly
+    // the point (&arr means the array's own address).
+    ir::ExprPtr buildAddressableOperand(const Expr &e) {
+        auto out = std::make_unique<ir::Expr>();
+        out->line = e.line;
+        if (e.kind == ExprKind::Var) {
+            out->kind = ir::ExprKind::Var;
+            out->slot = resolveVar(e.name, e.line);
+            return out;
+        }
+        if (e.kind == ExprKind::Index) {
+            out->kind = ir::ExprKind::Index;
+            out->slot = resolveVar(e.name, e.line);
+            markIndexedIfExternal(out->slot);
+            out->lhs = buildExpr(*e.lhs);
+            return out;
+        }
+        err(e.line, "'&' requires a plain variable or array element, e.g. &x or &arr[i]");
+    }
+
+    ir::ExprPtr buildExpr(const Expr &e) {
+        auto out = std::make_unique<ir::Expr>();
+        out->line = e.line;
+        switch (e.kind) {
+            case ExprKind::IntLit:
+                out->kind = ir::ExprKind::IntLit;
+                out->intValue = e.intValue;
+                return out;
+            case ExprKind::Var: {
+                ir::Slot *slot = resolveVar(e.name, e.line);
+                if (slot->arraySize > 0) {
+                    err(e.line, "array '" + e.name + "' used without a subscript - use " + e.name +
+                                    "[i], or &" + e.name + " for its address");
+                }
+                out->kind = ir::ExprKind::Var;
+                out->slot = slot;
+                return out;
+            }
+            case ExprKind::Index:
+                out->kind = ir::ExprKind::Index;
+                out->slot = resolveVar(e.name, e.line);
+                markIndexedIfExternal(out->slot);
+                out->lhs = buildExpr(*e.lhs);
+                return out;
+            case ExprKind::Assign:
+                out->kind = ir::ExprKind::Assign;
+                out->slot = resolveVar(e.name, e.line);
+                if (e.lhs) {
+                    markIndexedIfExternal(out->slot);  // arr[i] = ... - e.lhs is the index
+                    out->lhs = buildExpr(*e.lhs);
+                }
+                out->rhs = buildExpr(*e.rhs);
+                return out;
+            case ExprKind::DerefAssign:
+                out->kind = ir::ExprKind::DerefAssign;
+                out->lhs = buildExpr(*e.lhs);
+                out->rhs = buildExpr(*e.rhs);
+                return out;
+            case ExprKind::Unary:
+                out->kind = ir::ExprKind::Unary;
+                out->op = e.op;
+                out->rhs = (e.op == "&") ? buildAddressableOperand(*e.rhs) : buildExpr(*e.rhs);
+                return out;
+            case ExprKind::Binary:
+                out->kind = ir::ExprKind::Binary;
+                out->op = e.op;
+                out->lhs = buildExpr(*e.lhs);
+                out->rhs = buildExpr(*e.rhs);
+                return out;
+            case ExprKind::Call:
+                if (e.name == "_ion" || e.name == "_iof") {
+                    if (!e.args.empty()) err(e.line, e.name + "() takes no arguments");
+                    out->kind = ir::ExprKind::Intrinsic;
+                    out->op = e.name.substr(1);  // "ion" or "iof"
+                    return out;
+                }
+                out->kind = ir::ExprKind::Call;
+                out->func = resolveFunc(e.name, e.args.size(), e.line);
+                for (const auto &a : e.args) out->args.push_back(buildExpr(*a));
+                return out;
+        }
+        err(e.line, "internal: unhandled expr kind");
+    }
+
+    ir::StmtPtr buildStmt(const Stmt &s) {
+        auto out = std::make_unique<ir::Stmt>();
+        out->line = s.line;
+        switch (s.kind) {
+            case StmtKind::Block: {
+                out->kind = ir::StmtKind::Block;
+                pushScope();
+                for (const auto &child : s.body) out->body.push_back(buildStmt(*child));
+                popScope();
+                return out;
+            }
+            case StmtKind::If:
+                out->kind = ir::StmtKind::If;
+                out->cond = buildExpr(*s.cond);
+                out->thenStmt = buildStmt(*s.thenStmt);
+                if (s.elseStmt) out->elseStmt = buildStmt(*s.elseStmt);
+                return out;
+            case StmtKind::While:
+                out->kind = ir::StmtKind::While;
+                out->cond = buildExpr(*s.cond);
+                out->loopBody = buildStmt(*s.loopBody);
+                return out;
+            case StmtKind::Return:
+                out->kind = ir::StmtKind::Return;
+                if (s.initOrReturnOrExpr) out->initOrReturnOrExpr = buildExpr(*s.initOrReturnOrExpr);
+                return out;
+            case StmtKind::LocalDecl: {
+                out->kind = ir::StmtKind::LocalDecl;
+                ir::Slot *slot = allocSlot(ir::SlotKind::Local, s.declName, s.arraySize);
+                slot->arrayInit = s.arrayInit;
+                declareLocal(s.declName, slot, s.line);
+                out->declSlot = slot;
+                if (s.arraySize == 0 && s.initOrReturnOrExpr) out->initOrReturnOrExpr = buildExpr(*s.initOrReturnOrExpr);
+                return out;
+            }
+            case StmtKind::ExprStmt:
+                out->kind = ir::StmtKind::ExprStmt;
+                out->initOrReturnOrExpr = buildExpr(*s.initOrReturnOrExpr);
+                return out;
+            case StmtKind::Empty:
+                out->kind = ir::StmtKind::Empty;
+                return out;
+            case StmtKind::Asm:
+                out->kind = ir::StmtKind::Asm;
+                out->asmText = s.asmText;
+                return out;
+        }
+        err(s.line, "internal: unhandled stmt kind");
+    }
+
+    ir::Program prog_;
+    std::unordered_map<std::string, ir::Slot *> globalByName_;
+    std::unordered_map<std::string, ir::Function *> funcByName_;
+    std::vector<std::unordered_map<std::string, ir::Slot *>> scopes_;
+    int nextSlotId_ = 0;
+    int nextFuncId_ = 0;
+    bool allowExternal_ = false;
+};
+
+}  // namespace
+
+ir::Program buildIR(const Program &prog, bool allowExternal) {
+    Builder b(allowExternal);
+    return b.build(prog);
+}
+
+}  // namespace pcc
