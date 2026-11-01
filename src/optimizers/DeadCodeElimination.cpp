@@ -1,5 +1,6 @@
 #include "optimizers/DeadCodeElimination.h"
 
+#include <algorithm>
 #include <unordered_set>
 
 namespace pcc {

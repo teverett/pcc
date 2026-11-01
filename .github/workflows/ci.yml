@@ -80,21 +80,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # MSYS2 ships a prebuilt mingw-w64-x86_64-antlr4-runtime-cpp at
-      # exactly ANTLR_VERSION (4.13.2) - an exact version match, and
-      # (like Linux's conda-forge package) nothing to compile at all.
+      # MSYS2 ships a prebuilt antlr4-runtime-cpp at exactly
+      # ANTLR_VERSION (4.13.2) - an exact version match, and (like
+      # Linux's conda-forge package) nothing to compile at all - but
+      # only for the ucrt64 environment, not mingw64 (confirmed by a
+      # real `pacman: target not found` on mingw-w64-x86_64-antlr4-
+      # runtime-cpp), so this job uses UCRT64 throughout.
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-make
-            mingw-w64-x86_64-antlr4-runtime-cpp
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-make
+            mingw-w64-ucrt-x86_64-antlr4-runtime-cpp
 
-      # MSYS2's MINGW64 packages install under /mingw64.
+      # MSYS2's UCRT64 packages install under /ucrt64.
       - name: Build
-        run: make CXX=g++ ANTLR4_RUNTIME_PREFIX=/mingw64
+        run: make CXX=g++ ANTLR4_RUNTIME_PREFIX=/ucrt64
 
       # tests/run_tests.sh needs the pdp7 (open-simh) and qemu-system-i386
       # hardware simulators, which aren't readily available on Windows
