@@ -16,7 +16,7 @@ jobs:
   macos:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install ANTLR, runtime and target simulators (Homebrew)
         run: brew install antlr antlr4-cpp-runtime open-simh qemu
@@ -30,7 +30,7 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Ubuntu's own `libantlr4-runtime-dev` (currently 4.10, in
       # universe) instead of building the runtime from source - that
@@ -71,7 +71,7 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # MSYS2 ships a prebuilt mingw-w64-x86_64-antlr4-runtime-cpp at
       # exactly ANTLR_VERSION (4.13.2) - no from-source build needed
