@@ -60,7 +60,8 @@ jobs:
           cmake -S "${{ runner.temp }}/antlr4-src/runtime/Cpp" \
                 -B "${{ runner.temp }}/antlr4-build" \
                 -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_INSTALL_PREFIX="$VENDOR"
+                -DCMAKE_INSTALL_PREFIX="$VENDOR" \
+                -DANTLR_BUILD_CPP_TESTS=OFF
           cmake --build "${{ runner.temp }}/antlr4-build" --parallel
           cmake --install "${{ runner.temp }}/antlr4-build"
 
@@ -115,7 +116,8 @@ jobs:
           cmake -G "MinGW Makefiles" -S "${{ runner.temp }}/antlr4-src/runtime/Cpp" \
                 -B "${{ runner.temp }}/antlr4-build" \
                 -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_INSTALL_PREFIX="$VENDOR"
+                -DCMAKE_INSTALL_PREFIX="$VENDOR" \
+                -DANTLR_BUILD_CPP_TESTS=OFF
           cmake --build "${{ runner.temp }}/antlr4-build" --parallel
           cmake --install "${{ runner.temp }}/antlr4-build"
 
