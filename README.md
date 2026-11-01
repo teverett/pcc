@@ -28,12 +28,20 @@ one of two modes:
 ## Building
 
 ```
-make                # uses Homebrew's antlr/antlr4-cpp-runtime
+make                # uses Homebrew's antlr4-cpp-runtime
 make test            # runs tests/run_tests.sh against both targets
 ```
 
-See the Makefile's own header comment for how to point it at a
-vendored (non-Homebrew) ANTLR tool + C++ runtime instead.
+The generated C++ lexer/parser code (`src/generated/`, from
+`grammar/*.g4`) is checked into git - `make` never invokes the real
+ANTLR tool itself, so building pcc needs only the ANTLR4 C++
+*runtime* (headers/lib), not Java or the ANTLR jar. See the
+Makefile's own header comment for how to point it at a non-Homebrew
+runtime install instead.
+
+After editing a `grammar/*.g4` file, regenerate `src/generated/` by
+hand with `scripts/generate-grammars.sh` (or `make generate`, which
+just runs that script), review the diff, and commit both together.
 
 ## Command-line switches
 
