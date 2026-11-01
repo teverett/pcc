@@ -32,38 +32,58 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Ubuntu's own `libantlr4-runtime-dev` (currently 4.10, in
-      # universe) instead of building the runtime from source - that
-      # repeatedly got the job killed partway through (SIGTERM) on
-      # this runner. It's a slightly older minor version than the
-      # ANTLR_VERSION jar below (matched to local/macOS dev instead -
-      # see that var's own comment), but the handful of C++ runtime
-      # APIs pcc's generated code actually calls (ANTLRInputStream,
-      # CommonTokenStream, the Lexer/Parser/error-listener base
-      # classes) have been stable across that whole range; the Test
-      # step below is exactly what would catch it if that ever
-      # stopped being true.
-      - name: Install ANTLR C++ runtime, build tools and target simulators
+      # Tried Ubuntu's own `libantlr4-runtime-dev` package here first
+      # (to skip building from source entirely) - it's 4.10, and
+      # 4.13.2-generated code (antlr4::internal::OnceFlag, added
+      # after 4.10) doesn't actually compile against it. No Ubuntu
+      # package currently ships a matching 4.13.x runtime, so this
+      # vendors the exact ANTLR_VERSION from source instead (via
+      # ci/antlr-runtime/ below) - same version as local/macOS dev
+      # (see that var's own comment).
+      - name: Install build tools and target simulators
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              build-essential default-jre-headless libantlr4-runtime-dev \
+              build-essential cmake default-jre-headless \
               qemu-system-x86 netcat-openbsd simh
 
-      - name: Download ANTLR tool jar
+      - name: Cache vendored ANTLR tool + C++ runtime
+        id: antlr-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/antlr-vendor
+          key: antlr-vendor-linux-${{ env.ANTLR_VERSION }}-v2
+
+      # ci/antlr-runtime/ is a small standalone CMake project (not
+      # pcc's own build - see its own header comment) that fetches,
+      # builds and installs the runtime via ExternalProject_Add in
+      # one `cmake --build` - replaces the old hand-rolled `git
+      # clone` + separate `cmake -S/-B`/`--install` steps this job
+      # used to run inline here.
+      - name: Vendor ANTLR C++ runtime via CMake (ci/antlr-runtime/)
+        if: steps.antlr-cache.outputs.cache-hit != 'true'
         run: |
-          curl -fsSL -o "${{ runner.temp }}/antlr-${ANTLR_VERSION}-complete.jar" \
+          set -eu
+          VENDOR="${{ runner.temp }}/antlr-vendor"
+          mkdir -p "$VENDOR"
+          curl -fsSL -o "$VENDOR/antlr-${ANTLR_VERSION}-complete.jar" \
               "https://www.antlr.org/download/antlr-${ANTLR_VERSION}-complete.jar"
+          cmake -S ci/antlr-runtime -B "${{ runner.temp }}/antlr4-build" \
+                -DANTLR_GIT_TAG="${ANTLR_VERSION}" \
+                -DANTLR_INSTALL_PREFIX="$VENDOR"
+          cmake --build "${{ runner.temp }}/antlr4-build" --parallel
 
       - name: Build
         run: |
-          make ANTLR="java -jar ${{ runner.temp }}/antlr-${ANTLR_VERSION}-complete.jar" \
-               ANTLR4_RUNTIME_PREFIX=/usr
+          VENDOR="${{ runner.temp }}/antlr-vendor"
+          make ANTLR="java -jar $VENDOR/antlr-${ANTLR_VERSION}-complete.jar" \
+               ANTLR4_RUNTIME_PREFIX="$VENDOR"
 
       - name: Test
         run: |
-          make test ANTLR="java -jar ${{ runner.temp }}/antlr-${ANTLR_VERSION}-complete.jar" \
-                     ANTLR4_RUNTIME_PREFIX=/usr
+          VENDOR="${{ runner.temp }}/antlr-vendor"
+          make test ANTLR="java -jar $VENDOR/antlr-${ANTLR_VERSION}-complete.jar" \
+                     ANTLR4_RUNTIME_PREFIX="$VENDOR"
 
   windows:
     runs-on: windows-latest

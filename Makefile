@@ -11,13 +11,18 @@
 #   make
 #
 # Anywhere else (no Homebrew), point ANTLR at a downloaded tool jar
-# and ANTLR4_RUNTIME_PREFIX at wherever that platform's own C++
-# runtime package puts its headers/lib - see .github/workflows/ci.yml
-# for the exact package + prefix this uses on Linux (apt's
-# libantlr4-runtime-dev, prefix /usr) and Windows (MSYS2's
-# mingw-w64-x86_64-antlr4-runtime-cpp, prefix /mingw64):
+# and ANTLR4_RUNTIME_PREFIX at wherever a matching-*version* C++
+# runtime's headers/lib live - generated code from one ANTLR version
+# doesn't reliably compile against another version's runtime (e.g.
+# 4.13.2's generated code needs antlr4::internal::OnceFlag, which
+# doesn't exist before 4.11), so this isn't just "any C++ runtime
+# will do": either build runtime/Cpp from the exact same git tag as
+# the jar (see .github/workflows/ci.yml's Linux job for the full
+# cmake invocation) or, if one happens to exist, a prebuilt package at
+# that exact version (Windows's job uses MSYS2's
+# mingw-w64-x86_64-antlr4-runtime-cpp, which happens to ship 4.13.2):
 #   make ANTLR="java -jar /path/to/antlr-4.13.2-complete.jar" \
-#        ANTLR4_RUNTIME_PREFIX=/usr
+#        ANTLR4_RUNTIME_PREFIX=/path/to/matching-runtime-install
 
 ANTLR                  ?= antlr
 ANTLR4_RUNTIME_PREFIX  ?= $(shell brew --prefix antlr4-cpp-runtime 2>/dev/null || echo /usr/local)
