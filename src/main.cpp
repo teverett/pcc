@@ -67,6 +67,7 @@
 #include "codegen/arm/ArmCodegen.h"
 #include "codegen/arm64/Arm64Codegen.h"
 #include "codegen/powerpc/PowerPCCodegen.h"
+#include "codegen/sparc/SparcCodegen.h"
 #include "fileformat/FileFormat.h"
 #include "linker/Linker.h"
 #include "linker/factory/I8086LinkerFactory.h"
@@ -88,6 +89,7 @@
 #include "linker/factory/STM32LinkerFactory.h"
 #include "linker/factory/MipsLinkerFactory.h"
 #include "linker/factory/PowerPCLinkerFactory.h"
+#include "linker/factory/SparcLinkerFactory.h"
 #include "linker/factory/MCS51LinkerFactory.h"
 #include "linker/factory/PIC16LinkerFactory.h"
 #include "linker/factory/PIC18LinkerFactory.h"
@@ -222,6 +224,7 @@ std::unique_ptr<pcc::Backend> makeBackend(const std::string &target) {
     if (target == "armv7a") return std::make_unique<pcc::ArmCodegen>();
     if (target == "armv8a") return std::make_unique<pcc::Arm64Codegen>();
     if (target == "powerpc") return std::make_unique<pcc::PowerPCCodegen>();
+    if (target == "sparc") return std::make_unique<pcc::SparcCodegen>();
     return nullptr;
 }
 
@@ -247,6 +250,7 @@ std::unique_ptr<pcc::TargetLinker> makeLinker(const std::string &target) {
     if (target == "stm32") return pcc::makeSTM32Linker();
     if (target == "r10000" || target == "r4000") return pcc::makeMipsLinker();
     if (target == "powerpc") return pcc::makePowerPCLinker();
+    if (target == "sparc") return pcc::makeSparcLinker();
     if (target == "8051" || target == "8052" || target == "8031" || target == "8032") return pcc::makeMCS51Linker();
     if (target == "pic16") return pcc::makePIC16Linker();
     if (target == "pic18") return pcc::makePIC18Linker();
@@ -482,7 +486,7 @@ int main(int argc, char **argv) {
     if (link) {
         std::unique_ptr<pcc::TargetLinker> linker = makeLinker(target);
         if (!linker) {
-            std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502, 65c02, 68000, mc68328, pdp11, 8080, z80, 8008, stm8, stm32, i386, m16c, pic16, pic18, r10000, r4000, cortex-m3, cortex-m4, cortex-m7, 8051, 8052, 8031, 8032, armv7a, armv8a, powerpc)\n";
+            std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502, 65c02, 68000, mc68328, pdp11, 8080, z80, 8008, stm8, stm32, i386, m16c, pic16, pic18, r10000, r4000, cortex-m3, cortex-m4, cortex-m7, 8051, 8052, 8031, 8032, armv7a, armv8a, powerpc, sparc)\n";
             return 1;
         }
         std::vector<std::string> linkFormats = linker->outputFormats();
@@ -528,7 +532,7 @@ int main(int argc, char **argv) {
     // --- ordinary compile mode. ---
     std::unique_ptr<pcc::Backend> backend = makeBackend(target);
     if (!backend) {
-        std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502, 65c02, 68000, mc68328, pdp11, 8080, z80, 8008, stm8, stm32, i386, m16c, pic16, pic18, r10000, r4000, cortex-m3, cortex-m4, cortex-m7, 8051, 8052, 8031, 8032, armv7a, armv8a, powerpc)\n";
+        std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502, 65c02, 68000, mc68328, pdp11, 8080, z80, 8008, stm8, stm32, i386, m16c, pic16, pic18, r10000, r4000, cortex-m3, cortex-m4, cortex-m7, 8051, 8052, 8031, 8032, armv7a, armv8a, powerpc, sparc)\n";
         return 1;
     }
     if (!assemblerPathSet) assemblerPath = backend->defaultAssemblerPath();
@@ -677,6 +681,9 @@ int main(int argc, char **argv) {
     } else if (target == "powerpc") {
         predefinedMacros["__POWERPC__"] = "1";
         predefinedMacros["__ppc__"] = "1";
+    } else if (target == "sparc") {
+        predefinedMacros["__SPARC__"] = "1";
+        predefinedMacros["__sparc__"] = "1";
     }
 
     // A genuinely external reference is always allowed under a real

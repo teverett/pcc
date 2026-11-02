@@ -333,7 +333,7 @@ check_8086() {
     qemu-system-i386 -fda "$binfile" -monitor "tcp:127.0.0.1:$port,server,nowait" \
         -display none -no-reboot >/dev/null 2>&1 &
     local qemu_pid=$!
-    ( sleep 30; kill -9 "$qemu_pid" 2>/dev/null ) &
+    ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
     # Poll for HLT=1 instead of a single fixed sleep: a flat delay
@@ -343,7 +343,7 @@ check_8086() {
     # practice as mix.c/neg.c reading back EAX=0 (the CPU's power-on
     # value, i.e. the query raced ahead of the machine actually
     # halting) on GitHub's macOS runners while the same tests pass
-    # locally. Up to ~25s total before giving up and taking whatever
+    # locally. Up to ~40s total before giving up and taking whatever
     # the last query returned (the existing "no EAX" / wrong-value
     # checks below still catch a genuine failure).
     # Only "info registers" here, deliberately no "quit" - "quit" is
@@ -353,23 +353,35 @@ check_8086() {
     # iteration with nothing to connect to. The explicit kill below,
     # once polling is done, is what actually ends this qemu instance.
     #
-    # Poll until EAX reads the same value twice in a row, rather than
-    # waiting for HLT=1: a background timer interrupt wakes the CPU
-    # back out of `hlt` into the `jmp _hang` spin loop within a
+    # Poll until EAX reads the same value three times in a row, rather
+    # than waiting for HLT=1: a background timer interrupt wakes the
+    # CPU back out of `hlt` into the `jmp _hang` spin loop within a
     # couple of seconds (see ../docs/pdp-c-compiler.md's "The 8086
     # backend"), so HLT can easily have already flipped back to 0 by
     # the time of the very first poll - waiting for it can spin for
     # the entire timeout for no reason. EAX stops changing either way
-    # once main has returned, which a fixed sleep tuned on a fast dev
-    # machine isn't guaranteed to outlast on a slower/unaccelerated CI
-    # runner (seen in practice as mix.c/neg.c reading back EAX=0, the
-    # CPU's power-on value, on GitHub's macOS runners).
-    local waited=0 prev_eax="" cur_eax=""
-    while [ "$waited" -lt 25 ]; do
+    # once main has returned - but on a sufficiently slow/unaccelerated
+    # CI runner, a single loop iteration inside the program itself
+    # (not yet finished) can easily take longer than one poll interval,
+    # so EAX can read the same value on two consecutive polls purely
+    # by chance, mid-computation, well before the program actually
+    # finishes (confirmed directly: mix.c reading back a wrong,
+    # clearly-mid-computation value - not EAX's power-on 0 - on a slow
+    # CI runner). Three consecutive stable reads (a good ~2 extra
+    # seconds, not just 1) cuts that false-positive window down
+    # sharply without meaningfully slowing down the common case, where
+    # EAX really has already stopped changing for good.
+    local waited=0 prev_eax="" cur_eax="" stable_eax=0
+    while [ "$waited" -lt 40 ]; do
         echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
         cur_eax="$(grep -oE 'EAX=[0-9a-fA-F]+' "$outfile" | head -1)"
         if [ -n "$cur_eax" ] && [ "$cur_eax" = "$prev_eax" ]; then
-            break
+            stable_eax=$((stable_eax + 1))
+            if [ "$stable_eax" -ge 3 ]; then
+                break
+            fi
+        else
+            stable_eax=0
         fi
         prev_eax="$cur_eax"
         sleep 1
@@ -426,19 +438,24 @@ check_i386() {
     qemu-system-i386 -kernel "$binfile" -monitor "tcp:127.0.0.1:$port,server,nowait" \
         -display none -no-reboot >/dev/null 2>&1 &
     local qemu_pid=$!
-    ( sleep 30; kill -9 "$qemu_pid" 2>/dev/null ) &
+    ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
     # Same EAX-stabilizes-twice-in-a-row convention as check_8086()'s
     # own poll, for the same reason (a background timer interrupt
     # wakes the CPU back out of `hlt` into this backend's own `jmp
     # halt` spin loop - see I386Codegen.cpp's own `generate()`).
-    local waited=0 prev_eax="" cur_eax=""
-    while [ "$waited" -lt 25 ]; do
+    local waited=0 prev_eax="" cur_eax="" stable_eax=0
+    while [ "$waited" -lt 40 ]; do
         echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
         cur_eax="$(grep -oE 'EAX=[0-9a-fA-F]+' "$outfile" | head -1)"
         if [ -n "$cur_eax" ] && [ "$cur_eax" = "$prev_eax" ]; then
-            break
+            stable_eax=$((stable_eax + 1))
+            if [ "$stable_eax" -ge 3 ]; then
+                break
+            fi
+        else
+            stable_eax=0
         fi
         prev_eax="$cur_eax"
         sleep 1
@@ -498,19 +515,24 @@ check_armv7a() {
         -device "loader,addr=0x1000,cpu-num=0" \
         -monitor "tcp:127.0.0.1:$port,server,nowait" -display none -no-reboot >/dev/null 2>&1 &
     local qemu_pid=$!
-    ( sleep 30; kill -9 "$qemu_pid" 2>/dev/null ) &
+    ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
-    # Poll R00 until it reads the same value twice in a row - same
+    # Poll R00 until it reads the same value three times in a row - same
     # convention as check_68000's own D0 poll (the program's own
     # result sits in R00 the instant it reaches its `halt: b halt`
     # spin loop, see ../src/codegen/arm/ArmCodegen.h's own comment).
-    local waited=0 prev_r0="" cur_r0=""
-    while [ "$waited" -lt 25 ]; do
+    local waited=0 prev_r0="" cur_r0="" stable_r0=0
+    while [ "$waited" -lt 40 ]; do
         echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
         cur_r0="$(grep -oE 'R00=[0-9a-fA-F]+' "$outfile" | head -1)"
         if [ -n "$cur_r0" ] && [ "$cur_r0" = "$prev_r0" ]; then
-            break
+            stable_r0=$((stable_r0 + 1))
+            if [ "$stable_r0" -ge 3 ]; then
+                break
+            fi
+        else
+            stable_r0=0
         fi
         prev_r0="$cur_r0"
         sleep 1
@@ -567,19 +589,24 @@ check_armv8a() {
         -kernel "$binfile" -nographic \
         -monitor "tcp:127.0.0.1:$port,server,nowait" -serial none -display none -no-reboot >/dev/null 2>&1 &
     local qemu_pid=$!
-    ( sleep 30; kill -9 "$qemu_pid" 2>/dev/null ) &
+    ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
     # Same X00-stabilizes-twice-in-a-row convention as check_68000()'s
     # own D0 poll - the program's own result sits in X00/W00 the
     # instant it reaches its `halt: b halt` spin loop (see
     # ../src/codegen/arm64/Arm64Codegen.h's own comment).
-    local waited=0 prev_x0="" cur_x0=""
-    while [ "$waited" -lt 25 ]; do
+    local waited=0 prev_x0="" cur_x0="" stable_x0=0
+    while [ "$waited" -lt 40 ]; do
         echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
         cur_x0="$(grep -oE 'X00=[0-9a-fA-F]+' "$outfile" | head -1)"
         if [ -n "$cur_x0" ] && [ "$cur_x0" = "$prev_x0" ]; then
-            break
+            stable_x0=$((stable_x0 + 1))
+            if [ "$stable_x0" -ge 3 ]; then
+                break
+            fi
+        else
+            stable_x0=0
         fi
         prev_x0="$cur_x0"
         sleep 1
@@ -637,19 +664,24 @@ check_68000() {
         -device "loader,addr=0x1000,cpu-num=0" \
         -monitor "tcp:127.0.0.1:$port,server,nowait" -display none -no-reboot >/dev/null 2>&1 &
     local qemu_pid=$!
-    ( sleep 30; kill -9 "$qemu_pid" 2>/dev/null ) &
+    ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
-    # Poll D0 until it reads the same value twice in a row (same
+    # Poll D0 until it reads the same value three times in a row (same
     # convention, and the same reason, as check_8086's own EAX poll -
     # the program's own result sits in D0 the instant it reaches its
     # `halt: bra halt` spin loop, see M68kCodegen.h's own comment).
-    local waited=0 prev_d0="" cur_d0=""
-    while [ "$waited" -lt 25 ]; do
+    local waited=0 prev_d0="" cur_d0="" stable_d0=0
+    while [ "$waited" -lt 40 ]; do
         echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
         cur_d0="$(grep -oE 'D0 = [0-9a-fA-F]+' "$outfile" | head -1)"
         if [ -n "$cur_d0" ] && [ "$cur_d0" = "$prev_d0" ]; then
-            break
+            stable_d0=$((stable_d0 + 1))
+            if [ "$stable_d0" -ge 3 ]; then
+                break
+            fi
+        else
+            stable_d0=0
         fi
         prev_d0="$cur_d0"
         sleep 1
@@ -709,17 +741,22 @@ check_mc68328() {
         -device "loader,file=$binfile,addr=0x0,cpu-num=0" \
         -monitor "tcp:127.0.0.1:$port,server,nowait" -display none -no-reboot >/dev/null 2>&1 &
     local qemu_pid=$!
-    ( sleep 30; kill -9 "$qemu_pid" 2>/dev/null ) &
+    ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
     # Same D0-stabilizes-twice-in-a-row convention as check_68000()'s
     # own poll.
-    local waited=0 prev_d0="" cur_d0=""
-    while [ "$waited" -lt 25 ]; do
+    local waited=0 prev_d0="" cur_d0="" stable_d0=0
+    while [ "$waited" -lt 40 ]; do
         echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
         cur_d0="$(grep -oE 'D0 = [0-9a-fA-F]+' "$outfile" | head -1)"
         if [ -n "$cur_d0" ] && [ "$cur_d0" = "$prev_d0" ]; then
-            break
+            stable_d0=$((stable_d0 + 1))
+            if [ "$stable_d0" -ge 3 ]; then
+                break
+            fi
+        else
+            stable_d0=0
         fi
         prev_d0="$cur_d0"
         sleep 1
@@ -1524,17 +1561,22 @@ check_stm32() {
     qemu-system-arm -M stm32vldiscovery -kernel "$binfile" \
         -monitor "tcp:127.0.0.1:$port,server,nowait" -display none -no-reboot -serial none >/dev/null 2>&1 &
     local qemu_pid=$!
-    ( sleep 30; kill -9 "$qemu_pid" 2>/dev/null ) &
+    ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
     # Same R00-stabilizes-twice-in-a-row convention as check_68000()'s
     # own D0 poll.
-    local waited=0 prev_r0="" cur_r0=""
-    while [ "$waited" -lt 25 ]; do
+    local waited=0 prev_r0="" cur_r0="" stable_r0=0
+    while [ "$waited" -lt 40 ]; do
         echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
         cur_r0="$(grep -oE 'R00=[0-9a-fA-F]+' "$outfile" | head -1)"
         if [ -n "$cur_r0" ] && [ "$cur_r0" = "$prev_r0" ]; then
-            break
+            stable_r0=$((stable_r0 + 1))
+            if [ "$stable_r0" -ge 3 ]; then
+                break
+            fi
+        else
+            stable_r0=0
         fi
         prev_r0="$cur_r0"
         sleep 1
