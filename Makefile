@@ -73,7 +73,7 @@ SPACE +=
 # `#define`/`#if` etc. pass that runs on every source file before
 # ANTLR ever sees it) - not backend-specific, but still their own
 # subdirectories needing the same vpath treatment.
-BACKEND_DIRS := $(SRC_DIR)/codegen/pdp7 $(SRC_DIR)/codegen/x86_8086
+BACKEND_DIRS := $(SRC_DIR)/codegen/pdp7 $(SRC_DIR)/codegen/x86_8086 $(SRC_DIR)/codegen/m6502
 AST_DIR      := $(SRC_DIR)/ast
 IR_DIR       := $(SRC_DIR)/ir
 COFF_DIR     := $(SRC_DIR)/coff
@@ -109,7 +109,9 @@ HAND_SRCS := \
     $(SRC_DIR)/codegen/pdp7/Pdp7Codegen.cpp \
     $(SRC_DIR)/codegen/pdp7/Pdp7Assembler.cpp \
     $(SRC_DIR)/codegen/x86_8086/I8086Codegen.cpp \
-    $(SRC_DIR)/codegen/x86_8086/I8086Assembler.cpp
+    $(SRC_DIR)/codegen/x86_8086/I8086Assembler.cpp \
+    $(SRC_DIR)/codegen/m6502/M6502Codegen.cpp \
+    $(SRC_DIR)/codegen/m6502/M6502Assembler.cpp
 
 ALL_SRCS := $(GENERATED_SRCS) $(HAND_SRCS)
 OBJS     := $(patsubst %,$(OBJ_DIR)/%.o,$(notdir $(ALL_SRCS)))
@@ -152,9 +154,13 @@ clean:
 
 # Runs every backend's test suite in turn - see tests/run_tests.sh's
 # --target. A backend whose own target tool isn't installed (pdp7's
-# simulator, 8086's qemu) fails loudly rather than being skipped
-# silently; install it or run `tests/run_tests.sh $(TARGET) --target=<one>`
-# directly to check just one.
+# simulator, 8086's qemu, 6502's py65) fails loudly rather than being
+# skipped silently; install it or run `tests/run_tests.sh $(TARGET)
+# --target=<one>` directly to check just one. --target=8088 isn't run
+# here too - see src/main.cpp's own makeBackend() comment for why
+# that would just be re-running the --target=8086 suite against
+# provably byte-identical output.
 test: all
 	./tests/run_tests.sh $(TARGET) --target=pdp7
 	./tests/run_tests.sh $(TARGET) --target=8086
+	./tests/run_tests.sh $(TARGET) --target=6502

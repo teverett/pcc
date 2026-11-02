@@ -47,6 +47,7 @@
 #include "preprocessor/Preprocessor.h"
 #include "codegen/pdp7/Pdp7Codegen.h"
 #include "codegen/x86_8086/I8086Codegen.h"
+#include "codegen/m6502/M6502Codegen.h"
 #include "coff/CoffReader.h"
 #include "linker/I8086Linker.h"
 #include "linker/Linker.h"
@@ -130,9 +131,20 @@ void writeToBuildDir(const std::string &name, const std::string &content, bool b
     out << content;
 }
 
+// --target=8088 is a deliberate, software-identical alias for
+// --target=8086, not a separate backend: the 8088 is the exact same
+// instruction set as the 8086 (literally the same opcodes, the same
+// registers, the same real-mode memory model) - its one real
+// difference, an 8-bit external data bus instead of a 16-bit one, is
+// a hardware bus-timing detail invisible to every instruction this
+// compiler (or anything else) could ever emit. There is nothing for
+// a distinct I8088Codegen to do differently, so this just reuses
+// I8086Codegen/I8086Linker outright rather than inventing a
+// duplicate pair of classes with no actual behavioral difference.
 std::unique_ptr<pcc::Backend> makeBackend(const std::string &target) {
     if (target == "pdp7") return std::make_unique<pcc::Pdp7Codegen>();
-    if (target == "8086") return std::make_unique<pcc::I8086Codegen>();
+    if (target == "8086" || target == "8088") return std::make_unique<pcc::I8086Codegen>();
+    if (target == "6502") return std::make_unique<pcc::M6502Codegen>();
     return nullptr;
 }
 
@@ -140,7 +152,7 @@ std::unique_ptr<pcc::Backend> makeBackend(const std::string &target) {
 // TargetLinker implementation per target, see linker/Linker.h.
 std::unique_ptr<pcc::TargetLinker> makeLinker(const std::string &target) {
     if (target == "pdp7") return std::make_unique<pcc::Pdp7Linker>();
-    if (target == "8086") return std::make_unique<pcc::I8086Linker>();
+    if (target == "8086" || target == "8088") return std::make_unique<pcc::I8086Linker>();
     return nullptr;
 }
 
@@ -388,7 +400,7 @@ int main(int argc, char **argv) {
     if (link) {
         std::unique_ptr<pcc::TargetLinker> linker = makeLinker(target);
         if (!linker) {
-            std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086)\n";
+            std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502)\n";
             return 1;
         }
         std::vector<std::string> linkFormats = linker->outputFormats();
@@ -426,7 +438,7 @@ int main(int argc, char **argv) {
     // --- ordinary compile mode. ---
     std::unique_ptr<pcc::Backend> backend = makeBackend(target);
     if (!backend) {
-        std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086)\n";
+        std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502)\n";
         return 1;
     }
     if (!assemblerPathSet) assemblerPath = backend->defaultAssemblerPath();
@@ -460,9 +472,26 @@ int main(int argc, char **argv) {
     // Target macro pcc predefines for every file's own preprocessor
     // run - see preprocessor/Preprocessor.h and
     // docs/pdp-c-compiler.md's "Preprocessor" for `#ifdef __PDP7__`/
-    // `#ifdef __8086__`-style target-conditional code.
+    // `#ifdef __8086__`/`#ifdef __6502__`-style target-conditional code.
     std::map<std::string, std::string> predefinedMacros;
-    predefinedMacros[target == "pdp7" ? "__PDP7__" : "__8086__"] = "1";
+    if (target == "pdp7") {
+        predefinedMacros["__PDP7__"] = "1";
+    } else if (target == "8086") {
+        predefinedMacros["__8086__"] = "1";
+    } else if (target == "8088") {
+        // --target=8088 is a software-identical alias for --target=8086
+        // (see makeBackend()'s own comment) - defining __8086__ too
+        // means existing `#ifdef __8086__` source (e.g. tests/disk.c's
+        // real BIOS disk I/O, equally valid on either machine) keeps
+        // working unchanged under either target name. __8088__ exists
+        // only for source that wants to say "I was compiled for an
+        // 8088" specifically, even though nothing in pcc itself ever
+        // treats that differently from __8086__.
+        predefinedMacros["__8086__"] = "1";
+        predefinedMacros["__8088__"] = "1";
+    } else if (target == "6502") {
+        predefinedMacros["__6502__"] = "1";
+    }
 
     // A genuinely external reference is always allowed under
     // --format=coff (deferred as a relocation for a future --link
