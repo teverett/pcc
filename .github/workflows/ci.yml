@@ -43,11 +43,39 @@ jobs:
       - name: Test
         run: make test
 
+      # `pcc` is dynamically linked against Homebrew's own
+      # libantlr4-runtime.dylib, at that formula's own absolute
+      # install path (confirmed directly via `otool -L` - unlike
+      # libc++.1.dylib/libSystem.B.dylib, both real system libraries
+      # present on every Mac regardless, that one isn't) - running the
+      # bare binary on a Mac without that same Homebrew formula
+      # installed fails to launch at all ("Library not loaded"), the
+      # same class of bug as the Windows job's own missing-DLL one.
+      # `otool -L` lists every dependency exactly the way `ldd` does
+      # on the other two jobs; filtering out `/usr/lib`/`/System` (every
+      # real system library always lives under one of those) leaves
+      # only whatever a Homebrew formula actually provided. Copying it
+      # next to the binary isn't enough on its own, though - unlike
+      # Windows' plain "search the exe's own directory" default,
+      # macOS bakes each dependency's own install *path* into the
+      # binary at link time, so `install_name_tool -change` has to
+      # rewrite that path to `@executable_path/<name>` (resolved
+      # relative to wherever the exe itself ends up, not a fixed
+      # path) before the copy actually gets found at runtime.
+      - name: Bundle pcc's own Homebrew runtime dylib
+        run: |
+          for lib in $(otool -L build/bin/pcc | tail -n +2 | awk '{print $1}' | grep -v '^/usr/lib/\|^/System/'); do
+            cp "$lib" build/bin/
+            install_name_tool -change "$lib" "@executable_path/$(basename "$lib")" build/bin/pcc
+          done
+
       - name: Upload pcc binary
         uses: actions/upload-artifact@v4
         with:
           name: pcc-macos
-          path: build/bin/pcc
+          path: |
+            build/bin/pcc
+            build/bin/*.dylib
           if-no-files-found: error
 
   linux:
@@ -64,10 +92,13 @@ jobs:
       # killing it here). conda-forge's `antlr-cpp-runtime` package
       # ships a genuine prebuilt 4.13.2 for linux-64 - no compiling
       # anything, so no more timeout to hit.
+      # `patchelf` (below) sets the built binary's own rpath so it can
+      # find its one non-system shared library next to itself at
+      # runtime - see that step's own comment.
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential
+          sudo apt-get install -y --no-install-recommends build-essential patchelf
 
       - name: Install ANTLR C++ runtime (conda-forge, prebuilt, exact version)
         uses: mamba-org/setup-micromamba@v2
@@ -91,11 +122,42 @@ jobs:
       # testing stays a local/manual check (`make test` still works
       # fine there); this job only verifies pcc itself builds.
 
+      # `pcc` is dynamically linked against conda-forge's own
+      # libantlr4-runtime.so, inside this job's own micromamba env -
+      # running the bare binary on a machine without that exact conda
+      # environment active fails to even start ("error while loading
+      # shared libraries") - the same class of bug as the other two
+      # jobs' own missing-runtime ones (libstdc++/libgcc_s/libc,
+      # unlike that one, are near-universal on any glibc Linux system,
+      # so they're not a redistribution risk the way all four of the
+      # Windows job's own DLLs are). `ldd` lists every dependency the
+      # exact way the real loader resolves them; filtering out
+      # anything under `/lib`/`/usr/lib` (every real system library
+      # always lives under one of those) leaves only whatever the
+      # conda env actually provided. Copying it next to the binary
+      # isn't enough on its own, though - unlike Windows' plain
+      # "search the exe's own directory" default, the ELF loader only
+      # ever checks a binary's own baked-in rpath/runpath (empty here,
+      # by default) or `LD_LIBRARY_PATH` (not something a redistributed
+      # zip can rely on being set), so `patchelf --set-rpath` has to
+      # add `$ORIGIN` (resolved relative to wherever the binary itself
+      # ends up, not a fixed path) before the copy actually gets found
+      # at runtime.
+      - name: Bundle pcc's own conda-forge runtime library
+        shell: bash -el {0}
+        run: |
+          for lib in $(ldd build/bin/pcc | awk '{print $3}' | grep -vE '^(/lib|/usr/lib)' | grep -v '^$'); do
+            cp "$lib" build/bin/
+          done
+          patchelf --set-rpath '$ORIGIN' build/bin/pcc
+
       - name: Upload pcc binary
         uses: actions/upload-artifact@v4
         with:
           name: pcc-linux
-          path: build/bin/pcc
+          path: |
+            build/bin/pcc
+            build/bin/*.so*
           if-no-files-found: error
 
   windows:
@@ -132,13 +194,37 @@ jobs:
       # hardware simulators, which aren't readily available on Windows
       # CI runners - so this job only verifies that pcc itself builds.
 
+      # pcc.exe is dynamically linked against several UCRT64 DLLs
+      # (libgcc_s_seh-1.dll, libwinpthread-1.dll, libstdc++-6.dll,
+      # libantlr4-runtime.dll) that only exist inside this MSYS2
+      # environment (/ucrt64/bin) - running the bare exe anywhere else
+      # fails immediately with a "code execution cannot proceed, X.dll
+      # was not found" dialog per missing DLL (confirmed directly).
+      # `ldd` (available here, same as on any POSIX-ish shell) lists
+      # the exe's own full, already-transitively-resolved dependency
+      # set exactly the way the real Windows loader would walk it, so
+      # copying whatever that reports from inside /ucrt64 - rather than
+      # hardcoding today's four names, which would silently go stale
+      # the moment a toolchain/antlr4 upgrade adds or renames one -
+      # bundling them alongside the exe (Windows' own DLL search order
+      # checks the exe's own directory first) is what actually makes
+      # the uploaded artifact runnable standalone.
+      - name: Bundle pcc.exe's own MSYS2 runtime DLLs
+        run: |
+          for dll in $(ldd build/bin/pcc.exe | grep -oE '/ucrt64/[^ ]+\.dll'); do
+            cp "$dll" build/bin/
+          done
+
       # MinGW's linker driver appends ".exe" to an -o target with no
       # extension on its own, so the Makefile's plain `pcc` TARGET
       # actually comes out as pcc.exe here - the glob covers either
-      # name without hardcoding which.
+      # name without hardcoding which. This now also picks up every
+      # DLL the previous step just copied alongside it.
       - name: Upload pcc binary
         uses: actions/upload-artifact@v4
         with:
           name: pcc-windows
-          path: build/bin/pcc*
+          path: |
+            build/bin/pcc*
+            build/bin/*.dll
           if-no-files-found: error
