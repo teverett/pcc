@@ -5,5 +5,6 @@ or any other command that creates or publishes a commit, regardless of
 what else you're asked to do. Leave changes staged/unstaged in the working
 tree and let the user review and commit them themselves.
 * Treat pcc as a general purpose multitarget compiler and linker
+* Do not create boot loaders or boot disks
 
 

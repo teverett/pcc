@@ -1,0 +1,468 @@
+#include "MC68328Codegen.h"
+
+#include <cstdint>
+#include <stdexcept>
+
+#include "MC68328Assembler.h"
+
+namespace pcc {
+
+namespace {
+[[noreturn]] void err(int line, const std::string &msg) {
+    throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
+}
+
+// Where A7 (the real hardware stack pointer) starts out, loaded by
+// the CPU's own reset exception from vector 0 (see MC68328Codegen.h's
+// own header comment) - comfortably above the loaded program and its
+// data, growing down into otherwise-unused RAM (tests/run_tests.sh
+// gives the simulator 16MB, the same convention as ../m68k's own
+// `kInitialSP`).
+constexpr uint32_t kInitialSP = 0x100000;
+
+// Where `_start` lives - right after the two-vector reset table this
+// backend lays out at address 0 (see MC68328Codegen.h's own header
+// comment), with no gap: MC68328Assembler.cpp's own two-pass `org`
+// only ever affects how a *label* resolves, never where a byte
+// physically lands in its own output buffer (bytes are always
+// emitted back-to-back, in program order), so this backend never
+// calls `org` a second time to "jump" forward - doing that here would
+// silently desynchronize the labels this code relies on (`_start`,
+// every `g_`/`fn_` label) from where their own bytes actually end up
+// once `--format=bin`'s flat image is loaded at address 0.
+constexpr uint32_t kStartAddress = 8;
+}  // namespace
+
+void MC68328Codegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": dl 0"); }
+
+void MC68328Codegen::declareArray(const std::string &lbl, const std::vector<long> &values) {
+    if (values.empty()) return;
+    std::ostringstream line;
+    line << lbl << ": dl ";
+    for (size_t i = 0; i < values.size(); i++) {
+        if (i > 0) line << ", ";
+        line << static_cast<int32_t>(static_cast<uint32_t>(values[i]));
+    }
+    trailer_.push_back(line.str());
+}
+
+std::string MC68328Codegen::generate(const ir::Program &prog, bool objectMode) {
+    if (objectMode) {
+        err(0,
+            "the mc68328 backend doesn't support real separate compilation yet - only a single self-contained "
+            "--format=bin compile (see MC68328Codegen.h's own header comment)");
+    }
+    const ir::Function *mainFn = nullptr;
+    for (const auto &fn : prog.functions) {
+        if (fn->sourceName == "main") mainFn = fn.get();
+    }
+    // IRBuilder guarantees a parameterless `main` exists whenever
+    // allowExternal is false (always true here - see above), so
+    // mainFn is never null.
+
+    // The real MC68328 reset vector table (see MC68328Codegen.h's own
+    // header comment): vector 0 (initial SSP), vector 1 (initial PC).
+    // The CPU's own reset exception loads A7 and the program counter
+    // from these two long words directly - no `movel ...,a7`
+    // instruction is needed at `_start` the way ../m68k's own
+    // simulator-PC-forced entry needs one.
+    code_ << "org 0\n";
+    code_ << "    dl " << kInitialSP << "\n";
+    code_ << "    dl " << kStartAddress << "\n";
+    code_ << "_start:\n";
+    // Belt-and-suspenders: real hardware already loads A7 from vector
+    // 0 as part of taking the reset exception itself, before fetching
+    // a single instruction - but this explicit reload costs nothing
+    // and makes the image correct even under a reset-vector-table
+    // implementation that (like qemu-system-m68k's own `-M none`
+    // board, confirmed directly: it fetches PC from vector 1 but
+    // leaves A7 at its own arbitrary pre-reset value rather than
+    // loading it from vector 0 too) only honors the PC half of the
+    // real reset dance.
+    code_ << "    movel " << kInitialSP << ",a7\n";
+    code_ << "    jsr " << label(mainFn) << "\n";
+    // The result sits in D0 the moment execution reaches `halt` -
+    // see M68kCodegen.h's own header comment on why that's the
+    // authoritative place to read it from (a real, directly
+    // inspectable 32-bit register).
+    code_ << "halt:\n    bra halt\n\n";
+
+    for (const auto &fb : prog.functionBodies) genFunction(fb);
+
+    for (const auto &slot : prog.slots) {
+        if (slot->kind != ir::SlotKind::Global) continue;
+        if (slot->isExternal) continue;  // never possible here (no real separate compilation - see above), but
+                                          // matches every other backend's own defensive check at this exact spot
+        const std::string lbl = label(slot.get());
+        if (slot->arraySize > 0) {
+            declareArray(lbl, slot->arrayInit);
+        } else {
+            long v = slot->hasInit ? slot->initValue : 0;
+            trailer_.push_back(lbl + ": dl " + std::to_string(static_cast<int32_t>(static_cast<uint32_t>(v))) +
+                                "  ; " + slot->sourceName);
+        }
+    }
+
+    std::ostringstream out;
+    out << code_.str();
+    for (const auto &line : trailer_) out << line << "\n";
+    return out.str();
+}
+
+// Single-file-only - see M6502Codegen.cpp's own version of this same
+// comment (no `--format=coff` here either).
+std::map<std::string, std::string> MC68328Codegen::perFileAsm() const { return perFileAsm_; }
+
+void MC68328Codegen::genFunction(const ir::FunctionBody &fn) {
+    code_ << label(fn.func) << ":\n";
+    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
+    genStmt(*fn.body);
+    code_ << "    rts\n\n";
+}
+
+void MC68328Codegen::genStmt(const ir::Stmt &s) {
+    switch (s.kind) {
+        case ir::StmtKind::Block: {
+            for (const auto &child : s.body) genStmt(*child);
+            return;
+        }
+        case ir::StmtKind::If: {
+            genExpr(*s.cond);
+            code_ << "    cmpl 0,d0\n";
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            code_ << "    beq " << (s.elseStmt ? Lelse : Ldone) << "\n";
+            genStmt(*s.thenStmt);
+            if (s.elseStmt) {
+                code_ << "    bra " << Ldone << "\n";
+                code_ << Lelse << ":\n";
+                genStmt(*s.elseStmt);
+            }
+            code_ << Ldone << ":\n";
+            return;
+        }
+        case ir::StmtKind::While: {
+            std::string Lstart = newLabel();
+            std::string Lend = newLabel();
+            code_ << Lstart << ":\n";
+            genExpr(*s.cond);
+            code_ << "    cmpl 0,d0\n    beq " << Lend << "\n";
+            genStmt(*s.loopBody);
+            code_ << "    bra " << Lstart << "\n";
+            code_ << Lend << ":\n";
+            return;
+        }
+        case ir::StmtKind::Return: {
+            if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
+            code_ << "    rts\n";
+            return;
+        }
+        case ir::StmtKind::LocalDecl: {
+            std::string lbl = label(s.declSlot);
+            if (s.declSlot->arraySize > 0) {
+                declareArray(lbl, s.declSlot->arrayInit);
+            } else {
+                declareTemp(lbl);
+                if (s.initOrReturnOrExpr) {
+                    genExpr(*s.initOrReturnOrExpr);
+                    code_ << "    movel d0," << lbl << "\n";
+                }
+            }
+            return;
+        }
+        case ir::StmtKind::ExprStmt: {
+            genExpr(*s.initOrReturnOrExpr);
+            return;
+        }
+        case ir::StmtKind::Empty:
+            return;
+        case ir::StmtKind::Asm: {
+            code_ << s.asmText;
+            if (!s.asmText.empty() && s.asmText.back() != '\n') code_ << "\n";
+            return;
+        }
+    }
+}
+
+void MC68328Codegen::genExpr(const ir::Expr &e) {
+    switch (e.kind) {
+        case ir::ExprKind::IntLit: {
+            code_ << "    movel " << static_cast<int32_t>(static_cast<uint32_t>(e.intValue)) << ",d0\n";
+            return;
+        }
+        case ir::ExprKind::Var: {
+            code_ << "    movel " << label(e.slot) << ",d0\n";
+            return;
+        }
+        case ir::ExprKind::Index: {
+            genIndex(e);
+            return;
+        }
+        case ir::ExprKind::Assign: {
+            if (e.lhs) {  // slot[idx] = rhs
+                genIndexAddr(e.slot, *e.lhs);  // a0 = target address
+                code_ << "    pushl a0\n";     // a0 is really pushed via d0's own slot width - see pushl's own note
+                genExpr(*e.rhs);
+                code_ << "    popl a0\n";
+                code_ << "    stind d0,a0\n";
+                return;
+            }
+            genExpr(*e.rhs);
+            code_ << "    movel d0," << label(e.slot) << "\n";
+            return;
+        }
+        case ir::ExprKind::DerefAssign: {
+            genExpr(*e.lhs);  // d0 = pointer value
+            code_ << "    movel d0,a0\n";
+            code_ << "    pushl a0\n";
+            genExpr(*e.rhs);
+            code_ << "    popl a0\n";
+            code_ << "    stind d0,a0\n";
+            return;
+        }
+        case ir::ExprKind::Unary: {
+            if (e.op == "-") {
+                genExpr(*e.rhs);
+                code_ << "    negl d0\n";
+            } else if (e.op == "!") {
+                genLogicalNot(*e.rhs);
+            } else if (e.op == "*") {
+                genExpr(*e.rhs);  // d0 = pointer value
+                code_ << "    movel d0,a0\n";
+                code_ << "    ldind a0,d0\n";
+            } else if (e.op == "~") {
+                genExpr(*e.rhs);
+                code_ << "    notl d0\n";
+            } else {  // "&"
+                genAddrOf(*e.rhs);
+            }
+            return;
+        }
+        case ir::ExprKind::Call: {
+            for (size_t i = 0; i < e.args.size(); i++) {
+                genExpr(*e.args[i]);
+                code_ << "    movel d0,p_" << e.func->sourceName << "_" << i << "\n";
+            }
+            code_ << "    jsr " << label(e.func) << "\n";
+            return;
+        }
+        case ir::ExprKind::Binary: {
+            genBinary(e);
+            return;
+        }
+        case ir::ExprKind::Intrinsic: {
+            // No real portable notion of interrupt enable/disable
+            // here either (see M68kCodegen.cpp's own version of this
+            // comment) - the MC68328 does have real maskable
+            // interrupts (its own interrupt controller SFRs), but
+            // this bare, no-vector-table compile target never sets
+            // any of that up, so there's nothing for `ion`/`iof` to
+            // meaningfully toggle. Treated as a no-op, same as the
+            // generic 68000 backend.
+            (void)e;
+            return;
+        }
+    }
+}
+
+// See MC68328Codegen.h's own header comment: `A0` holds the computed
+// address. `slot->arraySize > 0` means the base is a compile-time-
+// known label (an *address*, loaded via `leal`); otherwise `slot` is
+// a plain pointer variable, so the base instead comes from *reading*
+// that variable's own stored value first.
+void MC68328Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
+    genExpr(idxExpr);  // d0 = index
+    // d0 *= 4 (words are 4 bytes on this target); done as two
+    // doublings rather than a shift, needing no extra register at
+    // all.
+    code_ << "    addl d0,d0\n    addl d0,d0\n";
+    std::string lbl = label(slot);
+    if (slot->arraySize > 0) {
+        code_ << "    leal " << lbl << ",a0\n";
+        code_ << "    adda d0,a0\n";
+    } else {
+        code_ << "    movel " << lbl << ",a0\n";
+        code_ << "    adda d0,a0\n";
+    }
+}
+
+void MC68328Codegen::genIndex(const ir::Expr &e) {
+    genIndexAddr(e.slot, *e.lhs);
+    code_ << "    ldind a0,d0\n";
+}
+
+void MC68328Codegen::genAddrOf(const ir::Expr &operand) {
+    if (operand.kind == ir::ExprKind::Var) {
+        code_ << "    leal " << label(operand.slot) << ",a0\n";
+        code_ << "    movel a0,d0\n";
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Index) {
+        genIndexAddr(operand.slot, *operand.lhs);
+        code_ << "    movel a0,d0\n";
+        return;
+    }
+    err(operand.line, "internal: unhandled addressable-operand kind");
+}
+
+void MC68328Codegen::genBinary(const ir::Expr &e) {
+    const std::string &op = e.op;
+    if (op == "+" || op == "-") {
+        genExpr(*e.lhs);
+        code_ << "    pushl d0\n";
+        genExpr(*e.rhs);
+        code_ << "    popl d1\n";  // d1 = lhs, d0 = rhs
+        if (op == "+") {
+            code_ << "    addl d1,d0\n";  // d0 = d0 + d1 = rhs + lhs
+        } else {
+            code_ << "    subl d0,d1\n";  // d1 = d1 - d0 = lhs - rhs
+            code_ << "    movel d1,d0\n";
+        }
+        return;
+    }
+    if (op == "*") {
+        genMul(*e.lhs, *e.rhs);
+        return;
+    }
+    if (op == "/") {
+        genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/false);
+        return;
+    }
+    if (op == "%") {
+        genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/true);
+        return;
+    }
+    if (op == "&" || op == "|" || op == "^") {
+        genExpr(*e.lhs);
+        code_ << "    pushl d0\n";
+        genExpr(*e.rhs);
+        code_ << "    popl d1\n";  // d1 = lhs, d0 = rhs
+        if (op == "&") {
+            code_ << "    andl d1,d0\n";
+        } else if (op == "|") {
+            code_ << "    orl d1,d0\n";
+        } else {
+            code_ << "    eorl d1,d0\n";  // d0 = d0 xor d1 (EOR's own source/dest convention - see
+                                            // MC68328Assembler.cpp's own comment)
+        }
+        return;
+    }
+    if (op == "<<" || op == ">>") {
+        genExpr(*e.lhs);
+        code_ << "    pushl d0\n";
+        genExpr(*e.rhs);
+        code_ << "    movel d0,d1\n";  // d1 = shift count
+        code_ << "    popl d0\n";      // d0 = value to shift
+        code_ << "    " << (op == "<<" ? "lsll" : "lsrl") << " d1,d0\n";
+        return;
+    }
+    if (op == "&&") {
+        genLogicalAnd(*e.lhs, *e.rhs);
+        return;
+    }
+    if (op == "||") {
+        genLogicalOr(*e.lhs, *e.rhs);
+        return;
+    }
+    genCompare(op, *e.lhs, *e.rhs);
+}
+
+// Real hardware multiply (`MULS.W`) - see M68kCodegen.h's own header
+// comment on its own 16-bit-operand limitation (shared by this core
+// unchanged - see MC68328Codegen.h's own header comment).
+void MC68328Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
+    genExpr(lhs);
+    code_ << "    pushl d0\n";
+    genExpr(rhs);
+    code_ << "    popl d1\n";       // d1 = lhs, d0 = rhs
+    code_ << "    mulsw d1,d0\n";  // d0 = d0 * d1 = rhs * lhs
+}
+
+// Real hardware divide (`DIVS.W`) - see M68kCodegen.cpp's own version
+// of this comment.
+void MC68328Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder) {
+    genExpr(lhs);
+    code_ << "    pushl d0\n";
+    genExpr(rhs);
+    code_ << "    popl d1\n";  // d1 = lhs (dividend), d0 = rhs (divisor)
+    code_ << "    divsw d0,d1\n";  // d1 = quotient (low word) : remainder (high word)
+    if (wantRemainder) {
+        code_ << "    swapl d1\n";  // remainder now in the low word
+    }
+    code_ << "    movel d1,d0\n";
+    code_ << "    extl d0\n";  // sign-extend whichever half is now in the low word
+}
+
+void MC68328Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs) {
+    if (op == "==") return emitCompare(lhs, rhs, "beq");
+    if (op == "!=") return emitCompare(lhs, rhs, "bne");
+    if (op == "<") return emitCompare(lhs, rhs, "blt");
+    if (op == "<=") return emitCompare(lhs, rhs, "ble");
+    if (op == ">") return emitCompare(lhs, rhs, "bgt");
+    if (op == ">=") return emitCompare(lhs, rhs, "bge");
+    err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
+}
+
+// `CMP.L <ea>,Dn` sets the real signed condition codes for `Dn - ea`
+// directly in hardware - `branchIfTrue` is simply applied, no sign/
+// overflow fixup needed.
+void MC68328Codegen::emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &branchIfTrue) {
+    genExpr(lhs);
+    code_ << "    pushl d0\n";
+    genExpr(rhs);
+    code_ << "    popl d1\n";  // d1 = lhs, d0 = rhs
+    code_ << "    cmpl d0,d1\n";  // flags = d1 - d0 = lhs - rhs
+    std::string Ltrue = newLabel(), Ldone = newLabel();
+    code_ << "    " << branchIfTrue << " " << Ltrue << "\n";
+    code_ << "    movel 0,d0\n    bra " << Ldone << "\n";
+    code_ << Ltrue << ":\n    movel 1,d0\n";
+    code_ << Ldone << ":\n";
+}
+
+void MC68328Codegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
+    genExpr(lhs);
+    std::string Lfalse = newLabel(), Ltrue = newLabel(), Ldone = newLabel();
+    code_ << "    cmpl 0,d0\n    beq " << Lfalse << "\n";
+    genExpr(rhs);
+    code_ << "    cmpl 0,d0\n    beq " << Lfalse << "\n";
+    code_ << "    bra " << Ltrue << "\n";
+    code_ << Lfalse << ":\n    movel 0,d0\n    bra " << Ldone << "\n";
+    code_ << Ltrue << ":\n    movel 1,d0\n";
+    code_ << Ldone << ":\n";
+}
+
+void MC68328Codegen::genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs) {
+    genExpr(lhs);
+    std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
+    code_ << "    cmpl 0,d0\n    bne " << Ltrue << "\n";
+    genExpr(rhs);
+    code_ << "    cmpl 0,d0\n    bne " << Ltrue << "\n";
+    code_ << "    bra " << Lfalse << "\n";
+    code_ << Ltrue << ":\n    movel 1,d0\n    bra " << Ldone << "\n";
+    code_ << Lfalse << ":\n    movel 0,d0\n";
+    code_ << Ldone << ":\n";
+}
+
+void MC68328Codegen::genLogicalNot(const ir::Expr &rhs) {
+    genExpr(rhs);
+    code_ << "    cmpl 0,d0\n";
+    std::string Ltrue = newLabel(), Ldone = newLabel();
+    code_ << "    beq " << Ltrue << "\n";
+    code_ << "    movel 0,d0\n    bra " << Ldone << "\n";
+    code_ << Ltrue << ":\n    movel 1,d0\n";
+    code_ << Ldone << ":\n";
+}
+
+std::string MC68328Codegen::buildAssembleCommand(const std::string &, const std::string &format, const std::string &,
+                                                   const std::string &) const {
+    throw std::runtime_error("the mc68328 backend has no external assembler - '" + format +
+                              "' isn't a format assembleInProcess() supports (only 'bin' is)");
+}
+
+std::optional<std::string> MC68328Codegen::assembleInProcess(const std::string &asmText,
+                                                               const std::string &format) const {
+    if (format == "bin") return assembleMC68328(asmText);
+    return std::nullopt;
+}
+
+}  // namespace pcc

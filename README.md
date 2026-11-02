@@ -103,6 +103,97 @@ retro hardware through pluggable backends. Today it supports:
   object-code compatible with anything later), so
   `tests/run_tests.sh --target=8008` runs a small from-scratch 8008
   emulator written just for this, standard library only.
+- **8051**/**8052**/**8031**/**8032** — real, standard MCS-51
+  assembly and machine code (see
+  `src/codegen/mcs51/MCS51Assembler.h`), one shared backend for all
+  four part numbers (`--target=8052`/`8031`/`8032` produce provably
+  byte-identical output to `--target=8051` - same "software-identical
+  part numbers" reasoning as the `8088`/`8086` alias above; see
+  `src/main.cpp`'s own `makeBackend()` comment). A genuinely Harvard
+  target: CODE (fetched by `PC`) and external DATA (`XDATA`, reached
+  only via `MOVX`+`DPTR`) are two distinct address spaces, so every
+  ordinary variable lives in XDATA at a fixed, compile-time-assigned
+  address (there's no assembler symbol for one at all - the address
+  is a plain immediate baked in by the codegen itself), while the
+  five fixed scratch pseudo-registers (same idea as the 6502/8080
+  backends' own) live in the 128-byte-or-more internal RAM every one
+  of the four parts guarantees, reached directly by the real
+  accumulator-centric ALU (`ADD`/`SUBB`/`ANL`/... `A,direct`). No
+  hardware 16-bit multiply/divide (`MUL AB`/`DIV AB` are 8x8->16/8÷8
+  only), so `*`/`/`/`%` use the same software loops every other
+  memory-cell-based backend here does; `<`/`<=`/`>`/`>=` use the same
+  N-xor-V idiom as 6502/8080, via the real `ACC.7` sign bit and
+  `PSW.OV`. No PyPI package models this target's own Harvard split,
+  so `tests/run_tests.sh --target=8051` runs a small from-scratch
+  MCS-51 emulator written just for this, standard library only.
+- **stm32** — real Thumb-2 assembly for a real STM32 (ARMv7-M,
+  Cortex-M3 - see `src/codegen/stm32/STM32Codegen.h`'s own header
+  comment), the "rich register machine" case here: a real 32-bit
+  multiply (`muls`), a real signed hardware divide (`sdiv` - this
+  CPU, unlike every other target here, genuinely has one, so `/`/`%`
+  need no software loop), a real variable-count shift (`lsl`/`lsr`),
+  real signed `cmp`+`Bcc`, and a real hardware call/return
+  (`bl`/`push {lr}`+`pop {pc}`). The one real wrinkle: flash and RAM
+  are two genuinely separate address ranges on real hardware (flash
+  is actually read-only - confirmed directly against qemu's own
+  `stm32vldiscovery` board model), so unlike every other backend's
+  one flat blob, every global/local/temp/array slot lives in RAM
+  (reserved, not baked in) while code lives in flash, with a real
+  two-word Cortex-M reset vector table at the front (`--format=bin`'s
+  own output is exactly what `qemu-system-arm -M stm32vldiscovery
+  -kernel` boots). `tests/run_tests.sh --target=stm32` runs its own
+  test suite against that real board model, polling a register over
+  qemu's own monitor the same way the `68000` target's own check
+  does.
+- **i386** — real 32-bit protected-mode i386 assembly (see
+  `src/codegen/i386/I386Codegen.h`'s own header comment) -
+  `src/codegen/x86_8086`'s own `8086` backend grown up one generation:
+  the same register-centric model (`eax` is every other backend's
+  "ac", `ebx` the "other operand" in a binary op *and* the one
+  indirect-addressing register), the same real `imul`/`idiv`,
+  `cmp`+conditional-jump, and `[label]`/`[ebx]`/`[label+ebx]`
+  addressing - just 32 bits wide throughout and a real flat 4GB
+  address space instead of 16-bit real-mode segmentation. Getting
+  from power-on into 32-bit protected mode at all is deliberately
+  *not* this backend's job: `--format=bin`'s own output is a real
+  Multiboot image (the standard contract a real bootloader like GRUB
+  uses to load a 32-bit kernel) - a small, standard header plus this
+  backend's own ordinary 32-bit code+data, nothing else. Loading it
+  (`qemu-system-i386 -kernel <file>`, acting as that bootloader) does
+  the whole real-mode-to-protected-mode transition before this
+  program's own first instruction ever runs - confirmed directly
+  against a real `qemu-system-i386` boot (reading `EAX`/`CS` over the
+  monitor) rather than assumed from the spec alone. The one thing this
+  backend's own entry sequence still does for itself is mask both real
+  8259 PICs (so this language's `_ion()` never risks a triple fault
+  with no real IDT behind it) before calling `main`.
+  `tests/run_tests.sh --target=i386` loads that same Multiboot image
+  directly via `-kernel` (no floppy image, no BIOS), polling the full
+  32-bit `EAX` over qemu's own monitor.
+- **armv7a** — real ARMv7-A A32 (32-bit ARM, not Thumb) assembly for
+  an A-profile core such as the Cortex-A15 (see
+  `src/codegen/arm/ArmCodegen.h`'s own header comment): `r0`-`r12`
+  general registers, real `sp`/`lr`, a real hardware signed divide
+  (`sdiv`, an optional ARMv7-A extension present on the qemu
+  `cortex-a15` model this backend is tested against) plus `mls` for
+  the remainder, and ARM's per-instruction condition field turning
+  every comparison into one `cmp` + one conditionally-executed `mov`
+  (`moveq`/`movlt`/etc.) with no branch at all. `tests/run_tests.sh
+  --target=armv7a` runs its test suite against real
+  `qemu-system-arm -M none -cpu cortex-a15`, the same PC-forcing
+  `loader`-device trick the `68000` target's own check uses.
+- **armv8a** — real ARMv8-A A64 (64-bit AArch64) assembly for an
+  A-profile core such as the Cortex-A53 (see
+  `src/codegen/arm64/Arm64Codegen.h`'s own header comment): this
+  language's 32-bit `int` lives in the `w0`-`w30` registers while
+  addresses use the real 64-bit `x0`-`x30`/`sp`/`x30`-as-`lr` view,
+  relying on AArch64's own architectural guarantee that every 32-bit
+  op zero-extends into its 64-bit register view - no explicit
+  extension instructions anywhere. Real `sdiv`+`msub` for `/`/`%`,
+  real `cmp`+`cset<cc>` for comparisons, and `cbz`/`cbnz` drive
+  `if`/`while` directly with no flags needed at all.
+  `tests/run_tests.sh --target=armv8a` runs its test suite against
+  real `qemu-system-aarch64 -M virt -cpu cortex-a53`.
 
 Every variable, temporary and literal is a single statically allocated
 word: there is no stack and no recursion. The same C subset compiles
@@ -110,8 +201,12 @@ to every target — `#ifdef __PDP7__` / `#ifdef __8086__` (also defined
 for `--target=8088`) / `#ifdef __6502__` (also defined for
 `--target=65c02`, plus its own `#ifdef __65C02__` - see
 `src/main.cpp`'s own `makeBackend()` comment) / `#ifdef __68000__` /
-`#ifdef __8080__` / `#ifdef __Z80__` / `#ifdef __8008__` let source
-code branch on which one it's being built for.
+`#ifdef __8080__` / `#ifdef __Z80__` / `#ifdef __8008__` / `#ifdef
+__MCS51__` (also defined for `--target=8051`/`8052`/`8031`/`8032`,
+plus each one's own exact `#ifdef __8051__`/`__8052__`/`__8031__`/
+`__8032__`) / `#ifdef __STM32__` / `#ifdef __I386__` / `#ifdef __ARMV7A__` /
+`#ifdef __ARMV8A__` (also defines `#ifdef __aarch64__`) let source code branch on which one
+it's being built for.
 
 A build produces a single `pcc` binary (`build/bin/pcc`) that runs in
 one of two modes:
@@ -151,13 +246,13 @@ pcc [--target=pdp7|8086|8088|6502|65c02] [--format=asm|<target-specific>] [--out
 
 | Switch | Meaning |
 | --- | --- |
-| `--target=pdp7\|8086\|8088\|6502\|65c02\|68000\|8080\|z80\|8008` | Which backend to compile for. Default: `pdp7`. `8088` is a software-identical alias for `8086` (see above). |
-| `--format=<fmt>` | What to produce. `asm` (the default) means "just the generated assembly text, don't assemble it". Every other value is target-specific and gets handed to that target's own assembler: `pdp7` supports `a7out`, `list`, `ptr`, `rim`, `coff`; `8086`/`8088` support `bin`, `coff`, `elf`; `6502`/`65c02`/`68000`/`8080`/`z80`/`8008` each support only `bin`. A non-`coff` format takes exactly one `.c` file (true of every format that isn't `pdp7`/`8086`/`8088` - none of the others has a `coff`). |
+| `--target=pdp7\|8086\|8088\|6502\|65c02\|68000\|8080\|z80\|8008\|8051\|8052\|8031\|8032\|armv7a\|armv8a` | Which backend to compile for. Default: `pdp7`. `8088` is a software-identical alias for `8086` (see above); `8052`/`8031`/`8032` are likewise software-identical aliases for `8051`. `armv7a` (AArch32) and `armv8a` (AArch64) are genuinely different instruction sets from each other, not aliases. |
+| `--format=<fmt>` | What to produce. `asm` (the default) means "just the generated assembly text, don't assemble it". Every other value is target-specific and gets handed to that target's own assembler: `pdp7` supports `a7out`, `list`, `ptr`, `rim`, `coff`; `8086`/`8088` support `bin`, `coff`, `elf`; `6502`/`65c02`/`68000`/`8080`/`z80`/`8008`/`8051`/`8052`/`8031`/`8032`/`armv7a`/`armv8a` each support only `bin`. A non-`coff` format takes exactly one `.c` file (true of every format that isn't `pdp7`/`8086`/`8088` - none of the others has a `coff`). |
 | `--out=file` | Where to write the result. Omit it to write to stdout; with `--format=coff` and no `--out`, output instead goes to `build/<name>.o` (one per input file). |
-| `--assembler=path` | Path to the target's real external assembler, for formats that need one (not every target has an in-process assembler for every format). Defaults to each backend's own tool (`../pdp-assembler/build/bin/pdp7as` for pdp7, `nasm` for 8086/8088; `6502`/`65c02`/`68000`/`8080`/`z80`/`8008` have none - every format each supports has an in-process assembler). |
+| `--assembler=path` | Path to the target's real external assembler, for formats that need one (not every target has an in-process assembler for every format). Defaults to each backend's own tool (`../pdp-assembler/build/bin/pdp7as` for pdp7, `nasm` for 8086/8088; `6502`/`65c02`/`68000`/`8080`/`z80`/`8008`/`8051`/`8052`/`8031`/`8032`/`armv7a`/`armv8a` have none - every format each supports has an in-process assembler). |
 | `--optimize` | Run every registered IR optimizer (see "Optimizers" below) before codegen. Off by default. |
 | `--dump-ir` | Also write each input file's intermediate representation to `build/<name>.ir`, for inspection. |
-| `--dump-asm` | Also write each input file's generated assembly to `build/<name><ext>` (`.s` for pdp7, `.asm` for 8086/8088, `.s65` for 6502, `.s65c` for 65c02, `.s68` for 68000, `.s80` for 8080, `.sz80` for z80, `.s08` for 8008). |
+| `--dump-asm` | Also write each input file's generated assembly to `build/<name><ext>` (`.s` for pdp7, `.asm` for 8086/8088, `.s65` for 6502, `.s65c` for 65c02, `.s68` for 68000, `.s80` for 8080, `.sz80` for z80, `.s08` for 8008, `.s51` for 8051/8052/8031/8032, `.sarm` for armv7a, `.s64` for armv8a). |
 | `-h`, `--help` | Print usage and exit. |
 
 Real separate compilation is the only way to combine more than one

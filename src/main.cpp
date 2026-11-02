@@ -50,14 +50,22 @@
 #include "codegen/m6502/M6502Codegen.h"
 #include "codegen/m65c02/M65C02Codegen.h"
 #include "codegen/m68k/M68kCodegen.h"
+#include "codegen/mc68328/MC68328Codegen.h"
 #include "codegen/pdp11/Pdp11Codegen.h"
 #include "codegen/i8080/I8080Codegen.h"
 #include "codegen/z80/Z80Codegen.h"
 #include "codegen/i8008/I8008Codegen.h"
 #include "codegen/m16c/M16cCodegen.h"
 #include "codegen/stm8/STM8Codegen.h"
+#include "codegen/stm32/STM32Codegen.h"
+#include "codegen/i386/I386Codegen.h"
 #include "codegen/pic16/PIC16Codegen.h"
 #include "codegen/pic18/PIC18Codegen.h"
+#include "codegen/mips/MipsCodegen.h"
+#include "codegen/armm/ArmMCodegen.h"
+#include "codegen/mcs51/MCS51Codegen.h"
+#include "codegen/arm/ArmCodegen.h"
+#include "codegen/arm64/Arm64Codegen.h"
 #include "coff/CoffReader.h"
 #include "linker/I8086Linker.h"
 #include "linker/Linker.h"
@@ -157,14 +165,50 @@ std::unique_ptr<pcc::Backend> makeBackend(const std::string &target) {
     if (target == "6502") return std::make_unique<pcc::M6502Codegen>();
     if (target == "65c02") return std::make_unique<pcc::M65C02Codegen>();
     if (target == "68000") return std::make_unique<pcc::M68kCodegen>();
+    if (target == "mc68328") return std::make_unique<pcc::MC68328Codegen>();
     if (target == "pdp11") return std::make_unique<pcc::Pdp11Codegen>();
     if (target == "8080") return std::make_unique<pcc::I8080Codegen>();
     if (target == "z80") return std::make_unique<pcc::Z80Codegen>();
     if (target == "8008") return std::make_unique<pcc::I8008Codegen>();
     if (target == "stm8") return std::make_unique<pcc::STM8Codegen>();
+    if (target == "stm32") return std::make_unique<pcc::STM32Codegen>();
+    if (target == "i386") return std::make_unique<pcc::I386Codegen>();
     if (target == "m16c") return std::make_unique<pcc::M16cCodegen>();
     if (target == "pic16") return std::make_unique<pcc::PIC16Codegen>();
     if (target == "pic18") return std::make_unique<pcc::PIC18Codegen>();
+    // --target=r4000 is a deliberate, software-identical alias for
+    // --target=r10000 (same reasoning as the 8088 alias above): this
+    // backend never emits anything beyond the real MIPS I
+    // instruction subset (see MipsCodegen.h's own header comment),
+    // which a real R4000 (MIPS III) runs exactly as unchanged as a
+    // real R10000 (MIPS IV) does - there is nothing for a distinct
+    // R4000 codegen to do differently.
+    if (target == "r10000" || target == "r4000") return std::make_unique<pcc::MipsCodegen>();
+    // --target=cortex-m4/cortex-m7 are deliberate, software-identical
+    // aliases for --target=cortex-m3 (same reasoning as r4000/r10000
+    // above): this backend only ever emits real ARMv7-M mainline
+    // Thumb/Thumb-2 instructions (see ArmMCodegen.h's own header
+    // comment), which the M4/M7 execute exactly the same as the M3 -
+    // there is nothing for a distinct M4/M7 codegen to do differently
+    // (this backend never touches either chip's own DSP/FP extension
+    // instructions at all).
+    if (target == "cortex-m3" || target == "cortex-m4" || target == "cortex-m7") {
+        return std::make_unique<pcc::ArmMCodegen>();
+    }
+    // 8031/8032/8051/8052 are all the same MCS-51 instruction set as
+    // far as any instruction this compiler could ever emit is
+    // concerned - see MCS51Codegen.h's own header comment (same
+    // "software-identical part numbers share one Backend" reasoning
+    // as the 8088 alias just above).
+    if (target == "8051" || target == "8052" || target == "8031" || target == "8032") {
+        return std::make_unique<pcc::MCS51Codegen>();
+    }
+    // ARM A-profile: armv7a is 32-bit AArch32 (A32 encoding), armv8a
+    // is 64-bit AArch64 (A64 encoding) - genuinely different
+    // instruction sets (unlike every alias above), so each gets its
+    // own Codegen rather than sharing one.
+    if (target == "armv7a") return std::make_unique<pcc::ArmCodegen>();
+    if (target == "armv8a") return std::make_unique<pcc::Arm64Codegen>();
     return nullptr;
 }
 
@@ -420,7 +464,7 @@ int main(int argc, char **argv) {
     if (link) {
         std::unique_ptr<pcc::TargetLinker> linker = makeLinker(target);
         if (!linker) {
-            std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502, 65c02, 68000, pdp11, 8080, z80, 8008, stm8, m16c, pic16, pic18)\n";
+            std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502, 65c02, 68000, mc68328, pdp11, 8080, z80, 8008, stm8, stm32, i386, m16c, pic16, pic18, r10000, r4000, cortex-m3, cortex-m4, cortex-m7, 8051, 8052, 8031, 8032, armv7a, armv8a)\n";
             return 1;
         }
         std::vector<std::string> linkFormats = linker->outputFormats();
@@ -458,7 +502,7 @@ int main(int argc, char **argv) {
     // --- ordinary compile mode. ---
     std::unique_ptr<pcc::Backend> backend = makeBackend(target);
     if (!backend) {
-        std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502, 65c02, 68000, pdp11, 8080, z80, 8008, stm8, m16c, pic16, pic18)\n";
+        std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502, 65c02, 68000, mc68328, pdp11, 8080, z80, 8008, stm8, stm32, i386, m16c, pic16, pic18, r10000, r4000, cortex-m3, cortex-m4, cortex-m7, 8051, 8052, 8031, 8032, armv7a, armv8a)\n";
         return 1;
     }
     if (!assemblerPathSet) assemblerPath = backend->defaultAssemblerPath();
@@ -526,6 +570,18 @@ int main(int argc, char **argv) {
         predefinedMacros["__65C02__"] = "1";
     } else if (target == "68000") {
         predefinedMacros["__68000__"] = "1";
+    } else if (target == "mc68328") {
+        // Same reasoning as __6502__/__65C02__ above: the MC68328's
+        // own CPU core executes a bit-for-bit identical instruction
+        // set to a plain 68000 (see MC68328Codegen.h's own header
+        // comment), so source gated on plain `#ifdef __68000__`
+        // keeps working unchanged under this target too; __MC68328__
+        // exists only for source that wants to say "I need this real
+        // chip specifically" (e.g. to assume its own real reset-
+        // vector-table entry convention, rather than the generic
+        // `68000` target's own simulator-PC-forced one).
+        predefinedMacros["__68000__"] = "1";
+        predefinedMacros["__MC68328__"] = "1";
     } else if (target == "pdp11") {
         predefinedMacros["__PDP11__"] = "1";
     } else if (target == "8080") {
@@ -536,12 +592,61 @@ int main(int argc, char **argv) {
         predefinedMacros["__8008__"] = "1";
     } else if (target == "stm8") {
         predefinedMacros["__STM8__"] = "1";
+    } else if (target == "stm32") {
+        predefinedMacros["__STM32__"] = "1";
+    } else if (target == "i386") {
+        predefinedMacros["__I386__"] = "1";
     } else if (target == "m16c") {
         predefinedMacros["__M16C__"] = "1";
     } else if (target == "pic16") {
         predefinedMacros["__PIC16__"] = "1";
     } else if (target == "pic18") {
         predefinedMacros["__PIC18__"] = "1";
+    } else if (target == "r10000") {
+        predefinedMacros["__R10000__"] = "1";
+    } else if (target == "r4000") {
+        // --target=r4000 is a software-identical alias for
+        // --target=r10000 (see makeBackend()'s own comment) - same
+        // __8086__/__8088__ reasoning: defining __R10000__ too means
+        // existing `#ifdef __R10000__` source (nothing here is ever
+        // actually R10000-specific, since this backend only emits
+        // the real MIPS I instruction subset) keeps working
+        // unchanged under either target name. __R4000__ exists only
+        // for source that wants to say "I was compiled for an
+        // R4000" specifically.
+        predefinedMacros["__R10000__"] = "1";
+        predefinedMacros["__R4000__"] = "1";
+    } else if (target == "cortex-m3") {
+        predefinedMacros["__CORTEX_M3__"] = "1";
+    } else if (target == "cortex-m4" || target == "cortex-m7") {
+        // --target=cortex-m4/cortex-m7 are software-identical aliases
+        // for --target=cortex-m3 (see makeBackend()'s own comment) -
+        // same __8086__/__8088__ reasoning: defining __CORTEX_M3__
+        // too means existing `#ifdef __CORTEX_M3__` source (nothing
+        // here is ever actually M3-specific, since this backend only
+        // emits the real ARMv7-M mainline instruction subset) keeps
+        // working unchanged under either target name. __CORTEX_M4__/
+        // __CORTEX_M7__ exist only for source that wants to say "I
+        // was compiled for this exact chip" specifically.
+        predefinedMacros["__CORTEX_M3__"] = "1";
+        predefinedMacros[target == "cortex-m4" ? "__CORTEX_M4__" : "__CORTEX_M7__"] = "1";
+    } else if (target == "8051" || target == "8052" || target == "8031" || target == "8032") {
+        // All four part numbers share the exact same backend (see
+        // makeBackend()'s own comment) and so always define the
+        // common `__MCS51__` macro; each part number also gets its
+        // own exact macro (`__8051__`/etc.) for source that wants to
+        // say "I need this specific part" even though nothing in
+        // pcc itself ever treats one differently from another.
+        predefinedMacros["__MCS51__"] = "1";
+        if (target == "8051") predefinedMacros["__8051__"] = "1";
+        else if (target == "8052") predefinedMacros["__8052__"] = "1";
+        else if (target == "8031") predefinedMacros["__8031__"] = "1";
+        else predefinedMacros["__8032__"] = "1";
+    } else if (target == "armv7a") {
+        predefinedMacros["__ARMV7A__"] = "1";
+    } else if (target == "armv8a") {
+        predefinedMacros["__ARMV8A__"] = "1";
+        predefinedMacros["__aarch64__"] = "1";
     }
 
     // A genuinely external reference is always allowed under

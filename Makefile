@@ -73,7 +73,7 @@ SPACE +=
 # `#define`/`#if` etc. pass that runs on every source file before
 # ANTLR ever sees it) - not backend-specific, but still their own
 # subdirectories needing the same vpath treatment.
-BACKEND_DIRS := $(SRC_DIR)/codegen/pdp7 $(SRC_DIR)/codegen/x86_8086 $(SRC_DIR)/codegen/m6502 $(SRC_DIR)/codegen/m65c02 $(SRC_DIR)/codegen/m68k $(SRC_DIR)/codegen/pdp11 $(SRC_DIR)/codegen/i8080 $(SRC_DIR)/codegen/pic16 $(SRC_DIR)/codegen/pic18 $(SRC_DIR)/codegen/z80 $(SRC_DIR)/codegen/i8008 $(SRC_DIR)/codegen/stm8 $(SRC_DIR)/codegen/m16c
+BACKEND_DIRS := $(SRC_DIR)/codegen/pdp7 $(SRC_DIR)/codegen/x86_8086 $(SRC_DIR)/codegen/m6502 $(SRC_DIR)/codegen/m65c02 $(SRC_DIR)/codegen/m68k $(SRC_DIR)/codegen/mc68328 $(SRC_DIR)/codegen/pdp11 $(SRC_DIR)/codegen/i8080 $(SRC_DIR)/codegen/pic16 $(SRC_DIR)/codegen/pic18 $(SRC_DIR)/codegen/z80 $(SRC_DIR)/codegen/i8008 $(SRC_DIR)/codegen/stm8 $(SRC_DIR)/codegen/m16c $(SRC_DIR)/codegen/mips $(SRC_DIR)/codegen/mcs51 $(SRC_DIR)/codegen/stm32 $(SRC_DIR)/codegen/i386 $(SRC_DIR)/codegen/armm $(SRC_DIR)/codegen/arm $(SRC_DIR)/codegen/arm64
 AST_DIR      := $(SRC_DIR)/ast
 IR_DIR       := $(SRC_DIR)/ir
 COFF_DIR     := $(SRC_DIR)/coff
@@ -116,6 +116,8 @@ HAND_SRCS := \
     $(SRC_DIR)/codegen/m65c02/M65C02Assembler.cpp \
     $(SRC_DIR)/codegen/m68k/M68kCodegen.cpp \
     $(SRC_DIR)/codegen/m68k/M68kAssembler.cpp \
+    $(SRC_DIR)/codegen/mc68328/MC68328Codegen.cpp \
+    $(SRC_DIR)/codegen/mc68328/MC68328Assembler.cpp \
     $(SRC_DIR)/codegen/pdp11/Pdp11Codegen.cpp \
     $(SRC_DIR)/codegen/pdp11/Pdp11Assembler.cpp \
     $(SRC_DIR)/codegen/i8080/I8080Codegen.cpp \
@@ -131,7 +133,21 @@ HAND_SRCS := \
     $(SRC_DIR)/codegen/pic16/PIC16Codegen.cpp \
     $(SRC_DIR)/codegen/pic16/PIC16Assembler.cpp \
     $(SRC_DIR)/codegen/pic18/PIC18Codegen.cpp \
-    $(SRC_DIR)/codegen/pic18/PIC18Assembler.cpp
+    $(SRC_DIR)/codegen/pic18/PIC18Assembler.cpp \
+    $(SRC_DIR)/codegen/mips/MipsCodegen.cpp \
+    $(SRC_DIR)/codegen/mips/MipsAssembler.cpp \
+    $(SRC_DIR)/codegen/armm/ArmMCodegen.cpp \
+    $(SRC_DIR)/codegen/armm/ArmMAssembler.cpp \
+    $(SRC_DIR)/codegen/mcs51/MCS51Codegen.cpp \
+    $(SRC_DIR)/codegen/mcs51/MCS51Assembler.cpp \
+    $(SRC_DIR)/codegen/stm32/STM32Codegen.cpp \
+    $(SRC_DIR)/codegen/stm32/STM32Assembler.cpp \
+    $(SRC_DIR)/codegen/i386/I386Codegen.cpp \
+    $(SRC_DIR)/codegen/i386/I386Assembler.cpp \
+    $(SRC_DIR)/codegen/arm/ArmCodegen.cpp \
+    $(SRC_DIR)/codegen/arm/ArmAssembler.cpp \
+    $(SRC_DIR)/codegen/arm64/Arm64Codegen.cpp \
+    $(SRC_DIR)/codegen/arm64/Arm64Assembler.cpp
 
 ALL_SRCS := $(GENERATED_SRCS) $(HAND_SRCS)
 OBJS     := $(patsubst %,$(OBJ_DIR)/%.o,$(notdir $(ALL_SRCS)))
@@ -186,5 +202,9 @@ test: all
 	./tests/run_tests.sh $(TARGET) --target=6502
 	./tests/run_tests.sh $(TARGET) --target=65c02
 	./tests/run_tests.sh $(TARGET) --target=68000
+	./tests/run_tests.sh $(TARGET) --target=mc68328
 	./tests/run_tests.sh $(TARGET) --target=8080
 	./tests/run_tests.sh $(TARGET) --target=z80
+	./tests/run_tests.sh $(TARGET) --target=8051
+	./tests/run_tests.sh $(TARGET) --target=stm32
+	./tests/run_tests.sh $(TARGET) --target=i386

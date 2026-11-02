@@ -1,0 +1,456 @@
+#include "MCS51Assembler.h"
+
+#include <cstdint>
+#include <stdexcept>
+#include <unordered_map>
+#include <vector>
+
+#include "ANTLRInputStream.h"
+#include "BaseErrorListener.h"
+#include "CommonTokenStream.h"
+#include "PccAsmLexer.h"
+#include "PccAsmParser.h"
+
+namespace pcc {
+
+namespace {
+
+[[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("MCS51Assembler: " + msg); }
+
+// --- Parsing, via the one shared grammar/PccAsm.g4 - same shape as
+// ../m6502/M6502Assembler.cpp's own Syllable/Line (see that file's
+// own header comment); nothing here is specific to the 8051 at all.
+
+enum class SylKind { Number, Symbol, Group };
+struct Syllable {
+    char sign = 0;
+    SylKind kind;
+    std::string text;
+    std::vector<Syllable> group;
+};
+
+struct Line {
+    std::vector<std::string> labels;
+    enum Kind { None, Equate, Org, Instr } kind = None;
+    std::string equateName;                      // Equate
+    std::vector<std::vector<Syllable>> exprList;  // Equate (1)/Org (1)
+    std::string mnemonic;                         // Instr
+    std::vector<std::vector<Syllable>> operands;  // Instr
+};
+
+std::string toLower(std::string s) {
+    for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
+    std::vector<Syllable> result;
+    for (auto *syl : ctx->syllable()) {
+        char sign = 0;
+        if (auto *s = syl->sign()) sign = s->PLUS() ? '+' : '-';
+        auto *atom = syl->atom();
+        if (atom->expr() != nullptr) {
+            Syllable g;
+            g.sign = sign;
+            g.kind = SylKind::Group;
+            g.group = exprToSyllables(atom->expr());
+            result.push_back(std::move(g));
+        } else if (atom->NUMBER()) {
+            result.push_back({sign, SylKind::Number, atom->NUMBER()->getText(), {}});
+        } else {
+            result.push_back({sign, SylKind::Symbol, atom->IDENT()->getText(), {}});
+        }
+    }
+    if (result.empty()) fail("empty expression");
+    return result;
+}
+
+class ThrowingErrorListener : public antlr4::BaseErrorListener {
+   public:
+    void syntaxError(antlr4::Recognizer *, antlr4::Token *, size_t line, size_t col, const std::string &msg,
+                      std::exception_ptr) override {
+        fail(std::to_string(line) + ":" + std::to_string(col) + ": " + msg);
+    }
+};
+
+std::vector<Syllable> buildOperand(PccAsmParser::OperandContext *ctx) {
+    if (ctx->LBRACKET()) fail("bracketed memory operands aren't part of this target's dialect");
+    return exprToSyllables(ctx->expr());
+}
+
+Line buildLine(PccAsmParser::LineContext *ctx) {
+    Line line;
+    for (auto *lbl : ctx->label()) line.labels.push_back(lbl->IDENT()->getText());
+
+    auto *stmt = ctx->statement();
+    if (stmt == nullptr) {
+        line.kind = Line::None;
+        return line;
+    }
+    // A pure compile-time symbol=value binding, no bytes emitted - used
+    // for this backend's own fixed internal-RAM pseudo-registers
+    // (`ac`/`bc`/`cx`/`dx`/`ptr` - see MCS51Codegen.cpp's own comment
+    // on why those need a *fixed* address rather than the usual
+    // sequentially-laid-out one).
+    if (auto *assign = dynamic_cast<PccAsmParser::AssignStmtContext *>(stmt)) {
+        line.kind = Line::Equate;
+        line.equateName = assign->lhs->getText();
+        line.exprList.push_back(exprToSyllables(assign->rhs));
+        return line;
+    }
+    if (dynamic_cast<PccAsmParser::TimesStmtContext *>(stmt)) {
+        fail("'times' isn't part of this target's dialect");
+    }
+    auto *instr = dynamic_cast<PccAsmParser::InstrStmtContext *>(stmt);
+    if (!instr) fail("internal: unhandled statement alternative");
+
+    std::string mnemonic = toLower(instr->mnemonic->getText());
+    if (mnemonic == "org") {
+        line.kind = Line::Org;
+        if (instr->operand().empty() || instr->operand(0)->LBRACKET()) fail("'org' needs a plain address operand");
+        line.exprList.push_back(exprToSyllables(instr->operand(0)->expr()));
+        return line;
+    }
+
+    line.kind = Line::Instr;
+    line.mnemonic = mnemonic;
+    for (auto *op : instr->operand()) line.operands.push_back(buildOperand(op));
+    return line;
+}
+
+std::vector<Line> parseProgram(const std::string &text) {
+    antlr4::ANTLRInputStream input(text);
+    PccAsmLexer lexer(&input);
+    ThrowingErrorListener errors;
+    lexer.removeErrorListeners();
+    lexer.addErrorListener(&errors);
+
+    antlr4::CommonTokenStream tokens(&lexer);
+    PccAsmParser parser(&tokens);
+    parser.removeErrorListeners();
+    parser.addErrorListener(&errors);
+
+    PccAsmParser::ProgramContext *prog = parser.program();
+
+    std::vector<Line> lines;
+    for (auto *lineCtx : prog->line()) lines.push_back(buildLine(lineCtx));
+    return lines;
+}
+
+// --- Two-pass assembly ----------------------------------------------------
+//
+// Every instruction's size is fixed by its mnemonic alone (see
+// MCS51Assembler.h) - pass 1 and pass 2 run the exact same encoding
+// logic, same reasoning as every other backend's own in-process
+// assembler here. `labels_` (which also holds every Equate binding -
+// see processLine's own comment) deliberately isn't reset between
+// passes: pass 1 already resolves every value correctly (since sizes
+// never depend on values), pass 2 just re-derives the identical
+// bindings and this time actually emits bytes using them.
+class Assembler {
+   public:
+    void run(const std::vector<Line> &lines) {
+        stage_ = 1;
+        pass(lines);
+        stage_ = 2;
+        pass(lines);
+    }
+
+    const std::vector<uint8_t> &bytes() const { return bytes_; }
+
+   private:
+    void pass(const std::vector<Line> &lines) {
+        bytes_.clear();
+        offset_ = 0;
+        orgBase_ = 0;
+        for (const auto &line : lines) processLine(line);
+    }
+
+    void processLine(const Line &line) {
+        for (const auto &lbl : line.labels) labels_[lbl] = orgBase_ + offset_;
+        switch (line.kind) {
+            case Line::None:
+                return;
+            case Line::Equate:
+                labels_[line.equateName] = evalExpr(line.exprList.at(0));
+                return;
+            case Line::Org:
+                orgBase_ = evalExpr(line.exprList.at(0));
+                return;
+            case Line::Instr:
+                encodeInstr(line.mnemonic, line.operands);
+                return;
+        }
+    }
+
+    uint32_t evalExpr(const std::vector<Syllable> &syls) {
+        uint32_t total = 0;
+        for (const auto &syl : syls) {
+            uint32_t v = resolveSyllable(syl);
+            if (syl.sign == '-') {
+                total -= v;
+            } else {
+                total += v;
+            }
+        }
+        return total;
+    }
+
+    uint32_t resolveSyllable(const Syllable &syl) {
+        if (syl.kind == SylKind::Group) return evalExpr(syl.group);
+        if (syl.kind == SylKind::Number) {
+            const std::string &t = syl.text;
+            if (t.size() > 2 && t[0] == '0' && (t[1] == 'x' || t[1] == 'X')) {
+                return static_cast<uint32_t>(std::stoul(t.substr(2), nullptr, 16));
+            }
+            return static_cast<uint32_t>(std::stoul(t));
+        }
+        auto it = labels_.find(syl.text);
+        if (it != labels_.end()) return it->second;
+        if (stage_ == 2) fail("undefined symbol '" + syl.text + "'");
+        return 0;
+    }
+
+    // --- byte emission --------------------------------------------
+
+    void emit8(uint8_t b) {
+        bytes_.push_back(b);
+        offset_ += 1;
+    }
+
+    // A direct-RAM address operand (0-255; every pseudo-register
+    // equate and every real SFR this dialect ever names - DPL/DPH's
+    // own fixed addresses are baked into movdpl/movdph below, never
+    // spelled out as a direct operand - resolves to one of these).
+    void emitDirectOperand(const std::vector<Syllable> &e) {
+        uint32_t v = evalExpr(e);
+        if (stage_ == 2 && v > 0xFF) fail("direct-address operand doesn't fit in a byte");
+        emit8(static_cast<uint8_t>(v & 0xFF));
+    }
+
+    // An immediate 8-bit operand - MCS51Codegen.cpp only ever passes
+    // plain literals <256 here, never a label (unlike direct
+    // operands, which are always a pseudo-register's own equate).
+    void emitImm8Operand(const std::vector<Syllable> &e) {
+        uint32_t v = evalExpr(e);
+        if (stage_ == 2 && v > 0xFF) fail("immediate operand doesn't fit in a byte");
+        emit8(static_cast<uint8_t>(v & 0xFF));
+    }
+
+    // `mov dptr,#imm16`'s own operand - a real 16-bit value (an
+    // XDATA address MCS51Codegen.cpp's own allocXdata() assigned, or
+    // 0 for the index-free base case), high byte first (real 8051
+    // encoding order).
+    void emitImm16Operand(const std::vector<Syllable> &e) {
+        uint32_t v = evalExpr(e);
+        emit8(static_cast<uint8_t>((v >> 8) & 0xFF));
+        emit8(static_cast<uint8_t>(v & 0xFF));
+    }
+
+    // `ljmp`/`lcall`'s own absolute CODE-space operand - always a
+    // function or branch-target label (see MCS51Assembler.h's own
+    // header comment on the CODE/XDATA symbol split) - high byte
+    // first, same real encoding order as emitImm16Operand().
+    void emitAbsOperand(const std::vector<Syllable> &e) {
+        uint32_t v = evalExpr(e);
+        emit8(static_cast<uint8_t>((v >> 8) & 0xFF));
+        emit8(static_cast<uint8_t>(v & 0xFF));
+    }
+
+    // A short conditional branch's own signed rel8 operand.
+    // MCS51Codegen.cpp's own safeBranch()/safeDjnz() (see that file's
+    // own comment) guarantee every one of these always targets the
+    // very next instruction - always trivially in range - so an out-
+    // of-range target here can only mean a real bug in that
+    // guarantee, not a legitimately-far user-code target that needs
+    // handling.
+    void emitRelOperand(const std::vector<Syllable> &target) {
+        uint32_t endAddr = orgBase_ + offset_ + 1;  // this field is 1 byte, right after the opcode (+ any direct/imm
+                                                     // byte already emitted by the caller)
+        uint32_t targetAddr = evalExpr(target);
+        int32_t rel = static_cast<int32_t>(targetAddr) - static_cast<int32_t>(endAddr);
+        if (stage_ == 2 && (rel < -128 || rel > 127)) {
+            fail("internal: branch target out of range - MCS51Codegen.cpp's safeBranch()/safeDjnz() should have "
+                 "prevented this");
+        }
+        emit8(static_cast<uint8_t>(static_cast<int8_t>(rel)));
+    }
+
+    // The full instruction vocabulary ../MCS51Codegen.cpp ever emits -
+    // see MCS51Assembler.h's own header comment. Not a general 8051
+    // encoder: exactly these mnemonic/operand-shape combinations,
+    // nothing else.
+    void encodeInstr(const std::string &mnemonic, const std::vector<std::vector<Syllable>> &ops) {
+        auto one = [&]() -> const std::vector<Syllable> & {
+            if (ops.size() != 1) fail("'" + mnemonic + "' needs exactly one operand");
+            return ops[0];
+        };
+        auto two = [&]() -> const std::vector<std::vector<Syllable>> & {
+            if (ops.size() != 2) fail("'" + mnemonic + "' needs exactly two operands");
+            return ops;
+        };
+
+        static const std::unordered_map<std::string, uint8_t> implied = {
+            {"ret", 0x22},    {"reti", 0x32},  {"nop", 0x00},    {"clra", 0xE4},   {"cpla", 0xF4},
+            {"clrc", 0xC3},   {"rla", 0x23},   {"rra", 0x03},    {"rlca", 0x33},   {"rrca", 0x13},
+            {"mul", 0xA4},    {"div", 0x84},   {"incdptr", 0xA3}, {"movxr", 0xE0}, {"movxw", 0xF0},
+            {"movc", 0x93},
+        };
+        if (auto it = implied.find(mnemonic); it != implied.end()) {
+            if (!ops.empty()) fail("'" + mnemonic + "' takes no operand");
+            emit8(it->second);
+            return;
+        }
+        // SETB/CLR on the two fixed bit addresses this dialect ever
+        // needs (EA - the global interrupt-enable bit, IE.7 = 0xAF -
+        // see MCS51Codegen.cpp's own Intrinsic handling): a real
+        // `SETB bit`/`CLR bit` is otherwise a general-bit-address
+        // instruction this dialect deliberately doesn't expose (no
+        // I/O pin or on-chip-peripheral modeling at all - see
+        // MCS51Codegen.h's own header comment), so these two are
+        // spelled out as their own fixed-encoding mnemonics instead
+        // of adding real bit-address operand syntax for a single use.
+        static const std::unordered_map<std::string, std::pair<uint8_t, uint8_t>> fixedBit = {
+            {"setea", {0xD2, 0xAF}}, {"clrea", {0xC2, 0xAF}},
+        };
+        if (auto it = fixedBit.find(mnemonic); it != fixedBit.end()) {
+            if (!ops.empty()) fail("'" + mnemonic + "' takes no operand");
+            emit8(it->second.first);
+            emit8(it->second.second);
+            return;
+        }
+        static const std::unordered_map<std::string, uint8_t> direct = {
+            {"mova", 0xE5}, {"movd", 0xF5}, {"incd", 0x05}, {"decd", 0x15}, {"add", 0x25},
+            {"addc", 0x35}, {"subb", 0x95}, {"anl", 0x55},  {"orl", 0x45},  {"xrl", 0x65},
+            {"push", 0xC0}, {"pop", 0xD0},
+        };
+        if (auto it = direct.find(mnemonic); it != direct.end()) {
+            emit8(it->second);
+            emitDirectOperand(one());
+            return;
+        }
+        static const std::unordered_map<std::string, uint8_t> imm8 = {
+            {"movai", 0x74}, {"addi", 0x24}, {"addci", 0x34}, {"subbi", 0x94}, {"anli", 0x54}, {"orli", 0x44},
+            {"xrli", 0x64},
+        };
+        if (auto it = imm8.find(mnemonic); it != imm8.end()) {
+            emit8(it->second);
+            emitImm8Operand(one());
+            return;
+        }
+        // `MOV DPL,direct`/`MOV DPH,direct` - the real direct-to-
+        // direct `MOV` (0x85) encodes its *source* direct address
+        // first and its *destination* second, no matter which way
+        // round this dialect's own mnemonic reads (see
+        // MCS51Codegen.h's own header comment) - DPL is SFR 0x82,
+        // DPH is 0x83.
+        if (mnemonic == "movdpl" || mnemonic == "movdph") {
+            emit8(0x85);
+            emitDirectOperand(one());
+            emit8(mnemonic == "movdpl" ? 0x82 : 0x83);
+            return;
+        }
+        // A general direct-to-direct `MOV dst,src` (0x85) -
+        // MCS51Codegen.cpp's own copy16(), moving one pseudo-register
+        // to another without detouring through the accumulator at
+        // all (a real single-instruction 8051 feature `movdpl`/
+        // `movdph` above are themselves just fixed-destination
+        // special cases of).
+        if (mnemonic == "movdd") {
+            const auto &o = two();
+            emit8(0x85);
+            emitDirectOperand(o[1]);  // src first (real hardware encoding order)
+            emitDirectOperand(o[0]);  // dst second
+            return;
+        }
+        if (mnemonic == "movdptr") {
+            emit8(0x90);
+            emitImm16Operand(one());
+            return;
+        }
+        if (mnemonic == "movdi") {  // MOV direct,#imm
+            const auto &o = two();
+            emit8(0x75);
+            emitDirectOperand(o[0]);
+            emitImm8Operand(o[1]);
+            return;
+        }
+        static const std::unordered_map<std::string, uint8_t> abs16 = {
+            {"ljmp", 0x02},
+            {"lcall", 0x12},
+        };
+        if (auto it = abs16.find(mnemonic); it != abs16.end()) {
+            emit8(it->second);
+            emitAbsOperand(one());
+            return;
+        }
+        static const std::unordered_map<std::string, uint8_t> rel = {
+            {"jz", 0x60}, {"jnz", 0x70}, {"jc", 0x40}, {"jnc", 0x50},
+        };
+        if (auto it = rel.find(mnemonic); it != rel.end()) {
+            emit8(it->second);
+            emitRelOperand(one());
+            return;
+        }
+        // `JB bit,rel`/`JNB bit,rel` on the two fixed bits this
+        // dialect ever tests - ACC.7 (0xE7, the sign bit, for signed
+        // compares) and PSW.OV (0xD2, for the same compares' overflow
+        // fixup) - same "fixed bit, no general bit-address syntax"
+        // reasoning as setea/clrea above.
+        static const std::unordered_map<std::string, std::pair<uint8_t, uint8_t>> fixedBitBranch = {
+            {"jbacc7", {0x20, 0xE7}}, {"jnbacc7", {0x30, 0xE7}}, {"jbov", {0x20, 0xD2}}, {"jnbov", {0x30, 0xD2}},
+        };
+        if (auto it = fixedBitBranch.find(mnemonic); it != fixedBitBranch.end()) {
+            emit8(it->second.first);
+            emit8(it->second.second);
+            emitRelOperand(one());
+            return;
+        }
+        if (mnemonic == "djnz") {
+            const auto &o = two();
+            emit8(0xD5);
+            emitDirectOperand(o[0]);
+            emitRelOperand(o[1]);
+            return;
+        }
+        // CJNE isn't emitted by MCS51Codegen.cpp itself (every
+        // compare here goes through the uniform SUBB-chain idiom -
+        // see MCS51Codegen.h's own header comment), but is still part
+        // of this dialect (reachable via the language's own `asm`
+        // escape) since it's one of the instructions this target's
+        // real instruction set is built around.
+        if (mnemonic == "cjnei") {  // CJNE A,#imm,rel
+            const auto &o = two();
+            emit8(0xB4);
+            emitImm8Operand(o[0]);
+            emitRelOperand(o[1]);
+            return;
+        }
+        if (mnemonic == "cjne") {  // CJNE A,direct,rel
+            const auto &o = two();
+            emit8(0xB5);
+            emitDirectOperand(o[0]);
+            emitRelOperand(o[1]);
+            return;
+        }
+        fail("unsupported instruction '" + mnemonic + "'");
+    }
+
+    std::vector<uint8_t> bytes_;
+    std::unordered_map<std::string, uint32_t> labels_;
+    uint32_t offset_ = 0;
+    uint32_t orgBase_ = 0;
+    int stage_ = 1;
+};
+
+}  // namespace
+
+std::string assembleMCS51(const std::string &asmText) {
+    std::vector<Line> lines = parseProgram(asmText);
+    Assembler assembler;
+    assembler.run(lines);
+    const auto &bytes = assembler.bytes();
+    return std::string(bytes.begin(), bytes.end());
+}
+
+}  // namespace pcc

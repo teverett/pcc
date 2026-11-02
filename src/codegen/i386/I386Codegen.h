@@ -1,0 +1,107 @@
+#pragma once
+
+#include <map>
+#include <optional>
+#include <sstream>
+#include <vector>
+
+#include "codegen/Codegen.h"
+#include "ir/IR.h"
+
+namespace pcc {
+
+// Generates real 32-bit protected-mode i386 assembly (this project's
+// own dialect, built from real i386 mnemonics - see I386Assembler.h)
+// for the IR built by IRBuilder. This is ../x86_8086/I8086Codegen.h's
+// own backend grown up one generation: same register-centric model
+// (`eax` is every other backend's "ac", `ebx` the "other operand" in
+// a binary op *and* the one indirect-addressing register, exactly
+// I8086Codegen.h's own `ax`/`bx` roles - see that file's own header
+// comment), same real hardware `imul`/`idiv`, `cmp`+conditional-jump,
+// and `[label]`/`[ebx]`/`[label+ebx]` addressing - just 32 bits wide
+// throughout instead of 16, and a real flat 4GB address space instead
+// of 8086 real-mode segmentation.
+//
+// This language's own `int` is 32 bits here (this target's native
+// register width, same reasoning as M68kCodegen.h's own `.L` choice).
+//
+// Getting from power-on into 32-bit protected mode at all - real
+// i386 hardware always starts a boot sector in 16-bit real mode - is
+// deliberately *not* this backend's job: `generate()` below emits a
+// real Multiboot header (see the Multiboot Specification's "OS image
+// format", and that function's own comment) instead of any boot-
+// sector/real-mode code of its own. A real bootloader (GRUB, or
+// here, `qemu-system-i386 -kernel` acting as one - see
+// tests/run_tests.sh's own check_i386()) reads that header and does
+// the real-mode-to-protected-mode transition itself, entirely before
+// this image's own first instruction ever runs - confirmed directly
+// against a real `qemu-system-i386` boot (reading `EAX`/`CS` over the
+// monitor) rather than assumed from the spec alone. So this backend's
+// own entry sequence only ever has to do two real things once control
+// actually reaches it: mask both real 8259 PICs (see generate()'s own
+// comment on why - this language's `_ion()` needs it, not booting
+// itself) and call `main`. Unlike `x86_8086`, this backend never
+// needs NASM's own `--format=coff`/`elf` real-separate-compilation
+// machinery (see generate()'s own comment) - every program here is
+// one flat, self-contained `--format=bin` image, the same scope every
+// other newer backend here (`68000`/`mc68328`/`stm32`) has settled
+// on.
+class I386Codegen : public Backend {
+   public:
+    std::string generate(const ir::Program &prog, bool objectMode = false) override;
+    std::string name() const override { return "i386"; }
+    std::string sourceExtension() const override { return ".s386"; }
+    std::vector<std::string> assembledFormats() const override { return {"bin"}; }
+    std::string defaultAssemblerPath() const override { return ""; }
+    std::string buildAssembleCommand(const std::string &assemblerPath, const std::string &format,
+                                      const std::string &srcPath, const std::string &outPath) const override;
+    std::map<std::string, std::string> perFileAsm() const override;
+    std::optional<std::string> assembleInProcess(const std::string &asmText,
+                                                  const std::string &format) const override;
+
+   private:
+    void genFunction(const ir::FunctionBody &fn);
+    void genStmt(const ir::Stmt &s);
+    void genExpr(const ir::Expr &e);  // leaves the result in eax
+
+    void genBinary(const ir::Expr &e);
+    void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
+    void emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &jumpIfTrue);
+    void genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs);
+    void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
+    void genLogicalNot(const ir::Expr &rhs);
+    void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
+    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
+    void genIndex(const ir::Expr &e);         // slot[idx] read
+    void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+
+    // Emits the i386 effective-address operand text (e.g.
+    // "[g_arr3+ebx]") for slot[idxExpr], with ebx already loaded -
+    // used by both an Index read and an indexed Assign. See
+    // I8086Codegen.h's own `computeElementAddr` - identical role,
+    // 32-bit ("dd"-sized elements, `ebx`) throughout.
+    std::string computeElementAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
+
+    static std::string label(const ir::Slot *slot) {
+        if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
+        if (slot->kind == ir::SlotKind::Param) {
+            return "p_" + slot->ownerFunctionName + "_" + std::to_string(slot->paramIndex);
+        }
+        return slot->sourceName + "_" + std::to_string(slot->id);
+    }
+    static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
+
+    std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
+    void declareTemp(const std::string &lbl);
+    void declareArray(const std::string &lbl, const std::vector<long> &values);
+    std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
+
+    std::ostringstream code_;
+    std::vector<std::string> trailer_;  // "label: dd v0, v1, ..." data lines, emitted once at the end
+    std::map<std::string, std::string> perFileAsm_;
+
+    int tempCounter_ = 0;
+    int labelCounter_ = 0;
+};
+
+}  // namespace pcc

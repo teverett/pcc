@@ -6,7 +6,7 @@
 # on every target (see ../src/Backend.h: a .c file means the same
 # thing regardless of --target).
 #
-# Usage: tests/run_tests.sh [path/to/pcc] [--target=pdp7|8086|8088|6502|65c02|68000]
+# Usage: tests/run_tests.sh [path/to/pcc] [--target=pdp7|8086|8088|6502|65c02|68000|mc68328|8080|z80|8008|8051|stm32|i386|armv7a|armv8a]
 
 set -u
 
@@ -83,6 +83,25 @@ case "$TARGET" in
             exit 1
         fi
         ;;
+    mc68328)
+        # Same CPU core as 68000 above (the real MC68328 "DragonBall"
+        # executes a bit-for-bit identical instruction set - see
+        # ../src/codegen/mc68328/MC68328Codegen.h's own header
+        # comment), so the same qemu tool suffices; check_mc68328()
+        # below drives it differently from check_68000() though - no
+        # PC-forcing `loader` device, since this backend lays out a
+        # real reset vector table and qemu's own `-M none` board
+        # genuinely honors its PC half (confirmed directly) - see
+        # check_mc68328()'s own comment.
+        if ! command -v qemu-system-m68k >/dev/null 2>&1; then
+            echo "qemu-system-m68k not found on PATH - install it (e.g. 'brew install qemu')" >&2
+            exit 1
+        fi
+        if ! command -v nc >/dev/null 2>&1; then
+            echo "nc not found on PATH - needed to talk to qemu's monitor" >&2
+            exit 1
+        fi
+        ;;
     8080)
         # No real simulator here either - the 8080 backend emits
         # real, standard Intel 8080 machine code (see
@@ -113,8 +132,88 @@ case "$TARGET" in
         # written just for this - standard library only, nothing to
         # install.
         ;;
+    8051)
+        # No PyPI package exists for this one either (nothing on PyPI
+        # models the 8051's own genuinely Harvard CODE/XDATA split -
+        # see ../src/codegen/mcs51/MCS51Codegen.h's own header
+        # comment), so check_8051() below drives a small from-scratch
+        # MCS-51 core written just for this - standard library only,
+        # nothing to install. --target=8052/8031/8032 aren't run here
+        # too, for the same "provably byte-identical output" reason
+        # --target=8088 isn't (see ../src/main.cpp's own makeBackend()
+        # comment) - all four part numbers share this one backend.
+        ;;
+    stm32)
+        # qemu's own `stm32vldiscovery` board (a real STM32F100,
+        # Cortex-M3) models flash/RAM as two genuinely separate,
+        # correctly-sized address ranges (confirmed directly via its
+        # own `info mtree` monitor command during development - flash
+        # a real read-only ROM, 8KB of RAM at 0x20000000 - see
+        # ../src/codegen/stm32/STM32Codegen.h's own header comment on
+        # why this backend needs that split at all), so unlike every
+        # other qemu-driven target here this one boots through a real
+        # Cortex-M reset (`-kernel`, no PC-forcing `loader` device
+        # trick) - check_stm32() below is the only check_*() that
+        # relies on the vector table it's given actually being
+        # honored, rather than sidestepping it.
+        if ! command -v qemu-system-arm >/dev/null 2>&1; then
+            echo "qemu-system-arm not found on PATH - install it (e.g. 'brew install qemu')" >&2
+            exit 1
+        fi
+        if ! command -v nc >/dev/null 2>&1; then
+            echo "nc not found on PATH - needed to talk to qemu's monitor" >&2
+            exit 1
+        fi
+        ;;
+    i386)
+        # Same qemu tool as `8086` above, but a completely different
+        # boot path: this backend's own `--format=bin` output is a
+        # real Multiboot image (see
+        # ../src/codegen/i386/I386Codegen.cpp's own `generate()`
+        # comment), loaded straight into 32-bit protected mode by
+        # qemu's own `-kernel` loader - no floppy image, no BIOS, no
+        # boot-sector/disk-I/O/mode-switch code at all, unlike `8086`'s
+        # own real-mode floppy boot; check_i386() below reads the full
+        # 32-bit `EAX`, not just its low 16 bits the way check_8086()
+        # does.
+        if ! command -v qemu-system-i386 >/dev/null 2>&1; then
+            echo "qemu-system-i386 not found on PATH - install it (e.g. 'brew install qemu')" >&2
+            exit 1
+        fi
+        if ! command -v nc >/dev/null 2>&1; then
+            echo "nc not found on PATH - needed to talk to qemu's monitor" >&2
+            exit 1
+        fi
+        ;;
+    armv7a)
+        # 32-bit AArch32 A32 encoding (see
+        # ../src/codegen/arm/ArmCodegen.h's own header comment);
+        # cortex-a15 specifically because it's the one qemu cpu model
+        # here that implements the ARMv7-A optional integer-divide
+        # extension (SDIV/UDIV) this backend's `*`/`/` rely on.
+        if ! command -v qemu-system-arm >/dev/null 2>&1; then
+            echo "qemu-system-arm not found on PATH - install it (e.g. 'brew install qemu')" >&2
+            exit 1
+        fi
+        if ! command -v nc >/dev/null 2>&1; then
+            echo "nc not found on PATH - needed to talk to qemu's monitor" >&2
+            exit 1
+        fi
+        ;;
+    armv8a)
+        # 64-bit AArch64 A64 encoding (see
+        # ../src/codegen/arm64/Arm64Codegen.h's own header comment).
+        if ! command -v qemu-system-aarch64 >/dev/null 2>&1; then
+            echo "qemu-system-aarch64 not found on PATH - install it (e.g. 'brew install qemu')" >&2
+            exit 1
+        fi
+        if ! command -v nc >/dev/null 2>&1; then
+            echo "nc not found on PATH - needed to talk to qemu's monitor" >&2
+            exit 1
+        fi
+        ;;
     *)
-        echo "unknown --target '$TARGET' (known: pdp7, 8086, 8088, 6502, 65c02, 68000, 8080, z80, 8008)" >&2
+        echo "unknown --target '$TARGET' (known: pdp7, 8086, 8088, 6502, 65c02, 68000, mc68328, 8080, z80, 8008, 8051, stm32, i386, armv7a, armv8a)" >&2
         exit 1
         ;;
 esac
@@ -299,6 +398,216 @@ check_8086() {
     return 1
 }
 
+check_i386() {
+    local src="$1" name="$2"
+    local binfile="$tmpdir/$name.bin"
+
+    pkill -f qemu-system-i386 2>/dev/null
+    sleep 1
+
+    if ! "$PCC" --target=i386 --format=bin \
+            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+        echo "FAIL $name: compile error"
+        sed 's/^/    /' "$tmpdir/$name.log"
+        return 1
+    fi
+
+    qemu_port_counter=$((qemu_port_counter + 1))
+    local port=$((23000 + ($$ % 10000) + qemu_port_counter))
+    local outfile="$tmpdir/$name.out"
+
+    # `-kernel "$binfile"`, no floppy/BIOS boot at all: this backend's
+    # own `--format=bin` output is a real Multiboot image (see
+    # ../src/codegen/i386/I386Codegen.cpp's own `generate()` comment),
+    # and qemu's own `-kernel` loader reads that header and lands this
+    # program running in real 32-bit protected mode directly, the same
+    # way a real GRUB would - no boot sector/disk I/O/mode-switch code
+    # of this program's own involved at all.
+    qemu-system-i386 -kernel "$binfile" -monitor "tcp:127.0.0.1:$port,server,nowait" \
+        -display none -no-reboot >/dev/null 2>&1 &
+    local qemu_pid=$!
+    ( sleep 30; kill -9 "$qemu_pid" 2>/dev/null ) &
+    local watcher=$!
+
+    # Same EAX-stabilizes-twice-in-a-row convention as check_8086()'s
+    # own poll, for the same reason (a background timer interrupt
+    # wakes the CPU back out of `hlt` into this backend's own `jmp
+    # halt` spin loop - see I386Codegen.cpp's own `generate()`).
+    local waited=0 prev_eax="" cur_eax=""
+    while [ "$waited" -lt 25 ]; do
+        echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
+        cur_eax="$(grep -oE 'EAX=[0-9a-fA-F]+' "$outfile" | head -1)"
+        if [ -n "$cur_eax" ] && [ "$cur_eax" = "$prev_eax" ]; then
+            break
+        fi
+        prev_eax="$cur_eax"
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    kill "$qemu_pid" 2>/dev/null
+    wait "$qemu_pid" 2>/dev/null
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+
+    local eax_hex
+    eax_hex="$(grep -oE 'EAX=[0-9a-fA-F]+' "$outfile" | head -1 | cut -d= -f2)"
+    if [ -z "$eax_hex" ]; then
+        echo "FAIL $name: qemu produced no EAX (timed out or crashed)"
+        return 1
+    fi
+
+    local eax_dec=$((16#$eax_hex))
+    eax_dec="$(to_signed "$eax_dec" 32)"
+    if [ "$eax_dec" -eq "$expect" ]; then
+        echo "PASS $name (EAX=$eax_dec)"
+        return 0
+    fi
+    echo "FAIL $name: expected $expect, got $eax_dec (EAX hex: $eax_hex)"
+    return 1
+}
+
+check_armv7a() {
+    local src="$1" name="$2"
+    local binfile="$tmpdir/$name.bin"
+
+    pkill -f qemu-system-arm 2>/dev/null
+    sleep 1
+
+    if ! "$PCC" --target=armv7a --format=bin \
+            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+        echo "FAIL $name: compile error"
+        sed 's/^/    /' "$tmpdir/$name.log"
+        return 1
+    fi
+
+    qemu_port_counter=$((qemu_port_counter + 1))
+    local port=$((21000 + ($$ % 10000) + qemu_port_counter))
+    local outfile="$tmpdir/$name.out"
+
+    # `-M none -cpu cortex-a15`: a bare A-profile CPU, no boot ROM/
+    # vector table at all - the `loader` device (no `file=`, just
+    # `addr=`) sets the CPU's own PC directly to where the other
+    # `loader` device (with `file=`) placed the program, same trick
+    # as check_68000's own (see its own comment) - and cortex-a15
+    # specifically because it's the one qemu cpu model here that
+    # implements the ARMv7-A optional integer-divide extension
+    # (SDIV/UDIV - see ../src/codegen/arm/ArmCodegen.cpp's own `*`/`/`).
+    qemu-system-arm -M none -cpu cortex-a15 -m 16M \
+        -device "loader,file=$binfile,addr=0x1000,cpu-num=0" \
+        -device "loader,addr=0x1000,cpu-num=0" \
+        -monitor "tcp:127.0.0.1:$port,server,nowait" -display none -no-reboot >/dev/null 2>&1 &
+    local qemu_pid=$!
+    ( sleep 30; kill -9 "$qemu_pid" 2>/dev/null ) &
+    local watcher=$!
+
+    # Poll R00 until it reads the same value twice in a row - same
+    # convention as check_68000's own D0 poll (the program's own
+    # result sits in R00 the instant it reaches its `halt: b halt`
+    # spin loop, see ../src/codegen/arm/ArmCodegen.h's own comment).
+    local waited=0 prev_r0="" cur_r0=""
+    while [ "$waited" -lt 25 ]; do
+        echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
+        cur_r0="$(grep -oE 'R00=[0-9a-fA-F]+' "$outfile" | head -1)"
+        if [ -n "$cur_r0" ] && [ "$cur_r0" = "$prev_r0" ]; then
+            break
+        fi
+        prev_r0="$cur_r0"
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    kill "$qemu_pid" 2>/dev/null
+    wait "$qemu_pid" 2>/dev/null
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+
+    local r0_hex
+    r0_hex="$(grep -oE 'R00=[0-9a-fA-F]+' "$outfile" | head -1 | cut -d= -f2)"
+    if [ -z "$r0_hex" ]; then
+        echo "FAIL $name: qemu produced no R00 (timed out or crashed)"
+        return 1
+    fi
+
+    local r0_dec=$((16#$r0_hex))
+    r0_dec="$(to_signed "$r0_dec" 32)"
+    if [ "$r0_dec" -eq "$expect" ]; then
+        echo "PASS $name (R0=$r0_dec)"
+        return 0
+    fi
+    echo "FAIL $name: expected $expect, got $r0_dec (R0 hex: $r0_hex)"
+    return 1
+}
+
+# qemu's own `-kernel` raw-image boot convention for the `virt`
+# machine's AArch64 boot places a flat binary at RAM base (a fixed,
+# documented 0x40000000) + 0x80000 and sets the CPU's PC there
+# directly - no vector table or `loader`-device PC-forcing trick
+# needed (unlike check_68000()'s own) - see
+# ../src/codegen/arm64/Arm64Codegen.cpp's own kBaseAddress comment.
+check_armv8a() {
+    local src="$1" name="$2"
+    local binfile="$tmpdir/$name.bin"
+
+    pkill -f qemu-system-aarch64 2>/dev/null
+    sleep 1
+
+    if ! "$PCC" --target=armv8a --format=bin \
+            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+        echo "FAIL $name: compile error"
+        sed 's/^/    /' "$tmpdir/$name.log"
+        return 1
+    fi
+
+    qemu_port_counter=$((qemu_port_counter + 1))
+    local port=$((21000 + ($$ % 10000) + qemu_port_counter))
+    local outfile="$tmpdir/$name.out"
+
+    qemu-system-aarch64 -M virt -cpu cortex-a53 -m 256M \
+        -kernel "$binfile" -nographic \
+        -monitor "tcp:127.0.0.1:$port,server,nowait" -serial none -display none -no-reboot >/dev/null 2>&1 &
+    local qemu_pid=$!
+    ( sleep 30; kill -9 "$qemu_pid" 2>/dev/null ) &
+    local watcher=$!
+
+    # Same X00-stabilizes-twice-in-a-row convention as check_68000()'s
+    # own D0 poll - the program's own result sits in X00/W00 the
+    # instant it reaches its `halt: b halt` spin loop (see
+    # ../src/codegen/arm64/Arm64Codegen.h's own comment).
+    local waited=0 prev_x0="" cur_x0=""
+    while [ "$waited" -lt 25 ]; do
+        echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
+        cur_x0="$(grep -oE 'X00=[0-9a-fA-F]+' "$outfile" | head -1)"
+        if [ -n "$cur_x0" ] && [ "$cur_x0" = "$prev_x0" ]; then
+            break
+        fi
+        prev_x0="$cur_x0"
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    kill "$qemu_pid" 2>/dev/null
+    wait "$qemu_pid" 2>/dev/null
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+
+    local x0_hex
+    x0_hex="$(grep -oE 'X00=[0-9a-fA-F]+' "$outfile" | head -1 | cut -d= -f2)"
+    if [ -z "$x0_hex" ]; then
+        echo "FAIL $name: qemu produced no X00 (timed out or crashed)"
+        return 1
+    fi
+
+    local x0_dec=$((16#$x0_hex & 0xFFFFFFFF))
+    x0_dec="$(to_signed "$x0_dec" 32)"
+    if [ "$x0_dec" -eq "$expect" ]; then
+        echo "PASS $name (X0=$x0_dec)"
+        return 0
+    fi
+    echo "FAIL $name: expected $expect, got $x0_dec (X00 hex: $x0_hex)"
+    return 1
+}
+
 check_68000() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
@@ -335,6 +644,76 @@ check_68000() {
     # convention, and the same reason, as check_8086's own EAX poll -
     # the program's own result sits in D0 the instant it reaches its
     # `halt: bra halt` spin loop, see M68kCodegen.h's own comment).
+    local waited=0 prev_d0="" cur_d0=""
+    while [ "$waited" -lt 25 ]; do
+        echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
+        cur_d0="$(grep -oE 'D0 = [0-9a-fA-F]+' "$outfile" | head -1)"
+        if [ -n "$cur_d0" ] && [ "$cur_d0" = "$prev_d0" ]; then
+            break
+        fi
+        prev_d0="$cur_d0"
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    kill "$qemu_pid" 2>/dev/null
+    wait "$qemu_pid" 2>/dev/null
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+
+    local d0_hex
+    d0_hex="$(grep -oE 'D0 = [0-9a-fA-F]+' "$outfile" | head -1 | awk '{print $3}')"
+    if [ -z "$d0_hex" ]; then
+        echo "FAIL $name: qemu produced no D0 (timed out or crashed)"
+        return 1
+    fi
+
+    local d0_dec=$((16#$d0_hex))
+    d0_dec="$(to_signed "$d0_dec" 32)"
+    if [ "$d0_dec" -eq "$expect" ]; then
+        echo "PASS $name (D0=$d0_dec)"
+        return 0
+    fi
+    echo "FAIL $name: expected $expect, got $d0_dec (D0 hex: $d0_hex)"
+    return 1
+}
+
+# Unlike check_68000() above, no PC-forcing `loader` device: this
+# backend (see ../src/codegen/mc68328/MC68328Codegen.h's own header
+# comment) lays out a real two-vector reset table at address 0, and
+# qemu-system-m68k's own `-M none` board genuinely honors its PC half
+# with no race or quirk (confirmed directly: a from-scratch minimal
+# image with nothing but those two vectors plus a self-loop settles
+# at the right PC immediately, no forcing needed) - so the binary is
+# simply loaded at address 0 and the real reset exception does the
+# rest, exactly as it would on genuine DragonBall silicon.
+check_mc68328() {
+    local src="$1" name="$2"
+    local binfile="$tmpdir/$name.bin"
+
+    pkill -f qemu-system-m68k 2>/dev/null
+    sleep 1
+
+    if ! "$PCC" --target=mc68328 --format=bin \
+            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+        echo "FAIL $name: compile error"
+        sed 's/^/    /' "$tmpdir/$name.log"
+        return 1
+    fi
+
+    qemu_port_counter=$((qemu_port_counter + 1))
+    local port=$((21000 + ($$ % 10000) + qemu_port_counter))
+    local outfile="$tmpdir/$name.out"
+
+    qemu-system-m68k -M none -cpu m68000 -m 16M \
+        -device "loader,file=$binfile,addr=0x0,cpu-num=0" \
+        -monitor "tcp:127.0.0.1:$port,server,nowait" -display none -no-reboot >/dev/null 2>&1 &
+    local qemu_pid=$!
+    ( sleep 30; kill -9 "$qemu_pid" 2>/dev/null ) &
+    local watcher=$!
+
+    # Same D0-stabilizes-twice-in-a-row convention as check_68000()'s
+    # own poll.
     local waited=0 prev_d0="" cur_d0=""
     while [ "$waited" -lt 25 ]; do
         echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
@@ -862,6 +1241,322 @@ PY
     return 1
 }
 
+check_8051() {
+    local src="$1" name="$2"
+    local binfile="$tmpdir/$name.bin"
+
+    if ! "$PCC" --target=8051 --format=bin \
+            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+        echo "FAIL $name: compile error"
+        sed 's/^/    /' "$tmpdir/$name.log"
+        return 1
+    fi
+
+    local result
+    result="$(python3 - "$binfile" <<'PY'
+import sys
+
+path = sys.argv[1]
+with open(path, "rb") as f:
+    data = f.read()
+
+# A from-scratch MCS-51 core for exactly the narrow dialect
+# ../src/codegen/mcs51/MCS51Codegen.cpp emits (see that file's own
+# header comment) - two genuinely separate address spaces, matching
+# this target's own real Harvard architecture: `code` (fetched by
+# PC - ljmp/lcall/jz/etc.) and `xdata` (every global/local/array,
+# reached only via MOVX+DPTR - see MCS51Codegen.h's own comment on
+# why ordinary variables live here rather than in the 128-byte
+# internal RAM alongside the five fixed scratch pseudo-registers,
+# which is `iram` below).
+code = data + bytes(0x10000 - len(data))
+xdata = bytearray(0x10000)
+iram = bytearray(0x100)
+
+A = 0
+DPL = 0
+DPH = 0
+CY = 0
+OV = 0
+pc = 0
+sp = 7
+stack = bytearray(256)
+
+
+def rd_direct(addr):
+    if addr == 0x82:
+        return DPL
+    if addr == 0x83:
+        return DPH
+    return iram[addr]
+
+
+def wr_direct(addr, val):
+    global DPL, DPH
+    val &= 0xFF
+    if addr == 0x82:
+        DPL = val
+    elif addr == 0x83:
+        DPH = val
+    else:
+        iram[addr] = val
+
+
+def fetch8():
+    global pc
+    b = code[pc]
+    pc = (pc + 1) & 0xFFFF
+    return b
+
+
+def fetch16():
+    hi = fetch8()
+    lo = fetch8()
+    return (hi << 8) | lo
+
+
+def rel_target(rel_byte, after_pc):
+    rel = rel_byte - 256 if rel_byte >= 128 else rel_byte
+    return (after_pc + rel) & 0xFFFF
+
+
+# The only two bit addresses MCS51Codegen.cpp ever tests - ACC.7 (the
+# sign bit, for signed compares) and PSW.OV (that same compares' own
+# overflow fixup) - see MCS51Assembler.cpp's own "fixedBitBranch"
+# table; nothing here models a general bit-addressable SFR space.
+def get_fixed_bit(bitaddr):
+    if bitaddr == 0xE7:
+        return (A >> 7) & 1
+    if bitaddr == 0xD2:
+        return OV
+    raise RuntimeError("unsupported bit address 0x%02x" % bitaddr)
+
+
+halted = False
+for _ in range(20_000_000):
+    op = fetch8()
+    if op == 0x02:  # LJMP
+        start = pc - 1
+        addr = fetch16()
+        if addr == start:
+            halted = True
+            break
+        pc = addr
+    elif op == 0x12:  # LCALL
+        addr = fetch16()
+        sp += 1
+        stack[sp] = pc & 0xFF
+        sp += 1
+        stack[sp] = (pc >> 8) & 0xFF
+        pc = addr
+    elif op in (0x22, 0x32):  # RET / RETI
+        pc = (stack[sp] << 8) | stack[sp - 1]
+        sp -= 2
+    elif op == 0x00:  # NOP
+        pass
+    elif op == 0xE4:  # CLR A
+        A = 0
+    elif op == 0xF4:  # CPL A
+        A = (~A) & 0xFF
+    elif op == 0xC3:  # CLR C
+        CY = 0
+    elif op == 0x23:  # RL A
+        CY = (A >> 7) & 1
+        A = ((A << 1) | CY) & 0xFF
+    elif op == 0x03:  # RR A
+        lsb = A & 1
+        A = ((A >> 1) | (lsb << 7)) & 0xFF
+    elif op == 0x33:  # RLC A
+        newcy = (A >> 7) & 1
+        A = ((A << 1) | CY) & 0xFF
+        CY = newcy
+    elif op == 0x13:  # RRC A
+        newcy = A & 1
+        A = ((A >> 1) | (CY << 7)) & 0xFF
+        CY = newcy
+    elif op == 0xA3:  # INC DPTR
+        dptr = (((DPH << 8) | DPL) + 1) & 0xFFFF
+        DPL = dptr & 0xFF
+        DPH = (dptr >> 8) & 0xFF
+    elif op == 0xE0:  # MOVX A,@DPTR
+        A = xdata[(DPH << 8) | DPL]
+    elif op == 0xF0:  # MOVX @DPTR,A
+        xdata[(DPH << 8) | DPL] = A
+    elif op in (0xD2, 0xC2):  # SETB bit / CLR bit - only EA (IE.7) ever emitted, a no-op (no interrupt model)
+        bitaddr = fetch8()
+        if bitaddr != 0xAF:
+            raise RuntimeError("unsupported SETB/CLR bit 0x%02x" % bitaddr)
+    elif op == 0xE5:  # MOV A,direct
+        A = rd_direct(fetch8())
+    elif op == 0xF5:  # MOV direct,A
+        wr_direct(fetch8(), A)
+    elif op == 0x05:  # INC direct
+        d = fetch8()
+        wr_direct(d, (rd_direct(d) + 1) & 0xFF)
+    elif op == 0x15:  # DEC direct
+        d = fetch8()
+        wr_direct(d, (rd_direct(d) - 1) & 0xFF)
+    elif op in (0x25, 0x35, 0x24, 0x34):  # ADD/ADDC A,direct|#imm
+        v = rd_direct(fetch8()) if op in (0x25, 0x35) else fetch8()
+        carry_in = CY if op in (0x35, 0x34) else 0
+        total = A + v + carry_in
+        sa, sv = A & 0x80, v & 0x80
+        res = total & 0xFF
+        newcy = 1 if total > 0xFF else 0
+        OV = 1 if (sa == sv and (res & 0x80) != sa) else 0
+        CY = newcy
+        A = res
+    elif op in (0x95, 0x94):  # SUBB A,direct|#imm
+        v = rd_direct(fetch8()) if op == 0x95 else fetch8()
+        total = A - v - CY
+        sa, sv = A & 0x80, v & 0x80
+        res = total & 0xFF
+        newcy = 1 if total < 0 else 0
+        OV = 1 if (sa != sv and (res & 0x80) != sa) else 0
+        CY = newcy
+        A = res
+    elif op in (0x55, 0x54):  # ANL A,direct|#imm
+        A &= rd_direct(fetch8()) if op == 0x55 else fetch8()
+    elif op in (0x45, 0x44):  # ORL A,direct|#imm
+        A |= rd_direct(fetch8()) if op == 0x45 else fetch8()
+    elif op in (0x65, 0x64):  # XRL A,direct|#imm
+        A ^= rd_direct(fetch8()) if op == 0x65 else fetch8()
+    elif op == 0xC0:  # PUSH direct
+        d = fetch8()
+        sp += 1
+        stack[sp] = rd_direct(d)
+    elif op == 0xD0:  # POP direct
+        d = fetch8()
+        wr_direct(d, stack[sp])
+        sp -= 1
+    elif op == 0x74:  # MOV A,#imm
+        A = fetch8()
+    elif op == 0x85:  # MOV direct,direct (src byte first, then dst - real hardware order)
+        src = fetch8()
+        dst = fetch8()
+        wr_direct(dst, rd_direct(src))
+    elif op == 0x90:  # MOV DPTR,#imm16 (high byte first)
+        DPH = fetch8()
+        DPL = fetch8()
+    elif op == 0x75:  # MOV direct,#imm
+        d = fetch8()
+        wr_direct(d, fetch8())
+    elif op in (0x60, 0x70, 0x40, 0x50):  # JZ/JNZ/JC/JNC rel
+        rel = fetch8()
+        target = rel_target(rel, pc)
+        taken = {0x60: A == 0, 0x70: A != 0, 0x40: CY == 1, 0x50: CY == 0}[op]
+        if taken:
+            pc = target
+    elif op in (0x20, 0x30):  # JB/JNB bit,rel
+        bitaddr = fetch8()
+        rel = fetch8()
+        target = rel_target(rel, pc)
+        bit = get_fixed_bit(bitaddr)
+        if (op == 0x20 and bit) or (op == 0x30 and not bit):
+            pc = target
+    elif op == 0xD5:  # DJNZ direct,rel
+        d = fetch8()
+        rel = fetch8()
+        target = rel_target(rel, pc)
+        newv = (rd_direct(d) - 1) & 0xFF
+        wr_direct(d, newv)
+        if newv != 0:
+            pc = target
+    else:
+        raise RuntimeError("unimplemented opcode 0x%02x at pc=0x%04x" % (op, pc - 1))
+else:
+    print("TIMEOUT")
+    sys.exit(0)
+
+if not halted:
+    print("TIMEOUT")
+    sys.exit(0)
+
+val = iram[0x30] | (iram[0x31] << 8)
+if val >= 0x8000:
+    val -= 0x10000
+print(val)
+PY
+    )"
+    if [ "$result" = "TIMEOUT" ]; then
+        echo "FAIL $name: simulator never reached the halt loop (step limit exceeded)"
+        return 1
+    fi
+    if [ "$result" -eq "$expect" ] 2>/dev/null; then
+        echo "PASS $name (ac=$result)"
+        return 0
+    fi
+    echo "FAIL $name: expected $expect, got $result"
+    return 1
+}
+
+check_stm32() {
+    local src="$1" name="$2"
+    local binfile="$tmpdir/$name.bin"
+
+    pkill -f qemu-system-arm 2>/dev/null
+    sleep 1
+
+    if ! "$PCC" --target=stm32 --format=bin \
+            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+        echo "FAIL $name: compile error"
+        sed 's/^/    /' "$tmpdir/$name.log"
+        return 1
+    fi
+
+    qemu_port_counter=$((qemu_port_counter + 1))
+    local port=$((22000 + ($$ % 10000) + qemu_port_counter))
+    local outfile="$tmpdir/$name.out"
+
+    # `-kernel`, not a PC-forcing `loader` device: `$binfile` already
+    # starts with a real two-word Cortex-M reset vector table (initial
+    # `sp`, reset handler with its Thumb bit forced on - see
+    # ../src/codegen/stm32/STM32Codegen.cpp's own `generate()`), and
+    # `stm32vldiscovery` genuinely honors it on reset (confirmed
+    # directly during development - see
+    # ../src/codegen/stm32/STM32Codegen.h's own header comment).
+    qemu-system-arm -M stm32vldiscovery -kernel "$binfile" \
+        -monitor "tcp:127.0.0.1:$port,server,nowait" -display none -no-reboot -serial none >/dev/null 2>&1 &
+    local qemu_pid=$!
+    ( sleep 30; kill -9 "$qemu_pid" 2>/dev/null ) &
+    local watcher=$!
+
+    # Same R00-stabilizes-twice-in-a-row convention as check_68000()'s
+    # own D0 poll.
+    local waited=0 prev_r0="" cur_r0=""
+    while [ "$waited" -lt 25 ]; do
+        echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
+        cur_r0="$(grep -oE 'R00=[0-9a-fA-F]+' "$outfile" | head -1)"
+        if [ -n "$cur_r0" ] && [ "$cur_r0" = "$prev_r0" ]; then
+            break
+        fi
+        prev_r0="$cur_r0"
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    kill "$qemu_pid" 2>/dev/null
+    wait "$qemu_pid" 2>/dev/null
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+
+    local r0_hex
+    r0_hex="$(grep -oE 'R00=[0-9a-fA-F]+' "$outfile" | head -1 | cut -d= -f2)"
+    if [ -z "$r0_hex" ]; then
+        echo "FAIL $name: qemu produced no R00 (timed out or crashed)"
+        return 1
+    fi
+
+    local r0_dec=$((16#$r0_hex))
+    r0_dec="$(to_signed "$r0_dec" 32)"
+    if [ "$r0_dec" -eq "$expect" ]; then
+        echo "PASS $name (R0=$r0_dec)"
+        return 0
+    fi
+    echo "FAIL $name: expected $expect, got $r0_dec (R0 hex: $r0_hex)"
+    return 1
+}
+
 for src in "$SCRIPT_DIR"/*.c; do
     expect="$(grep -m1 -oE 'EXPECT: *-?[0-9]+' "$src" | grep -oE '\-?[0-9]+$' || true)"
     if [ -z "$expect" ]; then
@@ -876,9 +1571,15 @@ for src in "$SCRIPT_DIR"/*.c; do
         6502) check_6502 "$src" "$name" || fail=1 ;;
         65c02) check_65c02 "$src" "$name" || fail=1 ;;
         68000) check_68000 "$src" "$name" || fail=1 ;;
+        mc68328) check_mc68328 "$src" "$name" || fail=1 ;;
         8080) check_8080 "$src" "$name" || fail=1 ;;
         z80) check_z80 "$src" "$name" || fail=1 ;;
         8008) check_8008 "$src" "$name" || fail=1 ;;
+        8051) check_8051 "$src" "$name" || fail=1 ;;
+        stm32) check_stm32 "$src" "$name" || fail=1 ;;
+        i386) check_i386 "$src" "$name" || fail=1 ;;
+        armv7a) check_armv7a "$src" "$name" || fail=1 ;;
+        armv8a) check_armv8a "$src" "$name" || fail=1 ;;
     esac
 done
 
