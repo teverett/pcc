@@ -55,7 +55,7 @@ pcc [--target=pdp7|8086] [--format=asm|<target-specific>] [--out=file]
 | Switch | Meaning |
 | --- | --- |
 | `--target=pdp7\|8086` | Which backend to compile for. Default: `pdp7`. |
-| `--format=<fmt>` | What to produce. `asm` (the default) means "just the generated assembly text, don't assemble it". Every other value is target-specific and gets handed to that target's own assembler: `pdp7` supports `a7out`, `list`, `ptr`, `rim`, `coff`; `8086` supports `bin`, `coff`. A non-`coff` format takes exactly one `.c` file. |
+| `--format=<fmt>` | What to produce. `asm` (the default) means "just the generated assembly text, don't assemble it". Every other value is target-specific and gets handed to that target's own assembler: `pdp7` supports `a7out`, `list`, `ptr`, `rim`, `coff`; `8086` supports `bin`, `coff`, `elf`. A non-`coff` format takes exactly one `.c` file. |
 | `--out=file` | Where to write the result. Omit it to write to stdout; with `--format=coff` and no `--out`, output instead goes to `build/<name>.o` (one per input file). |
 | `--assembler=path` | Path to the target's real external assembler, for formats that need one (not every target has an in-process assembler for every format). Defaults to each backend's own tool (`../pdp-assembler/build/bin/pdp7as` for pdp7, `nasm` for 8086). |
 | `--optimize` | Run every registered IR optimizer (see "Optimizers" below) before codegen. Off by default. |
@@ -79,7 +79,7 @@ pcc --link [--target=pdp7|8086] --format=<target-native> [--out=file] file1.o [f
 | --- | --- |
 | `--link` | Switches from compile mode to link mode. |
 | `--target=pdp7\|8086` | Which target's linker to use. Default: `pdp7`. |
-| `--format=<fmt>` | Final linked output format. `pdp7` supports `a7out`, `list`, `ptr`, `rim`, `coff`, `aout`; `8086` supports `bin`, `coff`, `aout`. |
+| `--format=<fmt>` | Final linked output format. `pdp7` supports `a7out`, `list`, `ptr`, `rim`, `coff`, `aout`; `8086` supports `bin`, `coff`, `elf`, `aout`. |
 | `--out=file` | Where to write the linked result. Omit it to write to stdout. |
 
 Every other flag (`--assembler`, `--optimize`, `--dump-ir`,

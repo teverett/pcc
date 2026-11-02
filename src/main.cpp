@@ -55,6 +55,7 @@
 #include "linker/format/AoutWriter.h"
 #include "linker/format/BinWriter.h"
 #include "linker/format/CoffLinkWriter.h"
+#include "linker/format/ElfLinkWriter.h"
 #include "linker/format/FormatWriter.h"
 #include "linker/format/ListWriter.h"
 #include "linker/format/PtrWriter.h"
@@ -155,6 +156,7 @@ std::unique_ptr<pcc::FormatWriter> makeFormatWriter(const std::string &format) {
     if (format == "a7out") return std::make_unique<pcc::A7outWriter>();
     if (format == "list") return std::make_unique<pcc::ListWriter>();
     if (format == "bin") return std::make_unique<pcc::BinWriter>();
+    if (format == "elf") return std::make_unique<pcc::ElfLinkWriter>();
     if (format == "aout") return std::make_unique<pcc::AoutWriter>();
     return nullptr;
 }

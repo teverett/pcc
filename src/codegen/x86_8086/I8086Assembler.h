@@ -33,7 +33,7 @@ namespace pcc {
 //
 // Throws std::runtime_error on any assembly error, same convention as
 // ../pdp7/Pdp7Assembler.h and the rest of pcc's own frontend.
-enum class I8086OutputFormat { Bin, Coff };
+enum class I8086OutputFormat { Bin, Coff, Elf };
 
 // `allowExternal` is real separate compilation's own switch
 // (`--format=coff` from a single `.c` file - see IRBuilder.h's

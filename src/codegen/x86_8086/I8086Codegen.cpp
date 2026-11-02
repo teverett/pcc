@@ -559,6 +559,17 @@ std::optional<std::string> I8086Codegen::assembleInProcess(const std::string &as
     // is always allowed here, whole-program single-file compile or
     // not, deferred as a relocation for a future `--link` step.
     if (format == "coff") return assembleI8086(asmText, I8086OutputFormat::Coff, /*allowExternal=*/true);
+    // `--format=elf`, like `--format=bin`, is a *complete* self-
+    // contained program - an external/undefined symbol is a hard
+    // error (allowExternal defaults to false), same as "asm"/"bin",
+    // not a relocation to defer to a future `--link` step the way
+    // "coff" allows (see elf/ElfWriter.h's own header comment for why
+    // this is a peer of `bin`'s "whole program" role, not of `coff`'s
+    // "relocatable object" one). Unlike "bin", there's no 510-byte
+    // sector limit to pad for - a real ELF file has no such
+    // constraint - so `asmText` is assembled exactly as generate()
+    // wrote it, with no boot-sector padding appended.
+    if (format == "elf") return assembleI8086(asmText, I8086OutputFormat::Elf);
     return std::nullopt;
 }
 

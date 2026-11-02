@@ -77,6 +77,7 @@ BACKEND_DIRS := $(SRC_DIR)/codegen/pdp7 $(SRC_DIR)/codegen/x86_8086
 AST_DIR      := $(SRC_DIR)/ast
 IR_DIR       := $(SRC_DIR)/ir
 COFF_DIR     := $(SRC_DIR)/coff
+ELF_DIR      := $(SRC_DIR)/elf
 LINKER_DIR   := $(SRC_DIR)/linker
 FORMAT_DIR   := $(LINKER_DIR)/format
 PREPROCESSOR_DIR := $(SRC_DIR)/preprocessor
@@ -86,10 +87,12 @@ HAND_SRCS := \
     $(SRC_DIR)/main.cpp \
     $(COFF_DIR)/CoffWriter.cpp \
     $(COFF_DIR)/CoffReader.cpp \
+    $(ELF_DIR)/ElfWriter.cpp \
     $(LINKER_DIR)/Pdp7Linker.cpp \
     $(LINKER_DIR)/I8086Linker.cpp \
     $(FORMAT_DIR)/Pdp7TapePacking.cpp \
     $(FORMAT_DIR)/CoffLinkWriter.cpp \
+    $(FORMAT_DIR)/ElfLinkWriter.cpp \
     $(FORMAT_DIR)/RimWriter.cpp \
     $(FORMAT_DIR)/PtrWriter.cpp \
     $(FORMAT_DIR)/A7outWriter.cpp \
@@ -111,7 +114,7 @@ HAND_SRCS := \
 ALL_SRCS := $(GENERATED_SRCS) $(HAND_SRCS)
 OBJS     := $(patsubst %,$(OBJ_DIR)/%.o,$(notdir $(ALL_SRCS)))
 
-vpath %.cpp $(GEN_DIR):$(SRC_DIR):$(AST_DIR):$(IR_DIR):$(COFF_DIR):$(LINKER_DIR):$(FORMAT_DIR):$(PREPROCESSOR_DIR):$(OPTIMIZERS_DIR):$(subst $(SPACE),:,$(BACKEND_DIRS))
+vpath %.cpp $(GEN_DIR):$(SRC_DIR):$(AST_DIR):$(IR_DIR):$(COFF_DIR):$(ELF_DIR):$(LINKER_DIR):$(FORMAT_DIR):$(PREPROCESSOR_DIR):$(OPTIMIZERS_DIR):$(subst $(SPACE),:,$(BACKEND_DIRS))
 
 .PHONY: all clean generate build test
 

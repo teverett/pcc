@@ -13,6 +13,7 @@
 #include "PccAsmLexer.h"
 #include "PccAsmParser.h"
 #include "coff/CoffWriter.h"
+#include "elf/ElfWriter.h"
 
 namespace pcc {
 
@@ -684,6 +685,10 @@ std::string assembleI8086(const std::string &asmText, I8086OutputFormat format, 
         }
         case I8086OutputFormat::Coff:
             return writeCoff(assembler);
+        case I8086OutputFormat::Elf: {
+            const auto &bytes = assembler.bytes();
+            return writeElfExecutable(kI8086BaseAddress, bytes);
+        }
     }
     fail("unknown output format");
 }
