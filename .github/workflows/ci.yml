@@ -24,6 +24,19 @@ jobs:
       - name: Install ANTLR C++ runtime and target simulators (Homebrew)
         run: brew install antlr4-cpp-runtime open-simh qemu
 
+      # `make test` (below) drives real, independent CPU cores for the
+      # 6502/65c02 (py65) and 8080/z80 (z80-python) targets - see
+      # tests/run_tests.sh's own per-target comments for why each one
+      # needs its own PyPI package rather than a from-scratch
+      # emulator. `--break-system-packages`: this runner's system
+      # Python is PEP 668 "externally managed" (confirmed directly -
+      # a plain `pip3 install` here fails with exactly that error),
+      # and a dedicated venv would be one more thing to keep in sync
+      # for no real benefit - nothing else on this runner depends on
+      # its system Python packages.
+      - name: Install Python simulator packages (py65, z80-python)
+        run: pip3 install --break-system-packages py65 z80-python
+
       - name: Build
         run: make
 
