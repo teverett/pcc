@@ -73,7 +73,7 @@ SPACE +=
 # `#define`/`#if` etc. pass that runs on every source file before
 # ANTLR ever sees it) - not backend-specific, but still their own
 # subdirectories needing the same vpath treatment.
-BACKEND_DIRS := $(SRC_DIR)/codegen/pdp7 $(SRC_DIR)/codegen/x86_8086 $(SRC_DIR)/codegen/m6502
+BACKEND_DIRS := $(SRC_DIR)/codegen/pdp7 $(SRC_DIR)/codegen/x86_8086 $(SRC_DIR)/codegen/m6502 $(SRC_DIR)/codegen/m65c02 $(SRC_DIR)/codegen/m68k $(SRC_DIR)/codegen/pdp11 $(SRC_DIR)/codegen/i8080 $(SRC_DIR)/codegen/pic16 $(SRC_DIR)/codegen/pic18 $(SRC_DIR)/codegen/z80 $(SRC_DIR)/codegen/i8008 $(SRC_DIR)/codegen/stm8 $(SRC_DIR)/codegen/m16c
 AST_DIR      := $(SRC_DIR)/ast
 IR_DIR       := $(SRC_DIR)/ir
 COFF_DIR     := $(SRC_DIR)/coff
@@ -111,7 +111,27 @@ HAND_SRCS := \
     $(SRC_DIR)/codegen/x86_8086/I8086Codegen.cpp \
     $(SRC_DIR)/codegen/x86_8086/I8086Assembler.cpp \
     $(SRC_DIR)/codegen/m6502/M6502Codegen.cpp \
-    $(SRC_DIR)/codegen/m6502/M6502Assembler.cpp
+    $(SRC_DIR)/codegen/m6502/M6502Assembler.cpp \
+    $(SRC_DIR)/codegen/m65c02/M65C02Codegen.cpp \
+    $(SRC_DIR)/codegen/m65c02/M65C02Assembler.cpp \
+    $(SRC_DIR)/codegen/m68k/M68kCodegen.cpp \
+    $(SRC_DIR)/codegen/m68k/M68kAssembler.cpp \
+    $(SRC_DIR)/codegen/pdp11/Pdp11Codegen.cpp \
+    $(SRC_DIR)/codegen/pdp11/Pdp11Assembler.cpp \
+    $(SRC_DIR)/codegen/i8080/I8080Codegen.cpp \
+    $(SRC_DIR)/codegen/i8080/I8080Assembler.cpp \
+    $(SRC_DIR)/codegen/z80/Z80Codegen.cpp \
+    $(SRC_DIR)/codegen/z80/Z80Assembler.cpp \
+    $(SRC_DIR)/codegen/i8008/I8008Codegen.cpp \
+    $(SRC_DIR)/codegen/i8008/I8008Assembler.cpp \
+    $(SRC_DIR)/codegen/stm8/STM8Codegen.cpp \
+    $(SRC_DIR)/codegen/stm8/STM8Assembler.cpp \
+    $(SRC_DIR)/codegen/m16c/M16cCodegen.cpp \
+    $(SRC_DIR)/codegen/m16c/M16cAssembler.cpp \
+    $(SRC_DIR)/codegen/pic16/PIC16Codegen.cpp \
+    $(SRC_DIR)/codegen/pic16/PIC16Assembler.cpp \
+    $(SRC_DIR)/codegen/pic18/PIC18Codegen.cpp \
+    $(SRC_DIR)/codegen/pic18/PIC18Assembler.cpp
 
 ALL_SRCS := $(GENERATED_SRCS) $(HAND_SRCS)
 OBJS     := $(patsubst %,$(OBJ_DIR)/%.o,$(notdir $(ALL_SRCS)))
@@ -154,13 +174,17 @@ clean:
 
 # Runs every backend's test suite in turn - see tests/run_tests.sh's
 # --target. A backend whose own target tool isn't installed (pdp7's
-# simulator, 8086's qemu, 6502's py65) fails loudly rather than being
-# skipped silently; install it or run `tests/run_tests.sh $(TARGET)
-# --target=<one>` directly to check just one. --target=8088 isn't run
-# here too - see src/main.cpp's own makeBackend() comment for why
-# that would just be re-running the --target=8086 suite against
-# provably byte-identical output.
+# simulator, 8086/68000's qemu, 6502/65c02's py65) fails loudly rather than
+# being skipped silently; install it or run `tests/run_tests.sh
+# $(TARGET) --target=<one>` directly to check just one. --target=8088
+# isn't run here too - see src/main.cpp's own makeBackend() comment
+# for why that would just be re-running the --target=8086 suite
+# against provably byte-identical output.
 test: all
 	./tests/run_tests.sh $(TARGET) --target=pdp7
 	./tests/run_tests.sh $(TARGET) --target=8086
 	./tests/run_tests.sh $(TARGET) --target=6502
+	./tests/run_tests.sh $(TARGET) --target=65c02
+	./tests/run_tests.sh $(TARGET) --target=68000
+	./tests/run_tests.sh $(TARGET) --target=8080
+	./tests/run_tests.sh $(TARGET) --target=z80

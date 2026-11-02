@@ -48,6 +48,16 @@
 #include "codegen/pdp7/Pdp7Codegen.h"
 #include "codegen/x86_8086/I8086Codegen.h"
 #include "codegen/m6502/M6502Codegen.h"
+#include "codegen/m65c02/M65C02Codegen.h"
+#include "codegen/m68k/M68kCodegen.h"
+#include "codegen/pdp11/Pdp11Codegen.h"
+#include "codegen/i8080/I8080Codegen.h"
+#include "codegen/z80/Z80Codegen.h"
+#include "codegen/i8008/I8008Codegen.h"
+#include "codegen/m16c/M16cCodegen.h"
+#include "codegen/stm8/STM8Codegen.h"
+#include "codegen/pic16/PIC16Codegen.h"
+#include "codegen/pic18/PIC18Codegen.h"
 #include "coff/CoffReader.h"
 #include "linker/I8086Linker.h"
 #include "linker/Linker.h"
@@ -145,6 +155,16 @@ std::unique_ptr<pcc::Backend> makeBackend(const std::string &target) {
     if (target == "pdp7") return std::make_unique<pcc::Pdp7Codegen>();
     if (target == "8086" || target == "8088") return std::make_unique<pcc::I8086Codegen>();
     if (target == "6502") return std::make_unique<pcc::M6502Codegen>();
+    if (target == "65c02") return std::make_unique<pcc::M65C02Codegen>();
+    if (target == "68000") return std::make_unique<pcc::M68kCodegen>();
+    if (target == "pdp11") return std::make_unique<pcc::Pdp11Codegen>();
+    if (target == "8080") return std::make_unique<pcc::I8080Codegen>();
+    if (target == "z80") return std::make_unique<pcc::Z80Codegen>();
+    if (target == "8008") return std::make_unique<pcc::I8008Codegen>();
+    if (target == "stm8") return std::make_unique<pcc::STM8Codegen>();
+    if (target == "m16c") return std::make_unique<pcc::M16cCodegen>();
+    if (target == "pic16") return std::make_unique<pcc::PIC16Codegen>();
+    if (target == "pic18") return std::make_unique<pcc::PIC18Codegen>();
     return nullptr;
 }
 
@@ -400,7 +420,7 @@ int main(int argc, char **argv) {
     if (link) {
         std::unique_ptr<pcc::TargetLinker> linker = makeLinker(target);
         if (!linker) {
-            std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502)\n";
+            std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502, 65c02, 68000, pdp11, 8080, z80, 8008, stm8, m16c, pic16, pic18)\n";
             return 1;
         }
         std::vector<std::string> linkFormats = linker->outputFormats();
@@ -438,7 +458,7 @@ int main(int argc, char **argv) {
     // --- ordinary compile mode. ---
     std::unique_ptr<pcc::Backend> backend = makeBackend(target);
     if (!backend) {
-        std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502)\n";
+        std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502, 65c02, 68000, pdp11, 8080, z80, 8008, stm8, m16c, pic16, pic18)\n";
         return 1;
     }
     if (!assemblerPathSet) assemblerPath = backend->defaultAssemblerPath();
@@ -491,6 +511,37 @@ int main(int argc, char **argv) {
         predefinedMacros["__8088__"] = "1";
     } else if (target == "6502") {
         predefinedMacros["__6502__"] = "1";
+    } else if (target == "65c02") {
+        // Same reasoning as __8086__/__8088__ above: a 65C02 is a
+        // real superset of the 6502, so source gated on plain
+        // `#ifdef __6502__` (nothing CMOS-specific) keeps working
+        // unchanged under this target too; __65C02__ exists only for
+        // source that wants to say "I need the real CMOS-only
+        // instructions" specifically (none of which this compiler's
+        // own backend ever lets through its `asm` escape and back
+        // into a `--format=bin` that doesn't build, since
+        // M65C02Assembler.cpp only ever recognizes this one extra
+        // mnemonic - `stz`/`stzp` - beyond the plain 6502 dialect).
+        predefinedMacros["__6502__"] = "1";
+        predefinedMacros["__65C02__"] = "1";
+    } else if (target == "68000") {
+        predefinedMacros["__68000__"] = "1";
+    } else if (target == "pdp11") {
+        predefinedMacros["__PDP11__"] = "1";
+    } else if (target == "8080") {
+        predefinedMacros["__8080__"] = "1";
+    } else if (target == "z80") {
+        predefinedMacros["__Z80__"] = "1";
+    } else if (target == "8008") {
+        predefinedMacros["__8008__"] = "1";
+    } else if (target == "stm8") {
+        predefinedMacros["__STM8__"] = "1";
+    } else if (target == "m16c") {
+        predefinedMacros["__M16C__"] = "1";
+    } else if (target == "pic16") {
+        predefinedMacros["__PIC16__"] = "1";
+    } else if (target == "pic18") {
+        predefinedMacros["__PIC18__"] = "1";
     }
 
     // A genuinely external reference is always allowed under
