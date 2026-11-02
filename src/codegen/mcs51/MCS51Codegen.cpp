@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "MCS51Assembler.h"
+#include "objectformat/ObjectFormat.h"
 
 namespace pcc {
 
@@ -13,28 +14,21 @@ namespace {
 }
 }  // namespace
 
-uint32_t MCS51Codegen::allocXdata(const std::string &lbl, int count) {
-    uint32_t addr = nextXdata_;
-    xdataAddr_[lbl] = addr;
-    nextXdata_ += static_cast<uint32_t>(count);
-    return addr;
-}
-
-uint32_t MCS51Codegen::xdataAddr(const std::string &lbl) const {
-    auto it = xdataAddr_.find(lbl);
-    if (it == xdataAddr_.end()) {
-        throw std::runtime_error("internal: '" + lbl + "' has no XDATA address - generate()'s own pre-pass should "
-                                                         "have allocated one before any code referencing it");
-    }
-    return it->second;
+void MCS51Codegen::allocXdata(const std::string &lbl, int count) {
+    // `lbl` and the `xdata` statement must share one physical line -
+    // the shared ../../../grammar/PccAsm.g4 only ever attaches a
+    // label to a statement appearing on that exact same line (`line :
+    // label* statement? NEWLINE`), same as every other label this
+    // backend ever emits.
+    code_ << lbl << ": xdata " << count << "\n";
 }
 
 void MCS51Codegen::declareTemp(const std::string &lbl) { allocXdata(lbl, 2); }
 
 void MCS51Codegen::declareGlobalTemp(const std::string &lbl, long initValue) {
-    uint32_t addr = allocXdata(lbl, 2);
+    allocXdata(lbl, 2);
     uint16_t v16 = static_cast<uint16_t>(initValue);
-    initCode_ << "    movdptr " << addr << "\n";
+    initCode_ << "    movdptr " << lbl << "\n";
     initCode_ << "    movai " << (v16 & 0xFF) << "\n    movxw\n";
     initCode_ << "    incdptr\n";
     initCode_ << "    movai " << ((v16 >> 8) & 0xFF) << "\n    movxw\n";
@@ -51,12 +45,20 @@ void MCS51Codegen::declareGlobalTemp(const std::string &lbl, long initValue) {
 void MCS51Codegen::declareArray(const std::string &lbl, int arraySize) { allocXdata(lbl, arraySize * 2); }
 
 void MCS51Codegen::declareGlobalArray(const std::string &lbl, int arraySize, const std::vector<long> &values) {
-    uint32_t base = allocXdata(lbl, arraySize * 2);
+    allocXdata(lbl, arraySize * 2);
     for (int i = 0; i < arraySize; i++) {
         long v = (static_cast<size_t>(i) < values.size()) ? values[i] : 0;
         uint16_t v16 = static_cast<uint16_t>(v);
-        uint32_t addr = base + static_cast<uint32_t>(i) * 2;
-        initCode_ << "    movdptr " << addr << "\n";
+        // Element `i`'s own `movdptr` operand - `lbl` itself for the
+        // first element, `lbl+<byte offset>` otherwise: this
+        // assembler's own expression grammar resolves the symbol part
+        // against its XDATA label table and folds the constant offset
+        // in alongside it, so the whole element address stays one
+        // relocatable expression (see MCS51Assembler.h's own header
+        // comment) rather than something this function has to resolve
+        // to a number itself.
+        std::string elemExpr = (i == 0) ? lbl : lbl + "+" + std::to_string(i * 2);
+        initCode_ << "    movdptr " << elemExpr << "\n";
         initCode_ << "    movai " << (v16 & 0xFF) << "\n    movxw\n";
         initCode_ << "    incdptr\n";
         initCode_ << "    movai " << ((v16 >> 8) & 0xFF) << "\n    movxw\n";
@@ -68,18 +70,24 @@ void MCS51Codegen::copy16(const std::string &dst, const std::string &src) {
     code_ << "    movdd " << dst << "+1, " << src << "+1\n";
 }
 
-void MCS51Codegen::loadXdata(const std::string &dstReg, uint32_t addr) {
-    code_ << "    movdptr " << addr << "\n";
+void MCS51Codegen::loadXdata(const std::string &dstReg, const std::string &xdataExpr) {
+    code_ << "    movdptr " << xdataExpr << "\n";
     code_ << "    movxr\n    movd " << dstReg << "\n";
     code_ << "    incdptr\n";
     code_ << "    movxr\n    movd " << dstReg << "+1\n";
 }
 
-void MCS51Codegen::storeXdata(uint32_t addr, const std::string &srcReg) {
-    code_ << "    movdptr " << addr << "\n";
+void MCS51Codegen::storeXdata(const std::string &xdataExpr, const std::string &srcReg) {
+    code_ << "    movdptr " << xdataExpr << "\n";
     code_ << "    mova " << srcReg << "\n    movxw\n";
     code_ << "    incdptr\n";
     code_ << "    mova " << srcReg << "+1\n    movxw\n";
+}
+
+void MCS51Codegen::loadXdataAddress(const std::string &dstReg, const std::string &xdataExpr) {
+    code_ << "    movdptr " << xdataExpr << "\n";
+    code_ << "    mova dpl\n    movd " << dstReg << "\n";
+    code_ << "    mova dph\n    movd " << dstReg << "+1\n";
 }
 
 // Loads DPTR from `ptr` (the only pseudo-register this ever needs to
@@ -113,18 +121,15 @@ void MCS51Codegen::safeDjnz(const std::string &counterReg, const std::string &ta
 }
 
 std::string MCS51Codegen::generate(const ir::Program &prog, bool objectMode) {
-    if (objectMode) {
-        err(0,
-            "the 8051 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=raw compile (see MCS51Codegen.h's own header comment)");
-    }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
     // IRBuilder guarantees a parameterless `main` exists whenever
-    // allowExternal is false (always true here - see above), so
-    // mainFn is never null.
+    // allowExternal is false (i.e. whenever `objectMode` is false
+    // here too - see Codegen.h's own header comment), so mainFn is
+    // only ever null in object mode, for a file that doesn't happen
+    // to define `main` itself.
 
     // Pre-pass: every global and every function's own parameters get
     // their XDATA address assigned up front, before any code is
@@ -136,8 +141,15 @@ std::string MCS51Codegen::generate(const ir::Program &prog, bool objectMode) {
     // problem - see MCS51Assembler.h's own header comment).
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        if (slot->isExternal) continue;  // never possible here (no real separate compilation - see above), but
-                                          // matches every other backend's own defensive check at this exact spot
+        // An external global (real separate compilation - see IR.h's
+        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
+        // defined in this file at all - see generate()'s own
+        // `objectMode` comment in MCS51Codegen.h for why this
+        // backend's Harvard CODE/XDATA split leaves no way to make
+        // one visible across files the way a function already is;
+        // skipping storage here at least keeps this file's own
+        // XDATA layout from wasting space on it.
+        if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
             declareGlobalArray(lbl, slot->arraySize, slot->arrayInit);
@@ -149,34 +161,72 @@ std::string MCS51Codegen::generate(const ir::Program &prog, bool objectMode) {
         for (ir::Slot *p : fn->params) declareTemp(label(p));
     }
 
-    code_ << "org 0\n";
+    code_ << "org " << kMCS51BaseAddress << "\n";
     // The fixed internal-RAM pseudo-registers - see MCS51Codegen.h's
     // own header comment for what each one is for. 0x30 sits safely
     // above the 4 register banks (0x00-0x1F) and the bit-addressable
     // area (0x20-0x2F), and comfortably below the 128-byte floor
-    // every one of 8031/8032/8051/8052 guarantees.
-    code_ << "ac = 0x30\nbc = 0x32\ncx = 0x34\ndx = 0x36\nptr = 0x38\n\n";
-    code_ << "_start:\n";
-    code_ << initCode_.str();
-    code_ << "    lcall " << label(mainFn) << "\n";
-    // The program's own final result sits in `ac` (XDATA's own 16-
-    // bit result doesn't fit any real register, same reason every
-    // other memory-cell-based backend's own header comment gives) the
-    // moment execution reaches `halt` below - the authoritative place
-    // to read it from. This extra `mova` is a minor nicety only: it
-    // leaves the low byte sitting in the real accumulator too, for a
-    // quick look with nothing more than a register dump.
-    code_ << "    mova ac\n";
-    code_ << "halt:\n    ljmp halt\n\n";
+    // every one of 8031/8032/8051/8052 guarantees. Every object
+    // declares these identically and harmlessly (a plain compile-time
+    // equate, the same in every object regardless of where it's
+    // linked - see MCS51LinkerFactory.cpp's own entry object, which
+    // redeclares them too), so no `objectMode` special-casing is
+    // needed here at all - same reasoning as
+    // ../i8008/I8008Codegen.cpp's own equivalent constants. `dpl`/
+    // `dph` are the real DPL/DPH SFRs (0x82/0x83), not invented
+    // scratch cells - see this file's own header comment on why
+    // loadXdataAddress() needs plain `direct`-addressable names for
+    // them.
+    code_ << "ac = 0x30\nbc = 0x32\ncx = 0x34\ndx = 0x36\nptr = 0x38\ndpl = 0x82\ndph = 0x83\n\n";
 
-    for (const auto &fb : prog.functionBodies) genFunction(fb);
+    // `objectMode` means no object file ever emits the entry sequence
+    // itself, even the one that happens to define `main` -
+    // MCS51LinkerFactory.cpp is solely responsible for synthesizing
+    // exactly one, once every object is merged and `main`'s linked
+    // address is resolvable (see MCS51Codegen.h's own `objectMode`
+    // comment above).
+    if (!objectMode) {
+        code_ << "_start:\n";
+        code_ << initCode_.str();
+        code_ << "    lcall " << label(mainFn) << "\n";
+        // The program's own final result sits in `ac` (XDATA's own 16-
+        // bit result doesn't fit any real register, same reason every
+        // other memory-cell-based backend's own header comment gives) the
+        // moment execution reaches `halt` below - the authoritative place
+        // to read it from. This extra `mova` is a minor nicety only: it
+        // leaves the low byte sitting in the real accumulator too, for a
+        // quick look with nothing more than a register dump.
+        code_ << "    mova ac\n";
+        code_ << "halt:\n    ljmp halt\n\n";
+    }
+
+    for (const auto &fb : prog.functionBodies) {
+        if (objectMode && fb.func == mainFn) {
+            // This file's own globals' init code (see
+            // declareGlobalTemp()'s own comment) has nowhere else to
+            // run in object mode: MCS51LinkerFactory.cpp's own
+            // synthesized `_start` is built once, before it has ever
+            // seen this (or any) user object, so it can't know this
+            // file's own `initCode_` exists at all. `fn_main`'s own
+            // prologue is the one place every linked program is
+            // guaranteed to reach exactly once, before any other
+            // code, that this file *does* control - see
+            // MCS51Codegen.h's own `objectMode` comment for why only
+            // the file defining `main` gets this treatment.
+            code_ << label(fb.func) << ":\n";
+            code_ << initCode_.str();
+            genStmt(*fb.body);
+            code_ << "    ret\n\n";
+        } else {
+            genFunction(fb);
+        }
+    }
 
     return code_.str();
 }
 
-// Single-file-only (see MCS51Codegen.h's own header comment: no
-// `--format=coff`) - see M6502Codegen.cpp's own version of this
-// comment for why that makes per-input-file splitting unnecessary.
+// Single-file-only - see M6502Codegen.cpp's own version of this same
+// comment (no multi-input-file splitting of one combined dump).
 std::map<std::string, std::string> MCS51Codegen::perFileAsm() const { return perFileAsm_; }
 
 void MCS51Codegen::genFunction(const ir::FunctionBody &fn) {
@@ -235,7 +285,7 @@ void MCS51Codegen::genStmt(const ir::Stmt &s) {
                 declareTemp(lbl);
                 if (s.initOrReturnOrExpr) {
                     genExpr(*s.initOrReturnOrExpr);
-                    storeXdata(xdataAddr(lbl), "ac");
+                    storeXdata(lbl, "ac");
                 }
             }
             return;
@@ -263,7 +313,7 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
-            loadXdata("ac", xdataAddr(label(e.slot)));
+            loadXdata("ac", label(e.slot));
             return;
         }
         case ir::ExprKind::Index: {
@@ -286,7 +336,7 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
                 return;
             }
             genExpr(*e.rhs);
-            storeXdata(xdataAddr(label(e.slot)), "ac");
+            storeXdata(label(e.slot), "ac");
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -322,9 +372,34 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
+            // An argument is passed by writing it straight into the
+            // callee's own `p_<name>_<i>` XDATA slot (allocated by
+            // generate()'s own pre-pass) - fine as long as this file
+            // is the one that actually defines the callee, since only
+            // then does that pre-pass know the callee's own real
+            // param list at all. An external callee (real separate
+            // compilation - see IR.h's own `isExternal`) is a bare
+            // function *name* with no param list this file ever sees
+            // (IRBuilder never populates one for it), so there's no
+            // slot to even compute an address for - and unlike a
+            // function's own CODE-space address (a real relocatable
+            // symbol, see MCS51Assembler.h's own `kMCS51RelocAbs16`),
+            // an XDATA slot address is always a plain per-compile
+            // numeric constant this backend's Harvard CODE/XDATA split
+            // gives no relocation for at all (see MCS51Codegen.h's own
+            // `objectMode` comment) - passing an argument across that
+            // boundary genuinely can't be made to work here. A
+            // parameterless external call has no such slot to write
+            // at all, so it's unaffected.
+            if (e.func->isExternal && !e.args.empty()) {
+                err(e.line, "call to '" + e.func->sourceName + "' needs " + std::to_string(e.args.size()) +
+                                " argument(s), but '" + e.func->sourceName + "' isn't defined in this file - the "
+                                "8051 backend can only pass arguments to a function defined in the same file (see "
+                                "MCS51Codegen.h's own header comment on this target's Harvard CODE/XDATA split)");
+            }
             for (size_t i = 0; i < e.args.size(); i++) {
                 genExpr(*e.args[i]);
-                storeXdata(xdataAddr("p_" + e.func->sourceName + "_" + std::to_string(i)), "ac");
+                storeXdata("p_" + e.func->sourceName + "_" + std::to_string(i), "ac");
             }
             code_ << "    lcall " << label(e.func) << "\n";
             return;
@@ -349,27 +424,24 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
 }
 
 // Leaves slot[idxExpr]'s own effective XDATA address in `ptr`.
-// `slot->arraySize > 0` means the base is a compile-time-known
-// constant (this backend's own allocXdata() result, embedded
-// directly as a plain immediate - there's no assembler symbol for an
-// XDATA address at all, see MCS51Assembler.h's own header comment);
-// otherwise `slot` is a plain pointer variable, so the base instead
-// comes from *reading* that variable's own stored value via
-// loadXdata().
+// `slot->arraySize > 0` means the base is this array's own relocatable
+// label (loadXdataAddress() resolves and loads it); otherwise `slot`
+// is a plain pointer variable, so the base instead comes from
+// *reading* that variable's own stored value via loadXdata(). Either
+// way the base ends up in `bc`, and the same 16-bit add then folds
+// the (already-doubled) index into it.
 void MCS51Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
     // ac *= 2 (words are 2 bytes on this byte-addressed target).
     code_ << "    clrc\n    mova ac\n    rlca\n    movd ac\n";
     code_ << "    mova ac+1\n    rlca\n    movd ac+1\n";
     if (slot->arraySize > 0) {
-        uint32_t base = xdataAddr(label(slot));
-        code_ << "    clrc\n    mova ac\n    addi " << (base & 0xFF) << "\n    movd ptr\n";
-        code_ << "    mova ac+1\n    addci " << ((base >> 8) & 0xFF) << "\n    movd ptr+1\n";
+        loadXdataAddress("bc", label(slot));
     } else {
-        loadXdata("bc", xdataAddr(label(slot)));
-        code_ << "    clrc\n    mova bc\n    add ac\n    movd ptr\n";
-        code_ << "    mova bc+1\n    addc ac+1\n    movd ptr+1\n";
+        loadXdata("bc", label(slot));
     }
+    code_ << "    clrc\n    mova bc\n    add ac\n    movd ptr\n";
+    code_ << "    mova bc+1\n    addc ac+1\n    movd ptr+1\n";
 }
 
 void MCS51Codegen::genIndex(const ir::Expr &e) {
@@ -382,9 +454,7 @@ void MCS51Codegen::genIndex(const ir::Expr &e) {
 
 void MCS51Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        uint32_t addr = xdataAddr(label(operand.slot));
-        code_ << "    movai " << (addr & 0xFF) << "\n    movd ac\n";
-        code_ << "    movai " << ((addr >> 8) & 0xFF) << "\n    movd ac+1\n";
+        loadXdataAddress("ac", label(operand.slot));
         return;
     }
     if (operand.kind == ir::ExprKind::Index) {
@@ -650,6 +720,17 @@ std::string MCS51Codegen::buildAssembleCommand(const std::string &, const std::s
 std::optional<std::string> MCS51Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "raw") return assembleMCS51(asmText);
+    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
+    // (see generate()'s own `objectMode` comment) - this backend's
+    // own assembler builds one format-neutral ObjectFile exactly once
+    // (see MCS51Assembler.h's own `assembleMCS51Object`), and
+    // whichever of these five names was asked for just picks that
+    // format's own ObjectFormatWriter (see objectformat/ObjectFormat.h)
+    // to serialize it.
+    if (auto kind = objectFormatKindFromName(format)) {
+        ObjectFile obj = assembleMCS51Object(asmText);
+        return makeObjectFormatWriter(*kind)->write(obj);
+    }
     return std::nullopt;
 }
 

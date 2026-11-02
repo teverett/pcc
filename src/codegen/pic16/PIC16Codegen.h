@@ -123,12 +123,59 @@ namespace pcc {
 // the standard sign-bit-bias trick (XOR 0x80 into both operands' high
 // bytes, mapping signed order onto unsigned order), then a plain
 // unsigned subtract-and-check-the-final-borrow.
+//
+// `objectMode` (real separate compilation, `--format=coff`/`elf`/
+// `aout`/`objraw` - see Codegen.h's own header comment) assembles at
+// this same CODE address 0, but omits the entry sequence itself -
+// PIC16LinkerFactory.cpp's own synthesized entry object is solely
+// responsible for that, once every object is merged and `fn_main`'s
+// linked address is resolvable, the same pattern every other
+// GenericLinker-based backend follows (see M68kCodegen.cpp's own
+// `generate()` comment). A global *variable*'s own initial value
+// still has to be written at runtime, not loaded as part of the
+// image (real file-register RAM has no "initial contents" of its own
+// - see this file's own header comment above), so in object mode
+// that write-out code runs as the prologue of `fn_main` itself
+// instead of `START` (the one point every linked program is
+// guaranteed to reach exactly once, before any other code, without
+// PIC16LinkerFactory.cpp's own entry object - built once, before it
+// has ever seen any user object at all - needing to know anything
+// about this file's own globals). Only the file that defines `main`
+// gets this treatment: a global *defined* in a different file from
+// the one that defines `main` has no mechanism here to run its own
+// initializer under real separate compilation at all.
+//
+// Every real global/local/param's own file-register address is a
+// real, relocatable assembler symbol (see declareRam()'s own
+// comment, and PIC16Assembler.h's own header comment on the
+// `kPIC16RelocData` relocation kind and the `"..d"` pseudo-symbol):
+// two separately-compiled files' own distinct globals get distinct,
+// non-colliding linked data-space addresses once merged
+// (GenericLinker.h's own second, data-space layout pass - see its
+// own `dataBaseAddress` comment), the data-space counterpart of how
+// `fn_`-prefixed functions' own CODE addresses already work. The
+// seven fixed scratch pseudo-registers/software-stack cells
+// (`ac`/`bc`/`cx`/`dx`/`ptr`/`SP`/`SSTACK`) are different: every
+// function in every file shares them, so they're declared as plain
+// compile-time equates at a fixed address instead (see declareRam()'s
+// own comment) - the same value in every object regardless of where
+// it's linked, never part of this relocatable data-space allocation
+// at all.
 class PIC16Codegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "pic16"; }
     std::string sourceExtension() const override { return ".pic16"; }
-    std::vector<std::string> assembledFormats() const override { return {"hex"}; }
+    std::vector<std::string> assembledFormats() const override {
+        return {"hex", "coff", "elf", "macho", "aout", "objraw"};
+    }
+    // `hex` is this backend's own whole-program Intel-HEX image; the
+    // other five all mean a real relocatable ObjectFile for separate
+    // compilation (see Codegen.h's own header comment on why this is
+    // asked per-backend, and generate()'s own `objectMode` comment
+    // below) - same convention as every other GenericLinker-based
+    // backend's own `isObjectFormat()` override.
+    bool isObjectFormat(const std::string &format) const override { return format != "hex"; }
     std::string defaultAssemblerPath() const override { return ""; }
     std::string buildAssembleCommand(const std::string &assemblerPath, const std::string &format,
                                       const std::string &srcPath, const std::string &outPath) const override;
@@ -221,17 +268,39 @@ class PIC16Codegen : public Backend {
 
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 
-    // Reserves `count` bytes of file-register space for `lbl` (this
-    // backend's own `res` directive - see PIC16Assembler.h's own
-    // header comment); `zeroAtStart` additionally queues it to be
-    // explicitly cleared by generate()'s own startup code (see this
-    // file's own header comment on why that's needed at all here).
+    // Reserves `count` bytes of file-register space for `lbl`. In
+    // whole-program mode (`!objectMode_`) this always emits this
+    // backend's own `res` directive (see PIC16Assembler.h's own
+    // header comment), the same single, unified RAM counter for
+    // every pseudo-register, global, local and param, exactly as
+    // before. In object mode, one of the seven fixed, shared scratch
+    // pseudo-registers/software-stack names (`ac`/`bc`/`cx`/`dx`/
+    // `ptr`/`SP`/`SSTACK`) instead becomes a plain compile-time
+    // equate at its own fixed address (`kPIC16Reg*` - see
+    // PIC16Assembler.h's own header comment on why these can never be
+    // part of any one object's own relocatable per-object data
+    // allocation); every other name (a real global/local/param) still
+    // emits `res`, now interpreted by PIC16Assembler.cpp's own
+    // object-mode assembler as a relocatable data-space symbol (see
+    // its own header comment on `"..d"`). `zeroAtStart` additionally
+    // queues a real global/local/param to be explicitly cleared by
+    // generate()'s own startup code (see this file's own header
+    // comment on why that's needed at all here) - never set for a
+    // pseudo-register, which this function never adds to
+    // `zeroAtStart_` regardless of mode.
     void declareRam(const std::string &lbl, int count, bool zeroAtStart = true);
 
     std::ostringstream code_;
     std::vector<std::string> ramDecls_;
     std::vector<std::pair<std::string, int>> zeroAtStart_;
     std::map<std::string, std::string> perFileAsm_;
+
+    // Set once, at the top of generate() - see declareRam()'s own
+    // comment on why the fixed pseudo-registers need a completely
+    // different declaration (a plain compile-time equate, never a
+    // relocatable data-space `res` label) once real separate
+    // compilation is in play.
+    bool objectMode_ = false;
 
     int labelCounter_ = 0;
 };

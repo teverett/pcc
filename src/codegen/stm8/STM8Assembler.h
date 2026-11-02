@@ -1,8 +1,40 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
+#include "objectformat/ObjectFile.h"
+
 namespace pcc {
+
+// This target's own custom, non-registered COFF/object-format
+// machine ID (no real one exists for the STM8 - see
+// ../../coff/CoffWriter.h's own header comment) - exported so
+// ../../linker/STM8LinkerFactory.cpp can check an input object's
+// embedded machine type against `--target=stm8` without duplicating
+// this literal.
+constexpr uint16_t kSTM8CoffMachine = 0x5708;
+
+// Where the whole program loads and starts running once real
+// separate compilation (`--format=coff`/`elf`/`macho`/`aout`, see
+// `allowExternal` below) and `--link` are both involved - the same
+// address STM8Codegen.cpp's own whole-program `--format=raw` entry
+// sequence already uses (`kBaseAddress`), kept identical so a linked
+// program behaves exactly like a single-file one. Exported so
+// STM8LinkerFactory.cpp's own sequential object layout starts from
+// the same place.
+constexpr uint32_t kSTM8BaseAddress = 0x0100;
+
+// This dialect's one relocation kind: a big-endian 16-bit *additive*
+// patch (see ../../linker/GenericLinker.h's own `RelocKinds::
+// patchAbs16BE`) - every address this backend's own codegen ever
+// emits (`ldwi`'s own 16-bit immediate, and every jump/call target,
+// including the conditional ones - see STM8Codegen.h's own header
+// comment on why those are full 16-bit absolute here, not a real
+// STM8's 8-bit relative `JRxx`) goes through this dialect's one
+// `emit16`, so there's only ever this one relocation kind to define,
+// the same situation z80's own dialect is in.
+constexpr uint16_t kSTM8RelocAbs16 = 1;
 
 // A from-scratch, in-process two-pass assembler for exactly the
 // narrow STM8 dialect STM8Codegen.cpp emits - not a general-purpose
@@ -38,11 +70,27 @@ namespace pcc {
 // any operand's resolved value - same convention, and the same
 // reason, as every other backend's own in-process assembler.
 //
-// No relocations, no external symbols, no `--format=coff`: this
-// backend only supports a single, fully self-contained `--format=raw`
-// compile, same restriction as the 6502/8080 backends.
-//
 // Throws std::runtime_error on any assembly error.
 std::string assembleSTM8(const std::string &asmText);
+
+// The real separate-compilation entry point (`--format=coff`/`elf`/
+// `macho`/`aout` - see STM8Codegen.h's own `objectMode`): assembles
+// `asmText` (generated with `org 0`, not `kSTM8BaseAddress` - see
+// STM8Codegen.cpp's own `generate()`) exactly like assembleSTM8()
+// does, except an undefined symbol is deferred as a relocation (see
+// ../../objectformat/ObjectFile.h's own `ObjRelocation`) instead of a
+// hard error, and *every* address reference - even to a label defined
+// in this same file - also gets an additional relocation against the
+// reserved pseudo-symbol ".." (this object's own eventual linked
+// base, resolved only by a linker - see
+// ../../linker/GenericLinker.h's own header comment on why: this
+// text's own labels all resolve to "offset from this object's own
+// org 0" until that base is added). Returns the format-neutral
+// ObjectFile a codegen backend builds once per compile (see
+// ObjectFile.h) - this function never touches a real COFF/ELF/
+// Mach-O/a.out byte layout itself; that happens only in whichever
+// ObjectFormatWriter the caller picks for the requested `--format`
+// (see ../../objectformat/ObjectFormat.h).
+ObjectFile assembleSTM8Object(const std::string &asmText);
 
 }  // namespace pcc

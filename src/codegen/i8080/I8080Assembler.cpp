@@ -1,5 +1,6 @@
 #include "I8080Assembler.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
@@ -148,9 +149,21 @@ std::optional<std::string> asBareIdent(const std::vector<Syllable> &operand) {
     return toLower(s.text);
 }
 
+// One pending fixup `assembleI8080Object()` (see I8080Assembler.h's
+// own header comment) turns into a real ObjRelocation once assembly
+// is done - `byteOffset` into `bytes()`, `symbolName` the reference
+// that couldn't be resolved locally (or the reserved pseudo-symbol
+// ".." for a same-file address's own needed base-shift).
+struct Relocation {
+    uint32_t byteOffset;
+    std::string symbolName;
+};
+
 // --- Two-pass assembly ----------------------------------------------------
 class Assembler {
    public:
+    explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
+
     void run(const std::vector<Line> &lines) {
         stage_ = 1;
         pass(lines);
@@ -159,10 +172,14 @@ class Assembler {
     }
 
     const std::vector<uint8_t> &bytes() const { return bytes_; }
+    uint32_t orgBase() const { return orgBase_; }
+    const std::unordered_map<std::string, uint32_t> &labels() const { return labels_; }
+    const std::vector<Relocation> &relocations() const { return relocations_; }
 
    private:
     void pass(const std::vector<Line> &lines) {
         bytes_.clear();
+        relocations_.clear();
         offset_ = 0;
         orgBase_ = 0;
         for (const auto &line : lines) processLine(line);
@@ -185,10 +202,19 @@ class Assembler {
         }
     }
 
-    uint32_t evalExpr(const std::vector<Syllable> &syls) {
+    // `externalName`/`needsBaseShift` mirror
+    // ../z80/Z80Assembler.cpp's own `evalExpr` exactly - see
+    // I8080Assembler.h's own header comment on why *any* local
+    // address reference, not just an external one, needs a
+    // relocation here once `allowExternal_` is set.
+    uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
+                       bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
         for (const auto &syl : syls) {
-            uint32_t v = resolveSyllable(syl);
+            bool wasExternal = false, wasLocalAddress = false;
+            uint32_t v = resolveSyllable(syl, &wasExternal, &wasLocalAddress);
+            if (wasExternal && externalName) *externalName = syl.text;
+            if (wasLocalAddress && needsBaseShift) *needsBaseShift = true;
             if (syl.sign == '-') {
                 total -= v;
             } else {
@@ -198,7 +224,7 @@ class Assembler {
         return total;
     }
 
-    uint32_t resolveSyllable(const Syllable &syl) {
+    uint32_t resolveSyllable(const Syllable &syl, bool *wasExternal = nullptr, bool *wasLocalAddress = nullptr) {
         if (syl.kind == SylKind::Group) return evalExpr(syl.group);
         if (syl.kind == SylKind::Number) {
             const std::string &t = syl.text;
@@ -208,8 +234,17 @@ class Assembler {
             return static_cast<uint32_t>(std::stoul(t));
         }
         auto it = labels_.find(syl.text);
-        if (it != labels_.end()) return it->second;
-        if (stage_ == 2) fail("undefined symbol '" + syl.text + "'");
+        if (it != labels_.end()) {
+            if (allowExternal_ && wasLocalAddress) *wasLocalAddress = true;
+            return it->second;
+        }
+        if (stage_ == 2) {
+            if (allowExternal_) {
+                if (wasExternal) *wasExternal = true;
+                return 0;
+            }
+            fail("undefined symbol '" + syl.text + "'");
+        }
         return 0;
     }
 
@@ -236,7 +271,13 @@ class Assembler {
     // range check (any symbol in this program's own 64KB address
     // space is valid here).
     void emit16(const std::vector<Syllable> &e) {
-        uint32_t v = evalExpr(e);
+        std::string externalName;
+        bool needsBaseShift = false;
+        uint32_t v = evalExpr(e, &externalName, &needsBaseShift);
+        if (stage_ == 2 && allowExternal_) {
+            if (needsBaseShift) relocations_.push_back({offset_, ".."});
+            if (!externalName.empty()) relocations_.push_back({offset_, externalName});
+        }
         emit8(static_cast<uint8_t>(v & 0xFF));
         emit8(static_cast<uint8_t>((v >> 8) & 0xFF));
     }
@@ -401,19 +442,56 @@ class Assembler {
 
     std::vector<uint8_t> bytes_;
     std::unordered_map<std::string, uint32_t> labels_;
+    std::vector<Relocation> relocations_;
     uint32_t offset_ = 0;
     uint32_t orgBase_ = 0;
     int stage_ = 1;
+    bool allowExternal_;
 };
+
+// Builds the format-neutral ObjectFile a completed object-mode
+// Assembler produced - see I8080Assembler.h's own `assembleI8080Object`
+// comment, and ../z80/Z80Assembler.cpp's own `buildObjectFile` for the
+// original version this is ported from (identical algorithm).
+ObjectFile buildObjectFile(const Assembler &a) {
+    ObjectFile obj;
+    obj.machineType = kI8080CoffMachine;
+    const auto &bytesVec = a.bytes();
+    obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
+
+    for (const auto &kv : a.labels()) {
+        obj.symbols.push_back({kv.first, kv.second - a.orgBase(), /*isDefined=*/true});
+    }
+    std::sort(obj.symbols.begin(), obj.symbols.end(),
+              [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
+
+    std::unordered_map<std::string, bool> known;
+    for (const auto &s : obj.symbols) known[s.name] = true;
+    for (const auto &r : a.relocations()) {
+        if (!known.count(r.symbolName)) {
+            obj.symbols.push_back({r.symbolName, 0, /*isDefined=*/false});
+            known[r.symbolName] = true;
+        }
+        obj.relocations.push_back({r.byteOffset, r.symbolName, kI8080RelocAbs16});
+    }
+    return obj;
+}
 
 }  // namespace
 
 std::string assembleI8080(const std::string &asmText) {
     std::vector<Line> lines = parseProgram(asmText);
-    Assembler assembler;
+    Assembler assembler(/*allowExternal=*/false);
     assembler.run(lines);
     const auto &bytes = assembler.bytes();
     return std::string(bytes.begin(), bytes.end());
+}
+
+ObjectFile assembleI8080Object(const std::string &asmText) {
+    std::vector<Line> lines = parseProgram(asmText);
+    Assembler assembler(/*allowExternal=*/true);
+    assembler.run(lines);
+    return buildObjectFile(assembler);
 }
 
 }  // namespace pcc

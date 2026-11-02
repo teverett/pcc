@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "Z80Assembler.h"
+#include "objectformat/ObjectFormat.h"
 
 namespace pcc {
 
@@ -81,46 +82,69 @@ void Z80Codegen::shiftOneBit(const std::string &lbl, bool isLeft) {
 }
 
 std::string Z80Codegen::generate(const ir::Program &prog, bool objectMode) {
-    if (objectMode) {
-        err(0,
-            "the Z80 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=raw compile (see Z80Codegen.h's own header comment)");
-    }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // IRBuilder guarantees a parameterless `main` exists whenever
-    // allowExternal is false (always true here - see above), so
-    // mainFn is never null.
-
-    code_ << "org " << kBaseAddress << "\n\n";
-    code_ << "_start:\n";
-    code_ << "    ld sp, " << kStackTop << "\n";
-    code_ << "    call " << label(mainFn) << "\n";
-    // The program's own final result sits in `ac` the moment
-    // execution reaches `halt` below - the authoritative place to
-    // read it from. This extra load leaves it in the real HL pair
-    // too, for a quick look with nothing more than a register dump.
-    code_ << "    ld hl, [ac]\n";
-    code_ << "halt:\n    jp halt\n\n";
+    // Real separate compilation (`--format=coff`/`elf`/`macho`/
+    // `aout` from a single file - see IRBuilder.h's `allowExternal`)
+    // means `prog` may not define `main` at all - an ordinary object
+    // file never does. `objectMode` (see Codegen.h) means no object
+    // file ever emits this entry sequence itself, even the one that
+    // happens to define `main` - Z80Linker.cpp is solely responsible
+    // for synthesizing exactly one, once every object is merged and
+    // `main`'s linked address is resolvable (see Linker.h) - same
+    // pattern Pdp7Codegen.cpp/I8086Codegen.cpp's own `objectMode`
+    // comment documents. An object file's own base is `org 0` - it's
+    // the linker's job to place it, not this backend's (see
+    // Z80Assembler.h's own header comment).
+    code_ << "org " << (objectMode ? 0 : kBaseAddress) << "\n\n";
+    if (!objectMode) {
+        code_ << "_start:\n";
+        code_ << "    ld sp, " << kStackTop << "\n";
+        code_ << "    call " << label(mainFn) << "\n";
+        // The program's own final result sits in `ac` the moment
+        // execution reaches `halt` below - the authoritative place to
+        // read it from. This extra load leaves it in the real HL pair
+        // too, for a quick look with nothing more than a register dump.
+        code_ << "    ld hl, [ac]\n";
+        code_ << "halt:\n    jp halt\n\n";
+    }
 
     // The fixed memory pseudo-registers - see Z80Codegen.h's own
-    // header comment for what each one is for. Declared once, up
-    // front, as ordinary temps (no addressing-mode restriction on
-    // where any of these can live, same as the 8080 backend).
-    declareTemp("ac");
-    declareTemp("_bc");
-    declareTemp("cx");
-    declareTemp("dx");
-    declareTemp("ptr");
+    // header comment for what each one is for. Every genExpr() call
+    // anywhere in the *whole linked program* shares the same `ac`
+    // (it's the one place a callee's own return value and a caller's
+    // own next operand both pass through - see the `Call`/`Return`
+    // cases below), so unlike every other symbol this backend emits,
+    // these five can't each be redeclared per-object: in whole-
+    // program mode (`!objectMode`) they're declared once, right here,
+    // as ordinary temps; in object mode, this file never declares
+    // them at all - every reference to `ac`/`_bc`/`cx`/`dx`/`ptr`
+    // anywhere in a compiled object is then automatically deferred as
+    // an external relocation (the same "undefined symbol" path any
+    // other symbol would take), resolved against the one real
+    // definition Z80Linker.cpp's own synthesized entry object
+    // provides - see that file's own header comment.
+    if (!objectMode) {
+        declareTemp("ac");
+        declareTemp("_bc");
+        declareTemp("cx");
+        declareTemp("dx");
+        declareTemp("ptr");
+    }
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
 
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        if (slot->isExternal) continue;  // never possible here (no real separate compilation - see above), but
-                                          // matches every other backend's own defensive check at this exact spot
+        // An external global (real separate compilation - see IR.h's
+        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
+        // defined in this file at all - it must never get a local
+        // storage word here, only ever be referenced by name (see
+        // label()) in code, letting the assembler's own undefined-
+        // symbol handling defer it to a relocation.
+        if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit);
@@ -577,6 +601,18 @@ std::string Z80Codegen::buildAssembleCommand(const std::string &, const std::str
 std::optional<std::string> Z80Codegen::assembleInProcess(const std::string &asmText,
                                                            const std::string &format) const {
     if (format == "raw") return assembleZ80(asmText);
+    // `coff`/`elf`/`macho`/`aout`: real separate compilation (see
+    // generate()'s own `objectMode` comment) - this backend's own
+    // assembler builds one format-neutral ObjectFile exactly once
+    // (see Z80Assembler.h's own `assembleZ80Object`), and whichever
+    // of these four names was asked for just picks that format's own
+    // ObjectFormatWriter (see objectformat/ObjectFormat.h) to
+    // serialize it - this file never touches a real COFF/ELF/Mach-O/
+    // a.out byte layout itself.
+    if (auto kind = objectFormatKindFromName(format)) {
+        ObjectFile obj = assembleZ80Object(asmText);
+        return makeObjectFormatWriter(*kind)->write(obj);
+    }
     return std::nullopt;
 }
 

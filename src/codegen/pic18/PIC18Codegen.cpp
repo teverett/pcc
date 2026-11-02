@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "PIC18Assembler.h"
+#include "objectformat/ObjectFormat.h"
 
 namespace pcc {
 
@@ -139,23 +140,32 @@ void PIC18Codegen::popPtrCell() {
 }
 
 std::string PIC18Codegen::generate(const ir::Program &prog, bool objectMode) {
-    if (objectMode) {
-        err(0,
-            "the pic18 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=hex compile (see PIC18Codegen.h's own header comment)");
-    }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
+    // IRBuilder guarantees a parameterless `main` exists whenever
+    // `objectMode` is false (see Codegen.h's own header comment), so
+    // `mainFn` is only ever null in object mode, for a file that
+    // doesn't happen to define `main` itself.
 
-    declareRam("ac", 2, false);
-    declareRam("bc", 2, false);
-    declareRam("cx", 2, false);
-    declareRam("dx", 2, false);
-    declareRam("ptr", 1, false);
-    declareRam("SP", 1, false);
-    declareRam("SSTACK", 24, false);
+    if (objectMode) {
+        // Plain compile-time equates, identical in every object and in
+        // PIC18LinkerFactory.cpp's own entry object - see
+        // PIC18Codegen.h's own `objectMode` comment and
+        // PIC18Assembler.h's own `kPIC18DataBaseAddress` comment for
+        // why these specific addresses (and why no relocation is
+        // needed for them at all).
+        code_ << "ac = 0\nbc = 2\ncx = 4\ndx = 6\nptr = 8\nSP = 9\nSSTACK = 10\n";
+    } else {
+        declareRam("ac", 2, false);
+        declareRam("bc", 2, false);
+        declareRam("cx", 2, false);
+        declareRam("dx", 2, false);
+        declareRam("ptr", 1, false);
+        declareRam("SP", 1, false);
+        declareRam("SSTACK", 24, false);
+    }
 
     std::ostringstream globalInit;
     for (const auto &slot : prog.slots) {
@@ -180,7 +190,23 @@ std::string PIC18Codegen::generate(const ir::Program &prog, bool objectMode) {
         }
     }
 
-    for (const auto &fb : prog.functionBodies) genFunction(fb);
+    for (const auto &fb : prog.functionBodies) {
+        if (objectMode && fb.func == mainFn) {
+            // This file's own globals' init code has nowhere else to
+            // run in object mode - see PIC18Codegen.h's own
+            // `objectMode` comment for why `fn_main`'s own prologue is
+            // the one place every linked program is guaranteed to
+            // reach exactly once, before any other code, that this
+            // file *does* control.
+            code_ << label(fb.func) << ":\n";
+            for (ir::Slot *p : fb.func->params) declareRam(label(p), 2);
+            code_ << globalInit.str();
+            genStmt(*fb.body);
+            code_ << "    return\n\n";
+        } else {
+            genFunction(fb);
+        }
+    }
 
     std::ostringstream header;
     // Access Bank SFR short addresses (see PIC18Codegen.h's own
@@ -189,22 +215,31 @@ std::string PIC18Codegen::generate(const ir::Program &prog, bool objectMode) {
     // MOVFF resolves via the Access Bank's own 0x60-0xFF->0xF60-0xFFF
     // hardware aliasing).
     header << "STATUS = 0xD8\nFSR0L = 0xE9\nFSR0H = 0xEA\nPOSTINC0 = 0xEE\nINDF0 = 0xEF\nINTCON = 0xF2\n\n";
-    header << "org 0\n    goto START\n\n";
-    header << "START:\n";
-    header << "    clrf FSR0H\n";  // FSR0 only ever needs its low byte set - see PIC18Codegen.h's own header
-                                    // comment (this target's own data is restricted to the Access Bank's own
-                                    // low byte, so the high byte of a real pointer never has to change)
-    header << "    movlw SSTACK\n    movwf SP\n";
-    for (const auto &entry : zeroAtStart_) {
-        for (int i = 0; i < entry.second; i++) {
-            header << "    clrf " << entry.first;
-            if (i > 0) header << "+" << i;
-            header << "\n";
+    if (objectMode) {
+        // No entry sequence here at all - see PIC18Codegen.h's own
+        // `objectMode` comment: PIC18LinkerFactory.cpp's own
+        // synthesized entry object is solely responsible for the real
+        // hardware reset vector, `FSR0H`/`SP` setup, and `call
+        // fn_main`/halt, once every object is merged.
+        header << "org 0\n\n";
+    } else {
+        header << "org 0\n    goto START\n\n";
+        header << "START:\n";
+        header << "    clrf FSR0H\n";  // FSR0 only ever needs its low byte set - see PIC18Codegen.h's own header
+                                        // comment (this target's own data is restricted to the Access Bank's own
+                                        // low byte, so the high byte of a real pointer never has to change)
+        header << "    movlw SSTACK\n    movwf SP\n";
+        for (const auto &entry : zeroAtStart_) {
+            for (int i = 0; i < entry.second; i++) {
+                header << "    clrf " << entry.first;
+                if (i > 0) header << "+" << i;
+                header << "\n";
+            }
         }
+        header << globalInit.str();
+        header << "    call " << label(mainFn) << "\n";
+        header << "HALT:\n    goto HALT\n\n";
     }
-    header << globalInit.str();
-    header << "    call " << label(mainFn) << "\n";
-    header << "HALT:\n    goto HALT\n\n";
 
     std::ostringstream out;
     out << header.str();
@@ -608,12 +643,23 @@ void PIC18Codegen::genLogicalNot(const ir::Expr &rhs) {
 std::string PIC18Codegen::buildAssembleCommand(const std::string &, const std::string &format, const std::string &,
                                                  const std::string &) const {
     throw std::runtime_error("the pic18 backend has no external assembler - '" + format +
-                              "' isn't a format assembleInProcess() supports (only 'hex' is)");
+                              "' isn't a format assembleInProcess() supports (see that function's own comment)");
 }
 
 std::optional<std::string> PIC18Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "hex") return assemblePIC18(asmText);
+    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
+    // (see generate()'s own `objectMode` comment) - this backend's
+    // own assembler builds one format-neutral ObjectFile exactly once
+    // (see PIC18Assembler.h's own `assemblePIC18Object`), and whichever
+    // of these five names was asked for just picks that format's own
+    // ObjectFormatWriter (see objectformat/ObjectFormat.h) to
+    // serialize it.
+    if (auto kind = objectFormatKindFromName(format)) {
+        ObjectFile obj = assemblePIC18Object(asmText);
+        return makeObjectFormatWriter(*kind)->write(obj);
+    }
     return std::nullopt;
 }
 

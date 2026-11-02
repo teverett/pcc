@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "STM32Assembler.h"
+#include "objectformat/ObjectFormat.h"
 
 namespace pcc {
 
@@ -59,56 +60,83 @@ void STM32Codegen::genGlobalInit(const std::string &ramLabel, long value) {
 }
 
 std::string STM32Codegen::generate(const ir::Program &prog, bool objectMode) {
-    if (objectMode) {
-        err(0,
-            "the stm32 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=raw compile (see STM32Codegen.h's own header comment)");
-    }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // IRBuilder guarantees a parameterless `main` exists whenever
-    // allowExternal is false (always true here - see above), so
-    // mainFn is never null.
-
-    // Globals first (see STM32Codegen.h's own header comment: nothing
-    // about processing order matters here, since every RAM
-    // reservation/init-copy line below is independently resolved by
-    // STM32Assembler.cpp's own two-pass assembly - this just means
-    // `initCode_` is ready before `_start` gets written out).
+    // Real separate compilation (`--format=coff`/`elf`/`macho`/
+    // `aout` from a single file - see IRBuilder.h's own
+    // `allowExternal`) means `prog` may not define `main` at all.
+    // `objectMode` (see Codegen.h) means no object file ever emits
+    // the vector table/reset-handler/`_start` sequence itself -
+    // STM32LinkerFactory.cpp is solely responsible for synthesizing
+    // exactly one, once every object is merged and `fn_main`'s linked
+    // address is resolvable (see Linker.h). An object file's own
+    // flash section is `org 0` - it's the linker's job to place it,
+    // not this backend's (see STM32Assembler.h's own header comment).
+    //
+    // RAM, unlike flash, keeps using its real fixed hardware base
+    // (`kRamBase`) unchanged even here: RAM is a genuinely separate
+    // address space whose placement has nothing to do with where this
+    // object's own code ends up in flash once linked, so (unlike a
+    // flash address) a RAM address resolves to its final value right
+    // here, at assembly time, never needing a linker-time base-shift
+    // relocation at all (see STM32Assembler.cpp's own `isRamLabel_`
+    // comment).
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        if (slot->isExternal) continue;  // never possible here (no real separate compilation - see above), but
-                                          // matches every other backend's own defensive check at this exact spot
+        // An external global (real separate compilation - see IR.h's
+        // own `isExternal`/IRBuilder.cpp's `resolveExternalVar`) is
+        // defined in some *other* file, which is the one that
+        // reserves its real RAM storage - this file only ever
+        // references it by name (see label()), letting
+        // STM32Assembler.cpp's own undefined-symbol handling defer it
+        // to a relocation.
+        if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit);
-            for (size_t i = 0; i < slot->arrayInit.size(); i++) {
-                if (slot->arrayInit[i] == 0) continue;
-                code_ << "    movl " << static_cast<int32_t>(static_cast<uint32_t>(slot->arrayInit[i])) << ",r0\n";
-                code_ << "    lea " << lbl << "+" << (i * 4) << ",r2\n";
-                code_ << "    str r0,[r2]\n";
+            // The startup copy below writes each nonzero element into
+            // RAM before `main` runs - see genGlobalInit()'s own
+            // comment on why RAM needs this at all. It's emitted as
+            // ordinary flash-resident code spliced into `_start`
+            // (never into this file's own functions), so in object
+            // mode - where this file never emits a `_start` of its
+            // own (see this function's own comment above) - it's
+            // skipped entirely: a nonzero RAM-resident global
+            // initializer only gets its copy from the single-file
+            // `--format=raw` entry sequence, not yet from a real
+            // multi-object `--link`.
+            if (!objectMode) {
+                for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+                    if (slot->arrayInit[i] == 0) continue;
+                    code_ << "    movl " << static_cast<int32_t>(static_cast<uint32_t>(slot->arrayInit[i]))
+                          << ",r0\n";
+                    code_ << "    lea " << lbl << "+" << (i * 4) << ",r2\n";
+                    code_ << "    str r0,[r2]\n";
+                }
             }
         } else {
             declareTemp(lbl);
-            genGlobalInit(lbl, slot->hasInit ? slot->initValue : 0);
+            if (!objectMode) genGlobalInit(lbl, slot->hasInit ? slot->initValue : 0);
         }
     }
     std::string initCode = code_.str();
     code_.str("");
 
-    code_ << "org " << kFlashBase << "\n";
-    code_ << "dl " << kInitialSP << "\n";  // vector[0]: initial sp
-    code_ << "dlt _start\n";               // vector[1]: reset handler, thumb bit forced on
-    code_ << "_start:\n";
-    code_ << initCode;
-    code_ << "    bl " << label(mainFn) << "\n";
-    // The result sits in r0 the moment execution reaches `halt` - see
-    // STM32Codegen.h's own header comment on why that's the
-    // authoritative place to read it from (a real, directly
-    // inspectable 32-bit register).
-    code_ << "halt:\n    b halt\n\n";
+    code_ << "org " << (objectMode ? 0 : kFlashBase) << "\n";
+    if (!objectMode) {
+        code_ << "dl " << kInitialSP << "\n";  // vector[0]: initial sp
+        code_ << "dlt _start\n";               // vector[1]: reset handler, thumb bit forced on
+        code_ << "_start:\n";
+        code_ << initCode;
+        code_ << "    bl " << label(mainFn) << "\n";
+        // The result sits in r0 the moment execution reaches `halt` -
+        // see STM32Codegen.h's own header comment on why that's the
+        // authoritative place to read it from (a real, directly
+        // inspectable 32-bit register).
+        code_ << "halt:\n    b halt\n\n";
+    }
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
 
@@ -483,6 +511,17 @@ std::string STM32Codegen::buildAssembleCommand(const std::string &, const std::s
 std::optional<std::string> STM32Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "raw") return assembleSTM32(asmText);
+    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
+    // (see generate()'s own `objectMode` comment) - this backend's
+    // own assembler builds one format-neutral ObjectFile exactly once
+    // (see STM32Assembler.h's own `assembleSTM32Object`), and
+    // whichever of these five names was asked for just picks that
+    // format's own ObjectFormatWriter (see objectformat/ObjectFormat.h)
+    // to serialize it.
+    if (auto kind = objectFormatKindFromName(format)) {
+        ObjectFile obj = assembleSTM32Object(asmText);
+        return makeObjectFormatWriter(*kind)->write(obj);
+    }
     return std::nullopt;
 }
 

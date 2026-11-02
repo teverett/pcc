@@ -38,8 +38,8 @@ void putSymbolName(std::string &out, const std::string &name, uint32_t stringTab
 }  // namespace
 
 std::string writeCoffObject(uint16_t machineType, const std::vector<uint8_t> &textBytes,
-                             const std::vector<CoffSymbol> &symbols,
-                             const std::vector<CoffRelocation> &relocations) {
+                             const std::vector<ObjSymbol> &symbols,
+                             const std::vector<ObjRelocation> &relocations, uint32_t dataSize) {
     // Build the string table (for symbol names > 8 chars) first, so
     // each long name's offset is known before writing the symbol
     // table itself. Offset 0 in the string table is reserved (means
@@ -67,8 +67,9 @@ std::string writeCoffObject(uint16_t machineType, const std::vector<uint8_t> &te
     constexpr uint32_t kFileHeaderSize = 20;
     constexpr uint32_t kSectionHeaderSize = 40;
     constexpr uint32_t kRelocationSize = 10;  // VirtualAddress(4) + SymbolTableIndex(4) + Type(2)
+    constexpr uint32_t kNumSections = 2;      // ".text" (code), ".bss" (Harvard data reservation - see below)
 
-    uint32_t textOffset = kFileHeaderSize + kSectionHeaderSize;
+    uint32_t textOffset = kFileHeaderSize + kNumSections * kSectionHeaderSize;
     uint32_t relocOffset = textOffset + static_cast<uint32_t>(textBytes.size());
     uint32_t numRelocs = static_cast<uint32_t>(relocations.size());
     uint32_t symTableOffset = relocOffset + numRelocs * kRelocationSize;
@@ -78,7 +79,7 @@ std::string writeCoffObject(uint16_t machineType, const std::vector<uint8_t> &te
 
     // --- IMAGE_FILE_HEADER (20 bytes) ---
     put16(out, machineType);
-    put16(out, 1);                  // NumberOfSections - just .text
+    put16(out, static_cast<uint16_t>(kNumSections));
     put32(out, 0);                   // TimeDateStamp
     put32(out, symTableOffset);       // PointerToSymbolTable
     put32(out, numSymbols);            // NumberOfSymbols
@@ -98,6 +99,26 @@ std::string writeCoffObject(uint16_t machineType, const std::vector<uint8_t> &te
     put16(out, 0);                                                  // NumberOfLinenumbers
     put32(out, 0x60000020);  // IMAGE_SCN_CNT_CODE | MEM_EXECUTE | MEM_READ
 
+    // --- IMAGE_SECTION_HEADER (40 bytes) for ".bss" - a pure size
+    // reservation in a Harvard target's own second, data address
+    // space (see ObjectFile::dataSize's own comment); `0` for every
+    // von-Neumann target, which never has any symbol pointing into
+    // it. No raw file bytes of its own at all (PointerToRawData=0,
+    // SizeOfRawData=0 - a real IMAGE_SCN_CNT_UNINITIALIZED_DATA
+    // section never has any), same reasoning this project's own
+    // a.out writer's `a_bss`/real ELF's SHT_NOBITS already use. ---
+    char bssName[8] = {'.', 'b', 's', 's', 0, 0, 0, 0};
+    putBytes(out, bssName, 8);
+    put32(out, dataSize);  // PhysicalAddress/VirtualSize
+    put32(out, 0);          // VirtualAddress
+    put32(out, 0);           // SizeOfRawData
+    put32(out, 0);            // PointerToRawData
+    put32(out, 0);             // PointerToRelocations
+    put32(out, 0);              // PointerToLinenumbers
+    put16(out, 0);               // NumberOfRelocations
+    put16(out, 0);                // NumberOfLinenumbers
+    put32(out, 0xC0000080);  // IMAGE_SCN_CNT_UNINITIALIZED_DATA | MEM_READ | MEM_WRITE
+
     // --- .text raw bytes ---
     if (!textBytes.empty()) putBytes(out, textBytes.data(), textBytes.size());
 
@@ -116,7 +137,10 @@ std::string writeCoffObject(uint16_t machineType, const std::vector<uint8_t> &te
     for (size_t i = 0; i < symbols.size(); i++) {
         putSymbolName(out, symbols[i].name, nameOffsets[i]);
         put32(out, symbols[i].value);                     // Value
-        put16(out, symbols[i].isDefined ? 1 : 0);            // SectionNumber - .text, or 0 (undefined)
+        // SectionNumber: 0 (undefined), 1 (.text), or 2 (.bss - see
+        // that section header's own comment above) depending on
+        // which address space this symbol actually lives in.
+        put16(out, !symbols[i].isDefined ? 0 : (symbols[i].isData ? 2 : 1));
         put16(out, 0);                                        // Type
         out.push_back(static_cast<char>(2));  // StorageClass = C_EXT (external/global)
         out.push_back(static_cast<char>(0));   // NumberOfAuxSymbols

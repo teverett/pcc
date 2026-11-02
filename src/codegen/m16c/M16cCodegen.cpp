@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "M16cAssembler.h"
+#include "objectformat/ObjectFormat.h"
 
 namespace pcc {
 
@@ -40,28 +41,25 @@ void M16cCodegen::declareArray(const std::string &lbl, const std::vector<long> &
 }
 
 std::string M16cCodegen::generate(const ir::Program &prog, bool objectMode) {
-    if (objectMode) {
-        err(0,
-            "the m16c backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=raw compile (see M16cCodegen.h's own header comment)");
-    }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
     // IRBuilder guarantees a parameterless `main` exists whenever
-    // allowExternal is false (always true here - see above), so
-    // mainFn is never null.
+    // allowExternal is false (always true in whole-program mode), so
+    // mainFn is never null there.
 
-    code_ << "org " << kBaseAddress << "\n\n";
-    code_ << "_start:\n";
-    code_ << "    mov.w " << kInitialSp << ",sp\n";
-    code_ << "    jsr.w " << label(mainFn) << "\n";
-    // The result sits in R0 the moment execution reaches `halt` - the
-    // same "a real, directly inspectable register" rationale as the
-    // pdp11/68000 backends' own R0/D0 (see M16cCodegen.h's own header
-    // comment).
-    code_ << "halt:\n    jmp halt\n\n";
+    code_ << "org " << (objectMode ? 0 : kBaseAddress) << "\n\n";
+    if (!objectMode) {
+        code_ << "_start:\n";
+        code_ << "    mov.w " << kInitialSp << ",sp\n";
+        code_ << "    jsr.w " << label(mainFn) << "\n";
+        // The result sits in R0 the moment execution reaches `halt` - the
+        // same "a real, directly inspectable register" rationale as the
+        // pdp11/68000 backends' own R0/D0 (see M16cCodegen.h's own header
+        // comment).
+        code_ << "halt:\n    jmp halt\n\n";
+    }
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
 
@@ -433,12 +431,16 @@ void M16cCodegen::genLogicalNot(const ir::Expr &rhs) {
 std::string M16cCodegen::buildAssembleCommand(const std::string &, const std::string &format, const std::string &,
                                                const std::string &) const {
     throw std::runtime_error("the m16c backend has no external assembler - '" + format +
-                              "' isn't a format assembleInProcess() supports (only 'bin' is)");
+                              "' isn't a format assembleInProcess() supports");
 }
 
 std::optional<std::string> M16cCodegen::assembleInProcess(const std::string &asmText,
                                                            const std::string &format) const {
     if (format == "raw") return assembleM16c(asmText);
+    if (auto kind = objectFormatKindFromName(format)) {
+        ObjectFile obj = assembleM16cObject(asmText);
+        return makeObjectFormatWriter(*kind)->write(obj);
+    }
     return std::nullopt;
 }
 

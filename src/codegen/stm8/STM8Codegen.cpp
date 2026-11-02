@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "STM8Assembler.h"
+#include "objectformat/ObjectFormat.h"
 
 namespace pcc {
 
@@ -72,49 +73,68 @@ void STM8Codegen::shiftOneBit(const std::string &lbl, bool isLeft) {
 }
 
 std::string STM8Codegen::generate(const ir::Program &prog, bool objectMode) {
-    if (objectMode) {
-        err(0,
-            "the stm8 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=raw compile (see STM8Codegen.h's own header comment)");
-    }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // IRBuilder guarantees a parameterless `main` exists whenever
-    // allowExternal is false (always true here - see above), so
-    // mainFn is never null.
-
-    code_ << "org " << kBaseAddress << "\n\n";
-    code_ << "_start:\n";
-    code_ << "    ldwi sp, " << kStackTop << "\n";
-    code_ << "    call " << label(mainFn) << "\n";
-    // The program's own final result sits in `ac` the moment
-    // execution reaches `halt` below - the authoritative place to
-    // read it from. This extra `ldw` leaves it in the real `x`
-    // register too, for a quick look with nothing more than a
-    // register dump.
-    code_ << "    ldw x, ac\n";
-    code_ << "halt:\n    jp halt\n\n";
+    // Real separate compilation (`--format=coff`/`elf`/`macho`/
+    // `aout` from a single file - see IRBuilder.h's `allowExternal`)
+    // means `prog` may not define `main` at all - an ordinary object
+    // file never does. `objectMode` (see Codegen.h) means no object
+    // file ever emits this entry sequence itself, even the one that
+    // happens to define `main` - STM8LinkerFactory.cpp is solely
+    // responsible for synthesizing exactly one, once every object is
+    // merged and `main`'s linked address is resolvable (see
+    // Linker.h). An object file's own base is `org 0` - it's the
+    // linker's job to place it, not this backend's.
+    code_ << "org " << (objectMode ? 0 : kBaseAddress) << "\n\n";
+    if (!objectMode) {
+        code_ << "_start:\n";
+        code_ << "    ldwi sp, " << kStackTop << "\n";
+        code_ << "    call " << label(mainFn) << "\n";
+        // The program's own final result sits in `ac` the moment
+        // execution reaches `halt` below - the authoritative place to
+        // read it from. This extra `ldw` leaves it in the real `x`
+        // register too, for a quick look with nothing more than a
+        // register dump.
+        code_ << "    ldw x, ac\n";
+        code_ << "halt:\n    jp halt\n\n";
+    }
 
     // The fixed memory pseudo-registers - see STM8Codegen.h's own
     // header comment for what each one is for. `lc` is this
     // backend's own loop counter (genMul()/genShift() need one but
     // can't use `a` - see their own comments), a plain byte, not one
-    // of the five 16-bit cells.
-    declareTemp("ac");
-    declareTemp("bc");
-    declareTemp("cx");
-    declareTemp("dx");
-    declareTemp("ptr");
-    trailer_.push_back("lc: db 0");
+    // of the five 16-bit cells. Every genExpr() call anywhere in the
+    // *whole linked program* shares these same cells (a callee's own
+    // return value and a caller's own next operand both pass through
+    // `ac`), so unlike every other symbol this backend emits, they
+    // can't each be redeclared per-object: in whole-program mode
+    // they're declared once, right here; in object mode, this file
+    // never declares them at all - every reference is then
+    // automatically deferred as an external relocation, resolved
+    // against the one real definition STM8LinkerFactory.cpp's own
+    // synthesized entry object provides.
+    if (!objectMode) {
+        declareTemp("ac");
+        declareTemp("bc");
+        declareTemp("cx");
+        declareTemp("dx");
+        declareTemp("ptr");
+        trailer_.push_back("lc: db 0");
+    }
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
 
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        if (slot->isExternal) continue;  // never possible here (no real separate compilation - see above), but
-                                          // matches every other backend's own defensive check at this exact spot
+        // An external global (real separate compilation - see IR.h's
+        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
+        // defined in this file at all - it must never get a local
+        // storage word here, only ever be referenced by name in
+        // code, letting the assembler's own undefined-symbol
+        // handling defer it to a relocation.
+        if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit);
@@ -564,6 +584,18 @@ std::string STM8Codegen::buildAssembleCommand(const std::string &, const std::st
 std::optional<std::string> STM8Codegen::assembleInProcess(const std::string &asmText,
                                                            const std::string &format) const {
     if (format == "raw") return assembleSTM8(asmText);
+    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
+    // (see generate()'s own `objectMode` comment) - this backend's
+    // own assembler builds one format-neutral ObjectFile exactly once
+    // (see STM8Assembler.h's own `assembleSTM8Object`), and whichever
+    // of these names was asked for just picks that format's own
+    // ObjectFormatWriter (see objectformat/ObjectFormat.h) to
+    // serialize it - this file never touches a real COFF/ELF/Mach-O/
+    // a.out byte layout itself.
+    if (auto kind = objectFormatKindFromName(format)) {
+        ObjectFile obj = assembleSTM8Object(asmText);
+        return makeObjectFormatWriter(*kind)->write(obj);
+    }
     return std::nullopt;
 }
 

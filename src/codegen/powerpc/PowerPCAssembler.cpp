@@ -1,5 +1,6 @@
 #include "PowerPCAssembler.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
@@ -190,9 +191,23 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
+// One pending fixup `assemblePowerPCObject()` (see
+// PowerPCAssembler.h's own header comment) turns into a real
+// ObjRelocation once assembly is done - `offset` into `bytes()`,
+// `symbolName` the reference that couldn't be resolved locally (or
+// the reserved pseudo-symbol ".." for a same-file address's own
+// needed base-shift), `kind` one of kPowerPCRelocHi/Lo/Branch.
+struct Relocation {
+    uint32_t offset;
+    std::string symbolName;
+    uint16_t kind;
+};
+
 // --- Two-pass assembly ----------------------------------------------------
 class Assembler {
    public:
+    explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
+
     void run(const std::vector<Line> &lines) {
         stage_ = 1;
         pass(lines);
@@ -201,10 +216,14 @@ class Assembler {
     }
 
     const std::vector<uint8_t> &bytes() const { return bytes_; }
+    uint32_t orgBase() const { return orgBase_; }
+    const std::unordered_map<std::string, uint32_t> &labels() const { return labels_; }
+    const std::vector<Relocation> &relocations() const { return relocations_; }
 
    private:
     void pass(const std::vector<Line> &lines) {
         bytes_.clear();
+        relocations_.clear();
         offset_ = 0;
         orgBase_ = 0;
         for (const auto &line : lines) processLine(line);
@@ -230,10 +249,22 @@ class Assembler {
         }
     }
 
-    uint32_t evalExpr(const std::vector<Syllable> &syls) {
+    // `externalName`/`needsBaseShift` mirror ../m68k/M68kAssembler.cpp's
+    // own `evalExpr` exactly - see PowerPCAssembler.h's own header
+    // comment on why *any* local `lis`/`ori` address reference, not
+    // just an external one, needs a relocation here once
+    // `allowExternal_` is set (a `b`/`bl` branch target never sets
+    // `needsBaseShift` at all - its own caller never passes that
+    // out-param, since a same-object branch displacement needs no
+    // relocation regardless of where this object ends up linked).
+    uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
+                       bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
         for (const auto &syl : syls) {
-            uint32_t v = resolveSyllable(syl);
+            bool wasExternal = false, wasLocalAddress = false;
+            uint32_t v = resolveSyllable(syl, &wasExternal, &wasLocalAddress);
+            if (wasExternal && externalName) *externalName = syl.text;
+            if (wasLocalAddress && needsBaseShift) *needsBaseShift = true;
             if (syl.sign == '-') {
                 total -= v;
             } else {
@@ -243,7 +274,7 @@ class Assembler {
         return total;
     }
 
-    uint32_t resolveSyllable(const Syllable &syl) {
+    uint32_t resolveSyllable(const Syllable &syl, bool *wasExternal = nullptr, bool *wasLocalAddress = nullptr) {
         if (syl.kind == SylKind::Group) return evalExpr(syl.group);
         if (syl.kind == SylKind::Number) {
             const std::string &t = syl.text;
@@ -253,8 +284,17 @@ class Assembler {
             return static_cast<uint32_t>(std::stoul(t));
         }
         auto it = labels_.find(syl.text);
-        if (it != labels_.end()) return it->second;
-        if (stage_ == 2) fail("undefined symbol '" + syl.text + "'");
+        if (it != labels_.end()) {
+            if (allowExternal_ && wasLocalAddress) *wasLocalAddress = true;
+            return it->second;
+        }
+        if (stage_ == 2) {
+            if (allowExternal_) {
+                if (wasExternal) *wasExternal = true;
+                return 0;
+            }
+            fail("undefined symbol '" + syl.text + "'");
+        }
         return 0;
     }
 
@@ -286,10 +326,13 @@ class Assembler {
     // (`Mem`) instead has its own full resolved address split into
     // its upper (`lis`) or lower (`ori`) 16 bits automatically here -
     // see PowerPCAssembler.h's own header comment on why this dialect
-    // needs no `%hi`/`%lo` syntax at all.
-    uint16_t evalHiLo(const Operand &op, bool hi) {
+    // needs no `%hi`/`%lo` syntax at all. `externalName`/
+    // `needsBaseShift` just thread through to `evalExpr()` - only a
+    // `Mem` operand (a real label reference) can ever set either one.
+    uint16_t evalHiLo(const Operand &op, bool hi, std::string *externalName = nullptr,
+                       bool *needsBaseShift = nullptr) {
         if (op.kind == Operand::Reg) fail("expected an immediate or label operand, not a register");
-        uint32_t full = evalExpr(op.expr);
+        uint32_t full = evalExpr(op.expr, externalName, needsBaseShift);
         if (op.kind == Operand::Mem) return static_cast<uint16_t>(hi ? (full >> 16) & 0xFFFFu : full & 0xFFFFu);
         return static_cast<uint16_t>(full & 0xFFFFu);
     }
@@ -377,10 +420,36 @@ class Assembler {
 
     void encodeInstr(const std::string &mnemonic, const std::vector<Operand> &ops) {
         // --- immediate load/arith (D-form, direct) ---
-        if (mnemonic == "li" || mnemonic == "lis") {
+        // `li` never takes a label operand in this dialect (only
+        // PowerPCCodegen.cpp's own pre-split literal halves and small
+        // boolean/comparison constants - see its own `genExpr()`), so
+        // it never needs a relocation here.
+        if (mnemonic == "li") {
             uint8_t rT = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
-            uint16_t imm = evalHiLo(requireOperand(ops, 1, mnemonic), /*hi=*/mnemonic == "lis");
-            emitDArith(mnemonic == "li" ? 14 : 15, rT, 0, imm);
+            uint16_t imm = evalHiLo(requireOperand(ops, 1, mnemonic), /*hi=*/false);
+            emitDArith(14, rT, 0, imm);
+            return;
+        }
+        // `lis` - the upper-half half of a `lis`/`ori` address-load
+        // pair (see loadAddress() in ../PowerPCCodegen.cpp): a `Mem`
+        // operand (a real label) needs a relocation in object mode -
+        // either against ".." (this object's own base, if the label
+        // is resolvable locally) or against the label's own name (if
+        // it's undefined here, deferred to the linker) - see
+        // PowerPCAssembler.h's own `kPowerPCRelocHi` comment. A plain
+        // `Imm` operand (PowerPCCodegen.cpp's own already-split
+        // literal half) never needs one.
+        if (mnemonic == "lis") {
+            uint8_t rT = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            const Operand &immOp = requireOperand(ops, 1, mnemonic);
+            std::string externalName;
+            bool needsBaseShift = false;
+            uint16_t imm = evalHiLo(immOp, /*hi=*/true, &externalName, &needsBaseShift);
+            if (stage_ == 2 && allowExternal_ && immOp.kind == Operand::Mem) {
+                if (needsBaseShift) relocations_.push_back({offset_, "..", kPowerPCRelocHi});
+                if (!externalName.empty()) relocations_.push_back({offset_, externalName, kPowerPCRelocHi});
+            }
+            emitDArith(15, rT, 0, imm);
             return;
         }
         if (mnemonic == "addi") {
@@ -391,10 +460,22 @@ class Assembler {
             return;
         }
         // --- immediate load/arith (D-form, swapped) ---
+        // `ori` - the lower-half of the same `lis`/`ori` pair above;
+        // same relocation treatment, `kPowerPCRelocLo` instead of
+        // `kPowerPCRelocHi` - see PowerPCLinkerFactory.cpp's own paired
+        // Hi/Lo patch functions for how the two sites' own carry gets
+        // computed correctly.
         if (mnemonic == "ori") {
             uint8_t rADest = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rSSrc = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
-            uint16_t imm = evalHiLo(requireOperand(ops, 2, mnemonic), /*hi=*/false);
+            const Operand &immOp = requireOperand(ops, 2, mnemonic);
+            std::string externalName;
+            bool needsBaseShift = false;
+            uint16_t imm = evalHiLo(immOp, /*hi=*/false, &externalName, &needsBaseShift);
+            if (stage_ == 2 && allowExternal_ && immOp.kind == Operand::Mem) {
+                if (needsBaseShift) relocations_.push_back({offset_, "..", kPowerPCRelocLo});
+                if (!externalName.empty()) relocations_.push_back({offset_, externalName, kPowerPCRelocLo});
+            }
             emitDLogical(24, rADest, rSSrc, imm);
             return;
         }
@@ -500,10 +581,26 @@ class Assembler {
             return;
         }
         // --- branches ---
+        // A branch target defined in *this* object is already a valid
+        // PC-relative displacement regardless of where this object
+        // ends up linked (both its own address and this instruction's
+        // own are shifted by the same base) - no relocation needed at
+        // all, unlike an absolute-address load (`lis`/`ori` above).
+        // Only a genuinely cross-object `bl` target (undefined here)
+        // needs deferring - see PowerPCAssembler.h's own
+        // `kPowerPCRelocBranch` comment, and
+        // ../arm64/Arm64Assembler.cpp's own identical `b`/`bl`
+        // handling this is ported from.
         if (mnemonic == "b" || mnemonic == "bl") {
             const Operand &target = requireOperand(ops, 0, mnemonic);
             if (target.kind != Operand::Mem) fail("'" + mnemonic + "': target must be a label");
-            uint32_t targetAddr = evalExpr(target.expr);
+            std::string externalName;
+            uint32_t targetAddr = evalExpr(target.expr, &externalName);
+            if (stage_ == 2 && allowExternal_ && !externalName.empty()) {
+                relocations_.push_back({offset_, externalName, kPowerPCRelocBranch});
+                emitBranch(0, mnemonic == "bl");
+                return;
+            }
             uint32_t rel = targetAddr - (orgBase_ + offset_);
             emitBranch(rel, mnemonic == "bl");
             return;
@@ -528,19 +625,56 @@ class Assembler {
 
     std::vector<uint8_t> bytes_;
     std::unordered_map<std::string, uint32_t> labels_;
+    std::vector<Relocation> relocations_;
     uint32_t offset_ = 0;
     uint32_t orgBase_ = 0;
     int stage_ = 1;
+    bool allowExternal_;
 };
+
+// Builds the format-neutral ObjectFile a completed object-mode
+// Assembler produced - see PowerPCAssembler.h's own
+// `assemblePowerPCObject` comment, and ../m68k/M68kAssembler.cpp's own
+// `buildObjectFile` for the identical algorithm this is ported from.
+ObjectFile buildObjectFile(const Assembler &a) {
+    ObjectFile obj;
+    obj.machineType = kPowerPCCoffMachine;
+    const auto &bytesVec = a.bytes();
+    obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
+
+    for (const auto &kv : a.labels()) {
+        obj.symbols.push_back({kv.first, kv.second - a.orgBase(), /*isDefined=*/true});
+    }
+    std::sort(obj.symbols.begin(), obj.symbols.end(),
+              [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
+
+    std::unordered_map<std::string, bool> known;
+    for (const auto &s : obj.symbols) known[s.name] = true;
+    for (const auto &r : a.relocations()) {
+        if (!known.count(r.symbolName)) {
+            obj.symbols.push_back({r.symbolName, 0, /*isDefined=*/false});
+            known[r.symbolName] = true;
+        }
+        obj.relocations.push_back({r.offset, r.symbolName, r.kind});
+    }
+    return obj;
+}
 
 }  // namespace
 
 std::string assemblePowerPC(const std::string &asmText) {
     std::vector<Line> lines = parseProgram(asmText);
-    Assembler assembler;
+    Assembler assembler(/*allowExternal=*/false);
     assembler.run(lines);
     const auto &bytes = assembler.bytes();
     return std::string(bytes.begin(), bytes.end());
+}
+
+ObjectFile assemblePowerPCObject(const std::string &asmText) {
+    std::vector<Line> lines = parseProgram(asmText);
+    Assembler assembler(/*allowExternal=*/true);
+    assembler.run(lines);
+    return buildObjectFile(assembler);
 }
 
 }  // namespace pcc

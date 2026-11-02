@@ -1,5 +1,6 @@
 #include "STM32Assembler.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
@@ -201,6 +202,19 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
+// One pending fixup `assembleSTM32Object()` (see STM32Assembler.h's
+// own header comment) turns into a real ObjRelocation once assembly
+// is done - `offset` into `bytes()`, `symbolName` the reference that
+// couldn't be resolved locally (or the reserved pseudo-symbol ".."
+// for a same-file *flash* address's own needed base-shift - never
+// emitted for a RAM address, see `isRamLabel_` below), `kind` one of
+// kSTM32RelocAbs32/MovWLo/MovTHi/Branch25.
+struct Relocation {
+    uint32_t offset;
+    std::string symbolName;
+    uint16_t kind;
+};
+
 // --- Two-pass assembly ----------------------------------------------------
 // Two independent address spaces (see STM32Assembler.h's own header
 // comment) - `section_` says which one every label/`ds`/instruction
@@ -213,6 +227,8 @@ std::vector<Line> parseProgram(const std::string &text) {
 // textually last).
 class Assembler {
    public:
+    explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
+
     void run(const std::vector<Line> &lines) {
         stage_ = 1;
         pass(lines);
@@ -221,10 +237,14 @@ class Assembler {
     }
 
     const std::vector<uint8_t> &bytes() const { return bytes_; }
+    uint32_t flashBase() const { return flashBase_; }
+    const std::unordered_map<std::string, uint32_t> &labels() const { return labels_; }
+    const std::vector<Relocation> &relocations() const { return relocations_; }
 
    private:
     void pass(const std::vector<Line> &lines) {
         bytes_.clear();
+        relocations_.clear();
         flashOffset_ = 0;
         flashBase_ = 0;
         ramOffset_ = 0;
@@ -236,7 +256,19 @@ class Assembler {
     uint32_t currentAddr() const { return inRam_ ? ramBase_ + ramOffset_ : flashBase_ + flashOffset_; }
 
     void processLine(const Line &line) {
-        for (const auto &lbl : line.labels) labels_[lbl] = currentAddr();
+        // `isRamLabel_` remembers which space each label was defined
+        // in, independently of `labels_`'s own resolved value - see
+        // `resolveSyllable()`'s own comment on why only a *flash*
+        // label's own address reference ever needs the ".." link-time
+        // base-shift relocation: a RAM label's value is already a
+        // real, final hardware address the instant it's resolved
+        // here, since `ramorg` (unlike `org` in object mode - see
+        // STM32Codegen.cpp's own `generate()`) always uses the real
+        // fixed hardware RAM base, never `0`.
+        for (const auto &lbl : line.labels) {
+            labels_[lbl] = currentAddr();
+            isRamLabel_[lbl] = inRam_;
+        }
         switch (line.kind) {
             case Line::None:
                 return;
@@ -258,10 +290,34 @@ class Assembler {
                 if (inRam_) fail("'dl' only valid in the flash section");
                 for (const auto &e : line.exprList) emit32(evalExpr(e));
                 return;
-            case Line::Dlt:
+            case Line::Dlt: {
+                // The reset-handler vector entry: a label's own
+                // resolved flash address with its low (Thumb) bit
+                // forced on - see STM32Assembler.h's own header
+                // comment. `dlt`'s own target (always `_start`, always
+                // defined in this same file - see
+                // STM32LinkerFactory.cpp's own entry-object text) is a
+                // *flash* address, so it needs the same ".." base-
+                // shift relocation any other same-file flash address
+                // reference does; the shift and the already-baked-in
+                // Thumb bit coexist correctly under plain addition
+                // (`RelocKinds::patchAbs32`, see STM32Assembler.h's
+                // own header comment on why this field needs no
+                // dedicated split patch function) because every flash
+                // address here - this object's own final base
+                // included - is always even, so OR-ing in bit 0 ahead
+                // of time is equivalent to adding 1.
                 if (inRam_) fail("'dlt' only valid in the flash section");
-                emit32(evalExpr(line.exprList.at(0)) | 1);
+                std::string externalName;
+                bool needsBaseShift = false;
+                uint32_t v = evalExpr(line.exprList.at(0), &externalName, &needsBaseShift) | 1;
+                if (stage_ == 2 && allowExternal_) {
+                    if (needsBaseShift) relocations_.push_back({flashOffset_, "..", kSTM32RelocAbs32});
+                    if (!externalName.empty()) relocations_.push_back({flashOffset_, externalName, kSTM32RelocAbs32});
+                }
+                emit32(v);
                 return;
+            }
             case Line::Instr:
                 if (inRam_) fail("an instruction can't appear after 'ramorg'");
                 encodeInstr(line.mnemonic, line.operands);
@@ -269,10 +325,21 @@ class Assembler {
         }
     }
 
-    uint32_t evalExpr(const std::vector<Syllable> &syls) {
+    // `externalName`/`needsBaseShift` mirror ../arm/ArmAssembler.cpp's
+    // own `evalExpr` - except `needsBaseShift` is only ever set for a
+    // *flash* label (see `resolveSyllable()`'s own comment): a RAM
+    // label's resolved value needs no base-shift relocation at all,
+    // since `ramorg` already placed it at its real final hardware
+    // address (see STM32Assembler.h's own `assembleSTM32Object`
+    // comment).
+    uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
+                       bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
         for (const auto &syl : syls) {
-            uint32_t v = resolveSyllable(syl);
+            bool wasExternal = false, wasLocalFlashAddress = false;
+            uint32_t v = resolveSyllable(syl, &wasExternal, &wasLocalFlashAddress);
+            if (wasExternal && externalName) *externalName = syl.text;
+            if (wasLocalFlashAddress && needsBaseShift) *needsBaseShift = true;
             if (syl.sign == '-') {
                 total -= v;
             } else {
@@ -282,7 +349,7 @@ class Assembler {
         return total;
     }
 
-    uint32_t resolveSyllable(const Syllable &syl) {
+    uint32_t resolveSyllable(const Syllable &syl, bool *wasExternal = nullptr, bool *wasLocalFlashAddress = nullptr) {
         if (syl.kind == SylKind::Group) return evalExpr(syl.group);
         if (syl.kind == SylKind::Number) {
             const std::string &t = syl.text;
@@ -292,8 +359,21 @@ class Assembler {
             return static_cast<uint32_t>(std::stoul(t));
         }
         auto it = labels_.find(syl.text);
-        if (it != labels_.end()) return it->second;
-        if (stage_ == 2) fail("undefined symbol '" + syl.text + "'");
+        if (it != labels_.end()) {
+            // Only a flash label needs the ".." link-time base-shift -
+            // see this function's own header comment and
+            // STM32Assembler.h's own `assembleSTM32Object` comment on
+            // why a RAM label's value is already final.
+            if (allowExternal_ && wasLocalFlashAddress && !isRamLabel_.at(syl.text)) *wasLocalFlashAddress = true;
+            return it->second;
+        }
+        if (stage_ == 2) {
+            if (allowExternal_) {
+                if (wasExternal) *wasExternal = true;
+                return 0;
+            }
+            fail("undefined symbol '" + syl.text + "'");
+        }
         return 0;
     }
 
@@ -364,8 +444,28 @@ class Assembler {
     // all).
     void encodeBranch25(const Operand &target, bool isLink, const std::string &mnemonic) {
         if (target.kind != Operand::Mem) fail("'" + mnemonic + "': branch target must be a label");
+        // A branch target defined in *this* object is already a valid
+        // PC-relative offset regardless of where this object ends up
+        // linked (both its own address and this instruction's own are
+        // shifted by the same final flash base) - no relocation needed
+        // at all, unlike an absolute-address load (`lea` below). Only
+        // a genuinely cross-object target (undefined here, e.g. `bl
+        // fn_main` reaching another file's own function) needs
+        // deferring - see ../arm/ArmAssembler.cpp's own identical
+        // reasoning for its own PC-relative `b`/`bl`. The field itself
+        // is left zero here; STM32LinkerFactory.cpp's own local patch
+        // function fills it in once the symbol's real linked address
+        // is known, reproducing this same "+4" arithmetic at link
+        // time instead of assembly time.
+        std::string externalName;
+        uint32_t targetAddr = evalExpr(target.expr, &externalName);
+        if (stage_ == 2 && allowExternal_ && !externalName.empty()) {
+            relocations_.push_back({flashOffset_, externalName, kSTM32RelocBranch25});
+            emit16(static_cast<uint16_t>(0xF000));
+            emit16(static_cast<uint16_t>(isLink ? 0xD000 : 0x9000));
+            return;
+        }
         uint32_t instrAddr = flashBase_ + flashOffset_;
-        uint32_t targetAddr = evalExpr(target.expr);
         int32_t offset = static_cast<int32_t>(targetAddr) - static_cast<int32_t>(instrAddr + 4);
         if (stage_ == 2 && (offset < -16777216 || offset > 16777214)) fail("'" + mnemonic + "': target out of range");
         uint32_t val25 = static_cast<uint32_t>(offset) & 0x1FFFFFFu;
@@ -429,7 +529,28 @@ class Assembler {
             const Operand &src = requireOperand(ops, 0, mnemonic);
             uint8_t rd = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
             if (src.kind != Operand::Mem) fail("'lea': source must be a label");
-            emitMovConst32(rd, evalExpr(src.expr));
+            // A RAM label's address is already final the moment it's
+            // resolved (see `resolveSyllable()`'s own comment), so
+            // `needsBaseShift` only ever fires for a flash one; either
+            // way, each half of the split gets its own relocation
+            // against the right pseudo-/real symbol, recorded right
+            // before the `movw`/`movt` instruction it belongs to (see
+            // STM32LinkerFactory.cpp's own `patchStm32MovWLo`/`Hi` for
+            // why each site is this specific 4-byte instruction's own
+            // start, not some other offset).
+            std::string externalName;
+            bool needsBaseShift = false;
+            uint32_t v = evalExpr(src.expr, &externalName, &needsBaseShift);
+            if (stage_ == 2 && allowExternal_) {
+                if (needsBaseShift) relocations_.push_back({flashOffset_, "..", kSTM32RelocMovWLo});
+                if (!externalName.empty()) relocations_.push_back({flashOffset_, externalName, kSTM32RelocMovWLo});
+            }
+            emitMovWT(rd, static_cast<uint16_t>(v & 0xFFFF), /*top=*/false);
+            if (stage_ == 2 && allowExternal_) {
+                if (needsBaseShift) relocations_.push_back({flashOffset_, "..", kSTM32RelocMovTHi});
+                if (!externalName.empty()) relocations_.push_back({flashOffset_, externalName, kSTM32RelocMovTHi});
+            }
+            emitMovWT(rd, static_cast<uint16_t>((v >> 16) & 0xFFFF), /*top=*/true);
             return;
         }
         if (mnemonic == "mov") {
@@ -518,22 +639,72 @@ class Assembler {
 
     std::vector<uint8_t> bytes_;
     std::unordered_map<std::string, uint32_t> labels_;
+    std::unordered_map<std::string, bool> isRamLabel_;
+    std::vector<Relocation> relocations_;
     uint32_t flashOffset_ = 0;
     uint32_t flashBase_ = 0;
     uint32_t ramOffset_ = 0;
     uint32_t ramBase_ = 0;
     bool inRam_ = false;
     int stage_ = 1;
+    bool allowExternal_;
 };
+
+// Builds the format-neutral ObjectFile a completed object-mode
+// Assembler produced - see STM32Assembler.h's own
+// `assembleSTM32Object` comment, and ../m68k/M68kAssembler.cpp's own
+// `buildObjectFile` for the identical algorithm this is ported from.
+// Every symbol's own recorded value is its raw resolved address minus
+// `flashBase()` (`0` in object mode - see STM32Codegen.cpp's own
+// `generate()`), exactly like every other migrated target: for a
+// flash label that's a small offset GenericLinker::merge() correctly
+// re-bases by adding this object's own final flash placement; for a
+// RAM label (always `>= kRamBase`, far larger than `flashBase()` ever
+// is) that arithmetic leaves its value numerically unchanged, so it's
+// still the real, final hardware address - merge() re-basing it
+// anyway when some *other* object refers to it by name is this
+// migration step's one known gap (see STM32Assembler.h's own
+// `assembleSTM32Object` comment), harmless for every reference this
+// backend's own test coverage makes (always within one file).
+ObjectFile buildObjectFile(const Assembler &a) {
+    ObjectFile obj;
+    obj.machineType = kSTM32CoffMachine;
+    const auto &bytesVec = a.bytes();
+    obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
+
+    for (const auto &kv : a.labels()) {
+        obj.symbols.push_back({kv.first, kv.second - a.flashBase(), /*isDefined=*/true});
+    }
+    std::sort(obj.symbols.begin(), obj.symbols.end(),
+              [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
+
+    std::unordered_map<std::string, bool> known;
+    for (const auto &s : obj.symbols) known[s.name] = true;
+    for (const auto &r : a.relocations()) {
+        if (!known.count(r.symbolName)) {
+            obj.symbols.push_back({r.symbolName, 0, /*isDefined=*/false});
+            known[r.symbolName] = true;
+        }
+        obj.relocations.push_back({r.offset, r.symbolName, r.kind});
+    }
+    return obj;
+}
 
 }  // namespace
 
 std::string assembleSTM32(const std::string &asmText) {
     std::vector<Line> lines = parseProgram(asmText);
-    Assembler assembler;
+    Assembler assembler(/*allowExternal=*/false);
     assembler.run(lines);
     const auto &bytes = assembler.bytes();
     return std::string(bytes.begin(), bytes.end());
+}
+
+ObjectFile assembleSTM32Object(const std::string &asmText) {
+    std::vector<Line> lines = parseProgram(asmText);
+    Assembler assembler(/*allowExternal=*/true);
+    assembler.run(lines);
+    return buildObjectFile(assembler);
 }
 
 }  // namespace pcc

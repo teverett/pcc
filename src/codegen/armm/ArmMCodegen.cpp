@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "ArmMAssembler.h"
+#include "objectformat/ObjectFormat.h"
 
 namespace pcc {
 
@@ -51,34 +52,41 @@ void ArmMCodegen::loadImm32(const std::string &reg, uint32_t value) {
 }
 
 std::string ArmMCodegen::generate(const ir::Program &prog, bool objectMode) {
-    if (objectMode) {
-        err(0,
-            "the cortex-m3 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=raw compile (see ArmMCodegen.h's own header comment)");
-    }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // IRBuilder guarantees a parameterless `main` exists whenever
-    // allowExternal is false (always true here), so mainFn is never
-    // null.
-
-    code_ << "org " << kBaseAddress << "\n\n";
-    code_ << "_start:\n";
-    loadImm32("sp", kInitialSP);
-    code_ << "    bl " << label(mainFn) << "\n";
-    // The result sits in r0 the moment execution reaches `halt` -
-    // see ArmMCodegen.h's own header comment on why that's the
-    // authoritative place to read it from.
-    code_ << "halt:\n    b halt\n\n";
+    // Real separate compilation (`--format=coff`/`elf`/`macho`/
+    // `aout` from a single file - see IRBuilder.h's `allowExternal`)
+    // means `prog` may not define `main` at all. `objectMode` (see
+    // Codegen.h) means no object file ever emits this entry sequence
+    // itself - ArmMLinkerFactory.cpp is solely responsible for
+    // synthesizing exactly one, once every object is merged and
+    // `main`'s linked address is resolvable (see Linker.h). An object
+    // file's own base is `org 0` - it's the linker's job to place it,
+    // not this backend's (see ArmMAssembler.h's own header comment).
+    code_ << "org " << (objectMode ? 0 : kBaseAddress) << "\n\n";
+    if (!objectMode) {
+        code_ << "_start:\n";
+        loadImm32("sp", kInitialSP);
+        code_ << "    bl " << label(mainFn) << "\n";
+        // The result sits in r0 the moment execution reaches `halt` -
+        // see ArmMCodegen.h's own header comment on why that's the
+        // authoritative place to read it from.
+        code_ << "halt:\n    b halt\n\n";
+    }
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
 
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        if (slot->isExternal) continue;  // never possible here (no real separate compilation), but matches every
-                                          // other backend's own defensive check at this exact spot
+        // An external global (real separate compilation - see IR.h's
+        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
+        // defined in this file at all - it must never get a local
+        // storage word here, only ever be referenced by name (see
+        // label()) in code, letting the assembler's own undefined-
+        // symbol handling defer it to a relocation.
+        if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit);
@@ -501,6 +509,17 @@ std::string ArmMCodegen::buildAssembleCommand(const std::string &, const std::st
 std::optional<std::string> ArmMCodegen::assembleInProcess(const std::string &asmText,
                                                             const std::string &format) const {
     if (format == "raw") return assembleArmM(asmText);
+    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
+    // (see generate()'s own `objectMode` comment) - this backend's
+    // own assembler builds one format-neutral ObjectFile exactly once
+    // (see ArmMAssembler.h's own `assembleArmMObject`), and whichever
+    // of these five names was asked for just picks that format's own
+    // ObjectFormatWriter (see objectformat/ObjectFormat.h) to
+    // serialize it.
+    if (auto kind = objectFormatKindFromName(format)) {
+        ObjectFile obj = assembleArmMObject(asmText);
+        return makeObjectFormatWriter(*kind)->write(obj);
+    }
     return std::nullopt;
 }
 

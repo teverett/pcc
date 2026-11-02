@@ -1,5 +1,6 @@
 #include "MipsAssembler.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
@@ -190,9 +191,23 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
+// One pending fixup `assembleMipsObject()` (see MipsAssembler.h's own
+// header comment) turns into a real ObjRelocation once assembly is
+// done - `offset` into `bytes()`, `symbolName` the reference that
+// couldn't be resolved locally (or the reserved pseudo-symbol ".."
+// for a same-file address's own needed base-shift), `kind` one of
+// kMipsRelocHi/Lo/Jump.
+struct Relocation {
+    uint32_t offset;
+    std::string symbolName;
+    uint16_t kind;
+};
+
 // --- Two-pass assembly ----------------------------------------------------
 class Assembler {
    public:
+    explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
+
     void run(const std::vector<Line> &lines) {
         stage_ = 1;
         pass(lines);
@@ -201,10 +216,14 @@ class Assembler {
     }
 
     const std::vector<uint8_t> &bytes() const { return bytes_; }
+    uint32_t orgBase() const { return orgBase_; }
+    const std::unordered_map<std::string, uint32_t> &labels() const { return labels_; }
+    const std::vector<Relocation> &relocations() const { return relocations_; }
 
    private:
     void pass(const std::vector<Line> &lines) {
         bytes_.clear();
+        relocations_.clear();
         offset_ = 0;
         orgBase_ = 0;
         for (const auto &line : lines) processLine(line);
@@ -230,10 +249,19 @@ class Assembler {
         }
     }
 
-    uint32_t evalExpr(const std::vector<Syllable> &syls) {
+    // `externalName`/`needsBaseShift` mirror
+    // ../m68k/M68kAssembler.cpp's own `evalExpr` exactly - see
+    // MipsAssembler.h's own header comment on why *any* local address
+    // reference, not just an external one, needs a relocation here
+    // once `allowExternal_` is set.
+    uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
+                       bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
         for (const auto &syl : syls) {
-            uint32_t v = resolveSyllable(syl);
+            bool wasExternal = false, wasLocalAddress = false;
+            uint32_t v = resolveSyllable(syl, &wasExternal, &wasLocalAddress);
+            if (wasExternal && externalName) *externalName = syl.text;
+            if (wasLocalAddress && needsBaseShift) *needsBaseShift = true;
             if (syl.sign == '-') {
                 total -= v;
             } else {
@@ -243,7 +271,7 @@ class Assembler {
         return total;
     }
 
-    uint32_t resolveSyllable(const Syllable &syl) {
+    uint32_t resolveSyllable(const Syllable &syl, bool *wasExternal = nullptr, bool *wasLocalAddress = nullptr) {
         if (syl.kind == SylKind::Group) return evalExpr(syl.group);
         if (syl.kind == SylKind::Number) {
             const std::string &t = syl.text;
@@ -253,8 +281,17 @@ class Assembler {
             return static_cast<uint32_t>(std::stoul(t));
         }
         auto it = labels_.find(syl.text);
-        if (it != labels_.end()) return it->second;
-        if (stage_ == 2) fail("undefined symbol '" + syl.text + "'");
+        if (it != labels_.end()) {
+            if (allowExternal_ && wasLocalAddress) *wasLocalAddress = true;
+            return it->second;
+        }
+        if (stage_ == 2) {
+            if (allowExternal_) {
+                if (wasExternal) *wasExternal = true;
+                return 0;
+            }
+            fail("undefined symbol '" + syl.text + "'");
+        }
         return 0;
     }
 
@@ -286,10 +323,13 @@ class Assembler {
     // (`Mem`) instead has its own full resolved address split into
     // its upper (`lui`) or lower (`ori`) 16 bits automatically here -
     // see MipsAssembler.h's own header comment on why this dialect
-    // needs no `%hi`/`%lo` syntax at all.
-    uint16_t evalHiLo(const Operand &op, bool hi) {
+    // needs no `%hi`/`%lo` syntax at all. `externalName`/
+    // `needsBaseShift` are only ever meaningful for a `Mem` operand -
+    // see `encodeHiLo()`'s own call site.
+    uint16_t evalHiLo(const Operand &op, bool hi, std::string *externalName = nullptr,
+                       bool *needsBaseShift = nullptr) {
         if (op.kind == Operand::Reg) fail("expected an immediate or label operand, not a register");
-        uint32_t full = evalExpr(op.expr);
+        uint32_t full = evalExpr(op.expr, externalName, needsBaseShift);
         if (op.kind == Operand::Mem) return static_cast<uint16_t>(hi ? (full >> 16) & 0xFFFFu : full & 0xFFFFu);
         return static_cast<uint16_t>(full & 0xFFFFu);
     }
@@ -348,13 +388,40 @@ class Assembler {
         uint8_t shamt = static_cast<uint8_t>(evalImm(requireOperand(ops, 2, mnemonic)) & 0x1F);
         emitR(0, 0, rt, rd, shamt, funct);
     }
-    // ADDIU/ORI/SLTIU - dialect order: mnemonic rt,rs,imm.
-    void encodeImmArith(uint8_t opcode, const std::vector<Operand> &ops, const std::string &mnemonic,
-                         bool hiLoAware) {
+    // ADDIU/SLTIU - dialect order: mnemonic rt,rs,imm. Never takes a
+    // label operand (see MipsCodegen.cpp's own call sites - always a
+    // plain literal), so unlike `encodeHiLo()` below this never needs
+    // to track a relocation.
+    void encodeImmArith(uint8_t opcode, const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rt = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         uint8_t rs = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
-        const Operand &immOp = requireOperand(ops, 2, mnemonic);
-        uint16_t imm = hiLoAware ? evalHiLo(immOp, /*hi=*/false) : evalImm(immOp);
+        uint16_t imm = evalImm(requireOperand(ops, 2, mnemonic));
+        emitI(opcode, rs, rt, imm);
+    }
+
+    // LUI's own `rt,imm` / ORI's own `rt,rs,imm` immediate operand,
+    // when it's a label (`Mem`): every such reference - even to a
+    // label defined in this same file - gets a relocation against the
+    // reserved pseudo-symbol ".." (this object assembles with `org 0`
+    // - see MipsAssembler.h's own header comment), and an undefined
+    // one additionally (or instead) gets one against its own name.
+    // `relocKind` is `kMipsRelocHi` for `lui`, `kMipsRelocLo` for
+    // `ori` - see MipsLinkerFactory.cpp's own paired Hi/Lo patch
+    // functions for why `lui` must always immediately precede `ori`
+    // for the same address (both the 4-byte-apart site offsets *and*
+    // the relocation-list order that gives the Hi patch access to the
+    // Lo site's own still-unpatched value both come from nothing more
+    // than MipsCodegen.cpp's own `loadAddress()` always emitting them
+    // back to back, and this function recording each one's relocation
+    // the moment it's encoded).
+    void encodeHiLo(uint8_t opcode, uint8_t rs, uint8_t rt, const Operand &immOp, bool hi, uint16_t relocKind) {
+        std::string externalName;
+        bool needsBaseShift = false;
+        uint16_t imm = evalHiLo(immOp, hi, &externalName, &needsBaseShift);
+        if (stage_ == 2 && allowExternal_ && immOp.kind == Operand::Mem) {
+            if (needsBaseShift) relocations_.push_back({offset_, "..", relocKind});
+            if (!externalName.empty()) relocations_.push_back({offset_, externalName, relocKind});
+        }
         emitI(opcode, rs, rt, imm);
     }
 
@@ -384,21 +451,22 @@ class Assembler {
             return;
         }
         if (mnemonic == "addiu") {
-            encodeImmArith(0x09, ops, mnemonic, /*hiLoAware=*/false);
+            encodeImmArith(0x09, ops, mnemonic);
             return;
         }
         if (mnemonic == "sltiu") {
-            encodeImmArith(0x0B, ops, mnemonic, /*hiLoAware=*/false);
+            encodeImmArith(0x0B, ops, mnemonic);
             return;
         }
         if (mnemonic == "ori") {
-            encodeImmArith(0x0D, ops, mnemonic, /*hiLoAware=*/true);
+            uint8_t rt = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            uint8_t rs = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+            encodeHiLo(0x0D, rs, rt, requireOperand(ops, 2, mnemonic), /*hi=*/false, kMipsRelocLo);
             return;
         }
         if (mnemonic == "lui") {
             uint8_t rt = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
-            uint16_t imm = evalHiLo(requireOperand(ops, 1, mnemonic), /*hi=*/true);
-            emitI(0x0F, 0, rt, imm);
+            encodeHiLo(0x0F, 0, rt, requireOperand(ops, 1, mnemonic), /*hi=*/true, kMipsRelocHi);
             return;
         }
         // Dedicated zero-displacement load/store - see MipsCodegen.h's
@@ -435,7 +503,23 @@ class Assembler {
         if (mnemonic == "j" || mnemonic == "jal") {
             const Operand &target = requireOperand(ops, 0, mnemonic);
             if (target.kind != Operand::Mem) fail("'" + mnemonic + "': target must be a label");
-            emitJ(mnemonic == "j" ? 0x02 : 0x03, evalExpr(target.expr));
+            // Unlike BEQ/BNE below (real PC-relative branches, never
+            // used to reach another file's own code - see
+            // MipsCodegen.h's own header comment), J/JAL's own target
+            // is this dialect's one pseudo-absolute address field, so
+            // even a purely intra-function jump (an `if`/`while`'s own
+            // label, never actually cross-object) needs the same ".."
+            // base-shift relocation a genuine cross-object call does -
+            // see MipsAssembler.h's own header comment on why *every*
+            // local address reference needs one here.
+            std::string externalName;
+            bool needsBaseShift = false;
+            uint32_t targetAddr = evalExpr(target.expr, &externalName, &needsBaseShift);
+            if (stage_ == 2 && allowExternal_) {
+                if (needsBaseShift) relocations_.push_back({offset_, "..", kMipsRelocJump});
+                if (!externalName.empty()) relocations_.push_back({offset_, externalName, kMipsRelocJump});
+            }
+            emitJ(mnemonic == "j" ? 0x02 : 0x03, targetAddr);
             return;
         }
         if (mnemonic == "beq" || mnemonic == "bne") {
@@ -459,19 +543,56 @@ class Assembler {
 
     std::vector<uint8_t> bytes_;
     std::unordered_map<std::string, uint32_t> labels_;
+    std::vector<Relocation> relocations_;
     uint32_t offset_ = 0;
     uint32_t orgBase_ = 0;
     int stage_ = 1;
+    bool allowExternal_;
 };
+
+// Builds the format-neutral ObjectFile a completed object-mode
+// Assembler produced - see MipsAssembler.h's own `assembleMipsObject`
+// comment, and ../m68k/M68kAssembler.cpp's own `buildObjectFile` for
+// the identical algorithm this is ported from.
+ObjectFile buildObjectFile(const Assembler &a) {
+    ObjectFile obj;
+    obj.machineType = kMipsCoffMachine;
+    const auto &bytesVec = a.bytes();
+    obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
+
+    for (const auto &kv : a.labels()) {
+        obj.symbols.push_back({kv.first, kv.second - a.orgBase(), /*isDefined=*/true});
+    }
+    std::sort(obj.symbols.begin(), obj.symbols.end(),
+              [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
+
+    std::unordered_map<std::string, bool> known;
+    for (const auto &s : obj.symbols) known[s.name] = true;
+    for (const auto &r : a.relocations()) {
+        if (!known.count(r.symbolName)) {
+            obj.symbols.push_back({r.symbolName, 0, /*isDefined=*/false});
+            known[r.symbolName] = true;
+        }
+        obj.relocations.push_back({r.offset, r.symbolName, r.kind});
+    }
+    return obj;
+}
 
 }  // namespace
 
 std::string assembleMips(const std::string &asmText) {
     std::vector<Line> lines = parseProgram(asmText);
-    Assembler assembler;
+    Assembler assembler(/*allowExternal=*/false);
     assembler.run(lines);
     const auto &bytes = assembler.bytes();
     return std::string(bytes.begin(), bytes.end());
+}
+
+ObjectFile assembleMipsObject(const std::string &asmText) {
+    std::vector<Line> lines = parseProgram(asmText);
+    Assembler assembler(/*allowExternal=*/true);
+    assembler.run(lines);
+    return buildObjectFile(assembler);
 }
 
 }  // namespace pcc

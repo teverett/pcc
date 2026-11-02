@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "PIC16Assembler.h"
+#include "objectformat/ObjectFormat.h"
 
 namespace pcc {
 
@@ -19,9 +20,31 @@ void emitInitByte(std::ostream &out, const std::string &lbl, uint8_t v) {
         out << "    movlw " << static_cast<int>(v) << "\n    movwf " << lbl << "\n";
     }
 }
+
+// `lbl`'s own fixed address, if it names one of the seven shared
+// scratch pseudo-registers/software-stack cells (see
+// PIC16Assembler.h's own `kPIC16Reg*` comment) - `std::nullopt` for
+// every other name (a real global/local/param, which declareRam()
+// still reserves via `res` even in object mode).
+std::optional<uint32_t> fixedRegAddr(const std::string &lbl) {
+    if (lbl == "ac") return kPIC16RegAc;
+    if (lbl == "bc") return kPIC16RegBc;
+    if (lbl == "cx") return kPIC16RegCx;
+    if (lbl == "dx") return kPIC16RegDx;
+    if (lbl == "ptr") return kPIC16RegPtr;
+    if (lbl == "SP") return kPIC16RegSP;
+    if (lbl == "SSTACK") return kPIC16RegSStack;
+    return std::nullopt;
+}
 }  // namespace
 
 void PIC16Codegen::declareRam(const std::string &lbl, int count, bool zeroAtStart) {
+    if (objectMode_) {
+        if (auto addr = fixedRegAddr(lbl)) {
+            ramDecls_.push_back(lbl + " = " + std::to_string(*addr));
+            return;
+        }
+    }
     ramDecls_.push_back(lbl + ": res " + std::to_string(count));
     if (zeroAtStart) zeroAtStart_.push_back({lbl, count});
 }
@@ -158,18 +181,16 @@ void PIC16Codegen::popPtrCell() {
 }
 
 std::string PIC16Codegen::generate(const ir::Program &prog, bool objectMode) {
-    if (objectMode) {
-        err(0,
-            "the pic16 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=hex compile (see PIC16Codegen.h's own header comment)");
-    }
+    objectMode_ = objectMode;
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
     // IRBuilder guarantees a parameterless `main` exists whenever
-    // allowExternal is false (always true here), so mainFn is never
-    // null.
+    // allowExternal is false (i.e. whenever `objectMode` is false
+    // here too - see Codegen.h's own header comment), so mainFn is
+    // only ever null in object mode, for a file that doesn't happen
+    // to define `main` itself.
 
     declareRam("ac", 2, false);
     declareRam("bc", 2, false);
@@ -191,8 +212,14 @@ std::string PIC16Codegen::generate(const ir::Program &prog, bool objectMode) {
     std::ostringstream globalInit;
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        if (slot->isExternal) continue;  // never possible here (no real separate compilation), but matches every
-                                          // other backend's own defensive check at this exact spot
+        // An external global (real separate compilation - see IR.h's
+        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
+        // defined in this file at all - it must never get a local
+        // `res` reservation here, only ever be referenced by name
+        // (see label()) in code, letting PIC16Assembler.cpp's own
+        // object-mode resolution defer it to a data-space relocation
+        // against whichever other object actually defines it.
+        if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
             declareRam(lbl, slot->arraySize * 2, false);
@@ -212,33 +239,82 @@ std::string PIC16Codegen::generate(const ir::Program &prog, bool objectMode) {
         }
     }
 
-    for (const auto &fb : prog.functionBodies) genFunction(fb);
+    for (const auto &fb : prog.functionBodies) {
+        if (objectMode && fb.func == mainFn) {
+            // This file's own globals' zero/init code (`zeroAtStart_`/
+            // `globalInit` above) has nowhere else to run in object
+            // mode - PIC16LinkerFactory.cpp's own synthesized `START`
+            // entry sequence is built once, before it has ever seen
+            // this (or any) user object, so it can't know this file's
+            // own globals exist at all. `fn_main`'s own prologue is
+            // the one place every linked program is guaranteed to
+            // reach exactly once, before any other code, that this
+            // file does control - see PIC16Codegen.h's own
+            // `objectMode` comment.
+            code_ << label(fb.func) << ":\n";
+            for (const auto &entry : zeroAtStart_) {
+                for (int i = 0; i < entry.second; i++) {
+                    code_ << "    clrf " << entry.first;
+                    if (i > 0) code_ << "+" << i;
+                    code_ << "\n";
+                }
+            }
+            code_ << globalInit.str();
+            genStmt(*fb.body);
+            code_ << "    return\n\n";
+        } else {
+            genFunction(fb);
+        }
+    }
 
     std::ostringstream header;
     header << "INDF = 0\nSTATUS = 3\nFSR = 4\nINTCON = 0x0B\n\n";
-    header << "org 0\n    goto START\n\n";
-    header << "START:\n";
-    header << "    movlw SSTACK\n    movwf SP\n";
-    // Every real C variable (globals, locals, params, arrays - never
-    // this backend's own pseudo-registers, always written before
-    // read) gets explicitly zeroed here first, since this target's
-    // own data memory powers up to an unknown state - see
-    // PIC16Codegen.h's own header comment.
-    for (const auto &entry : zeroAtStart_) {
-        for (int i = 0; i < entry.second; i++) {
-            header << "    clrf " << entry.first;
-            if (i > 0) header << "+" << i;
-            header << "\n";
+    // `objectMode` means no object file ever emits the entry sequence
+    // itself, even the one that happens to define `main` -
+    // PIC16LinkerFactory.cpp is solely responsible for synthesizing
+    // exactly one, once every object is merged and `main`'s linked
+    // address is resolvable (see this file's own header comment on
+    // `objectMode`). An object file's own base is always `org 0`
+    // either way (see PIC16Assembler.h's own `kPIC16BaseAddress`
+    // comment) - it's the linker's job to place it, not this
+    // backend's.
+    header << "org 0\n";
+    if (!objectMode) {
+        header << "    goto START\n\n";
+        header << "START:\n";
+        header << "    movlw SSTACK\n    movwf SP\n";
+        // Every real C variable (globals, locals, params, arrays -
+        // never this backend's own pseudo-registers, always written
+        // before read) gets explicitly zeroed here first, since this
+        // target's own data memory powers up to an unknown state -
+        // see PIC16Codegen.h's own header comment.
+        for (const auto &entry : zeroAtStart_) {
+            for (int i = 0; i < entry.second; i++) {
+                header << "    clrf " << entry.first;
+                if (i > 0) header << "+" << i;
+                header << "\n";
+            }
         }
+        header << globalInit.str();
+        header << "    call " << label(mainFn) << "\n";
+        header << "HALT:\n    goto HALT\n\n";
     }
-    header << globalInit.str();
-    header << "    call " << label(mainFn) << "\n";
-    header << "HALT:\n    goto HALT\n\n";
 
     std::ostringstream out;
     out << header.str();
     out << code_.str();
-    out << "\norgram 0x0C\n";
+    // In whole-program mode, every pseudo-register/global/local/param
+    // shares one unified `res` counter starting at the real GPR-bank
+    // base (`kPIC16RamBase`). In object mode, declareRam() already
+    // turned the seven fixed pseudo-registers into equates above (no
+    // `res` at all for them - see that function's own comment), so
+    // `ramDecls_` here holds only real globals/locals/params' own
+    // `res` lines, meant to be this *object's own* local, pre-link
+    // data-space offsets - leaving the `orgram` cursor at its default
+    // (0, reset at the start of every pass - see
+    // PIC16Assembler.cpp's own `Assembler::pass()`) is exactly what
+    // that needs, so no `orgram` directive is emitted here at all.
+    if (!objectMode) out << "\norgram " << kPIC16RamBase << "\n";
     for (const auto &l : ramDecls_) out << l << "\n";
     return out.str();
 }
@@ -667,6 +743,17 @@ std::string PIC16Codegen::buildAssembleCommand(const std::string &, const std::s
 std::optional<std::string> PIC16Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "hex") return assemblePIC16(asmText);
+    // `coff`/`elf`/`aout`/`objraw`: real separate compilation (see
+    // generate()'s own `objectMode` comment) - this backend's own
+    // assembler builds one format-neutral ObjectFile exactly once
+    // (see PIC16Assembler.h's own `assemblePIC16Object`), and
+    // whichever of these four names was asked for just picks that
+    // format's own ObjectFormatWriter (see
+    // objectformat/ObjectFormat.h) to serialize it.
+    if (auto kind = objectFormatKindFromName(format)) {
+        ObjectFile obj = assemblePIC16Object(asmText);
+        return makeObjectFormatWriter(*kind)->write(obj);
+    }
     return std::nullopt;
 }
 

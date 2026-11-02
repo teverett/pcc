@@ -645,31 +645,41 @@ class Assembler {
 // only to be unique and memorable, distinct from pdp7's 0x1987.
 constexpr uint16_t kI8086CoffMachine = 0x0086;
 
-std::string writeCoff(const Assembler &a) {
+// Builds the format-neutral ObjectFile a completed object-mode
+// Assembler produced - shared by `writeCoff()` (serializes it
+// straight to COFF bytes, for `assembleI8086`'s own `Coff` case) and
+// `assembleI8086Object()` (returns it directly - see
+// I8086Assembler.h's own comment on why).
+ObjectFile buildObjectFile(const Assembler &a) {
+    ObjectFile obj;
+    obj.machineType = kI8086CoffMachine;
     const auto &bytesVec = a.bytes();
-    std::vector<uint8_t> text(bytesVec.begin(), bytesVec.end());
+    obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
 
-    std::vector<CoffSymbol> symbols;
     for (const auto &kv : a.labels()) {
-        symbols.push_back({kv.first, kv.second - a.orgBase(), /*isDefined=*/true});
+        obj.symbols.push_back({kv.first, kv.second - a.orgBase(), /*isDefined=*/true});
     }
-    std::sort(symbols.begin(), symbols.end(), [](const CoffSymbol &x, const CoffSymbol &y) { return x.name < y.name; });
+    std::sort(obj.symbols.begin(), obj.symbols.end(),
+              [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
 
     // Every relocation's target symbol needs a symbol-table entry too
     // (the writer resolves relocations to symbols by index) - add one,
     // undefined, for any name that isn't already a real local label.
-    std::vector<CoffRelocation> relocations;
     std::unordered_map<std::string, bool> known;
-    for (const auto &s : symbols) known[s.name] = true;
+    for (const auto &s : obj.symbols) known[s.name] = true;
     for (const auto &r : a.relocations()) {
         if (!known.count(r.symbolName)) {
-            symbols.push_back({r.symbolName, 0, /*isDefined=*/false});
+            obj.symbols.push_back({r.symbolName, 0, /*isDefined=*/false});
             known[r.symbolName] = true;
         }
-        relocations.push_back({r.byteOffset, r.symbolName, static_cast<uint16_t>(r.kind)});
+        obj.relocations.push_back({r.byteOffset, r.symbolName, static_cast<uint16_t>(r.kind)});
     }
+    return obj;
+}
 
-    return writeCoffObject(kI8086CoffMachine, text, symbols, relocations);
+std::string writeCoff(const Assembler &a) {
+    ObjectFile obj = buildObjectFile(a);
+    return writeCoffObject(obj.machineType, obj.textBytes, obj.symbols, obj.relocations, obj.dataSize);
 }
 
 }  // namespace
@@ -691,6 +701,13 @@ std::string assembleI8086(const std::string &asmText, I8086OutputFormat format, 
         }
     }
     fail("unknown output format");
+}
+
+ObjectFile assembleI8086Object(const std::string &asmText) {
+    std::vector<Line> lines = parseProgram(asmText);
+    Assembler assembler(/*allowExternal=*/true);
+    assembler.run(lines);
+    return buildObjectFile(assembler);
 }
 
 }  // namespace pcc

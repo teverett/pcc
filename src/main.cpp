@@ -68,12 +68,34 @@
 #include "codegen/arm64/Arm64Codegen.h"
 #include "codegen/powerpc/PowerPCCodegen.h"
 #include "coff/CoffReader.h"
-#include "linker/I8086Linker.h"
+#include "objectformat/ObjectFormat.h"
 #include "linker/Linker.h"
-#include "linker/Pdp7Linker.h"
+#include "linker/factory/I8086LinkerFactory.h"
+#include "linker/factory/Pdp7LinkerFactory.h"
+#include "linker/factory/Z80LinkerFactory.h"
+#include "linker/factory/M6502LinkerFactory.h"
+#include "linker/factory/M65C02LinkerFactory.h"
+#include "linker/factory/I8080LinkerFactory.h"
+#include "linker/factory/I8008LinkerFactory.h"
+#include "linker/factory/STM8LinkerFactory.h"
+#include "linker/factory/MC68328LinkerFactory.h"
+#include "linker/factory/M68kLinkerFactory.h"
+#include "linker/factory/Pdp11LinkerFactory.h"
+#include "linker/factory/M16cLinkerFactory.h"
+#include "linker/factory/I386LinkerFactory.h"
+#include "linker/factory/ArmLinkerFactory.h"
+#include "linker/factory/ArmMLinkerFactory.h"
+#include "linker/factory/Arm64LinkerFactory.h"
+#include "linker/factory/STM32LinkerFactory.h"
+#include "linker/factory/MipsLinkerFactory.h"
+#include "linker/factory/PowerPCLinkerFactory.h"
+#include "linker/factory/MCS51LinkerFactory.h"
+#include "linker/factory/PIC16LinkerFactory.h"
+#include "linker/factory/PIC18LinkerFactory.h"
 #include "linker/format/A7outWriter.h"
 #include "linker/format/AoutWriter.h"
 #include "linker/format/RawWriter.h"
+#include "linker/format/FlatWriter.h"
 #include "linker/format/CoffLinkWriter.h"
 #include "linker/format/ElfLinkWriter.h"
 #include "linker/format/FormatWriter.h"
@@ -158,7 +180,7 @@ void writeToBuildDir(const std::string &name, const std::string &content, bool b
 // a hardware bus-timing detail invisible to every instruction this
 // compiler (or anything else) could ever emit. There is nothing for
 // a distinct I8088Codegen to do differently, so this just reuses
-// I8086Codegen/I8086Linker outright rather than inventing a
+// I8086Codegen/makeI8086Linker() outright rather than inventing a
 // duplicate pair of classes with no actual behavioral difference.
 std::unique_ptr<pcc::Backend> makeBackend(const std::string &target) {
     if (target == "pdp7") return std::make_unique<pcc::Pdp7Codegen>();
@@ -217,8 +239,28 @@ std::unique_ptr<pcc::Backend> makeBackend(const std::string &target) {
 // The linker's own equivalent of makeBackend() above - one
 // TargetLinker implementation per target, see linker/Linker.h.
 std::unique_ptr<pcc::TargetLinker> makeLinker(const std::string &target) {
-    if (target == "pdp7") return std::make_unique<pcc::Pdp7Linker>();
-    if (target == "8086" || target == "8088") return std::make_unique<pcc::I8086Linker>();
+    if (target == "pdp7") return pcc::makePdp7Linker();
+    if (target == "8086" || target == "8088") return pcc::makeI8086Linker();
+    if (target == "z80") return pcc::makeZ80Linker();
+    if (target == "6502") return pcc::makeM6502Linker();
+    if (target == "65c02") return pcc::makeM65C02Linker();
+    if (target == "8080") return pcc::makeI8080Linker();
+    if (target == "8008") return pcc::makeI8008Linker();
+    if (target == "stm8") return pcc::makeSTM8Linker();
+    if (target == "mc68328") return pcc::makeMC68328Linker();
+    if (target == "68000") return pcc::makeM68kLinker();
+    if (target == "pdp11") return pcc::makePdp11Linker();
+    if (target == "m16c") return pcc::makeM16cLinker();
+    if (target == "i386") return pcc::makeI386Linker();
+    if (target == "armv7a") return pcc::makeArmLinker();
+    if (target == "armv8a") return pcc::makeArm64Linker();
+    if (target == "cortex-m3" || target == "cortex-m4" || target == "cortex-m7") return pcc::makeArmMLinker();
+    if (target == "stm32") return pcc::makeSTM32Linker();
+    if (target == "r10000" || target == "r4000") return pcc::makeMipsLinker();
+    if (target == "powerpc") return pcc::makePowerPCLinker();
+    if (target == "8051" || target == "8052" || target == "8031" || target == "8032") return pcc::makeMCS51Linker();
+    if (target == "pic16") return pcc::makePIC16Linker();
+    if (target == "pic18") return pcc::makePIC18Linker();
     return nullptr;
 }
 
@@ -236,6 +278,7 @@ std::unique_ptr<pcc::FormatWriter> makeFormatWriter(const std::string &format) {
     if (format == "raw") return std::make_unique<pcc::RawWriter>();
     if (format == "elf") return std::make_unique<pcc::ElfLinkWriter>();
     if (format == "aout") return std::make_unique<pcc::AoutWriter>();
+    if (format == "flat") return std::make_unique<pcc::FlatWriter>();
     return nullptr;
 }
 
@@ -484,13 +527,20 @@ int main(int argc, char **argv) {
         // those always names a real FormatWriter (see
         // makeFormatWriter) - this can't actually be null.
         try {
-            std::vector<pcc::CoffObject> objects;
+            std::vector<pcc::ObjectFile> objects;
             for (const std::string &path : srcPaths) {
                 std::ifstream in(path, std::ios::binary);
                 if (!in) throw std::runtime_error("could not read object file '" + path + "'");
                 std::ostringstream ss;
                 ss << in.rdbuf();
-                objects.push_back(pcc::readCoffObject(ss.str()));
+                std::string bytes = ss.str();
+                // Each input .o can be in any supported object format
+                // (see objectformat/ObjectFormat.h) - sniffed from its
+                // own leading bytes, not assumed to be COFF, so a
+                // link step can freely combine objects compiled with
+                // different `--format` choices.
+                pcc::ObjectFormatKind kind = pcc::detectObjectFormat(bytes);
+                objects.push_back(pcc::makeObjectFormatReader(kind)->read(bytes));
             }
             pcc::LinkedImage image = linker->merge(objects);
             writeResult(outPath, writer->write(image));
@@ -524,13 +574,14 @@ int main(int argc, char **argv) {
     // `objectMode`/IRBuilder.h's `allowExternal`) - any other format
     // only ever meant "merge every file into one shared namespace
     // before resolving a single name", which no longer exists.
-    if (format != "coff" && srcPaths.size() != 1) {
+    if (!backend->isObjectFormat(format) && srcPaths.size() != 1) {
         std::cerr << "--format=" << format << " takes exactly one .c file (got " << srcPaths.size()
-                   << ") - compile each file with --format=coff, then --link them together; see --help\n";
+                   << ") - compile each file as an object format, then --link them together; see --help\n";
         return 1;
     }
-    if (format == "coff" && srcPaths.size() > 1 && !outPath.empty()) {
-        std::cerr << "--out can't be used with --format=coff and more than one input file - each file gets its "
+    if (backend->isObjectFormat(format) && srcPaths.size() > 1 && !outPath.empty()) {
+        std::cerr << "--out can't be used with --format=" << format
+                   << " and more than one input file - each file gets its "
                       "own build/<name>.o\n";
         return 1;
     }
@@ -654,14 +705,17 @@ int main(int argc, char **argv) {
         predefinedMacros["__ppc__"] = "1";
     }
 
-    // A genuinely external reference is always allowed under
-    // --format=coff (deferred as a relocation for a future --link
-    // step) and always a hard compile error under any other format -
-    // see IRBuilder.h's `allowExternal`.
-    bool allowExternal = (format == "coff");
+    // A genuinely external reference is always allowed under a real
+    // object format for this backend (`backend->isObjectFormat()` -
+    // see Codegen.h's own header comment on why that's asked per-
+    // backend rather than hardcoded to "coff": deferred as a
+    // relocation for a future --link step) and always a hard compile
+    // error under any other format - see IRBuilder.h's
+    // `allowExternal`.
+    bool allowExternal = backend->isObjectFormat(format);
 
-    if (format == "coff" && srcPaths.size() > 1) {
-        // Multi-file --format=coff: each file compiles completely
+    if (allowExternal && srcPaths.size() > 1) {
+        // Multi-file object compile: each file compiles completely
         // independently (compileOneFile has no idea any other file
         // on this command line exists) and gets its own build/<name>.o.
         // Each needs its own fresh Backend instance, not the shared
@@ -695,7 +749,7 @@ int main(int argc, char **argv) {
         std::string asmText =
             compileOneFile(srcPaths[0], predefinedMacros, *backend, allowExternal, optimize, dumpIr, dumpAsm);
         std::string bytes = assembleOne(*backend, asmText, format, assemblerPath);
-        if (format == "coff" && outPath.empty()) {
+        if (backend->isObjectFormat(format) && outPath.empty()) {
             writeToBuildDir(baseName(srcPaths[0]) + ".o", bytes, /*binary=*/true);
         } else {
             writeResult(outPath, bytes);

@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "MC68328Assembler.h"
+#include "objectformat/ObjectFormat.h"
 
 namespace pcc {
 
@@ -47,52 +48,64 @@ void MC68328Codegen::declareArray(const std::string &lbl, const std::vector<long
 }
 
 std::string MC68328Codegen::generate(const ir::Program &prog, bool objectMode) {
-    if (objectMode) {
-        err(0,
-            "the mc68328 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=raw compile (see MC68328Codegen.h's own header comment)");
-    }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // IRBuilder guarantees a parameterless `main` exists whenever
-    // allowExternal is false (always true here - see above), so
-    // mainFn is never null.
-
-    // The real MC68328 reset vector table (see MC68328Codegen.h's own
-    // header comment): vector 0 (initial SSP), vector 1 (initial PC).
-    // The CPU's own reset exception loads A7 and the program counter
-    // from these two long words directly - no `movel ...,a7`
-    // instruction is needed at `_start` the way ../m68k's own
-    // simulator-PC-forced entry needs one.
+    // Real separate compilation (`--format=coff`/`elf`/`macho`/
+    // `aout` from a single file - see IRBuilder.h's `allowExternal`)
+    // means `prog` may not define `main` at all. `objectMode` (see
+    // Codegen.h) means no object file ever lays out the real reset
+    // vector table or entry sequence itself, even the one that
+    // happens to define `main` - MC68328LinkerFactory.cpp is solely
+    // responsible for synthesizing exactly one (vector table
+    // included), once every object is merged and `main`'s linked
+    // address is resolvable (see Linker.h) - same pattern
+    // ../m68k/M68kCodegen.cpp's own `objectMode` comment documents.
+    // An object file's own base is `org 0` - it's the linker's job
+    // to place it, not this backend's (see MC68328Assembler.h's own
+    // header comment).
     code_ << "org 0\n";
-    code_ << "    dl " << kInitialSP << "\n";
-    code_ << "    dl " << kStartAddress << "\n";
-    code_ << "_start:\n";
-    // Belt-and-suspenders: real hardware already loads A7 from vector
-    // 0 as part of taking the reset exception itself, before fetching
-    // a single instruction - but this explicit reload costs nothing
-    // and makes the image correct even under a reset-vector-table
-    // implementation that (like qemu-system-m68k's own `-M none`
-    // board, confirmed directly: it fetches PC from vector 1 but
-    // leaves A7 at its own arbitrary pre-reset value rather than
-    // loading it from vector 0 too) only honors the PC half of the
-    // real reset dance.
-    code_ << "    movel " << kInitialSP << ",a7\n";
-    code_ << "    jsr " << label(mainFn) << "\n";
-    // The result sits in D0 the moment execution reaches `halt` -
-    // see M68kCodegen.h's own header comment on why that's the
-    // authoritative place to read it from (a real, directly
-    // inspectable 32-bit register).
-    code_ << "halt:\n    bra halt\n\n";
+    if (!objectMode) {
+        // The real MC68328 reset vector table (see MC68328Codegen.h's
+        // own header comment): vector 0 (initial SSP), vector 1
+        // (initial PC). The CPU's own reset exception loads A7 and
+        // the program counter from these two long words directly -
+        // no `movel ...,a7` instruction is needed at `_start` the way
+        // ../m68k's own simulator-PC-forced entry needs one.
+        code_ << "    dl " << kInitialSP << "\n";
+        code_ << "    dl " << kStartAddress << "\n";
+        code_ << "_start:\n";
+        // Belt-and-suspenders: real hardware already loads A7 from
+        // vector 0 as part of taking the reset exception itself,
+        // before fetching a single instruction - but this explicit
+        // reload costs nothing and makes the image correct even
+        // under a reset-vector-table implementation that (like
+        // qemu-system-m68k's own `-M none` board, confirmed
+        // directly: it fetches PC from vector 1 but leaves A7 at its
+        // own arbitrary pre-reset value rather than loading it from
+        // vector 0 too) only honors the PC half of the real reset
+        // dance.
+        code_ << "    movel " << kInitialSP << ",a7\n";
+        code_ << "    jsr " << label(mainFn) << "\n";
+        // The result sits in D0 the moment execution reaches `halt` -
+        // see M68kCodegen.h's own header comment on why that's the
+        // authoritative place to read it from (a real, directly
+        // inspectable 32-bit register).
+        code_ << "halt:\n    bra halt\n\n";
+    }
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
 
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        if (slot->isExternal) continue;  // never possible here (no real separate compilation - see above), but
-                                          // matches every other backend's own defensive check at this exact spot
+        // An external global (real separate compilation - see IR.h's
+        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
+        // defined in this file at all - it must never get a local
+        // storage word here, only ever be referenced by name (see
+        // label()) in code, letting the assembler's own undefined-
+        // symbol handling defer it to a relocation.
+        if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit);
@@ -109,8 +122,6 @@ std::string MC68328Codegen::generate(const ir::Program &prog, bool objectMode) {
     return out.str();
 }
 
-// Single-file-only - see M6502Codegen.cpp's own version of this same
-// comment (no `--format=coff` here either).
 std::map<std::string, std::string> MC68328Codegen::perFileAsm() const { return perFileAsm_; }
 
 void MC68328Codegen::genFunction(const ir::FunctionBody &fn) {
@@ -462,6 +473,17 @@ std::string MC68328Codegen::buildAssembleCommand(const std::string &, const std:
 std::optional<std::string> MC68328Codegen::assembleInProcess(const std::string &asmText,
                                                                const std::string &format) const {
     if (format == "raw") return assembleMC68328(asmText);
+    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
+    // (see generate()'s own `objectMode` comment) - this backend's
+    // own assembler builds one format-neutral ObjectFile exactly once
+    // (see MC68328Assembler.h's own `assembleMC68328Object`), and
+    // whichever of these five names was asked for just picks that
+    // format's own ObjectFormatWriter (see
+    // objectformat/ObjectFormat.h) to serialize it.
+    if (auto kind = objectFormatKindFromName(format)) {
+        ObjectFile obj = assembleMC68328Object(asmText);
+        return makeObjectFormatWriter(*kind)->write(obj);
+    }
     return std::nullopt;
 }
 

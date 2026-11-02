@@ -1,5 +1,6 @@
 #include "I386Assembler.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
@@ -214,6 +215,18 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
+// One pending fixup `assembleI386Object()` (see I386Assembler.h's own
+// header comment) turns into a real ObjRelocation once assembly is
+// done - `byteOffset` into `bytes()`, `symbolName` the reference that
+// couldn't be resolved locally (or the reserved pseudo-symbol ".."
+// for a same-file address's own needed base-shift), `kind` one of
+// `kI386RelocAbs32`/`kI386RelocRel32`.
+struct Relocation {
+    uint32_t byteOffset;
+    std::string symbolName;
+    uint16_t kind;
+};
+
 // --- Two-pass assembly ----------------------------------------------------
 // One flat blob, `org` called exactly once at the top (this backend's
 // Multiboot header is loaded and runs at the same fixed address - see
@@ -222,6 +235,8 @@ std::vector<Line> parseProgram(const std::string &text) {
 // way STM32Assembler.cpp's flash/RAM split requires.
 class Assembler {
    public:
+    explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
+
     void run(const std::vector<Line> &lines) {
         stage_ = 1;
         pass(lines);
@@ -230,10 +245,14 @@ class Assembler {
     }
 
     const std::vector<uint8_t> &bytes() const { return bytes_; }
+    uint32_t orgBase() const { return orgBase_; }
+    const std::unordered_map<std::string, uint32_t> &labels() const { return labels_; }
+    const std::vector<Relocation> &relocations() const { return relocations_; }
 
    private:
     void pass(const std::vector<Line> &lines) {
         bytes_.clear();
+        relocations_.clear();
         orgBase_ = 0;
         for (const auto &line : lines) processLine(line);
     }
@@ -263,10 +282,19 @@ class Assembler {
         }
     }
 
-    uint32_t evalExpr(const std::vector<Syllable> &syls) {
+    // `externalName`/`needsBaseShift` mirror
+    // ../m68k/M68kAssembler.cpp's own `evalExpr` exactly - see
+    // I386Assembler.h's own header comment on why *any* local address
+    // reference, not just an external one, needs a relocation here
+    // once `allowExternal_` is set.
+    uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
+                       bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
         for (const auto &syl : syls) {
-            uint32_t v = resolveSyllable(syl);
+            bool wasExternal = false, wasLocalAddress = false;
+            uint32_t v = resolveSyllable(syl, &wasExternal, &wasLocalAddress);
+            if (wasExternal && externalName) *externalName = syl.text;
+            if (wasLocalAddress && needsBaseShift) *needsBaseShift = true;
             if (syl.sign == '-') {
                 total -= v;
             } else {
@@ -276,7 +304,7 @@ class Assembler {
         return total;
     }
 
-    uint32_t resolveSyllable(const Syllable &syl) {
+    uint32_t resolveSyllable(const Syllable &syl, bool *wasExternal = nullptr, bool *wasLocalAddress = nullptr) {
         if (syl.kind == SylKind::Group) return evalExpr(syl.group);
         if (syl.kind == SylKind::Number) {
             const std::string &t = syl.text;
@@ -286,8 +314,17 @@ class Assembler {
             return static_cast<uint32_t>(std::stoul(t));
         }
         auto it = labels_.find(syl.text);
-        if (it != labels_.end()) return it->second;
-        if (stage_ == 2) fail("undefined symbol '" + syl.text + "'");
+        if (it != labels_.end()) {
+            if (allowExternal_ && wasLocalAddress) *wasLocalAddress = true;
+            return it->second;
+        }
+        if (stage_ == 2) {
+            if (allowExternal_) {
+                if (wasExternal) *wasExternal = true;
+                return 0;
+            }
+            fail("undefined symbol '" + syl.text + "'");
+        }
         return 0;
     }
 
@@ -326,13 +363,38 @@ class Assembler {
         }
         if (mem.memHasEbx && mem.memHasDisp) {
             emit8(static_cast<uint8_t>(0x80 | (reg << 3) | 0x03));  // mod=10, rm=011 (ebx), disp32 follows
-            emit32(evalExpr(mem.expr));
+            emitAbs32(mem.expr);
             return;
         }
         // direct [label]: mod=00, rm=101, disp32-only addressing
         emit8(static_cast<uint8_t>(0x00 | (reg << 3) | 0x05));
-        emit32(evalExpr(mem.expr));
+        emitAbs32(mem.expr);
     }
+
+    // The one choke point every absolute-32-bit-address reference in
+    // this dialect passes through - `[label]`/`[label+ebx]` disp32
+    // fields, the moffs32 `mov eax,[label]`/`mov [label],eax`
+    // shortcut forms, `add eax,<label>`'s own short-immediate form,
+    // and a bare label used as a 32-bit immediate (`mov eax,<label>` -
+    // genAddrOf()'s own address-of-a-static-variable case, the same
+    // role as m68k's `leal`). Records a `kI386RelocAbs32` relocation
+    // against the reserved pseudo-symbol ".." whenever the reference
+    // needs its own object's base added (every one of them, once
+    // linked - see I386Assembler.h's own header comment), plus a
+    // second one against the real symbol name if it's not yet defined
+    // in this object at all.
+    void emitAbs32(const std::vector<Syllable> &expr) {
+        std::string externalName;
+        bool needsBaseShift = false;
+        uint32_t v = evalExpr(expr, &externalName, &needsBaseShift);
+        if (stage_ == 2 && allowExternal_) {
+            if (needsBaseShift) relocations_.push_back({offset(), "..", kI386RelocAbs32});
+            if (!externalName.empty()) relocations_.push_back({offset(), externalName, kI386RelocAbs32});
+        }
+        emit32(v);
+    }
+
+    uint32_t offset() const { return static_cast<uint32_t>(bytes_.size()); }
 
     // The full instruction vocabulary ../I386Codegen.cpp ever emits -
     // see I386Assembler.h's own header comment. Not a general i386
@@ -402,7 +464,7 @@ class Assembler {
             }
             if (dst.kind == Operand::Reg && src.kind == Operand::Imm) {
                 emit8(static_cast<uint8_t>(0xB8 | dst.reg));
-                emit32(evalExpr(src.expr));
+                emitAbs32(src.expr);
                 return;
             }
             if (dst.kind == Operand::Reg && src.kind == Operand::Reg) {
@@ -420,7 +482,7 @@ class Assembler {
                 // goes through the general ModRM form instead.
                 if (dst.reg == 0 && !src.memHasEbx) {
                     emit8(0xA1);
-                    emit32(evalExpr(src.expr));
+                    emitAbs32(src.expr);
                     return;
                 }
                 emit8(0x8B);
@@ -430,7 +492,7 @@ class Assembler {
             if (dst.kind == Operand::Mem && src.kind == Operand::Reg) {
                 if (src.reg == 0 && !dst.memHasEbx) {
                     emit8(0xA3);
-                    emit32(evalExpr(dst.expr));
+                    emitAbs32(dst.expr);
                     return;
                 }
                 emit8(0x89);
@@ -461,7 +523,7 @@ class Assembler {
             // against a real toolchain's own encoding - see
             // I386Assembler.h's own header comment).
             emit8(0x05);
-            emit32(evalExpr(requireOperand(ops, 1, mnemonic).expr));
+            emitAbs32(requireOperand(ops, 1, mnemonic).expr);
             return;
         }
         if (mnemonic == "add" && requireOperand(ops, 0, mnemonic).kind == Operand::Reg &&
@@ -506,10 +568,28 @@ class Assembler {
             return;
         }
         if (mnemonic == "call" || mnemonic == "jmp") {
+            // `call`/`jmp label` (E8/E9 rel32) - the one place this
+            // dialect's control flow can reach another file's own
+            // code (every conditional `jcc` below is always an
+            // intra-function branch to a `newLabel()`-generated
+            // target - see I386Codegen.cpp's own call sites - so it
+            // never needs a relocation). A same-object target's own
+            // relative displacement is base-shift-invariant (both the
+            // site and the target move by the same linked base - see
+            // ../m68k/M68kAssembler.cpp's own `encodeBranch` comment
+            // for the identical reasoning), so it's only deferred as
+            // a real `kI386RelocRel32` relocation when the target
+            // isn't defined in this object at all.
             const Operand &target = requireOperand(ops, 0, mnemonic);
             if (target.kind != Operand::Imm) fail("'" + mnemonic + "': target must be a label");
-            uint32_t targetAddr = evalExpr(target.expr);
+            std::string externalName;
+            uint32_t targetAddr = evalExpr(target.expr, &externalName);
             emit8(mnemonic == "call" ? 0xE8 : 0xE9);
+            if (stage_ == 2 && allowExternal_ && !externalName.empty()) {
+                relocations_.push_back({offset(), externalName, kI386RelocRel32});
+                emit32(0);
+                return;
+            }
             emit32(targetAddr - (currentAddr() + 4));
             return;
         }
@@ -530,18 +610,55 @@ class Assembler {
 
     std::vector<uint8_t> bytes_;
     std::unordered_map<std::string, uint32_t> labels_;
+    std::vector<Relocation> relocations_;
     uint32_t orgBase_ = 0;
     int stage_ = 1;
+    bool allowExternal_;
 };
+
+// Builds the format-neutral ObjectFile a completed object-mode
+// Assembler produced - see I386Assembler.h's own `assembleI386Object`
+// comment, and ../m68k/M68kAssembler.cpp's own `buildObjectFile` for
+// the identical algorithm this is ported from.
+ObjectFile buildObjectFile(const Assembler &a) {
+    ObjectFile obj;
+    obj.machineType = kI386CoffMachine;
+    const auto &bytesVec = a.bytes();
+    obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
+
+    for (const auto &kv : a.labels()) {
+        obj.symbols.push_back({kv.first, kv.second - a.orgBase(), /*isDefined=*/true});
+    }
+    std::sort(obj.symbols.begin(), obj.symbols.end(),
+              [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
+
+    std::unordered_map<std::string, bool> known;
+    for (const auto &s : obj.symbols) known[s.name] = true;
+    for (const auto &r : a.relocations()) {
+        if (!known.count(r.symbolName)) {
+            obj.symbols.push_back({r.symbolName, 0, /*isDefined=*/false});
+            known[r.symbolName] = true;
+        }
+        obj.relocations.push_back({r.byteOffset, r.symbolName, r.kind});
+    }
+    return obj;
+}
 
 }  // namespace
 
 std::string assembleI386(const std::string &asmText) {
     std::vector<Line> lines = parseProgram(asmText);
-    Assembler assembler;
+    Assembler assembler(/*allowExternal=*/false);
     assembler.run(lines);
     const auto &bytes = assembler.bytes();
     return std::string(bytes.begin(), bytes.end());
+}
+
+ObjectFile assembleI386Object(const std::string &asmText) {
+    std::vector<Line> lines = parseProgram(asmText);
+    Assembler assembler(/*allowExternal=*/true);
+    assembler.run(lines);
+    return buildObjectFile(assembler);
 }
 
 }  // namespace pcc

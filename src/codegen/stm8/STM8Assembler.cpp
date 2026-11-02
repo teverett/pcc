@@ -1,5 +1,6 @@
 #include "STM8Assembler.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
@@ -150,6 +151,16 @@ std::optional<std::string> asBareIdent(const std::vector<Syllable> &operand) {
     return toLower(s.text);
 }
 
+// One pending fixup `assembleSTM8Object()` (see STM8Assembler.h's own
+// header comment) turns into a real ObjRelocation once assembly is
+// done - `byteOffset` into `bytes()`, `symbolName` the reference that
+// couldn't be resolved locally (or the reserved pseudo-symbol ".."
+// for a same-file address's own needed base-shift).
+struct Relocation {
+    uint32_t byteOffset;
+    std::string symbolName;
+};
+
 // --- Two-pass assembly ----------------------------------------------------
 //
 // Opcode bytes below are this backend's own invention (see
@@ -160,6 +171,8 @@ std::optional<std::string> asBareIdent(const std::vector<Syllable> &operand) {
 // STM8Codegen.cpp lays out its own memory cells (see STM8Codegen.h).
 class Assembler {
    public:
+    explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
+
     void run(const std::vector<Line> &lines) {
         stage_ = 1;
         pass(lines);
@@ -168,10 +181,14 @@ class Assembler {
     }
 
     const std::vector<uint8_t> &bytes() const { return bytes_; }
+    uint32_t orgBase() const { return orgBase_; }
+    const std::unordered_map<std::string, uint32_t> &labels() const { return labels_; }
+    const std::vector<Relocation> &relocations() const { return relocations_; }
 
    private:
     void pass(const std::vector<Line> &lines) {
         bytes_.clear();
+        relocations_.clear();
         offset_ = 0;
         orgBase_ = 0;
         for (const auto &line : lines) processLine(line);
@@ -194,10 +211,19 @@ class Assembler {
         }
     }
 
-    uint32_t evalExpr(const std::vector<Syllable> &syls) {
+    // `externalName`/`needsBaseShift` mirror
+    // ../z80/Z80Assembler.cpp's own `evalExpr` exactly - see
+    // STM8Assembler.h's own header comment on why *any* local address
+    // reference, not just an external one, needs a relocation here
+    // once `allowExternal_` is set.
+    uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
+                       bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
         for (const auto &syl : syls) {
-            uint32_t v = resolveSyllable(syl);
+            bool wasExternal = false, wasLocalAddress = false;
+            uint32_t v = resolveSyllable(syl, &wasExternal, &wasLocalAddress);
+            if (wasExternal && externalName) *externalName = syl.text;
+            if (wasLocalAddress && needsBaseShift) *needsBaseShift = true;
             if (syl.sign == '-') {
                 total -= v;
             } else {
@@ -207,7 +233,7 @@ class Assembler {
         return total;
     }
 
-    uint32_t resolveSyllable(const Syllable &syl) {
+    uint32_t resolveSyllable(const Syllable &syl, bool *wasExternal = nullptr, bool *wasLocalAddress = nullptr) {
         if (syl.kind == SylKind::Group) return evalExpr(syl.group);
         if (syl.kind == SylKind::Number) {
             const std::string &t = syl.text;
@@ -217,8 +243,17 @@ class Assembler {
             return static_cast<uint32_t>(std::stoul(t));
         }
         auto it = labels_.find(syl.text);
-        if (it != labels_.end()) return it->second;
-        if (stage_ == 2) fail("undefined symbol '" + syl.text + "'");
+        if (it != labels_.end()) {
+            if (allowExternal_ && wasLocalAddress) *wasLocalAddress = true;
+            return it->second;
+        }
+        if (stage_ == 2) {
+            if (allowExternal_) {
+                if (wasExternal) *wasExternal = true;
+                return 0;
+            }
+            fail("undefined symbol '" + syl.text + "'");
+        }
         return 0;
     }
 
@@ -243,9 +278,20 @@ class Assembler {
 
     // addr16/imm16 - big-endian, full 16-bit resolved value (see this
     // class's own header comment), no range check (any symbol in this
-    // program's own 64KB address space is valid here).
+    // program's own 64KB address space is valid here). This is the
+    // one choke point every absolute address this dialect ever emits
+    // goes through (ldwi/ldw/ld/and/or/xor's own mem operand, and
+    // every jump/call target, conditional ones included - see
+    // STM8Codegen.h's own header comment), so it's also the one place
+    // that needs to record a relocation.
     void emit16(const std::vector<Syllable> &e) {
-        uint32_t v = evalExpr(e);
+        std::string externalName;
+        bool needsBaseShift = false;
+        uint32_t v = evalExpr(e, &externalName, &needsBaseShift);
+        if (stage_ == 2 && allowExternal_) {
+            if (needsBaseShift) relocations_.push_back({offset_, ".."});
+            if (!externalName.empty()) relocations_.push_back({offset_, externalName});
+        }
         emit8(static_cast<uint8_t>((v >> 8) & 0xFF));
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
@@ -409,19 +455,64 @@ class Assembler {
 
     std::vector<uint8_t> bytes_;
     std::unordered_map<std::string, uint32_t> labels_;
+    std::vector<Relocation> relocations_;
     uint32_t offset_ = 0;
     uint32_t orgBase_ = 0;
     int stage_ = 1;
+    bool allowExternal_;
 };
+
+// Builds the format-neutral ObjectFile a completed object-mode
+// Assembler produced - see STM8Assembler.h's own `assembleSTM8Object`
+// comment, and ../z80/Z80Assembler.cpp's own `buildObjectFile` for
+// the template this is ported from (identical algorithm, just
+// returning the neutral struct directly instead of handing it to
+// `writeCoffObject`).
+ObjectFile buildObjectFile(const Assembler &a) {
+    ObjectFile obj;
+    obj.machineType = kSTM8CoffMachine;
+    const auto &bytesVec = a.bytes();
+    obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
+
+    for (const auto &kv : a.labels()) {
+        obj.symbols.push_back({kv.first, kv.second - a.orgBase(), /*isDefined=*/true});
+    }
+    std::sort(obj.symbols.begin(), obj.symbols.end(),
+              [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
+
+    // Every relocation's target symbol needs a symbol-table entry
+    // too - add one, undefined, for any name that isn't already a
+    // real local label (this also covers the reserved pseudo-symbol
+    // ".." - a linker resolves that one specially, never by looking
+    // it up here, but it still needs a table entry for the object-
+    // format writer to point the relocation's own symbol index at).
+    std::unordered_map<std::string, bool> known;
+    for (const auto &s : obj.symbols) known[s.name] = true;
+    for (const auto &r : a.relocations()) {
+        if (!known.count(r.symbolName)) {
+            obj.symbols.push_back({r.symbolName, 0, /*isDefined=*/false});
+            known[r.symbolName] = true;
+        }
+        obj.relocations.push_back({r.byteOffset, r.symbolName, kSTM8RelocAbs16});
+    }
+    return obj;
+}
 
 }  // namespace
 
 std::string assembleSTM8(const std::string &asmText) {
     std::vector<Line> lines = parseProgram(asmText);
-    Assembler assembler;
+    Assembler assembler(/*allowExternal=*/false);
     assembler.run(lines);
     const auto &bytes = assembler.bytes();
     return std::string(bytes.begin(), bytes.end());
+}
+
+ObjectFile assembleSTM8Object(const std::string &asmText) {
+    std::vector<Line> lines = parseProgram(asmText);
+    Assembler assembler(/*allowExternal=*/true);
+    assembler.run(lines);
+    return buildObjectFile(assembler);
 }
 
 }  // namespace pcc

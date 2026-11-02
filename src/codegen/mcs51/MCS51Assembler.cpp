@@ -1,5 +1,6 @@
 #include "MCS51Assembler.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
@@ -31,9 +32,13 @@ struct Syllable {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Equate, Org, Instr } kind = None;
+    // `Xdata` reserves `exprList`'s own byte count in the XDATA
+    // address space for every label attached to this line, instead of
+    // emitting any CODE bytes - see MCS51Assembler.h's own header
+    // comment on the `xdata <count>` directive.
+    enum Kind { None, Equate, Org, Instr, Xdata } kind = None;
     std::string equateName;                      // Equate
-    std::vector<std::vector<Syllable>> exprList;  // Equate (1)/Org (1)
+    std::vector<std::vector<Syllable>> exprList;  // Equate (1)/Org (1)/Xdata (1, the byte count)
     std::string mnemonic;                         // Instr
     std::vector<std::vector<Syllable>> operands;  // Instr
 };
@@ -111,6 +116,14 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         line.exprList.push_back(exprToSyllables(instr->operand(0)->expr()));
         return line;
     }
+    if (mnemonic == "xdata") {
+        line.kind = Line::Xdata;
+        if (instr->operand().size() != 1 || instr->operand(0)->LBRACKET()) {
+            fail("'xdata' needs exactly one operand (a byte count)");
+        }
+        line.exprList.push_back(exprToSyllables(instr->operand(0)->expr()));
+        return line;
+    }
 
     line.kind = Line::Instr;
     line.mnemonic = mnemonic;
@@ -137,6 +150,17 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
+// One pending fixup assembleMCS51Object() (see MCS51Assembler.h's own
+// header comment) turns into a real ObjRelocation once assembly is
+// done - mirrors ../i8008/I8008Assembler.cpp's own `Relocation`. Only
+// ever populated against `kMCS51RelocAbs16` here (see
+// emitAbsOperand() below) - this dialect has no split hi/lo pair the
+// way i8008/m6502 need, so there's no `kind` field at all.
+struct Relocation {
+    uint32_t byteOffset;
+    std::string symbolName;
+};
+
 // --- Two-pass assembly ----------------------------------------------------
 //
 // Every instruction's size is fixed by its mnemonic alone (see
@@ -149,6 +173,16 @@ std::vector<Line> parseProgram(const std::string &text) {
 // bindings and this time actually emits bytes using them.
 class Assembler {
    public:
+    // `allowExternal` is object mode (see MCS51Assembler.h's own
+    // `assembleMCS51Object()`): an undefined CODE-space label in
+    // `LJMP`/`LCALL`'s own target operand becomes a relocation
+    // instead of a hard error, and every *resolved* local label used
+    // there also gets an additional relocation against the reserved
+    // pseudo-symbol ".." (see emitAbsOperand() below) - mirrors
+    // ../i8008/I8008Assembler.cpp's own `Assembler(bool
+    // allowExternal)`.
+    explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
+
     void run(const std::vector<Line> &lines) {
         stage_ = 1;
         pass(lines);
@@ -157,17 +191,35 @@ class Assembler {
     }
 
     const std::vector<uint8_t> &bytes() const { return bytes_; }
+    uint32_t orgBase() const { return orgBase_; }
+    const std::unordered_map<std::string, uint32_t> &labels() const { return labels_; }
+    const std::vector<Relocation> &relocations() const { return relocations_; }
+    // This object's own final XDATA-space usage, in bytes - every
+    // `xdata <count>` directive's own `count` summed in declaration
+    // order, starting from 0 (see `dataCursor_`'s own comment) -
+    // becomes `ObjectFile::dataSize` (see buildObjectFile() below).
+    uint32_t dataSize() const { return dataCursor_; }
+    const std::unordered_map<std::string, uint32_t> &dataLabels() const { return dataLabels_; }
 
    private:
     void pass(const std::vector<Line> &lines) {
         bytes_.clear();
+        relocations_.clear();
         offset_ = 0;
         orgBase_ = 0;
+        dataCursor_ = 0;
         for (const auto &line : lines) processLine(line);
     }
 
     void processLine(const Line &line) {
-        for (const auto &lbl : line.labels) labels_[lbl] = orgBase_ + offset_;
+        // An `xdata` line's own label(s) bind into `dataLabels_`
+        // instead of the default CODE-space `labels_` binding every
+        // other line's label(s) get below - these two tables are
+        // entirely independent (see MCS51Assembler.h's own header
+        // comment), so a label never ends up in both.
+        if (line.kind != Line::Xdata) {
+            for (const auto &lbl : line.labels) labels_[lbl] = orgBase_ + offset_;
+        }
         switch (line.kind) {
             case Line::None:
                 return;
@@ -180,13 +232,30 @@ class Assembler {
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
                 return;
+            case Line::Xdata: {
+                uint32_t count = evalExpr(line.exprList.at(0));
+                for (const auto &lbl : line.labels) dataLabels_[lbl] = dataCursor_;
+                dataCursor_ += count;
+                return;
+            }
         }
     }
 
-    uint32_t evalExpr(const std::vector<Syllable> &syls) {
+    // `externalName`/`needsBaseShift` are only ever passed by
+    // emitAbsOperand() below (see that function's own comment) - every
+    // other operand kind (direct-RAM, immediate, rel8) never resolves
+    // a relocatable CODE-space address at all, so they call this with
+    // both left at their default `nullptr` and get plain local-only
+    // resolution, same as assembleMCS51()'s own non-object use.
+    // Mirrors ../i8008/I8008Assembler.cpp's own `evalExpr`.
+    uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
+                       bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
         for (const auto &syl : syls) {
-            uint32_t v = resolveSyllable(syl);
+            bool wasExternal = false, wasLocalAddress = false;
+            uint32_t v = resolveSyllable(syl, &wasExternal, &wasLocalAddress);
+            if (wasExternal && externalName) *externalName = syl.text;
+            if (wasLocalAddress && needsBaseShift) *needsBaseShift = true;
             if (syl.sign == '-') {
                 total -= v;
             } else {
@@ -196,18 +265,77 @@ class Assembler {
         return total;
     }
 
-    uint32_t resolveSyllable(const Syllable &syl) {
-        if (syl.kind == SylKind::Group) return evalExpr(syl.group);
-        if (syl.kind == SylKind::Number) {
-            const std::string &t = syl.text;
-            if (t.size() > 2 && t[0] == '0' && (t[1] == 'x' || t[1] == 'X')) {
-                return static_cast<uint32_t>(std::stoul(t.substr(2), nullptr, 16));
-            }
-            return static_cast<uint32_t>(std::stoul(t));
+    // A plain numeric syllable's own text, decimal or `0x`-prefixed
+    // hex - shared by `resolveSyllable()` (CODE-space) and
+    // `resolveDataSyllable()` (XDATA-space) below, since a number
+    // means exactly the same thing in either expression.
+    static uint32_t parseNumber(const std::string &t) {
+        if (t.size() > 2 && t[0] == '0' && (t[1] == 'x' || t[1] == 'X')) {
+            return static_cast<uint32_t>(std::stoul(t.substr(2), nullptr, 16));
         }
+        return static_cast<uint32_t>(std::stoul(t));
+    }
+
+    uint32_t resolveSyllable(const Syllable &syl, bool *wasExternal = nullptr, bool *wasLocalAddress = nullptr) {
+        if (syl.kind == SylKind::Group) return evalExpr(syl.group);
+        if (syl.kind == SylKind::Number) return parseNumber(syl.text);
         auto it = labels_.find(syl.text);
-        if (it != labels_.end()) return it->second;
-        if (stage_ == 2) fail("undefined symbol '" + syl.text + "'");
+        if (it != labels_.end()) {
+            // Every caller that tracks `wasLocalAddress` at all
+            // (emitAbsOperand() below) only ever resolves a real
+            // CODE-space label (a function or branch target) this
+            // way, never one of the fixed internal-RAM pseudo-register
+            // equates - see MCS51Assembler.h's own header comment on
+            // why that's structurally guaranteed rather than needing
+            // its own exclusion list the way ../i8008/I8008Assembler.cpp's
+            // own `equateNames_` does.
+            if (allowExternal_ && wasLocalAddress) *wasLocalAddress = true;
+            return it->second;
+        }
+        if (stage_ == 2) {
+            if (allowExternal_) {
+                if (wasExternal) *wasExternal = true;
+                return 0;
+            }
+            fail("undefined symbol '" + syl.text + "'");
+        }
+        return 0;
+    }
+
+    // XDATA-space counterpart of `evalExpr()` above - resolves every
+    // syllable against `dataLabels_` instead of `labels_`, for
+    // `movdptr`'s own operand (see `emitDataPtrOperand()` below). A
+    // data-space symbol is never deferred as an external reference
+    // the way a CODE-space one can be in object mode (see
+    // `resolveDataSyllable()`'s own comment) - MCS51Codegen.cpp's own
+    // `generate()` pre-pass only ever emits an `xdata` directive for a
+    // variable this file itself defines, so an undefined one here
+    // always means a real, same-file bug (a reference to an
+    // `isExternal` global, or an internal-error coding mistake), never
+    // something a linker could resolve later.
+    uint32_t evalDataExpr(const std::vector<Syllable> &syls) {
+        uint32_t total = 0;
+        for (const auto &syl : syls) {
+            uint32_t v = resolveDataSyllable(syl);
+            if (syl.sign == '-') {
+                total -= v;
+            } else {
+                total += v;
+            }
+        }
+        return total;
+    }
+
+    uint32_t resolveDataSyllable(const Syllable &syl) {
+        if (syl.kind == SylKind::Group) return evalDataExpr(syl.group);
+        if (syl.kind == SylKind::Number) return parseNumber(syl.text);
+        auto it = dataLabels_.find(syl.text);
+        if (it != dataLabels_.end()) return it->second;
+        if (stage_ == 2) {
+            fail("internal: '" + syl.text + "' has no XDATA address - MCS51Codegen.cpp's own generate() pre-pass "
+                 "should have emitted an 'xdata' directive for it before any code referencing it (a data-space "
+                 "symbol can never be forward-declared across files - see MCS51Codegen.h's own header comment)");
+        }
         return 0;
     }
 
@@ -219,9 +347,12 @@ class Assembler {
     }
 
     // A direct-RAM address operand (0-255; every pseudo-register
-    // equate and every real SFR this dialect ever names - DPL/DPH's
-    // own fixed addresses are baked into movdpl/movdph below, never
-    // spelled out as a direct operand - resolves to one of these).
+    // equate and every real SFR this dialect ever names resolves to
+    // one of these - DPL/DPH's own fixed addresses are baked directly
+    // into movdpl/movdph below when they're the *destination*, but
+    // also reachable as an ordinary direct operand via the `dpl`/
+    // `dph` equates MCS51Codegen.cpp's own generate() declares, for
+    // reading DPTR back out after loadXdataAddress()'s own `movdptr`).
     void emitDirectOperand(const std::vector<Syllable> &e) {
         uint32_t v = evalExpr(e);
         if (stage_ == 2 && v > 0xFF) fail("direct-address operand doesn't fit in a byte");
@@ -237,12 +368,21 @@ class Assembler {
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
 
-    // `mov dptr,#imm16`'s own operand - a real 16-bit value (an
-    // XDATA address MCS51Codegen.cpp's own allocXdata() assigned, or
-    // 0 for the index-free base case), high byte first (real 8051
-    // encoding order).
-    void emitImm16Operand(const std::vector<Syllable> &e) {
-        uint32_t v = evalExpr(e);
+    // `mov dptr,#imm16`'s own operand - the only instruction this
+    // dialect ever gives an XDATA-space symbol to (every global/
+    // local/param's own `label()`, optionally `+<constant>` for an
+    // array element - see MCS51Codegen.cpp's own declareGlobalArray()
+    // comment), resolved against `dataLabels_` via `evalDataExpr()`,
+    // high byte first (real 8051 encoding order). In object mode this
+    // always also gets a relocation against the reserved pseudo-
+    // symbol `"..d"` - even a same-file reference, exactly like
+    // `emitAbsOperand()`'s own `".."` handling below, and for the same
+    // reason (see MCS51Assembler.h's own `kMCS51RelocAbs16` comment).
+    void emitDataPtrOperand(const std::vector<Syllable> &e) {
+        uint32_t v = evalDataExpr(e);
+        if (stage_ == 2 && allowExternal_) {
+            relocations_.push_back({offset_, "..d"});
+        }
         emit8(static_cast<uint8_t>((v >> 8) & 0xFF));
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
@@ -250,9 +390,22 @@ class Assembler {
     // `ljmp`/`lcall`'s own absolute CODE-space operand - always a
     // function or branch-target label (see MCS51Assembler.h's own
     // header comment on the CODE/XDATA symbol split) - high byte
-    // first, same real encoding order as emitImm16Operand().
+    // first, same real encoding order as emitDataPtrOperand() above.
+    // The one place this assembler's own CODE-space resolution ever
+    // needs a relocation (see MCS51Assembler.h's own
+    // `kMCS51RelocAbs16` comment): a locally-resolved label still
+    // needs this object's own base added once linked (the ".."
+    // pseudo-symbol), and an undefined one (another file's own
+    // function, in object mode) is deferred to the linker entirely -
+    // mirrors ../i8008/I8008Assembler.cpp's own `emit16`.
     void emitAbsOperand(const std::vector<Syllable> &e) {
-        uint32_t v = evalExpr(e);
+        std::string externalName;
+        bool needsBaseShift = false;
+        uint32_t v = evalExpr(e, &externalName, &needsBaseShift);
+        if (stage_ == 2 && allowExternal_) {
+            if (needsBaseShift) relocations_.push_back({offset_, ".."});
+            if (!externalName.empty()) relocations_.push_back({offset_, externalName});
+        }
         emit8(static_cast<uint8_t>((v >> 8) & 0xFF));
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
@@ -365,7 +518,7 @@ class Assembler {
         }
         if (mnemonic == "movdptr") {
             emit8(0x90);
-            emitImm16Operand(one());
+            emitDataPtrOperand(one());
             return;
         }
         if (mnemonic == "movdi") {  // MOV direct,#imm
@@ -436,21 +589,80 @@ class Assembler {
         fail("unsupported instruction '" + mnemonic + "'");
     }
 
+    std::vector<Relocation> relocations_;
+    bool allowExternal_;
     std::vector<uint8_t> bytes_;
     std::unordered_map<std::string, uint32_t> labels_;
     uint32_t offset_ = 0;
     uint32_t orgBase_ = 0;
+    // XDATA-space label table and cursor - entirely independent of
+    // `labels_`/`offset_`/`orgBase_` above (see MCS51Assembler.h's own
+    // header comment): `dataCursor_` starts at 0 and only ever
+    // advances via an `xdata <count>` directive line (see
+    // `processLine()`'s own `Line::Xdata` case), never via any
+    // instruction's byte emission. Like `labels_`, `dataLabels_` isn't
+    // reset between passes - pass 1 already resolves every value
+    // correctly, pass 2 just re-derives the identical bindings.
+    std::unordered_map<std::string, uint32_t> dataLabels_;
+    uint32_t dataCursor_ = 0;
     int stage_ = 1;
 };
+
+// Builds the format-neutral ObjectFile a completed object-mode
+// Assembler produced - see ../i8008/I8008Assembler.cpp's own
+// `buildObjectFile` for the template this is ported from (identical
+// algorithm for the CODE side, minus the per-relocation `kind` field
+// this dialect doesn't need - see MCS51Assembler.h's own
+// `kMCS51RelocAbs16` comment), plus this target's own Harvard-
+// specific second half: every `dataLabels_` entry becomes an
+// `isData=true` symbol (see ObjectFile.h's own comment) instead of a
+// CODE-space one, and `dataCursor_`'s own final value becomes
+// `ObjectFile::dataSize` - GenericLinker.cpp's own second, data-space
+// layout pass (see GenericLinker.h's own `dataBaseAddress` comment)
+// is what actually turns these into real linked addresses.
+ObjectFile buildObjectFile(const Assembler &a) {
+    ObjectFile obj;
+    obj.machineType = kMCS51CoffMachine;
+    const auto &bytesVec = a.bytes();
+    obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
+    obj.dataSize = a.dataSize();
+
+    for (const auto &kv : a.labels()) {
+        obj.symbols.push_back({kv.first, kv.second - a.orgBase(), /*isDefined=*/true});
+    }
+    for (const auto &kv : a.dataLabels()) {
+        obj.symbols.push_back({kv.first, kv.second, /*isDefined=*/true, /*isData=*/true});
+    }
+    std::sort(obj.symbols.begin(), obj.symbols.end(),
+              [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
+
+    std::unordered_map<std::string, bool> known;
+    for (const auto &s : obj.symbols) known[s.name] = true;
+    for (const auto &r : a.relocations()) {
+        if (!known.count(r.symbolName)) {
+            obj.symbols.push_back({r.symbolName, 0, /*isDefined=*/false});
+            known[r.symbolName] = true;
+        }
+        obj.relocations.push_back({r.byteOffset, r.symbolName, kMCS51RelocAbs16});
+    }
+    return obj;
+}
 
 }  // namespace
 
 std::string assembleMCS51(const std::string &asmText) {
     std::vector<Line> lines = parseProgram(asmText);
-    Assembler assembler;
+    Assembler assembler(/*allowExternal=*/false);
     assembler.run(lines);
     const auto &bytes = assembler.bytes();
     return std::string(bytes.begin(), bytes.end());
+}
+
+ObjectFile assembleMCS51Object(const std::string &asmText) {
+    std::vector<Line> lines = parseProgram(asmText);
+    Assembler assembler(/*allowExternal=*/true);
+    assembler.run(lines);
+    return buildObjectFile(assembler);
 }
 
 }  // namespace pcc

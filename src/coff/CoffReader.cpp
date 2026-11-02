@@ -46,26 +46,38 @@ std::string getSymbolName(const std::string &bytes, size_t nameFieldOffset, cons
 
 }  // namespace
 
-CoffObject readCoffObject(const std::string &bytes) {
+ObjectFile readCoffObject(const std::string &bytes) {
     constexpr size_t kFileHeaderSize = 20;
     constexpr size_t kSectionHeaderSize = 40;
     constexpr size_t kRelocationSize = 10;
     constexpr size_t kSymbolSize = 18;
 
     need(bytes, 0, kFileHeaderSize);
-    CoffObject obj;
+    ObjectFile obj;
     obj.machineType = get16(bytes, 0);
     uint16_t numSections = get16(bytes, 2);
-    if (numSections != 1) fail("expected exactly one section (.text), got " + std::to_string(numSections));
+    if (numSections != 2) {
+        fail("expected exactly two sections (.text, .bss), got " + std::to_string(numSections));
+    }
     uint32_t symTableOffset = get32(bytes, 8);
     uint32_t numSymbols = get32(bytes, 12);
 
+    // ".text" (section 1 in the symbol table's own SectionNumber
+    // field - see CoffWriter.cpp's own layout) and ".bss" (section 2,
+    // a pure Harvard-data-space size reservation, never any raw bytes
+    // of its own - see that file's own comment) are always written in
+    // that fixed order, never found by name/type the way
+    // ElfObjectFormat.cpp's own reader more flexibly does.
     size_t sectionHeaderOffset = kFileHeaderSize;
     need(bytes, sectionHeaderOffset, kSectionHeaderSize);
     uint32_t sizeOfRawData = get32(bytes, sectionHeaderOffset + 16);
     uint32_t pointerToRawData = get32(bytes, sectionHeaderOffset + 20);
     uint32_t pointerToRelocations = get32(bytes, sectionHeaderOffset + 24);
     uint16_t numRelocations = get16(bytes, sectionHeaderOffset + 32);
+
+    size_t bssHeaderOffset = sectionHeaderOffset + kSectionHeaderSize;
+    need(bytes, bssHeaderOffset, kSectionHeaderSize);
+    obj.dataSize = get32(bytes, bssHeaderOffset + 8);  // PhysicalAddress/VirtualSize
 
     need(bytes, pointerToRawData, sizeOfRawData);
     obj.textBytes.assign(bytes.begin() + static_cast<long>(pointerToRawData),
@@ -88,7 +100,7 @@ CoffObject readCoffObject(const std::string &bytes) {
         std::string name = getSymbolName(bytes, symOffset, stringTable);
         uint32_t value = get32(bytes, symOffset + 8);
         uint16_t sectionNumber = get16(bytes, symOffset + 12);
-        obj.symbols.push_back({name, value, /*isDefined=*/sectionNumber != 0});
+        obj.symbols.push_back({name, value, /*isDefined=*/sectionNumber != 0, /*isData=*/sectionNumber == 2});
     }
 
     // Relocations reference symbols by table index (SymbolTableIndex)

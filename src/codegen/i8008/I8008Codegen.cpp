@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "I8008Assembler.h"
+#include "objectformat/ObjectFormat.h"
 
 namespace pcc {
 
@@ -200,48 +201,61 @@ void I8008Codegen::shiftOneBit(const std::string &lbl, bool isLeft) {
 }
 
 std::string I8008Codegen::generate(const ir::Program &prog, bool objectMode) {
-    if (objectMode) {
-        err(0,
-            "the 8008 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=raw compile (see I8008Codegen.h's own header comment)");
-    }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // IRBuilder guarantees a parameterless `main` exists whenever
-    // allowExternal is false (always true here - see above), so
-    // mainFn is never null.
-
+    // Real separate compilation (`--format=coff`/`elf`/`macho`/
+    // `aout` from a single file - see IRBuilder.h's `allowExternal`)
+    // means `prog` may not define `main` at all. `objectMode` (see
+    // Codegen.h) means no object file ever emits the entry sequence
+    // itself, even the one that happens to define `main` -
+    // I8008LinkerFactory.cpp is solely responsible for synthesizing
+    // exactly one, once every object is merged and `main`'s linked
+    // address is resolvable - same pattern Z80Codegen.cpp/
+    // M6502Codegen.cpp's own `objectMode` comment documents.
     code_ << "org 0\n\n";
     // The fixed memory pseudo-registers and the runtime software
     // stack's own pointer cell - see this file's own anonymous-
-    // namespace comment on `kPseudoBase`/`kStackBase`.
+    // namespace comment on `kPseudoBase`/`kStackBase`. These are
+    // compile-time `name = expr` equates (a plain constant, the same
+    // in every object regardless of where it's linked - see
+    // I8008Assembler.h's own header comment), so - unlike a real
+    // backend's own per-object *storage* cells (z80's own `ac` etc. -
+    // see Z80Codegen.cpp's own `generate()` comment) - every object
+    // declares them identically and harmlessly; no `objectMode`
+    // special-casing needed here at all.
     code_ << "ac = " << kPseudoBase << "\n";
     code_ << "bc = " << (kPseudoBase + 2) << "\n";
     code_ << "cx = " << (kPseudoBase + 4) << "\n";
     code_ << "dx = " << (kPseudoBase + 6) << "\n";
     code_ << "ptr = " << (kPseudoBase + 8) << "\n";
     code_ << "sp = " << (kPseudoBase + 10) << "\n";
-    code_ << "\n_start:\n";
-    // The software stack grows up from `kStackBase`; `sp` always
-    // holds the address *just past* the last pushed word (see
-    // pushAc()/popInto()).
-    storeImmediate16("sp", std::to_string(kStackBase));
-    code_ << "    cal " << label(mainFn) << "\n";
-    // The program's own final result sits in `ac` the moment
-    // execution reaches `halt` below - the authoritative (and, on
-    // this backend, only practical - there's no register wide enough
-    // to dump the way every other backend's own halt sequence
-    // leaves one) place to read it from.
-    code_ << "halt:\n    jmp halt\n\n";
+    if (!objectMode) {
+        code_ << "\n_start:\n";
+        // The software stack grows up from `kStackBase`; `sp` always
+        // holds the address *just past* the last pushed word (see
+        // pushAc()/popInto()).
+        storeImmediate16("sp", std::to_string(kStackBase));
+        code_ << "    cal " << label(mainFn) << "\n";
+        // The program's own final result sits in `ac` the moment
+        // execution reaches `halt` below - the authoritative (and, on
+        // this backend, only practical - there's no register wide enough
+        // to dump the way every other backend's own halt sequence
+        // leaves one) place to read it from.
+        code_ << "halt:\n    jmp halt\n\n";
+    }
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
 
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        if (slot->isExternal) continue;  // never possible here (no real separate compilation - see above), but
-                                          // matches every other backend's own defensive check at this exact spot
+        // An external global (real separate compilation - see IR.h's
+        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
+        // defined in this file at all - only ever referenced by name,
+        // letting the assembler's own undefined-symbol handling defer
+        // it to a relocation.
+        if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit);
@@ -827,6 +841,17 @@ std::string I8008Codegen::buildAssembleCommand(const std::string &, const std::s
 std::optional<std::string> I8008Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "raw") return assembleI8008(asmText);
+    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
+    // (see generate()'s own `objectMode` comment) - this backend's
+    // own assembler builds one format-neutral ObjectFile exactly once
+    // (see I8008Assembler.h's own `assembleI8008Object`), and
+    // whichever of these five names was asked for just picks that
+    // format's own ObjectFormatWriter (see
+    // objectformat/ObjectFormat.h) to serialize it.
+    if (auto kind = objectFormatKindFromName(format)) {
+        ObjectFile obj = assembleI8008Object(asmText);
+        return makeObjectFormatWriter(*kind)->write(obj);
+    }
     return std::nullopt;
 }
 

@@ -1,5 +1,6 @@
 #include "Pdp11Assembler.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
@@ -177,9 +178,23 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
+// One pending fixup `assemblePdp11Object()` (see Pdp11Assembler.h's
+// own header comment) turns into a real ObjRelocation once assembly
+// is done - `byteOffset` into `bytes()`, `symbolName` the reference
+// that couldn't be resolved locally, `kind` either
+// `kPdp11RelocAbs16` (`lea`'s own absolute extension word) or
+// `kPdp11RelocRel16` (every other, PC-relative, bare-label operand).
+struct Relocation {
+    uint32_t byteOffset;
+    std::string symbolName;
+    uint16_t kind;
+};
+
 // --- Two-pass assembly ----------------------------------------------------
 class Assembler {
    public:
+    explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
+
     void run(const std::vector<Line> &lines) {
         stage_ = 1;
         pass(lines);
@@ -188,10 +203,14 @@ class Assembler {
     }
 
     const std::vector<uint8_t> &bytes() const { return bytes_; }
+    uint32_t orgBase() const { return orgBase_; }
+    const std::unordered_map<std::string, uint32_t> &labels() const { return labels_; }
+    const std::vector<Relocation> &relocations() const { return relocations_; }
 
    private:
     void pass(const std::vector<Line> &lines) {
         bytes_.clear();
+        relocations_.clear();
         offset_ = 0;
         orgBase_ = 0;
         for (const auto &line : lines) processLine(line);
@@ -217,10 +236,19 @@ class Assembler {
         }
     }
 
-    uint32_t evalExpr(const std::vector<Syllable> &syls) {
+    // `externalName`/`needsBaseShift` mirror ../m68k/M68kAssembler.cpp's
+    // own `evalExpr` exactly - see Pdp11Assembler.h's own header
+    // comment on why only `lea`'s own absolute reference ever needs
+    // `needsBaseShift` (an ordinary PC-relative `Mem` operand never
+    // does - see `emitEAExtension`'s own comment below).
+    uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
+                       bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
         for (const auto &syl : syls) {
-            uint32_t v = resolveSyllable(syl);
+            bool wasExternal = false, wasLocalAddress = false;
+            uint32_t v = resolveSyllable(syl, &wasExternal, &wasLocalAddress);
+            if (wasExternal && externalName) *externalName = syl.text;
+            if (wasLocalAddress && needsBaseShift) *needsBaseShift = true;
             if (syl.sign == '-') {
                 total -= v;
             } else {
@@ -230,7 +258,7 @@ class Assembler {
         return total;
     }
 
-    uint32_t resolveSyllable(const Syllable &syl) {
+    uint32_t resolveSyllable(const Syllable &syl, bool *wasExternal = nullptr, bool *wasLocalAddress = nullptr) {
         if (syl.kind == SylKind::Group) return evalExpr(syl.group);
         if (syl.kind == SylKind::Number) {
             const std::string &t = syl.text;
@@ -240,8 +268,17 @@ class Assembler {
             return static_cast<uint32_t>(std::stoul(t));
         }
         auto it = labels_.find(syl.text);
-        if (it != labels_.end()) return it->second;
-        if (stage_ == 2) fail("undefined symbol '" + syl.text + "'");
+        if (it != labels_.end()) {
+            if (allowExternal_ && wasLocalAddress) *wasLocalAddress = true;
+            return it->second;
+        }
+        if (stage_ == 2) {
+            if (allowExternal_) {
+                if (wasExternal) *wasExternal = true;
+                return 0;
+            }
+            fail("undefined symbol '" + syl.text + "'");
+        }
         return 0;
     }
 
@@ -285,8 +322,19 @@ class Assembler {
         if (op.kind == Operand::Imm) {
             emit16(static_cast<uint16_t>(evalExpr(op.expr)));
         } else if (op.kind == Operand::Mem) {
-            uint32_t target = evalExpr(op.expr);
+            // PC-relative (mode 067) - target and extAddr are both
+            // already final, zero-based, position-independent
+            // offsets *within this one object* once resolved locally,
+            // so a locally-resolved reference needs no relocation at
+            // all (see Pdp11Assembler.h's own `kPdp11RelocRel16`
+            // comment): only an `externalName` (never a
+            // `needsBaseShift`) is ever requested here.
+            std::string externalName;
+            uint32_t target = evalExpr(op.expr, &externalName, nullptr);
             uint32_t extAddr = orgBase_ + offset_;
+            if (stage_ == 2 && allowExternal_ && !externalName.empty()) {
+                relocations_.push_back({offset_, externalName, kPdp11RelocRel16});
+            }
             emit16(static_cast<uint16_t>(target - extAddr));
         }
     }
@@ -345,7 +393,14 @@ class Assembler {
         if (src.kind != Operand::Mem) fail("'lea': source must be a label");
         uint8_t rn = requireReg(dst, "lea");
         emit16(static_cast<uint16_t>(0x1000 | (0b010 << 9) | (7 << 6) | rn));
-        emit16(static_cast<uint16_t>(evalExpr(src.expr)));
+        std::string externalName;
+        bool needsBaseShift = false;
+        uint32_t v = evalExpr(src.expr, &externalName, &needsBaseShift);
+        if (stage_ == 2 && allowExternal_) {
+            if (needsBaseShift) relocations_.push_back({offset_, "..", kPdp11RelocAbs16});
+            if (!externalName.empty()) relocations_.push_back({offset_, externalName, kPdp11RelocAbs16});
+        }
+        emit16(static_cast<uint16_t>(v));
     }
 
     // Branch-offset family (BR/BEQ/BNE/BLT/BLE/BGT/BGE): an 8-bit
@@ -485,19 +540,56 @@ class Assembler {
 
     std::vector<uint8_t> bytes_;
     std::unordered_map<std::string, uint32_t> labels_;
+    std::vector<Relocation> relocations_;
     uint32_t offset_ = 0;
     uint32_t orgBase_ = 0;
     int stage_ = 1;
+    bool allowExternal_;
 };
+
+// Builds the format-neutral ObjectFile a completed object-mode
+// Assembler produced - see Pdp11Assembler.h's own
+// `assemblePdp11Object` comment, and ../m68k/M68kAssembler.cpp's own
+// `buildObjectFile` for the identical algorithm this is ported from.
+ObjectFile buildObjectFile(const Assembler &a) {
+    ObjectFile obj;
+    obj.machineType = kPdp11CoffMachine;
+    const auto &bytesVec = a.bytes();
+    obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
+
+    for (const auto &kv : a.labels()) {
+        obj.symbols.push_back({kv.first, kv.second - a.orgBase(), /*isDefined=*/true});
+    }
+    std::sort(obj.symbols.begin(), obj.symbols.end(),
+              [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
+
+    std::unordered_map<std::string, bool> known;
+    for (const auto &s : obj.symbols) known[s.name] = true;
+    for (const auto &r : a.relocations()) {
+        if (r.symbolName != ".." && !known.count(r.symbolName)) {
+            obj.symbols.push_back({r.symbolName, 0, /*isDefined=*/false});
+            known[r.symbolName] = true;
+        }
+        obj.relocations.push_back({r.byteOffset, r.symbolName, r.kind});
+    }
+    return obj;
+}
 
 }  // namespace
 
 std::string assemblePdp11(const std::string &asmText) {
     std::vector<Line> lines = parseProgram(asmText);
-    Assembler assembler;
+    Assembler assembler(/*allowExternal=*/false);
     assembler.run(lines);
     const auto &bytes = assembler.bytes();
     return std::string(bytes.begin(), bytes.end());
+}
+
+ObjectFile assemblePdp11Object(const std::string &asmText) {
+    std::vector<Line> lines = parseProgram(asmText);
+    Assembler assembler(/*allowExternal=*/true);
+    assembler.run(lines);
+    return buildObjectFile(assembler);
 }
 
 }  // namespace pcc

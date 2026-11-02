@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 
+#include "objectformat/ObjectFile.h"
+
 namespace pcc {
 
 // A from-scratch, in-process two-pass assembler for exactly the
@@ -59,11 +61,29 @@ constexpr uint16_t kI8086CoffMachine = 0x0086;
 // from the same place.
 constexpr uint32_t kI8086BaseAddress = 0x7C00;
 
-// Relocation `type` values an 8086 object's own `CoffRelocation`
+// Relocation `type` values an 8086 object's own `ObjRelocation`
 // entries use (see I8086Assembler.cpp's own `RelocKind` comment) -
-// exported so I8086Linker.cpp can tell the two kinds apart when
-// patching a resolved symbol's value into a word.
+// exported so ../../linker/factory/I8086LinkerFactory.cpp can tell
+// the two kinds apart when patching a resolved symbol's value into a
+// word (both are plain, additive/relative 16-bit patches - see
+// ../../linker/GenericLinker.h's own `RelocKinds::patchAbs16`/
+// `patchRel16`, which this target reuses as-is rather than needing
+// any local patch function of its own).
 constexpr uint16_t kI8086RelocAbs16 = 1;
 constexpr uint16_t kI8086RelocRel16 = 2;
+
+// Assembles `asmText` (generated with `ORG 0`, not `kI8086BaseAddress`
+// - see I8086Codegen.cpp's own `generate()`) exactly like
+// `assembleI8086(asmText, Coff, true)` does, except it returns the
+// format-neutral ObjectFile a codegen backend builds once per compile
+// (see ../../objectformat/ObjectFile.h) directly, instead of already-
+// serialized COFF bytes. `--format=coff` compiles (see
+// I8086Codegen.h's own `objectMode`) still go through `assembleI8086`
+// as before; this function exists solely for
+// ../../linker/factory/I8086LinkerFactory.cpp's own `makeI8086Linker()`
+// to assemble its synthesized entry object without a serialize-then-
+// immediately-deserialize round trip through `writeCoffObject`/
+// `readCoffObject`.
+ObjectFile assembleI8086Object(const std::string &asmText);
 
 }  // namespace pcc

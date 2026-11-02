@@ -1,11 +1,13 @@
 #include "PIC18Assembler.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ANTLRInputStream.h"
@@ -148,14 +150,51 @@ std::optional<std::string> asBareIdent(const std::vector<Syllable> &operand) {
     return toLower(s.text);
 }
 
+// One pending fixup `assemblePIC18Object()` (see PIC18Assembler.h's
+// own header comment) turns into a real ObjRelocation once assembly
+// is done - mirrors ../i8008/I8008Assembler.cpp's own `Relocation`
+// (a `kind` field, not just one implied type, since this dialect also
+// has more than one relocation kind).
+struct Relocation {
+    uint32_t byteOffset;
+    std::string symbolName;
+    uint16_t kind;
+};
+
+// Which of this object's own linked address spaces a `labels_` entry
+// lives in, tracked alongside it so `buildObjectFile()` below can
+// build the right kind of `ObjSymbol` for each one - see that
+// function's own comment. `Equate` is a plain compile-time constant
+// (`name = expr`, e.g. STATUS/FSR0L/.../this backend's own `ac`/`bc`/
+// .../`SSTACK` pseudo-registers in object mode - see
+// PIC18Codegen.cpp's own `generate()`), never linker-visible at all.
+enum class LabelKind { Code, Data, Equate };
+
 // --- Two-pass assembly ----------------------------------------------------
 // Same code-space/data-space split as ../pic16/PIC16Assembler.cpp's
 // own Assembler (see that file's own header comment) - the one real
 // difference is that some instructions here (GOTO/CALL/MOVFF) are two
 // words, not one, so `codeOffset_` doesn't always advance by exactly
 // 1 the way every PIC16 instruction's own did.
+//
+// `allowExternal_` (constructor parameter) switches this same class
+// between the whole-program dialect (`assemblePIC18()`, every label
+// must resolve within this one compile) and the real separate-
+// compilation dialect (`assemblePIC18Object()`, an unresolved symbol
+// is deferred as a relocation instead of a hard error) - mirrors
+// every other GenericLinker-based backend's own single-Assembler-
+// class convention (see e.g. ../m68k/M68kAssembler.cpp's own
+// `Assembler(bool allowExternal)`) rather than duplicating this whole
+// class. `codeOffset_` is still counted in *words* either way (`k`'s
+// own real hardware unit, and this class's own existing encoding
+// logic already assumes that) - only `buildObjectFile()` below ever
+// needs a *byte* offset (GenericLinker.cpp's own unit throughout),
+// computed there by multiplying by two, never by changing what this
+// class counts internally.
 class Assembler {
    public:
+    explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
+
     void run(const std::vector<Line> &lines) {
         stage_ = 1;
         pass(lines);
@@ -164,10 +203,15 @@ class Assembler {
     }
 
     const std::vector<uint16_t> &words() const { return words_; }
+    uint32_t dataSize() const { return ramOffset_; }
+    const std::unordered_map<std::string, uint32_t> &labels() const { return labels_; }
+    const std::unordered_map<std::string, LabelKind> &labelKinds() const { return labelKind_; }
+    const std::vector<Relocation> &relocations() const { return relocations_; }
 
    private:
     void pass(const std::vector<Line> &lines) {
         words_.clear();
+        relocations_.clear();
         codeOffset_ = 0;
         ramOffset_ = 0;
         for (const auto &line : lines) processLine(line);
@@ -176,24 +220,49 @@ class Assembler {
     void processLine(const Line &line) {
         switch (line.kind) {
             case Line::None:
-                for (const auto &lbl : line.labels) labels_[lbl] = codeOffset_;
+                for (const auto &lbl : line.labels) {
+                    labels_[lbl] = codeOffset_;
+                    labelKind_[lbl] = LabelKind::Code;
+                }
                 return;
-            case Line::Equate:
-                labels_[line.labels.back()] = evalExpr(line.rhs);
+            case Line::Equate: {
+                const std::string &name = line.labels.back();
+                labels_[name] = evalExpr(line.rhs);
+                labelKind_[name] = LabelKind::Equate;
+                equateNames_.insert(name);
                 return;
+            }
             case Line::Org:
-                for (const auto &lbl : line.labels) labels_[lbl] = codeOffset_;
+                for (const auto &lbl : line.labels) {
+                    labels_[lbl] = codeOffset_;
+                    labelKind_[lbl] = LabelKind::Code;
+                }
                 codeOffset_ = evalExpr(line.rhs);
                 return;
             case Line::OrgRam:
-                for (const auto &lbl : line.labels) labels_[lbl] = codeOffset_;
+                for (const auto &lbl : line.labels) {
+                    labels_[lbl] = codeOffset_;
+                    labelKind_[lbl] = LabelKind::Code;
+                }
                 ramOffset_ = evalExpr(line.rhs);
                 return;
             case Line::Res: {
-                for (const auto &lbl : line.labels) labels_[lbl] = ramOffset_;
+                for (const auto &lbl : line.labels) {
+                    labels_[lbl] = ramOffset_;
+                    labelKind_[lbl] = LabelKind::Data;
+                }
                 uint32_t count = evalExpr(line.rhs);
                 ramOffset_ += count;
-                if (stage_ == 2 && ramOffset_ > 0x60) {
+                // This per-object bound only ever reflects reality in
+                // whole-program mode, where `ramOffset_` *is* the real
+                // final Access Bank address: in object mode every
+                // object's own data space gets re-based at link time
+                // (see PIC18Assembler.h's own `kPIC18DataBaseAddress`
+                // comment), so a single object alone staying under the
+                // window proves nothing about the linked total -
+                // PIC18LinkerFactory.cpp's own `patchDataAbs8` is the
+                // real, authoritative check for that case.
+                if (stage_ == 2 && !allowExternal_ && ramOffset_ > 0x60) {
                     fail("Access Bank GPR space exhausted (this target is restricted to the 96-byte 0x00-0x5F "
                          "window - see PIC18Codegen.h's own header comment) - program needs too many globals/"
                          "locals/temporaries for this target");
@@ -201,16 +270,36 @@ class Assembler {
                 return;
             }
             case Line::Instr:
-                for (const auto &lbl : line.labels) labels_[lbl] = codeOffset_;
+                for (const auto &lbl : line.labels) {
+                    labels_[lbl] = codeOffset_;
+                    labelKind_[lbl] = LabelKind::Code;
+                }
                 encodeInstr(line.mnemonic, line.operands);
                 return;
         }
     }
 
-    uint32_t evalExpr(const std::vector<Syllable> &syls) {
+    // `externalName`/`needsBaseShift` mirror ../m68k/M68kAssembler.cpp's
+    // own `evalExpr` exactly - see PIC18Assembler.h's own header
+    // comment on why *any* local address reference, not just an
+    // external one, needs a relocation here once `allowExternal_` is
+    // set. Which reserved pseudo-symbol (".." vs "..d") and which
+    // relocation kind a caller ends up using for `needsBaseShift`/
+    // `externalName` is entirely up to that caller (`controlAddr20`
+    // for a CODE-space reference, `fileAddr`/`fileAddr12` for a DATA-
+    // space one) - this function only ever reports *that* a real,
+    // linker-visible label (as opposed to a plain number or a compile-
+    // time `equateNames_` constant) was resolved, never which address
+    // space it lives in, since the caller already knows that from its
+    // own instruction-encoding context.
+    uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
+                       bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
         for (const auto &syl : syls) {
-            uint32_t v = resolveSyllable(syl);
+            bool wasExternal = false, wasLocalAddress = false;
+            uint32_t v = resolveSyllable(syl, &wasExternal, &wasLocalAddress);
+            if (wasExternal && externalName) *externalName = syl.text;
+            if (wasLocalAddress && needsBaseShift) *needsBaseShift = true;
             if (syl.sign == '-') {
                 total -= v;
             } else {
@@ -220,7 +309,7 @@ class Assembler {
         return total;
     }
 
-    uint32_t resolveSyllable(const Syllable &syl) {
+    uint32_t resolveSyllable(const Syllable &syl, bool *wasExternal = nullptr, bool *wasLocalAddress = nullptr) {
         if (syl.kind == SylKind::Group) return evalExpr(syl.group);
         if (syl.kind == SylKind::Number) {
             const std::string &t = syl.text;
@@ -230,8 +319,17 @@ class Assembler {
             return static_cast<uint32_t>(std::stoul(t));
         }
         auto it = labels_.find(syl.text);
-        if (it != labels_.end()) return it->second;
-        if (stage_ == 2) fail("undefined symbol '" + syl.text + "'");
+        if (it != labels_.end()) {
+            if (allowExternal_ && wasLocalAddress && !equateNames_.count(syl.text)) *wasLocalAddress = true;
+            return it->second;
+        }
+        if (stage_ == 2) {
+            if (allowExternal_) {
+                if (wasExternal) *wasExternal = true;
+                return 0;
+            }
+            fail("undefined symbol '" + syl.text + "'");
+        }
         return 0;
     }
 
@@ -262,8 +360,21 @@ class Assembler {
     // SFR address like STATUS (0xFD8) here correctly keeps only its
     // low byte (0xD8), exactly the real hardware's own Access Bank
     // aliasing of 0x60-0xFF onto 0xF60-0xFFF.
+    //
+    // In object mode, a real (non-equate) label resolved here is
+    // always a DATA-space reference (see PIC18Assembler.h's own
+    // header comment: this field is never used for anything else),
+    // so a needed relocation always targets "..d"/`kPIC18RelocDataAbs8`
+    // - this instruction's own current word (not yet emitted - `f`
+    // always resolves before its own `emitWord` call) is exactly
+    // where that single byte lives, at byte offset `codeOffset_ * 2`
+    // (the word-to-byte conversion every CODE-space site needs too -
+    // see `controlAddr20`'s own comment).
     uint8_t fileAddr(const std::vector<Syllable> &operand, const std::string &) {
-        uint32_t v = evalExpr(operand);
+        std::string externalName;
+        bool needsShift = false;
+        uint32_t v = evalExpr(operand, &externalName, &needsShift);
+        emitDataReloc(needsShift, externalName);
         return static_cast<uint8_t>(v & 0xFF);
     }
 
@@ -272,11 +383,38 @@ class Assembler {
     // byte data space directly, bypassing BSR/Access Bank entirely -
     // so an SFR here needs its real full address (e.g. STATUS is
     // 0xFD8, not 0xD8).
-    uint16_t fileAddr12(const std::vector<Syllable> &operand, const std::string &mnemonic) {
-        uint32_t v = evalExpr(operand);
+    //
+    // `wordDelta` (0 for `fs`, 1 for `fd` - see `encodeInstr`'s own
+    // `movff` case) is needed because *both* operands are resolved
+    // before *either* of MOVFF's own two words is emitted (unlike
+    // `fileAddr` above, always resolved immediately before its own
+    // one-word instruction) - without it, `fd`'s own relocation site
+    // would be computed against `codeOffset_` before it's advanced
+    // past `fs`'s own word at all, landing on the wrong byte.
+    uint16_t fileAddr12(const std::vector<Syllable> &operand, const std::string &mnemonic, uint32_t wordDelta = 0) {
+        std::string externalName;
+        bool needsShift = false;
+        uint32_t v = evalExpr(operand, &externalName, &needsShift);
         if (stage_ == 2 && v > 0xFFF) fail("'" + mnemonic + "': address " + std::to_string(v) +
                                             " doesn't fit this target's 12-bit data space");
+        emitDataReloc(needsShift, externalName, wordDelta);
         return static_cast<uint16_t>(v & 0xFFF);
+    }
+
+    // Shared by `fileAddr`/`fileAddr12` above - pushes a
+    // `kPIC18RelocDataAbs8` relocation (see PIC18Assembler.h's own
+    // comment) against "..d" (a same-object DATA-space reference) or
+    // `externalName` (a cross-object one), at this instruction's own
+    // `wordDelta`'th word's own low byte - the one and only byte
+    // either caller's own field ever occupies (see
+    // `kPIC18RelocDataAbs8`'s own comment on why the field's own high
+    // nibble, for MOVFF, never needs its own separate patch site).
+    void emitDataReloc(bool needsShift, const std::string &externalName, uint32_t wordDelta = 0) {
+        if (stage_ != 2 || !allowExternal_) return;
+        if (!needsShift && externalName.empty()) return;
+        uint32_t site = (codeOffset_ + wordDelta) * 2;
+        if (needsShift) relocations_.push_back({site, "..d", kPIC18RelocDataAbs8});
+        if (!externalName.empty()) relocations_.push_back({site, externalName, kPIC18RelocDataAbs8});
     }
 
     uint8_t bitNum(const std::vector<Syllable> &operand, const std::string &mnemonic) {
@@ -298,10 +436,37 @@ class Assembler {
     // header comment) comfortably fits, so unlike PIC16's own direct-
     // 11-bit GOTO/CALL, no paging/range workaround is ever needed
     // here.
+    //
+    // In object mode, a real (non-equate) label resolved here is
+    // always a CODE-space reference (every GOTO/CALL target is always
+    // a bare function/control-flow label - see PIC18Assembler.h's own
+    // header comment), so a needed relocation always targets
+    // ".."/the three `kPIC18RelocGotoCall*` kinds, at this
+    // instruction's own first word (not yet emitted - this is always
+    // called before either of `encodeInstr`'s own two `emitWord`
+    // calls for `goto`/`call`). Pushed high-nibble-first, then mid,
+    // then low - see PIC18LinkerFactory.cpp's own `patchGotoCallHiNibble`
+    // comment for why that order (not emission order) is what makes
+    // the carry chain across all three patch sites correct.
     uint32_t controlAddr20(const std::vector<Syllable> &operand, const std::string &mnemonic) {
-        uint32_t v = evalExpr(operand);
+        std::string externalName;
+        bool needsShift = false;
+        uint32_t v = evalExpr(operand, &externalName, &needsShift);
         if (stage_ == 2 && v > 0xFFFFF) fail("'" + mnemonic + "': address " + std::to_string(v) +
                                               " is beyond this target's 20-bit GOTO/CALL range");
+        if (stage_ == 2 && allowExternal_ && (needsShift || !externalName.empty())) {
+            uint32_t site = codeOffset_ * 2;
+            if (needsShift) {
+                relocations_.push_back({site + 3, "..", kPIC18RelocGotoCallHiNibble});
+                relocations_.push_back({site + 2, "..", kPIC18RelocGotoCallMid});
+                relocations_.push_back({site, "..", kPIC18RelocGotoCallLo});
+            }
+            if (!externalName.empty()) {
+                relocations_.push_back({site + 3, externalName, kPIC18RelocGotoCallHiNibble});
+                relocations_.push_back({site + 2, externalName, kPIC18RelocGotoCallMid});
+                relocations_.push_back({site, externalName, kPIC18RelocGotoCallLo});
+            }
+        }
         return v & 0xFFFFF;
     }
 
@@ -371,8 +536,8 @@ class Assembler {
         }
 
         if (mnemonic == "movff") {
-            uint16_t fs = fileAddr12(operandAt(ops, 0, mnemonic, 2), mnemonic);
-            uint16_t fd = fileAddr12(operandAt(ops, 1, mnemonic, 2), mnemonic);
+            uint16_t fs = fileAddr12(operandAt(ops, 0, mnemonic, 2), mnemonic, /*wordDelta=*/0);
+            uint16_t fd = fileAddr12(operandAt(ops, 1, mnemonic, 2), mnemonic, /*wordDelta=*/1);
             emitWord(static_cast<uint16_t>(0xC000 | fs));
             emitWord(static_cast<uint16_t>(0xF000 | fd));
             return;
@@ -383,10 +548,77 @@ class Assembler {
 
     std::vector<uint16_t> words_;
     std::unordered_map<std::string, uint32_t> labels_;
+    std::unordered_map<std::string, LabelKind> labelKind_;
+    std::unordered_set<std::string> equateNames_;
+    std::vector<Relocation> relocations_;
     uint32_t codeOffset_ = 0;
     uint32_t ramOffset_ = 0;
     int stage_ = 1;
+    bool allowExternal_;
 };
+
+// Packs each 16-bit instruction word into two little-endian bytes -
+// the real on-disk PIC18 program-memory shape (see PIC18Assembler.h's
+// own header comment), and `assemblePIC18Object()`'s own
+// `ObjectFile::textBytes` representation of it (unlike
+// `assemblePIC18()`'s own Intel-HEX text container, built straight
+// from `words()` by `toIntelHex()` below instead).
+std::vector<uint8_t> packWordsToBytes(const std::vector<uint16_t> &words) {
+    std::vector<uint8_t> out;
+    out.reserve(words.size() * 2);
+    for (uint16_t w : words) {
+        out.push_back(static_cast<uint8_t>(w & 0xFF));
+        out.push_back(static_cast<uint8_t>((w >> 8) & 0xFF));
+    }
+    return out;
+}
+
+// Builds the format-neutral ObjectFile a completed object-mode
+// Assembler produced - see PIC18Assembler.h's own
+// `assemblePIC18Object` comment, and ../m68k/M68kAssembler.cpp's own
+// `buildObjectFile` for the single-address-space template this is
+// ported from; the one real difference is the CODE/DATA split itself
+// (`LabelKind` - see that enum's own comment), which this function is
+// the one place that actually resolves into two separate `ObjSymbol`
+// shapes.
+ObjectFile buildObjectFile(const Assembler &a) {
+    ObjectFile obj;
+    obj.machineType = kPIC18CoffMachine;
+    obj.textBytes = packWordsToBytes(a.words());
+    obj.dataSize = a.dataSize();
+
+    for (const auto &kv : a.labelKinds()) {
+        const std::string &name = kv.first;
+        if (kv.second == LabelKind::Equate) continue;  // a pure compile-time constant - never linker-visible
+        uint32_t raw = a.labels().at(name);
+        if (kv.second == LabelKind::Code) {
+            obj.symbols.push_back({name, raw * 2, /*isDefined=*/true, /*isData=*/false});
+        } else {
+            obj.symbols.push_back({name, raw, /*isDefined=*/true, /*isData=*/true});
+        }
+    }
+    std::sort(obj.symbols.begin(), obj.symbols.end(),
+              [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
+
+    std::unordered_map<std::string, bool> known;
+    for (const auto &s : obj.symbols) known[s.name] = true;
+    for (const auto &r : a.relocations()) {
+        if (!known.count(r.symbolName)) {
+            // An as-yet-undefined forward/cross-object reference (or
+            // one of the reserved pseudo-symbols, ".."/"..d", neither
+            // of which is ever a real label - see GenericLinker.cpp's
+            // own `merge()`, which always special-cases both before
+            // ever consulting the real symbol table at all, so this
+            // placeholder's own `isData` is never actually read for
+            // either one) - `isData=false` matches every other
+            // backend's own convention for an undefined placeholder.
+            obj.symbols.push_back({r.symbolName, 0, /*isDefined=*/false, /*isData=*/false});
+            known[r.symbolName] = true;
+        }
+        obj.relocations.push_back({r.byteOffset, r.symbolName, r.kind});
+    }
+    return obj;
+}
 
 // Standard Intel HEX - see ../pic16/PIC16Assembler.cpp's own
 // toIntelHex() comment (identical convention: each program-memory
@@ -426,9 +658,16 @@ std::string toIntelHex(const std::vector<uint16_t> &words) {
 
 std::string assemblePIC18(const std::string &asmText) {
     std::vector<Line> lines = parseProgram(asmText);
-    Assembler assembler;
+    Assembler assembler(/*allowExternal=*/false);
     assembler.run(lines);
     return toIntelHex(assembler.words());
+}
+
+ObjectFile assemblePIC18Object(const std::string &asmText) {
+    std::vector<Line> lines = parseProgram(asmText);
+    Assembler assembler(/*allowExternal=*/true);
+    assembler.run(lines);
+    return buildObjectFile(assembler);
 }
 
 }  // namespace pcc

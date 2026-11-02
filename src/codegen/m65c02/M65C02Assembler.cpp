@@ -1,8 +1,10 @@
 #include "M65C02Assembler.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ANTLRInputStream.h"
@@ -155,8 +157,20 @@ std::vector<Line> parseProgram(const std::string &text) {
 // between passes: pass 1 already resolves every value correctly
 // (since sizes never depend on values), pass 2 just re-derives the
 // identical bindings and this time actually emits bytes using them.
+// One pending fixup `assembleM65C02Object()` turns into a real
+// ObjRelocation once assembly is done - see
+// ../z80/Z80Assembler.cpp's own `Relocation` comment (identical
+// role).
+struct Relocation {
+    uint32_t byteOffset;
+    std::string symbolName;
+    uint16_t type;
+};
+
 class Assembler {
    public:
+    explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
+
     void run(const std::vector<Line> &lines) {
         stage_ = 1;
         pass(lines);
@@ -165,10 +179,14 @@ class Assembler {
     }
 
     const std::vector<uint8_t> &bytes() const { return bytes_; }
+    uint32_t orgBase() const { return orgBase_; }
+    const std::unordered_map<std::string, uint32_t> &labels() const { return labels_; }
+    const std::vector<Relocation> &relocations() const { return relocations_; }
 
    private:
     void pass(const std::vector<Line> &lines) {
         bytes_.clear();
+        relocations_.clear();
         offset_ = 0;
         orgBase_ = 0;
         for (const auto &line : lines) processLine(line);
@@ -178,6 +196,13 @@ class Assembler {
     // `name` in the same symbol table - a label's value is simply
     // "the current location", an Equate's is whatever its own
     // expression evaluates to right now, independent of location.
+    // `equates_` remembers which names came from the Equate side of
+    // that split: M65C02Codegen.cpp's own `ptr`/`ac`/`bc`/`cx`/`dx`
+    // are bound this way specifically because their value is a fixed
+    // compile-time constant, not a real address - a reference to one
+    // must never be treated as needing the ".." base-shift relocation
+    // the way an ordinary label does (see resolveSyllable() below and
+    // M65C02Assembler.h's own `kM65C02RelocAbs16` comment).
     void processLine(const Line &line) {
         for (const auto &lbl : line.labels) labels_[lbl] = orgBase_ + offset_;
         switch (line.kind) {
@@ -185,6 +210,7 @@ class Assembler {
                 return;
             case Line::Equate:
                 labels_[line.equateName] = evalExpr(line.exprList.at(0));
+                equates_.insert(line.equateName);
                 return;
             case Line::Org:
                 orgBase_ = evalExpr(line.exprList.at(0));
@@ -198,10 +224,16 @@ class Assembler {
         }
     }
 
-    uint32_t evalExpr(const std::vector<Syllable> &syls) {
+    // `externalName`/`needsBaseShift` mirror ../z80/Z80Assembler.cpp's
+    // own `evalExpr` exactly.
+    uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
+                       bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
         for (const auto &syl : syls) {
-            uint32_t v = resolveSyllable(syl);
+            bool wasExternal = false, wasLocalAddress = false;
+            uint32_t v = resolveSyllable(syl, &wasExternal, &wasLocalAddress);
+            if (wasExternal && externalName) *externalName = syl.text;
+            if (wasLocalAddress && needsBaseShift) *needsBaseShift = true;
             if (syl.sign == '-') {
                 total -= v;
             } else {
@@ -211,7 +243,7 @@ class Assembler {
         return total;
     }
 
-    uint32_t resolveSyllable(const Syllable &syl) {
+    uint32_t resolveSyllable(const Syllable &syl, bool *wasExternal = nullptr, bool *wasLocalAddress = nullptr) {
         if (syl.kind == SylKind::Group) return evalExpr(syl.group);
         if (syl.kind == SylKind::Number) {
             const std::string &t = syl.text;
@@ -221,8 +253,19 @@ class Assembler {
             return static_cast<uint32_t>(std::stoul(t));
         }
         auto it = labels_.find(syl.text);
-        if (it != labels_.end()) return it->second;
-        if (stage_ == 2) fail("undefined symbol '" + syl.text + "'");
+        if (it != labels_.end()) {
+            // An Equate's own value is a fixed constant, identical in
+            // every object - see this class's own `equates_` comment.
+            if (allowExternal_ && wasLocalAddress && !equates_.count(syl.text)) *wasLocalAddress = true;
+            return it->second;
+        }
+        if (stage_ == 2) {
+            if (allowExternal_) {
+                if (wasExternal) *wasExternal = true;
+                return 0;
+            }
+            fail("undefined symbol '" + syl.text + "'");
+        }
         return 0;
     }
 
@@ -246,7 +289,13 @@ class Assembler {
     // full 16-bit resolved value, no range check (any symbol in this
     // program's own 64KB address space is valid here).
     void emitAbsOperand(const std::vector<Syllable> &e) {
-        uint32_t v = evalExpr(e);
+        std::string externalName;
+        bool needsBaseShift = false;
+        uint32_t v = evalExpr(e, &externalName, &needsBaseShift);
+        if (stage_ == 2 && allowExternal_) {
+            if (needsBaseShift) relocations_.push_back({offset_, "..", kM65C02RelocAbs16});
+            if (!externalName.empty()) relocations_.push_back({offset_, externalName, kM65C02RelocAbs16});
+        }
         emit8(static_cast<uint8_t>(v & 0xFF));
         emit8(static_cast<uint8_t>((v >> 8) & 0xFF));
     }
@@ -260,13 +309,25 @@ class Assembler {
     // operator means, just spelled as a plain mnemonic here instead
     // of needing a grammar token for `<`/`>` that doesn't exist).
     void emitImmLow(const std::vector<Syllable> &e) {
-        uint32_t v = evalExpr(e);
+        std::string externalName;
+        bool needsBaseShift = false;
+        uint32_t v = evalExpr(e, &externalName, &needsBaseShift);
+        if (stage_ == 2 && allowExternal_) {
+            if (needsBaseShift) relocations_.push_back({offset_, "..", kM65C02RelocAbsLo8});
+            if (!externalName.empty()) relocations_.push_back({offset_, externalName, kM65C02RelocAbsLo8});
+        }
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
     // `ldai_hi`/`adci_hi`'s own immediate operand - the HIGH byte of
     // the resolved value (a real assembler's `#>label`).
     void emitImmHigh(const std::vector<Syllable> &e) {
-        uint32_t v = evalExpr(e);
+        std::string externalName;
+        bool needsBaseShift = false;
+        uint32_t v = evalExpr(e, &externalName, &needsBaseShift);
+        if (stage_ == 2 && allowExternal_) {
+            if (needsBaseShift) relocations_.push_back({offset_, "..", kM65C02RelocAbsHi8});
+            if (!externalName.empty()) relocations_.push_back({offset_, externalName, kM65C02RelocAbsHi8});
+        }
         emit8(static_cast<uint8_t>((v >> 8) & 0xFF));
     }
     // `ldaind`/`staind`'s own operand - the zero-page indirect-
@@ -386,19 +447,56 @@ class Assembler {
 
     std::vector<uint8_t> bytes_;
     std::unordered_map<std::string, uint32_t> labels_;
+    std::unordered_set<std::string> equates_;
+    std::vector<Relocation> relocations_;
     uint32_t offset_ = 0;
     uint32_t orgBase_ = 0;
     int stage_ = 1;
+    bool allowExternal_;
 };
+
+// Builds the format-neutral ObjectFile a completed object-mode
+// Assembler produced - see ../z80/Z80Assembler.cpp's own
+// `buildObjectFile` (identical algorithm).
+ObjectFile buildObjectFile(const Assembler &a) {
+    ObjectFile obj;
+    obj.machineType = kM65C02CoffMachine;
+    const auto &bytesVec = a.bytes();
+    obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
+
+    for (const auto &kv : a.labels()) {
+        obj.symbols.push_back({kv.first, kv.second - a.orgBase(), /*isDefined=*/true});
+    }
+    std::sort(obj.symbols.begin(), obj.symbols.end(),
+              [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
+
+    std::unordered_map<std::string, bool> known;
+    for (const auto &s : obj.symbols) known[s.name] = true;
+    for (const auto &r : a.relocations()) {
+        if (!known.count(r.symbolName)) {
+            obj.symbols.push_back({r.symbolName, 0, /*isDefined=*/false});
+            known[r.symbolName] = true;
+        }
+        obj.relocations.push_back({r.byteOffset, r.symbolName, r.type});
+    }
+    return obj;
+}
 
 }  // namespace
 
 std::string assembleM65C02(const std::string &asmText) {
     std::vector<Line> lines = parseProgram(asmText);
-    Assembler assembler;
+    Assembler assembler(/*allowExternal=*/false);
     assembler.run(lines);
     const auto &bytes = assembler.bytes();
     return std::string(bytes.begin(), bytes.end());
+}
+
+ObjectFile assembleM65C02Object(const std::string &asmText) {
+    std::vector<Line> lines = parseProgram(asmText);
+    Assembler assembler(/*allowExternal=*/true);
+    assembler.run(lines);
+    return buildObjectFile(assembler);
 }
 
 }  // namespace pcc

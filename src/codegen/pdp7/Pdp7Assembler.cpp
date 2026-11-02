@@ -466,42 +466,57 @@ std::string writePtrOrRim(const Assembler &a, bool rim) {
 // kPdp7RelocOr/Add/Sub comment (exported from there, not redeclared
 // here, so Pdp7Linker.cpp uses the exact same values).
 
-std::string writeCoff(const Assembler &a) {
+// Builds the format-neutral ObjectFile a completed object-mode
+// Assembler produced - shared by `writeCoff()` (serializes it
+// straight to COFF bytes, for `assemblePdp7`'s own `Coff` case) and
+// `assemblePdp7Object()` (returns it directly - see Pdp7Assembler.h's
+// own comment on why). Every word is packed into 3 raw `.textBytes`
+// bytes, big-endian (high 2 bits of the top byte always 0, since an
+// 18-bit word never needs more than 3 bytes) - see
+// GenericLinker.h's own `GenericLinkerConfig::addressUnitBytes`
+// comment for how ../../linker/factory/Pdp7LinkerFactory.cpp's own
+// `makePdp7Linker()` tells GenericLinker to treat every 3 of these
+// packed bytes as one addressable/relocatable pdp7 word.
+ObjectFile buildObjectFile(const Assembler &a) {
     uint32_t base = a.base();
     const auto &mem = a.mem();
-    std::vector<uint8_t> text;
+    ObjectFile obj;
+    obj.machineType = kPdp7CoffMachine;
     for (size_t loc = base; loc < mem.size(); ++loc) {
         uint32_t w = (mem[loc] ? *mem[loc] : 0) & MASK18;
-        text.push_back(static_cast<uint8_t>((w >> 16) & 0xFF));
-        text.push_back(static_cast<uint8_t>((w >> 8) & 0xFF));
-        text.push_back(static_cast<uint8_t>(w & 0xFF));
+        obj.textBytes.push_back(static_cast<uint8_t>((w >> 16) & 0xFF));
+        obj.textBytes.push_back(static_cast<uint8_t>((w >> 8) & 0xFF));
+        obj.textBytes.push_back(static_cast<uint8_t>(w & 0xFF));
     }
 
-    std::vector<CoffSymbol> symbols;
     for (const auto &kv : a.labels()) {
         uint32_t addr = kv.second;
         if (addr & RELATIVE) addr = (addr & MASK18) + base;
         if (addr < base) continue;  // not part of the emitted .text section
-        symbols.push_back({kv.first, (addr - base) * 3, /*isDefined=*/true});
+        obj.symbols.push_back({kv.first, (addr - base) * 3, /*isDefined=*/true});
     }
-    std::sort(symbols.begin(), symbols.end(), [](const CoffSymbol &x, const CoffSymbol &y) { return x.name < y.name; });
+    std::sort(obj.symbols.begin(), obj.symbols.end(),
+              [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
 
     // Every relocation's target symbol needs a symbol-table entry too
     // (the writer resolves relocations to symbols by index) - add one,
     // undefined, for any name that isn't already a real local label.
-    std::vector<CoffRelocation> relocations;
     std::unordered_map<std::string, bool> known;
-    for (const auto &s : symbols) known[s.name] = true;
+    for (const auto &s : obj.symbols) known[s.name] = true;
     for (const auto &r : a.relocations()) {
         if (!known.count(r.symbolName)) {
-            symbols.push_back({r.symbolName, 0, /*isDefined=*/false});
+            obj.symbols.push_back({r.symbolName, 0, /*isDefined=*/false});
             known[r.symbolName] = true;
         }
         uint16_t type = r.op == '+' ? kPdp7RelocAdd : (r.op == '-' ? kPdp7RelocSub : kPdp7RelocOr);
-        relocations.push_back({r.wordOffset * 3, r.symbolName, type});
+        obj.relocations.push_back({r.wordOffset * 3, r.symbolName, type});
     }
+    return obj;
+}
 
-    return writeCoffObject(kPdp7CoffMachine, text, symbols, relocations);
+std::string writeCoff(const Assembler &a) {
+    ObjectFile obj = buildObjectFile(a);
+    return writeCoffObject(obj.machineType, obj.textBytes, obj.symbols, obj.relocations, obj.dataSize);
 }
 
 }  // namespace
@@ -524,6 +539,13 @@ std::string assemblePdp7(const std::string &asmText, Pdp7OutputFormat format, bo
             return writeCoff(assembler);
     }
     fail("unknown output format");
+}
+
+ObjectFile assemblePdp7Object(const std::string &asmText) {
+    std::vector<Line> lines = parseProgram(asmText);
+    Assembler assembler(/*allowExternal=*/true);
+    assembler.run(lines);
+    return buildObjectFile(assembler);
 }
 
 }  // namespace pcc

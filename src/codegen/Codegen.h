@@ -59,6 +59,21 @@ class Backend {
     // real assembler involved) - e.g. pdp7's {"a7out","list","ptr","rim"}.
     virtual std::vector<std::string> assembledFormats() const = 0;
 
+    // Whether `format` means real separate compilation for this
+    // backend specifically (`objectMode`/IRBuilder.h's
+    // `allowExternal` - see generate()'s own comment) - main.cpp asks
+    // this instead of hardcoding a format name, since the same name
+    // can mean genuinely different things to different backends:
+    // `--format=elf` is a *complete* self-contained whole program for
+    // `8086` (I8086Codegen.h's own peer of `raw`/`bin`) but a real
+    // relocatable object file (see
+    // ../objectformat/ObjectFormat.h) for `z80` (Z80Codegen.h's own
+    // peer of `coff`). The default - only "coff" - matches every
+    // backend that predates the format-neutral object model (pdp7,
+    // 8086); a backend that uses more than one object-file format
+    // (z80's coff/elf/macho/aout/objraw) overrides this.
+    virtual bool isObjectFormat(const std::string &format) const { return format == "coff"; }
+
     // Where to look for the real assembler if --assembler wasn't
     // given - a relative path (resolved from the current directory)
     // or a bare command name (resolved via PATH).

@@ -83,12 +83,66 @@ namespace pcc {
 //   way), but leaves W/STATUS completely undisturbed, which happens
 //   to make it a strictly safer choice for copy2() than the 8080/
 //   6502/PIC16 backends' own W-based copy ever needs to be here.
+//
+// `objectMode` (real separate compilation, `--format=coff`/`elf`/
+// `macho`/`aout`/`objraw` - see Codegen.h's own header comment)
+// assembles at this same CODE address 0, but omits the entry sequence
+// itself (the `goto START`/`START:`/FSR0H clear/SP setup/`call
+// fn_main`/halt loop) entirely - PIC18LinkerFactory.cpp's own
+// synthesized entry object is solely responsible for that, once
+// every object is merged and `fn_main`'s linked address is
+// resolvable, same pattern every other GenericLinker-based backend
+// follows (see M68kCodegen.cpp's own `generate()` comment). This
+// backend's own `ac`/`bc`/`cx`/`dx`/`ptr`/`SP`/`SSTACK` pseudo-
+// registers become plain compile-time equates in object mode, fixed
+// at the same addresses (0x00-0x21) in every object and in
+// PIC18LinkerFactory.cpp's own entry object - see
+// PIC18Assembler.h's own `kPIC18DataBaseAddress` comment for why that
+// needs no relocation at all, the same choice
+// ../mcs51/MCS51Codegen.cpp's own identical pseudo-registers already
+// make.
+//
+// A global *variable*'s own initial value still has to be written at
+// runtime, not loaded as part of the image (real data memory is RAM,
+// with no "initial contents" of its own - see this file's own header
+// comment above), so in object mode that write-out code runs as the
+// prologue of `fn_main` itself instead of `START:` (the one point
+// every linked program is guaranteed to reach exactly once, before
+// any other code, without PIC18LinkerFactory.cpp's own entry object -
+// built once, before it has ever seen any user object at all -
+// needing to know anything about this file's own globals). Only the
+// file that defines `main` gets this treatment: a global *defined* in
+// a different file from the one that defines `main` has no mechanism
+// here to run its own initializer under real separate compilation at
+// all, nor does any function's own local/parameter get zero-
+// initialized the way `generate()`'s own whole-program `START:`
+// sequence otherwise guarantees - a real, documented scope limitation
+// of real separate compilation on this backend specifically, not
+// present in whole-program (`--format=hex`) mode at all.
+//
+// Every global/local/param's own Access-Bank address is a real,
+// relocatable assembler symbol (see PIC18Assembler.cpp's own
+// `fileAddr`/`fileAddr12`, and PIC18Assembler.h's own header comment
+// on the `"..d"` pseudo-symbol): two separately-compiled files' own
+// distinct globals get distinct, non-colliding linked data-space
+// addresses once merged by GenericLinker.cpp's own second, Harvard-
+// data-space layout pass, the actual fix this whole migration exists
+// for (see ../../objectformat/ObjectFile.h's own `ObjSymbol::isData`
+// comment).
 class PIC18Codegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "pic18"; }
     std::string sourceExtension() const override { return ".pic18"; }
-    std::vector<std::string> assembledFormats() const override { return {"hex"}; }
+    // `hex` is this backend's own whole-program Intel-HEX output; the
+    // other five mean a real relocatable object file for separate
+    // compilation (see Codegen.h's own header comment on why this is
+    // asked per-backend, and PIC18Assembler.h's own header comment on
+    // what this backend's own ObjectFile actually carries).
+    std::vector<std::string> assembledFormats() const override {
+        return {"hex", "coff", "elf", "macho", "aout", "objraw"};
+    }
+    bool isObjectFormat(const std::string &format) const override { return format != "hex"; }
     std::string defaultAssemblerPath() const override { return ""; }
     std::string buildAssembleCommand(const std::string &assemblerPath, const std::string &format,
                                       const std::string &srcPath, const std::string &outPath) const override;

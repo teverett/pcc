@@ -4,26 +4,38 @@
 #include <vector>
 
 #include "LinkedImage.h"
-#include "coff/CoffReader.h"
+#include "objectformat/ObjectFile.h"
 
 namespace pcc {
 
 // The architecture-specific half of `--link` (see main.cpp): combines
-// several independently-compiled COFF object files (see
-// ../coff/CoffReader.h) - each produced by `pcc --format=coff` from
-// its own single `.c` file - into one fully-resolved LinkedImage (see
+// several independently-compiled object files (see
+// ../objectformat/ObjectFormat.h - any supported format, COFF/ELF/
+// Mach-O/a.out/raw, read back into the same format-neutral
+// `ObjectFile`) - each produced by `pcc --format=<fmt>` from its own
+// single `.c` file - into one fully-resolved LinkedImage (see
 // LinkedImage.h). Writing that image out in a particular format is a
 // separate, decoupled step - see FormatWriter.h - so this interface
 // only ever does "validate -> lay out sequentially -> resolve every
 // relocation -> patch -> synthesize the entry sequence", never any
-// output-format-specific byte packing. One implementation per target
-// - Pdp7Linker.h/I8086Linker.h - the same split Codegen.h already
-// uses for codegen: each target's own word size (pdp7's 18-bit words,
-// addressed/relocated in units of 3 packed bytes - see
-// Pdp7Assembler.cpp; 8086's plain byte addressing) and relocation-type
-// semantics (pdp7's OR/`+`/`-` word-combine kinds; 8086's
-// Abs16/Rel16) are different enough that there's no useful shared
-// "generic merge" step to factor out above this interface.
+// output-format-specific byte packing. Every target in this project
+// shares one single implementation, GenericLinker (see
+// GenericLinker.h), configured per target via GenericLinkerConfig
+// rather than needing its own bespoke subclass - including pdp7,
+// whose own 18-bit words (addressed/relocated in units of 3 packed
+// bytes - see Pdp7Assembler.cpp) and non-additive OR/`+`/`-` word-
+// combine relocation semantics look like they'd need a bespoke
+// implementation at first glance, but don't: GenericLinker's own
+// sequential layout and relocation-site indexing are already purely
+// byte-based internally (every `ObjSymbol`/`ObjRelocation` is always
+// a plain byte offset regardless of target - see ObjectFile.h's own
+// comments), so a target whose own real addressable unit packs more
+// than one byte just tells GenericLinker that scale factor
+// (`GenericLinkerConfig::addressUnitBytes`) and supplies its own
+// local, non-additive patch functions (see GenericLinker.h's own
+// `RelocKinds` comment on why a target with unusual combine semantics
+// always needs local patch functions anyway, word-addressed or not) -
+// see Pdp7LinkerFactory.cpp for the concrete instance of this.
 class TargetLinker {
    public:
     virtual ~TargetLinker() = default;
@@ -42,7 +54,7 @@ class TargetLinker {
     // resolved purely locally within their own object's own two-pass
     // assembly and never via a cross-file relocation) is a harmless
     // duplicate, not a conflict, and tolerated silently.
-    virtual LinkedImage merge(const std::vector<CoffObject> &objects) const = 0;
+    virtual LinkedImage merge(const std::vector<ObjectFile> &objects) const = 0;
 
     // Which --format values are valid for `--link` with this target -
     // each one naming a FormatWriter (see FormatWriter.h) whose own

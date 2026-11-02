@@ -1,5 +1,6 @@
 #include "Arm64Assembler.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
@@ -202,9 +203,23 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
+// One pending fixup `assembleArm64Object()` (see Arm64Assembler.h's
+// own header comment) turns into a real ObjRelocation once assembly
+// is done - `offset` into `bytes()`, `symbolName` the reference that
+// couldn't be resolved locally (or the reserved pseudo-symbol ".."
+// for a same-file address's own needed base-shift), `kind` one of
+// kArm64RelocRel26/MovZLo/MovKHi.
+struct Relocation {
+    uint32_t offset;
+    std::string symbolName;
+    uint16_t kind;
+};
+
 // --- Two-pass assembly ----------------------------------------------------
 class Assembler {
    public:
+    explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
+
     void run(const std::vector<Line> &lines) {
         stage_ = 1;
         pass(lines);
@@ -213,10 +228,14 @@ class Assembler {
     }
 
     const std::vector<uint8_t> &bytes() const { return bytes_; }
+    uint64_t orgBase() const { return orgBase_; }
+    const std::unordered_map<std::string, uint64_t> &labels() const { return labels_; }
+    const std::vector<Relocation> &relocations() const { return relocations_; }
 
    private:
     void pass(const std::vector<Line> &lines) {
         bytes_.clear();
+        relocations_.clear();
         offset_ = 0;
         orgBase_ = 0;
         for (const auto &line : lines) processLine(line);
@@ -242,10 +261,19 @@ class Assembler {
         }
     }
 
-    uint64_t evalExpr(const std::vector<Syllable> &syls) {
+    // `externalName`/`needsBaseShift` mirror ../m68k/M68kAssembler.cpp's
+    // own `evalExpr` exactly - see Arm64Assembler.h's own header
+    // comment on why *any* local address reference, not just an
+    // external one, needs a relocation here once `allowExternal_` is
+    // set.
+    uint64_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
+                       bool *needsBaseShift = nullptr) {
         uint64_t total = 0;
         for (const auto &syl : syls) {
-            uint64_t v = resolveSyllable(syl);
+            bool wasExternal = false, wasLocalAddress = false;
+            uint64_t v = resolveSyllable(syl, &wasExternal, &wasLocalAddress);
+            if (wasExternal && externalName) *externalName = syl.text;
+            if (wasLocalAddress && needsBaseShift) *needsBaseShift = true;
             if (syl.sign == '-') {
                 total -= v;
             } else {
@@ -255,7 +283,7 @@ class Assembler {
         return total;
     }
 
-    uint64_t resolveSyllable(const Syllable &syl) {
+    uint64_t resolveSyllable(const Syllable &syl, bool *wasExternal = nullptr, bool *wasLocalAddress = nullptr) {
         if (syl.kind == SylKind::Group) return evalExpr(syl.group);
         if (syl.kind == SylKind::Number) {
             const std::string &t = syl.text;
@@ -265,8 +293,17 @@ class Assembler {
             return std::stoull(t);
         }
         auto it = labels_.find(syl.text);
-        if (it != labels_.end()) return it->second;
-        if (stage_ == 2) fail("undefined symbol '" + syl.text + "'");
+        if (it != labels_.end()) {
+            if (allowExternal_ && wasLocalAddress) *wasLocalAddress = true;
+            return it->second;
+        }
+        if (stage_ == 2) {
+            if (allowExternal_) {
+                if (wasExternal) *wasExternal = true;
+                return 0;
+            }
+            fail("undefined symbol '" + syl.text + "'");
+        }
         return 0;
     }
 
@@ -309,9 +346,10 @@ class Assembler {
     // `evalHiLo`); a label (`Mem`) instead has its own full resolved
     // address split into its own low (`movz`) or high (`movk`) 16
     // bits automatically here.
-    uint32_t evalHiLo(const Operand &op, bool hi) {
+    uint32_t evalHiLo(const Operand &op, bool hi, std::string *externalName = nullptr,
+                      bool *needsBaseShift = nullptr) {
         if (op.kind == Operand::Reg) fail("expected an immediate or label operand, not a register");
-        uint64_t full = evalExpr(op.expr);
+        uint64_t full = evalExpr(op.expr, externalName, needsBaseShift);
         if (op.kind == Operand::Mem) return static_cast<uint32_t>(hi ? (full >> 16) & 0xFFFFu : full & 0xFFFFu);
         return static_cast<uint32_t>(full & 0xFFFFu);
     }
@@ -406,8 +444,17 @@ class Assembler {
         if (mnemonic == "movz" || mnemonic == "movk") {
             uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             int sf = requireOperand(ops, 0, mnemonic).width;
-            uint32_t imm16 = evalHiLo(requireOperand(ops, 1, mnemonic), /*hi=*/mnemonic == "movk");
-            emitMovWide(mnemonic == "movz" ? 0b10u : 0b11u, sf, rd, imm16, mnemonic == "movk" ? 1u : 0u);
+            const Operand &immOp = requireOperand(ops, 1, mnemonic);
+            bool hi = mnemonic == "movk";
+            std::string externalName;
+            bool needsBaseShift = false;
+            uint32_t imm16 = evalHiLo(immOp, hi, &externalName, &needsBaseShift);
+            if (stage_ == 2 && allowExternal_ && immOp.kind == Operand::Mem) {
+                uint16_t kind = hi ? kArm64RelocMovKHi : kArm64RelocMovZLo;
+                if (needsBaseShift) relocations_.push_back({static_cast<uint32_t>(offset_), "..", kind});
+                if (!externalName.empty()) relocations_.push_back({static_cast<uint32_t>(offset_), externalName, kind});
+            }
+            emitMovWide(mnemonic == "movz" ? 0b10u : 0b11u, sf, rd, imm16, hi ? 1u : 0u);
             return;
         }
         if (mnemonic == "mov") {  // alias: orr rd,<zr matching rd's width>,rn
@@ -512,9 +559,25 @@ class Assembler {
         if (mnemonic == "b" || mnemonic == "bl") {
             const Operand &target = requireOperand(ops, 0, mnemonic);
             if (target.kind != Operand::Mem) fail("'" + mnemonic + "': target must be a label");
-            uint64_t targetAddr = evalExpr(target.expr);
+            uint32_t opc = mnemonic == "b" ? 0b000101u : 0b100101u;
+            std::string externalName;
+            uint64_t targetAddr = evalExpr(target.expr, &externalName);
+            // A branch target defined in *this* object is already a
+            // valid PC-relative offset regardless of where this object
+            // ends up linked (both its own address and this
+            // instruction's own are shifted by the same base) - no
+            // relocation needed at all, unlike an absolute-address
+            // load (movz/movk above). Only a genuinely cross-object
+            // target (undefined here) needs deferring - see
+            // ../pdp11/Pdp11Assembler.cpp's own identical reasoning for
+            // its own PC-relative addressing mode.
+            if (stage_ == 2 && allowExternal_ && !externalName.empty()) {
+                relocations_.push_back({static_cast<uint32_t>(offset_), externalName, kArm64RelocRel26});
+                emitBranchImm(opc, 0);
+                return;
+            }
             int64_t rel = (static_cast<int64_t>(targetAddr) - static_cast<int64_t>(orgBase_ + offset_)) / 4;
-            emitBranchImm(mnemonic == "b" ? 0b000101u : 0b100101u, rel);
+            emitBranchImm(opc, rel);
             return;
         }
         if (mnemonic == "cbz" || mnemonic == "cbnz") {
@@ -533,19 +596,56 @@ class Assembler {
 
     std::vector<uint8_t> bytes_;
     std::unordered_map<std::string, uint64_t> labels_;
+    std::vector<Relocation> relocations_;
     uint64_t offset_ = 0;
     uint64_t orgBase_ = 0;
     int stage_ = 1;
+    bool allowExternal_;
 };
+
+// Builds the format-neutral ObjectFile a completed object-mode
+// Assembler produced - see Arm64Assembler.h's own `assembleArm64Object`
+// comment, and ../m68k/M68kAssembler.cpp's own `buildObjectFile` for
+// the identical algorithm this is ported from.
+ObjectFile buildObjectFile(const Assembler &a) {
+    ObjectFile obj;
+    obj.machineType = kArm64CoffMachine;
+    const auto &bytesVec = a.bytes();
+    obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
+
+    for (const auto &kv : a.labels()) {
+        obj.symbols.push_back({kv.first, static_cast<uint32_t>(kv.second - a.orgBase()), /*isDefined=*/true});
+    }
+    std::sort(obj.symbols.begin(), obj.symbols.end(),
+              [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
+
+    std::unordered_map<std::string, bool> known;
+    for (const auto &s : obj.symbols) known[s.name] = true;
+    for (const auto &r : a.relocations()) {
+        if (!known.count(r.symbolName)) {
+            obj.symbols.push_back({r.symbolName, 0, /*isDefined=*/false});
+            known[r.symbolName] = true;
+        }
+        obj.relocations.push_back({r.offset, r.symbolName, r.kind});
+    }
+    return obj;
+}
 
 }  // namespace
 
 std::string assembleArm64(const std::string &asmText) {
     std::vector<Line> lines = parseProgram(asmText);
-    Assembler assembler;
+    Assembler assembler(/*allowExternal=*/false);
     assembler.run(lines);
     const auto &bytes = assembler.bytes();
     return std::string(bytes.begin(), bytes.end());
+}
+
+ObjectFile assembleArm64Object(const std::string &asmText) {
+    std::vector<Line> lines = parseProgram(asmText);
+    Assembler assembler(/*allowExternal=*/true);
+    assembler.run(lines);
+    return buildObjectFile(assembler);
 }
 
 }  // namespace pcc

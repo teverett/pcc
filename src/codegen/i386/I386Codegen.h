@@ -40,18 +40,27 @@ namespace pcc {
 // own entry sequence only ever has to do two real things once control
 // actually reaches it: mask both real 8259 PICs (see generate()'s own
 // comment on why - this language's `_ion()` needs it, not booting
-// itself) and call `main`. Unlike `x86_8086`, this backend never
-// needs NASM's own `--format=coff`/`elf` real-separate-compilation
-// machinery (see generate()'s own comment) - every program here is
-// one flat, self-contained `--format=raw` image, the same scope every
-// other newer backend here (`68000`/`mc68328`/`stm32`) has settled
-// on.
+// itself) and call `main`. Real separate compilation
+// (`--format=coff`/`elf`/`macho`/`aout`/`objraw`, see `objectMode`
+// below) builds one format-neutral ObjectFile per compile (see
+// I386Assembler.h's own `assembleI386Object`) instead of this one
+// self-contained Multiboot image - I386LinkerFactory.cpp is solely
+// responsible for synthesizing the one real Multiboot-header-bearing
+// entry object, once every user object is merged.
 class I386Codegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "i386"; }
     std::string sourceExtension() const override { return ".s386"; }
-    std::vector<std::string> assembledFormats() const override { return {"raw"}; }
+    std::vector<std::string> assembledFormats() const override {
+        return {"raw", "coff", "elf", "macho", "aout", "objraw"};
+    }
+    // `raw` is this backend's own whole-program flat Multiboot image -
+    // a completely different concept from the other five, every one
+    // of which means a real relocatable object file for separate
+    // compilation (see Codegen.h's own header comment on why this is
+    // asked per-backend).
+    bool isObjectFormat(const std::string &format) const override { return format != "raw"; }
     std::string defaultAssemblerPath() const override { return ""; }
     std::string buildAssembleCommand(const std::string &assemblerPath, const std::string &format,
                                       const std::string &srcPath, const std::string &outPath) const override;

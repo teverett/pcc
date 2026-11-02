@@ -1,8 +1,65 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
+#include "objectformat/ObjectFile.h"
+
 namespace pcc {
+
+// This target's own custom, non-registered COFF/object-format machine
+// ID (no real one exists for this project's own STM32/Cortex-M3
+// dialect - see ../../coff/CoffWriter.h's own header comment) -
+// exported so ../../linker/factory/STM32LinkerFactory.cpp can check an
+// input object's embedded machine type against `--target=stm32`
+// without duplicating this literal. ASCII "32" (`'3'=0x33,'2'=0x32`) -
+// this dialect's own distinguishing suffix, since the "STM" prefix is
+// shared with stm8 (see STM8Assembler.h's own `kSTM8CoffMachine`,
+// which picked an unrelated numeric scheme instead, so there's no
+// collision either way).
+constexpr uint16_t kSTM32CoffMachine = 0x3332;
+
+// Where this backend's own flash image loads and the reset vector
+// table lives once real separate compilation (`--format=coff`/`elf`/
+// `macho`/`aout`, see `allowExternal` below) and `--link` are both
+// involved - the same address STM32Codegen.cpp's own whole-program
+// `--format=raw` entry sequence already uses (its own private
+// `kFlashBase`), kept identical so a linked program behaves exactly
+// like a single-file one. Exported so STM32LinkerFactory.cpp's own
+// sequential object layout starts from the same place.
+constexpr uint32_t kSTM32BaseAddress = 0x08000000u;
+
+// This dialect's four relocation kinds - see
+// ../../linker/factory/STM32LinkerFactory.cpp's own patch functions
+// (`MovWLo`/`MovTHi`/`Branch25` are kept local there, not in the
+// shared GenericLinker.h, same precedent as ArmLinkerFactory.cpp's own
+// split: classic ARM's `MOVW`/`MOVT` imm4:imm12 split and this
+// dialect's own Thumb-2 `movw`/`movt` imm4:i:imm3:imm8 split share the
+// same *idea* - an additive 16-bit half of a 32-bit address - but not
+// the same bit layout, so each target keeps its own patch function;
+// `Abs32` is reused from the shared `RelocKinds::patchAbs32` instead,
+// since `dlt`'s own 32-bit field, once resolved, is a plain
+// little-endian additive word with no split at all - see
+// STM32Assembler.cpp's own `Line::Dlt` comment):
+//   Abs32     - `dlt`'s own 32-bit vector-table entry (used only by
+//               STM32LinkerFactory.cpp's own synthesized entry
+//               object's `dlt _start`, never by ordinary user code -
+//               see STM32Codegen.cpp's own `generate()` comment on why
+//               the vector table only ever lives there now).
+//   MovWLo    - `lea`'s own expansion into `movw`+`movt` (see
+//               STM32Assembler.h's own big header comment below): the
+//               low 16 bits of the address.
+//   MovTHi    - the same expansion's high 16 bits.
+//   Branch25  - `bl`/`b`'s own wide Thumb-2 25-bit PC-relative branch
+//               field, split non-contiguously across S/J1/J2/imm10/
+//               imm11 (see encodeBranch25() below) - never a plain
+//               contiguous N-bit integer the way classic ARM's own
+//               24-bit `B`/`BL` field is, hence its own dedicated kind
+//               rather than reusing ArmLinkerFactory.cpp's `Rel24`.
+constexpr uint16_t kSTM32RelocAbs32 = 1;
+constexpr uint16_t kSTM32RelocMovWLo = 2;
+constexpr uint16_t kSTM32RelocMovTHi = 3;
+constexpr uint16_t kSTM32RelocBranch25 = 4;
 
 // A from-scratch, in-process two-pass assembler for exactly the
 // narrow Thumb-2/ARMv7-M dialect STM32Codegen.cpp emits - not a
@@ -72,5 +129,41 @@ namespace pcc {
 //
 // Throws std::runtime_error on any assembly error.
 std::string assembleSTM32(const std::string &asmText);
+
+// The real separate-compilation entry point (`--format=coff`/`elf`/
+// `macho`/`aout` - see STM32Codegen.h's own `objectMode`): assembles
+// `asmText` (generated with `org 0` for its flash section, not
+// `kSTM32BaseAddress` - see STM32Codegen.cpp's own `generate()`)
+// exactly like assembleSTM32() does, except an undefined symbol is
+// deferred as a relocation instead of a hard error, and every *flash*
+// address reference - even to a label defined in this same file -
+// also gets an additional relocation against the reserved
+// pseudo-symbol ".." (see ../../linker/GenericLinker.h's own header
+// comment on why: this text's own flash labels all resolve to "offset
+// from this object's own org 0" until that base is added).
+//
+// RAM addresses are deliberately exempt from that same ".." shift:
+// `ramorg` keeps using the real fixed hardware base (`kRamBase`, see
+// STM32Codegen.cpp) unchanged even here, since RAM is a genuinely
+// separate address space whose placement has nothing to do with where
+// this object's own code ends up in flash once linked - a *local* RAM
+// address reference is therefore already its own final, correct value
+// the moment this function resolves it, with no relocation needed at
+// all (see STM32Assembler.cpp's own `isRamLabel_` comment). An
+// *external* RAM-resident global (declared but not defined in this
+// file) still becomes an ordinary symbol relocation like any other
+// undefined name - but GenericLinker's own single sequentially-laid-
+// out address space has no notion of a second, RAM-based region to
+// place such a symbol's real linked value against, so correctly
+// resolving a cross-object reference to another file's own RAM-
+// resident global is outside what this migration step's linker model
+// can do; every reference this backend's own test coverage exercises
+// stays within one file (see tests/run_tests.sh's own check_stm32()),
+// so this never comes up there.
+//
+// Returns the format-neutral ObjectFile a codegen backend builds once
+// per compile (see ../../objectformat/ObjectFile.h) - this function
+// never touches a real COFF/ELF/Mach-O/a.out byte layout itself.
+ObjectFile assembleSTM32Object(const std::string &asmText);
 
 }  // namespace pcc

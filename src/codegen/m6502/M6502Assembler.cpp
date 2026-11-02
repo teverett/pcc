@@ -1,8 +1,10 @@
 #include "M6502Assembler.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ANTLRInputStream.h"
@@ -67,6 +69,16 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
     if (result.empty()) fail("empty expression");
     return result;
 }
+
+// One pending fixup `assembleM6502Object()` (see M6502Assembler.h's
+// own header comment) turns into a real ObjRelocation once assembly
+// is done - `kind` is one of `kM6502RelocAbs16`/`...Lo`/`...Hi`
+// (see that file's own comment on why there are three).
+struct Relocation {
+    uint32_t byteOffset;
+    std::string symbolName;
+    uint16_t kind;
+};
 
 class ThrowingErrorListener : public antlr4::BaseErrorListener {
    public:
@@ -157,6 +169,8 @@ std::vector<Line> parseProgram(const std::string &text) {
 // identical bindings and this time actually emits bytes using them.
 class Assembler {
    public:
+    explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
+
     void run(const std::vector<Line> &lines) {
         stage_ = 1;
         pass(lines);
@@ -165,10 +179,15 @@ class Assembler {
     }
 
     const std::vector<uint8_t> &bytes() const { return bytes_; }
+    uint32_t orgBase() const { return orgBase_; }
+    const std::unordered_map<std::string, uint32_t> &labels() const { return labels_; }
+    const std::vector<Relocation> &relocations() const { return relocations_; }
 
    private:
     void pass(const std::vector<Line> &lines) {
         bytes_.clear();
+        relocations_.clear();
+        equateNames_.clear();
         offset_ = 0;
         orgBase_ = 0;
         for (const auto &line : lines) processLine(line);
@@ -185,6 +204,16 @@ class Assembler {
                 return;
             case Line::Equate:
                 labels_[line.equateName] = evalExpr(line.exprList.at(0));
+                // An Equate (M6502Codegen.cpp's own fixed zero-page
+                // `ptr`/`ac`/`bc`/`cx`/`dx`) is a plain compile-time
+                // constant, the same in every object regardless of
+                // where it's linked - unlike a real label (bound from
+                // `orgBase_ + offset_` above), it must never be
+                // treated as a "local address" needing a `..`
+                // base-shift relocation (see resolveSyllable()'s own
+                // check below) - tracked here so that check can tell
+                // the two apart by name.
+                equateNames_.insert(line.equateName);
                 return;
             case Line::Org:
                 orgBase_ = evalExpr(line.exprList.at(0));
@@ -198,10 +227,19 @@ class Assembler {
         }
     }
 
-    uint32_t evalExpr(const std::vector<Syllable> &syls) {
+    // `externalName`/`needsBaseShift` mirror
+    // ../z80/Z80Assembler.cpp's own `evalExpr` exactly - see
+    // M6502Assembler.h's own header comment on why *any* local
+    // address reference, not just an external one, needs a
+    // relocation here once `allowExternal_` is set.
+    uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
+                       bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
         for (const auto &syl : syls) {
-            uint32_t v = resolveSyllable(syl);
+            bool wasExternal = false, wasLocalAddress = false;
+            uint32_t v = resolveSyllable(syl, &wasExternal, &wasLocalAddress);
+            if (wasExternal && externalName) *externalName = syl.text;
+            if (wasLocalAddress && needsBaseShift) *needsBaseShift = true;
             if (syl.sign == '-') {
                 total -= v;
             } else {
@@ -211,7 +249,7 @@ class Assembler {
         return total;
     }
 
-    uint32_t resolveSyllable(const Syllable &syl) {
+    uint32_t resolveSyllable(const Syllable &syl, bool *wasExternal = nullptr, bool *wasLocalAddress = nullptr) {
         if (syl.kind == SylKind::Group) return evalExpr(syl.group);
         if (syl.kind == SylKind::Number) {
             const std::string &t = syl.text;
@@ -221,8 +259,17 @@ class Assembler {
             return static_cast<uint32_t>(std::stoul(t));
         }
         auto it = labels_.find(syl.text);
-        if (it != labels_.end()) return it->second;
-        if (stage_ == 2) fail("undefined symbol '" + syl.text + "'");
+        if (it != labels_.end()) {
+            if (allowExternal_ && wasLocalAddress && !equateNames_.count(syl.text)) *wasLocalAddress = true;
+            return it->second;
+        }
+        if (stage_ == 2) {
+            if (allowExternal_) {
+                if (wasExternal) *wasExternal = true;
+                return 0;
+            }
+            fail("undefined symbol '" + syl.text + "'");
+        }
         return 0;
     }
 
@@ -244,9 +291,18 @@ class Assembler {
 
     // Absolute addressing's own 2-byte little-endian operand - the
     // full 16-bit resolved value, no range check (any symbol in this
-    // program's own 64KB address space is valid here).
+    // program's own 64KB address space is valid here). See
+    // M6502Assembler.h's own `kM6502RelocAbs16` comment: covers
+    // `jsr`/`jmp`/every absolute `lda`/`sta`/etc. operand - the same
+    // single-choke-point role Z80Assembler.cpp's own `emit16` plays.
     void emitAbsOperand(const std::vector<Syllable> &e) {
-        uint32_t v = evalExpr(e);
+        std::string externalName;
+        bool needsBaseShift = false;
+        uint32_t v = evalExpr(e, &externalName, &needsBaseShift);
+        if (stage_ == 2 && allowExternal_) {
+            if (needsBaseShift) relocations_.push_back({offset_, "..", kM6502RelocAbs16});
+            if (!externalName.empty()) relocations_.push_back({offset_, externalName, kM6502RelocAbs16});
+        }
         emit8(static_cast<uint8_t>(v & 0xFF));
         emit8(static_cast<uint8_t>((v >> 8) & 0xFF));
     }
@@ -258,15 +314,32 @@ class Assembler {
     // genIndexAddr() - taking just the low byte of a resolved address
     // this way is exactly what a real assembler's `#<label` low-byte
     // operator means, just spelled as a plain mnemonic here instead
-    // of needing a grammar token for `<`/`>` that doesn't exist).
+    // of needing a grammar token for `<`/`>` that doesn't exist). See
+    // M6502Assembler.h's own `kM6502RelocAbs16Lo` comment: a plain
+    // Abs16 patch can't be reused here since only one byte of the
+    // resolved value is ever written to this field.
     void emitImmLow(const std::vector<Syllable> &e) {
-        uint32_t v = evalExpr(e);
+        std::string externalName;
+        bool needsBaseShift = false;
+        uint32_t v = evalExpr(e, &externalName, &needsBaseShift);
+        if (stage_ == 2 && allowExternal_) {
+            if (needsBaseShift) relocations_.push_back({offset_, "..", kM6502RelocAbs16Lo});
+            if (!externalName.empty()) relocations_.push_back({offset_, externalName, kM6502RelocAbs16Lo});
+        }
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
     // `ldai_hi`/`adci_hi`'s own immediate operand - the HIGH byte of
-    // the resolved value (a real assembler's `#>label`).
+    // the resolved value (a real assembler's `#>label`) - see
+    // `kM6502RelocAbs16Hi`'s own comment, the high-byte counterpart
+    // of `emitImmLow`'s own relocation handling above.
     void emitImmHigh(const std::vector<Syllable> &e) {
-        uint32_t v = evalExpr(e);
+        std::string externalName;
+        bool needsBaseShift = false;
+        uint32_t v = evalExpr(e, &externalName, &needsBaseShift);
+        if (stage_ == 2 && allowExternal_) {
+            if (needsBaseShift) relocations_.push_back({offset_, "..", kM6502RelocAbs16Hi});
+            if (!externalName.empty()) relocations_.push_back({offset_, externalName, kM6502RelocAbs16Hi});
+        }
         emit8(static_cast<uint8_t>((v >> 8) & 0xFF));
     }
     // `ldaind`/`staind`'s own operand - the zero-page indirect-
@@ -364,19 +437,59 @@ class Assembler {
 
     std::vector<uint8_t> bytes_;
     std::unordered_map<std::string, uint32_t> labels_;
+    std::unordered_set<std::string> equateNames_;
+    std::vector<Relocation> relocations_;
     uint32_t offset_ = 0;
     uint32_t orgBase_ = 0;
     int stage_ = 1;
+    bool allowExternal_;
 };
+
+// Builds the format-neutral ObjectFile a completed object-mode
+// Assembler produced - see M6502Assembler.h's own
+// `assembleM6502Object` comment, and ../z80/Z80Assembler.cpp's own
+// `buildObjectFile` for the template this is ported from (same
+// algorithm; the only difference is three relocation kinds instead
+// of one - see that constant's own header comment).
+ObjectFile buildObjectFile(const Assembler &a) {
+    ObjectFile obj;
+    obj.machineType = kM6502CoffMachine;
+    const auto &bytesVec = a.bytes();
+    obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
+
+    for (const auto &kv : a.labels()) {
+        obj.symbols.push_back({kv.first, kv.second - a.orgBase(), /*isDefined=*/true});
+    }
+    std::sort(obj.symbols.begin(), obj.symbols.end(),
+              [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
+
+    std::unordered_map<std::string, bool> known;
+    for (const auto &s : obj.symbols) known[s.name] = true;
+    for (const auto &r : a.relocations()) {
+        if (!known.count(r.symbolName)) {
+            obj.symbols.push_back({r.symbolName, 0, /*isDefined=*/false});
+            known[r.symbolName] = true;
+        }
+        obj.relocations.push_back({r.byteOffset, r.symbolName, r.kind});
+    }
+    return obj;
+}
 
 }  // namespace
 
 std::string assembleM6502(const std::string &asmText) {
     std::vector<Line> lines = parseProgram(asmText);
-    Assembler assembler;
+    Assembler assembler(/*allowExternal=*/false);
     assembler.run(lines);
     const auto &bytes = assembler.bytes();
     return std::string(bytes.begin(), bytes.end());
+}
+
+ObjectFile assembleM6502Object(const std::string &asmText) {
+    std::vector<Line> lines = parseProgram(asmText);
+    Assembler assembler(/*allowExternal=*/true);
+    assembler.run(lines);
+    return buildObjectFile(assembler);
 }
 
 }  // namespace pcc

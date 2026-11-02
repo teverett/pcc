@@ -26,12 +26,12 @@ std::string CoffLinkWriter::write(const LinkedImage &image) const {
         }
     }
 
-    std::vector<CoffSymbol> symbols;
+    std::vector<ObjSymbol> symbols;
     for (const auto &kv : image.symbols) {
         if (kv.second < image.base) continue;  // not part of the emitted .text (shouldn't happen once linked)
         symbols.push_back({kv.first, (kv.second - image.base) * bytesPerUnit, /*isDefined=*/true});
     }
-    std::sort(symbols.begin(), symbols.end(), [](const CoffSymbol &x, const CoffSymbol &y) { return x.name < y.name; });
+    std::sort(symbols.begin(), symbols.end(), [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
 
     return writeCoffObject(image.machineType, text, symbols);
 }

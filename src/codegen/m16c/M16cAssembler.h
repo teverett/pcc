@@ -1,8 +1,38 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
+#include "objectformat/ObjectFile.h"
+
 namespace pcc {
+
+// This target's own custom, non-registered COFF/object-format
+// machine ID (no real one exists for the M16C - see
+// ../../coff/CoffWriter.h's own header comment) - exported so
+// ../../linker/factory/M16cLinkerFactory.cpp can check an input
+// object's embedded machine type against `--target=m16c` without
+// duplicating this literal.
+constexpr uint16_t kM16cCoffMachine = 0x16C3;
+
+// Where the whole program loads and starts running once real
+// separate compilation (`--format=coff`/`elf`/`macho`/`aout`, see
+// `allowExternal` below) and `--link` are both involved - the same
+// address M16cCodegen.cpp's own whole-program `--format=raw` entry
+// sequence already uses (`kBaseAddress`), kept identical so a linked
+// program behaves exactly like a single-file one. Exported so
+// M16cLinkerFactory.cpp's own sequential object layout starts from
+// the same place.
+constexpr uint32_t kM16cBaseAddress = 0x0400;
+
+// This dialect's one relocation kind: a little-endian 16-bit
+// *additive* patch (see ../../linker/GenericLinker.h's own
+// `RelocKinds::patchAbs16`) - every M16C jump/call this backend ever
+// emits is a full absolute address (see M16cCodegen.h's own header
+// comment: "every jump and conditional jump here is always encoded
+// as a full, unconditional-range absolute address"), so this is the
+// only relocation kind the M16C dialect needs at all.
+constexpr uint16_t kM16cRelocAbs16 = 1;
 
 // A from-scratch, in-process two-pass assembler for the subset of
 // M16C assembly ../M16cCodegen.cpp emits - not a general-purpose M16C
@@ -54,5 +84,25 @@ namespace pcc {
 //
 // Throws std::runtime_error on any assembly error.
 std::string assembleM16c(const std::string &asmText);
+
+// The real separate-compilation entry point (`--format=coff`/`elf`/
+// `macho`/`aout` - see M16cCodegen.h's own `objectMode`): assembles
+// `asmText` (generated with `org 0`, not `kBaseAddress` - see
+// M16cCodegen.cpp's own `generate()`) exactly like assembleM16c()
+// does, except an undefined symbol is deferred as a relocation (see
+// ../../objectformat/ObjectFile.h's own `ObjRelocation`) instead of a
+// hard error, and *every* address reference - even to a label defined
+// in this same file - also gets an additional relocation against the
+// reserved pseudo-symbol ".." (this object's own eventual linked
+// base, resolved only by a linker - see
+// ../../linker/GenericLinker.h's own header comment on why - same
+// convention as every other GenericLinker-based target's own
+// assembler, e.g. ../z80/Z80Assembler.h's `assembleZ80Object`).
+// Returns the format-neutral ObjectFile a codegen backend builds
+// once per compile (see ObjectFile.h) - this function never touches
+// a real COFF/ELF/Mach-O/a.out byte layout itself; that happens only
+// in whichever ObjectFormatWriter the caller picks for the requested
+// `--format` (see ../../objectformat/ObjectFormat.h).
+ObjectFile assembleM16cObject(const std::string &asmText);
 
 }  // namespace pcc

@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "M6502Assembler.h"
+#include "objectformat/ObjectFormat.h"
 
 namespace pcc {
 
@@ -61,45 +62,62 @@ void M6502Codegen::inc16(const std::string &lbl) {
 }
 
 std::string M6502Codegen::generate(const ir::Program &prog, bool objectMode) {
-    if (objectMode) {
-        err(0,
-            "the 6502 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=raw compile (see M6502Codegen.h's own header comment)");
-    }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // IRBuilder guarantees a parameterless `main` exists whenever
-    // allowExternal is false (always true here - see above), so
-    // mainFn is never null.
-
-    code_ << "org " << kBaseAddress << "\n\n";
+    // Real separate compilation (`--format=coff`/`elf`/`macho`/
+    // `aout` from a single file - see IRBuilder.h's `allowExternal`)
+    // means `prog` may not define `main` at all - an ordinary object
+    // file never does. `objectMode` (see Codegen.h) means no object
+    // file ever emits this entry sequence itself, even the one that
+    // happens to define `main` - M6502Linker.cpp is solely
+    // responsible for synthesizing exactly one, once every object is
+    // merged and `main`'s linked address is resolvable (see
+    // Linker.h) - same pattern Z80Codegen.cpp's own `objectMode`
+    // comment documents. An object file's own base is `org 0` - it's
+    // the linker's job to place it, not this backend's.
+    code_ << "org " << (objectMode ? 0 : kBaseAddress) << "\n\n";
     // The fixed zero-page pseudo-registers - see M6502Codegen.h's own
     // header comment for what each one is for and why `ptr`
     // specifically has to be bound this way (a pure compile-time
     // equate, not the usual sequential data-trailer layout) rather
-    // than wherever declareTemp() would otherwise place it.
+    // than wherever declareTemp() would otherwise place it. Unlike
+    // Z80Codegen.cpp's own shared memory cells (which really are
+    // runtime storage, and so can't be redeclared per object - see
+    // that file's own `generate()` comment), these are plain
+    // compile-time constants: `ptr`/`ac`/`bc`/`cx`/`dx` bind to the
+    // exact same zero-page addresses in every object regardless of
+    // where it ends up linked, so every object - including this one,
+    // even in object mode - declares them identically with no
+    // conflict and no relocation ever needed for the equate itself.
     code_ << "ptr = 0\nac = 2\nbc = 4\ncx = 6\ndx = 8\n\n";
-    code_ << "_start:\n";
-    code_ << "    jsr " << label(mainFn) << "\n";
-    // The program's own final result sits in `ac`/`ac+1` (memory,
-    // $0002/$0003) the moment execution reaches `halt` below - the
-    // authoritative place to read it from (see M6502Codegen.h's own
-    // comment on the 6502 having no register wide enough to hold a
-    // full 16-bit result the way pdp7's AC/8086's AX do). This extra
-    // `lda` is a minor nicety only: it leaves the low byte sitting in
-    // the real A register too, for a quick look with nothing more
-    // than a register dump.
-    code_ << "    lda ac\n";
-    code_ << "halt:\n    jmp halt\n\n";
+    if (!objectMode) {
+        code_ << "_start:\n";
+        code_ << "    jsr " << label(mainFn) << "\n";
+        // The program's own final result sits in `ac`/`ac+1` (memory,
+        // $0002/$0003) the moment execution reaches `halt` below - the
+        // authoritative place to read it from (see M6502Codegen.h's own
+        // comment on the 6502 having no register wide enough to hold a
+        // full 16-bit result the way pdp7's AC/8086's AX do). This extra
+        // `lda` is a minor nicety only: it leaves the low byte sitting in
+        // the real A register too, for a quick look with nothing more
+        // than a register dump.
+        code_ << "    lda ac\n";
+        code_ << "halt:\n    jmp halt\n\n";
+    }
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
 
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        if (slot->isExternal) continue;  // never possible here (no real separate compilation - see above), but
-                                          // matches every other backend's own defensive check at this exact spot
+        // An external global (real separate compilation - see IR.h's
+        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
+        // defined in this file at all - it must never get a local
+        // storage word here, only ever be referenced by name (see
+        // label()) in code, letting the assembler's own undefined-
+        // symbol handling defer it to a relocation.
+        if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit);
@@ -590,6 +608,18 @@ std::string M6502Codegen::buildAssembleCommand(const std::string &, const std::s
 std::optional<std::string> M6502Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "raw") return assembleM6502(asmText);
+    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
+    // (see generate()'s own `objectMode` comment) - this backend's
+    // own assembler builds one format-neutral ObjectFile exactly once
+    // (see M6502Assembler.h's own `assembleM6502Object`), and
+    // whichever of these names was asked for just picks that
+    // format's own ObjectFormatWriter (see
+    // objectformat/ObjectFormat.h) to serialize it - this file never
+    // touches a real COFF/ELF/Mach-O/a.out byte layout itself.
+    if (auto kind = objectFormatKindFromName(format)) {
+        ObjectFile obj = assembleM6502Object(asmText);
+        return makeObjectFormatWriter(*kind)->write(obj);
+    }
     return std::nullopt;
 }
 
