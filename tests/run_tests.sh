@@ -767,8 +767,8 @@ check_6502() {
         return 1
     fi
 
-    local result
-    result="$(python3 - "$binfile" <<'PY'
+    local outfile="$tmpdir/$name.sim.out"
+    python3 - "$binfile" > "$outfile" <<'PY'
 import sys
 from py65.devices.mpu6502 import MPU
 
@@ -797,7 +797,8 @@ if val >= 0x8000:
     val -= 0x10000
 print(val)
 PY
-    )"
+    local result
+    result="$(cat "$outfile")"
     if [ "$result" = "TIMEOUT" ]; then
         echo "FAIL $name: simulator never reached the halt loop (step limit exceeded)"
         return 1
@@ -832,8 +833,8 @@ check_65c02() {
         return 1
     fi
 
-    local result
-    result="$(python3 - "$binfile" <<'PY'
+    local outfile="$tmpdir/$name.sim.out"
+    python3 - "$binfile" > "$outfile" <<'PY'
 import sys
 from py65.devices.mpu65c02 import MPU
 
@@ -862,7 +863,8 @@ if val >= 0x8000:
     val -= 0x10000
 print(val)
 PY
-    )"
+    local result
+    result="$(cat "$outfile")"
     if [ "$result" = "TIMEOUT" ]; then
         echo "FAIL $name: simulator never reached the halt loop (step limit exceeded)"
         return 1
@@ -898,8 +900,8 @@ check_8080() {
         return 1
     fi
 
-    local result
-    result="$(python3 - "$binfile" <<'PY'
+    local outfile="$tmpdir/$name.sim.out"
+    python3 - "$binfile" > "$outfile" <<'PY'
 import sys
 from z80_python import Z80CPU
 
@@ -928,7 +930,8 @@ if val >= 0x8000:
     val -= 0x10000
 print(val)
 PY
-    )"
+    local result
+    result="$(cat "$outfile")"
     if [ "$result" = "TIMEOUT" ]; then
         echo "FAIL $name: simulator never reached the halt loop (step limit exceeded)"
         return 1
@@ -960,8 +963,8 @@ check_z80() {
         return 1
     fi
 
-    local result
-    result="$(python3 - "$binfile" <<'PY'
+    local outfile="$tmpdir/$name.sim.out"
+    python3 - "$binfile" > "$outfile" <<'PY'
 import sys
 from z80_python import Z80CPU
 
@@ -990,7 +993,8 @@ if val >= 0x8000:
     val -= 0x10000
 print(val)
 PY
-    )"
+    local result
+    result="$(cat "$outfile")"
     if [ "$result" = "TIMEOUT" ]; then
         echo "FAIL $name: simulator never reached the halt loop (step limit exceeded)"
         return 1
@@ -1028,8 +1032,8 @@ check_8008() {
         return 1
     fi
 
-    local result
-    result="$(python3 - "$binfile" <<'PY'
+    local outfile="$tmpdir/$name.sim.out"
+    python3 - "$binfile" > "$outfile" <<'PY'
 import sys
 
 path = sys.argv[1]
@@ -1228,7 +1232,8 @@ if val >= 0x8000:
     val -= 0x10000
 print(val)
 PY
-    )"
+    local result
+    result="$(cat "$outfile")"
     if [ "$result" = "TIMEOUT" ]; then
         echo "FAIL $name: simulator never reached the halt loop (step limit exceeded)"
         return 1
@@ -1252,8 +1257,8 @@ check_8051() {
         return 1
     fi
 
-    local result
-    result="$(python3 - "$binfile" <<'PY'
+    local outfile="$tmpdir/$name.sim.out"
+    python3 - "$binfile" > "$outfile" <<'PY'
 import sys
 
 path = sys.argv[1]
@@ -1477,7 +1482,8 @@ if val >= 0x8000:
     val -= 0x10000
 print(val)
 PY
-    )"
+    local result
+    result="$(cat "$outfile")"
     if [ "$result" = "TIMEOUT" ]; then
         echo "FAIL $name: simulator never reached the halt loop (step limit exceeded)"
         return 1
