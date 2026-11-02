@@ -131,25 +131,45 @@ jobs:
       # unlike that one, are near-universal on any glibc Linux system,
       # so they're not a redistribution risk the way all four of the
       # Windows job's own DLLs are). `ldd` lists every dependency the
-      # exact way the real loader resolves them; filtering out
-      # anything under `/lib`/`/usr/lib` (every real system library
-      # always lives under one of those) leaves only whatever the
-      # conda env actually provided. Copying it next to the binary
-      # isn't enough on its own, though - unlike Windows' plain
-      # "search the exe's own directory" default, the ELF loader only
-      # ever checks a binary's own baked-in rpath/runpath (empty here,
-      # by default) or `LD_LIBRARY_PATH` (not something a redistributed
-      # zip can rely on being set), so `patchelf --set-rpath` has to
-      # add `$ORIGIN` (resolved relative to wherever the binary itself
+      # exact way the real loader resolves them - but only once it can
+      # actually *find* `libantlr4-runtime.so` itself: the Build step
+      # above only ever passed conda's own lib directory to the
+      # *linker* (`-L`, via `ANTLR4_RUNTIME_PREFIX`), never baked an
+      # rpath into the binary and never exported `LD_LIBRARY_PATH`, so
+      # even this same activated conda shell's own `ldd` can't resolve
+      # it without being told that directory explicitly (confirmed
+      # directly - without this, `ldd` prints "libantlr4-runtime.so.*
+      # => not found", and the loop below ends up trying to `cp` the
+      # literal word "not"). Exporting it here fixes `ldd`'s own
+      # resolution; filtering the real results down to anything NOT
+      # under `/lib`/`/usr/lib` (every real system library always
+      # lives under one of those) then leaves only whatever the conda
+      # env actually provided. Copying it next to the binary isn't
+      # enough on its own, though - unlike Windows' plain "search the
+      # exe's own directory" default, the ELF loader only ever checks
+      # a binary's own baked-in rpath/runpath (empty here, by default)
+      # or `LD_LIBRARY_PATH` (not something a redistributed zip can
+      # rely on being set), so `patchelf --set-rpath` has to add
+      # `$ORIGIN` (resolved relative to wherever the binary itself
       # ends up, not a fixed path) before the copy actually gets found
-      # at runtime.
+      # at runtime. The final `env -i ... ldd` re-check, with every
+      # environment variable (including `LD_LIBRARY_PATH` itself)
+      # scrubbed, confirms the *patched* binary resolves on its own -
+      # not just inside this one conda-activated shell - before ever
+      # uploading it.
       - name: Bundle pcc's own conda-forge runtime library
         shell: bash -el {0}
         run: |
+          export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
           for lib in $(ldd build/bin/pcc | awk '{print $3}' | grep -vE '^(/lib|/usr/lib)' | grep -v '^$'); do
             cp "$lib" build/bin/
           done
           patchelf --set-rpath '$ORIGIN' build/bin/pcc
+          if env -i PATH="/usr/bin:/bin" ldd build/bin/pcc | grep -q 'not found'; then
+            echo "pcc still has an unresolved dependency once LD_LIBRARY_PATH/conda are gone:" >&2
+            env -i PATH="/usr/bin:/bin" ldd build/bin/pcc >&2
+            exit 1
+          fi
 
       - name: Upload pcc binary
         uses: actions/upload-artifact@v4
