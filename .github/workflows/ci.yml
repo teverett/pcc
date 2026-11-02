@@ -30,6 +30,13 @@ jobs:
       - name: Test
         run: make test
 
+      - name: Upload pcc binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: pcc-macos
+          path: build/bin/pcc
+          if-no-files-found: error
+
   linux:
     runs-on: ubuntu-latest
     steps:
@@ -71,6 +78,13 @@ jobs:
       # testing stays a local/manual check (`make test` still works
       # fine there); this job only verifies pcc itself builds.
 
+      - name: Upload pcc binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: pcc-linux
+          path: build/bin/pcc
+          if-no-files-found: error
+
   windows:
     runs-on: windows-latest
     defaults:
@@ -104,3 +118,14 @@ jobs:
       # tests/run_tests.sh needs the pdp7 (open-simh) and qemu-system-i386
       # hardware simulators, which aren't readily available on Windows
       # CI runners - so this job only verifies that pcc itself builds.
+
+      # MinGW's linker driver appends ".exe" to an -o target with no
+      # extension on its own, so the Makefile's plain `pcc` TARGET
+      # actually comes out as pcc.exe here - the glob covers either
+      # name without hardcoding which.
+      - name: Upload pcc binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: pcc-windows
+          path: build/bin/pcc*
+          if-no-files-found: error
