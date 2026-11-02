@@ -16,6 +16,49 @@ env:
   ANTLR_VERSION: "4.13.2"
 
 jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # `pandoc` (Markdown -> PDF) needs a real PDF-rendering engine
+      # behind it. `xelatex` (not the more commonly-suggested
+      # `pdflatex`) specifically, because docs/*.md leans heavily on
+      # real Unicode punctuation throughout (em dashes, `±`, etc. -
+      # confirmed directly, dozens of real occurrences, not a
+      # theoretical concern) that `xelatex`'s own native UTF-8/system-
+      # font handling renders correctly without the `inputenc`/
+      # `fontenc` package juggling `pdflatex` would otherwise need.
+      # `lmodern` + `texlive-fonts-recommended`/`texlive-latex-extra`:
+      # pandoc's own default LaTeX template expects these (a few
+      # packages it reaches for - `fancyvrb` for code blocks,
+      # `longtable` for docs/using.md's own real tables - aren't in
+      # `texlive-xetex` alone).
+      - name: Install pandoc and a PDF engine
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pandoc texlive-xetex texlive-fonts-recommended texlive-latex-extra lmodern
+
+      # One PDF per file under docs/ - see docs/ir.md's own header
+      # comment etc. for what each one covers; this job's whole job
+      # is making them available as a build artifact too, not just
+      # viewable on GitHub as Markdown.
+      - name: Render docs/*.md to PDF
+        run: |
+          mkdir -p build/docs-pdf
+          for src in docs/*.md; do
+            name="$(basename "$src" .md)"
+            pandoc "$src" --pdf-engine=xelatex --metadata title="$name" -o "build/docs-pdf/$name.pdf"
+          done
+
+      - name: Upload documentation PDFs
+        uses: actions/upload-artifact@v4
+        with:
+          name: pcc-docs
+          path: build/docs-pdf/*.pdf
+          if-no-files-found: error
+
   macos:
     runs-on: macos-14
     steps:
