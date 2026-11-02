@@ -9,7 +9,7 @@ namespace pcc {
 // purpose 8008 assembler (no macros, no conditional assembly, no
 // relocations/external symbols/`--format=coff` - see
 // I8008Codegen.h's own header comment: this backend only supports a
-// single, fully self-contained `--format=bin` compile).
+// single, fully self-contained `--format=raw` compile).
 //
 // Uses real, standard mnemonics and the 8008's own real register
 // codes (a=0,b=1,c=2,d=3,e=4,h=5,l=6,m=7 - *not* the same numbering

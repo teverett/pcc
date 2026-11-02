@@ -9,7 +9,7 @@ namespace pcc {
 // assembler (no macros, no conditional assembly, no relocations/
 // external symbols/`--format=coff` - see Z80Codegen.h's own header
 // comment: this backend only supports a single, fully self-contained
-// `--format=bin` compile). Like ../i8080/I8080Assembler.h, this uses
+// `--format=raw` compile). Like ../i8080/I8080Assembler.h, this uses
 // real, standard Z80 mnemonics and produces real Z80 machine code -
 // every opcode byte emitted here matches Zilog's own published
 // encoding (including the `CB`-prefixed bit/rotate group and the

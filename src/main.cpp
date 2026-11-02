@@ -66,13 +66,14 @@
 #include "codegen/mcs51/MCS51Codegen.h"
 #include "codegen/arm/ArmCodegen.h"
 #include "codegen/arm64/Arm64Codegen.h"
+#include "codegen/powerpc/PowerPCCodegen.h"
 #include "coff/CoffReader.h"
 #include "linker/I8086Linker.h"
 #include "linker/Linker.h"
 #include "linker/Pdp7Linker.h"
 #include "linker/format/A7outWriter.h"
 #include "linker/format/AoutWriter.h"
-#include "linker/format/BinWriter.h"
+#include "linker/format/RawWriter.h"
 #include "linker/format/CoffLinkWriter.h"
 #include "linker/format/ElfLinkWriter.h"
 #include "linker/format/FormatWriter.h"
@@ -209,6 +210,7 @@ std::unique_ptr<pcc::Backend> makeBackend(const std::string &target) {
     // own Codegen rather than sharing one.
     if (target == "armv7a") return std::make_unique<pcc::ArmCodegen>();
     if (target == "armv8a") return std::make_unique<pcc::Arm64Codegen>();
+    if (target == "powerpc") return std::make_unique<pcc::PowerPCCodegen>();
     return nullptr;
 }
 
@@ -231,7 +233,7 @@ std::unique_ptr<pcc::FormatWriter> makeFormatWriter(const std::string &format) {
     if (format == "ptr") return std::make_unique<pcc::PtrWriter>();
     if (format == "a7out") return std::make_unique<pcc::A7outWriter>();
     if (format == "list") return std::make_unique<pcc::ListWriter>();
-    if (format == "bin") return std::make_unique<pcc::BinWriter>();
+    if (format == "raw") return std::make_unique<pcc::RawWriter>();
     if (format == "elf") return std::make_unique<pcc::ElfLinkWriter>();
     if (format == "aout") return std::make_unique<pcc::AoutWriter>();
     return nullptr;
@@ -464,7 +466,7 @@ int main(int argc, char **argv) {
     if (link) {
         std::unique_ptr<pcc::TargetLinker> linker = makeLinker(target);
         if (!linker) {
-            std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502, 65c02, 68000, mc68328, pdp11, 8080, z80, 8008, stm8, stm32, i386, m16c, pic16, pic18, r10000, r4000, cortex-m3, cortex-m4, cortex-m7, 8051, 8052, 8031, 8032, armv7a, armv8a)\n";
+            std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502, 65c02, 68000, mc68328, pdp11, 8080, z80, 8008, stm8, stm32, i386, m16c, pic16, pic18, r10000, r4000, cortex-m3, cortex-m4, cortex-m7, 8051, 8052, 8031, 8032, armv7a, armv8a, powerpc)\n";
             return 1;
         }
         std::vector<std::string> linkFormats = linker->outputFormats();
@@ -502,7 +504,7 @@ int main(int argc, char **argv) {
     // --- ordinary compile mode. ---
     std::unique_ptr<pcc::Backend> backend = makeBackend(target);
     if (!backend) {
-        std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502, 65c02, 68000, mc68328, pdp11, 8080, z80, 8008, stm8, stm32, i386, m16c, pic16, pic18, r10000, r4000, cortex-m3, cortex-m4, cortex-m7, 8051, 8052, 8031, 8032, armv7a, armv8a)\n";
+        std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502, 65c02, 68000, mc68328, pdp11, 8080, z80, 8008, stm8, stm32, i386, m16c, pic16, pic18, r10000, r4000, cortex-m3, cortex-m4, cortex-m7, 8051, 8052, 8031, 8032, armv7a, armv8a, powerpc)\n";
         return 1;
     }
     if (!assemblerPathSet) assemblerPath = backend->defaultAssemblerPath();
@@ -563,7 +565,7 @@ int main(int argc, char **argv) {
         // source that wants to say "I need the real CMOS-only
         // instructions" specifically (none of which this compiler's
         // own backend ever lets through its `asm` escape and back
-        // into a `--format=bin` that doesn't build, since
+        // into a `--format=raw` that doesn't build, since
         // M65C02Assembler.cpp only ever recognizes this one extra
         // mnemonic - `stz`/`stzp` - beyond the plain 6502 dialect).
         predefinedMacros["__6502__"] = "1";
@@ -647,6 +649,9 @@ int main(int argc, char **argv) {
     } else if (target == "armv8a") {
         predefinedMacros["__ARMV8A__"] = "1";
         predefinedMacros["__aarch64__"] = "1";
+    } else if (target == "powerpc") {
+        predefinedMacros["__POWERPC__"] = "1";
+        predefinedMacros["__ppc__"] = "1";
     }
 
     // A genuinely external reference is always allowed under

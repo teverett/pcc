@@ -15,7 +15,7 @@ retro hardware through pluggable backends. Today it supports:
   expects 32-bit protected-mode code, not 16-bit real mode, so this
   is for tooling that merely needs to recognize the file as ELF, not
   a claim that it's runnable by anything other than pcc's own
-  `--format=bin` convention.
+  `--format=raw` convention.
 - **8088** — a deliberate, software-identical alias for `8086`, not a
   separate backend: the 8088 is the exact same instruction set as the
   8086 (its one real difference, an 8-bit external data bus instead
@@ -139,7 +139,7 @@ retro hardware through pluggable backends. Today it supports:
   `stm32vldiscovery` board model), so unlike every other backend's
   one flat blob, every global/local/temp/array slot lives in RAM
   (reserved, not baked in) while code lives in flash, with a real
-  two-word Cortex-M reset vector table at the front (`--format=bin`'s
+  two-word Cortex-M reset vector table at the front (`--format=raw`'s
   own output is exactly what `qemu-system-arm -M stm32vldiscovery
   -kernel` boots). `tests/run_tests.sh --target=stm32` runs its own
   test suite against that real board model, polling a register over
@@ -155,7 +155,7 @@ retro hardware through pluggable backends. Today it supports:
   addressing - just 32 bits wide throughout and a real flat 4GB
   address space instead of 16-bit real-mode segmentation. Getting
   from power-on into 32-bit protected mode at all is deliberately
-  *not* this backend's job: `--format=bin`'s own output is a real
+  *not* this backend's job: `--format=raw`'s own output is a real
   Multiboot image (the standard contract a real bootloader like GRUB
   uses to load a 32-bit kernel) - a small, standard header plus this
   backend's own ordinary 32-bit code+data, nothing else. Loading it

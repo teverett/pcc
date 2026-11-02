@@ -116,7 +116,7 @@ std::string MCS51Codegen::generate(const ir::Program &prog, bool objectMode) {
     if (objectMode) {
         err(0,
             "the 8051 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=bin compile (see MCS51Codegen.h's own header comment)");
+            "--format=raw compile (see MCS51Codegen.h's own header comment)");
     }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
@@ -649,7 +649,7 @@ std::string MCS51Codegen::buildAssembleCommand(const std::string &, const std::s
 
 std::optional<std::string> MCS51Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
-    if (format == "bin") return assembleMCS51(asmText);
+    if (format == "raw") return assembleMCS51(asmText);
     return std::nullopt;
 }
 

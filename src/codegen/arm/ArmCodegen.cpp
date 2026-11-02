@@ -48,7 +48,7 @@ std::string ArmCodegen::generate(const ir::Program &prog, bool objectMode) {
     if (objectMode) {
         err(0,
             "the armv7a backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=bin compile (see ArmCodegen.h's own header comment)");
+            "--format=raw compile (see ArmCodegen.h's own header comment)");
     }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
@@ -471,7 +471,7 @@ std::string ArmCodegen::buildAssembleCommand(const std::string &, const std::str
 
 std::optional<std::string> ArmCodegen::assembleInProcess(const std::string &asmText,
                                                            const std::string &format) const {
-    if (format == "bin") return assembleArm(asmText);
+    if (format == "raw") return assembleArm(asmText);
     return std::nullopt;
 }
 

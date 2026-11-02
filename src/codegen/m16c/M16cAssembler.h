@@ -9,7 +9,7 @@ namespace pcc {
 // assembler (no macros, no conditional assembly, no relocations/
 // external symbols/`--format=coff` - see M16cCodegen.h's own header
 // comment: this backend only supports a single, fully self-contained
-// `--format=bin` compile), and - unlike the pdp11/8080 backends' own
+// `--format=raw` compile), and - unlike the pdp11/8080 backends' own
 // in-process assemblers (which produce real object code for their
 // own targets) - not real M16C object code either: like the 6502/
 // 68000 backends' own assemblers (see I8080Assembler.h's own header

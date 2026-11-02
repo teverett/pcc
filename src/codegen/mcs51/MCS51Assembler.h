@@ -23,7 +23,7 @@ namespace pcc {
 //
 // No relocations, no external symbols, no `--format=coff`: this
 // backend only supports a single, fully self-contained
-// `--format=bin` compile, assembled from CODE address 0 - every
+// `--format=raw` compile, assembled from CODE address 0 - every
 // symbol must resolve within the one file being assembled, a hard
 // error otherwise. Every symbol this assembler itself ever resolves
 // is a CODE-space address (a function or branch-target label, or one

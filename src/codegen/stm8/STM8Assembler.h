@@ -39,7 +39,7 @@ namespace pcc {
 // reason, as every other backend's own in-process assembler.
 //
 // No relocations, no external symbols, no `--format=coff`: this
-// backend only supports a single, fully self-contained `--format=bin`
+// backend only supports a single, fully self-contained `--format=raw`
 // compile, same restriction as the 6502/8080 backends.
 //
 // Throws std::runtime_error on any assembly error.

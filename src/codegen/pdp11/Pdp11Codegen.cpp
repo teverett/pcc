@@ -54,7 +54,7 @@ std::string Pdp11Codegen::generate(const ir::Program &prog, bool objectMode) {
     if (objectMode) {
         err(0,
             "the pdp11 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=bin compile (see Pdp11Codegen.h's own header comment)");
+            "--format=raw compile (see Pdp11Codegen.h's own header comment)");
     }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
@@ -488,7 +488,7 @@ std::string Pdp11Codegen::buildAssembleCommand(const std::string &, const std::s
 
 std::optional<std::string> Pdp11Codegen::assembleInProcess(const std::string &asmText,
                                                             const std::string &format) const {
-    if (format == "bin") return assemblePdp11(asmText);
+    if (format == "raw") return assemblePdp11(asmText);
     return std::nullopt;
 }
 

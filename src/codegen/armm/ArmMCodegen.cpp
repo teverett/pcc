@@ -54,7 +54,7 @@ std::string ArmMCodegen::generate(const ir::Program &prog, bool objectMode) {
     if (objectMode) {
         err(0,
             "the cortex-m3 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=bin compile (see ArmMCodegen.h's own header comment)");
+            "--format=raw compile (see ArmMCodegen.h's own header comment)");
     }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
@@ -500,7 +500,7 @@ std::string ArmMCodegen::buildAssembleCommand(const std::string &, const std::st
 
 std::optional<std::string> ArmMCodegen::assembleInProcess(const std::string &asmText,
                                                             const std::string &format) const {
-    if (format == "bin") return assembleArmM(asmText);
+    if (format == "raw") return assembleArmM(asmText);
     return std::nullopt;
 }
 

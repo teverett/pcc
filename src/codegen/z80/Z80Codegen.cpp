@@ -84,7 +84,7 @@ std::string Z80Codegen::generate(const ir::Program &prog, bool objectMode) {
     if (objectMode) {
         err(0,
             "the Z80 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=bin compile (see Z80Codegen.h's own header comment)");
+            "--format=raw compile (see Z80Codegen.h's own header comment)");
     }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
@@ -576,7 +576,7 @@ std::string Z80Codegen::buildAssembleCommand(const std::string &, const std::str
 
 std::optional<std::string> Z80Codegen::assembleInProcess(const std::string &asmText,
                                                            const std::string &format) const {
-    if (format == "bin") return assembleZ80(asmText);
+    if (format == "raw") return assembleZ80(asmText);
     return std::nullopt;
 }
 

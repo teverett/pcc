@@ -29,7 +29,7 @@ constexpr uint32_t kInitialSP = 0x100000;
 // calls `org` a second time to "jump" forward - doing that here would
 // silently desynchronize the labels this code relies on (`_start`,
 // every `g_`/`fn_` label) from where their own bytes actually end up
-// once `--format=bin`'s flat image is loaded at address 0.
+// once `--format=raw`'s flat image is loaded at address 0.
 constexpr uint32_t kStartAddress = 8;
 }  // namespace
 
@@ -50,7 +50,7 @@ std::string MC68328Codegen::generate(const ir::Program &prog, bool objectMode) {
     if (objectMode) {
         err(0,
             "the mc68328 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=bin compile (see MC68328Codegen.h's own header comment)");
+            "--format=raw compile (see MC68328Codegen.h's own header comment)");
     }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
@@ -461,7 +461,7 @@ std::string MC68328Codegen::buildAssembleCommand(const std::string &, const std:
 
 std::optional<std::string> MC68328Codegen::assembleInProcess(const std::string &asmText,
                                                                const std::string &format) const {
-    if (format == "bin") return assembleMC68328(asmText);
+    if (format == "raw") return assembleMC68328(asmText);
     return std::nullopt;
 }
 

@@ -535,7 +535,7 @@ std::string I8086Codegen::buildAssembleCommand(const std::string &assemblerPath,
 // see I8086Assembler.h for what it does and doesn't support.
 //
 // The boot-sector padding/signature (`times (510-($-$$)) db 0\ndw
-// 0xAA55`) is added here, only for `--format=bin`, not in generate()
+// 0xAA55`) is added here, only for `--format=raw`, not in generate()
 // itself - `generate()`'s own text is shared by every format, and
 // that padding only means anything for a direct, bootable, exactly-
 // one-sector image. Appending it unconditionally used to also apply
@@ -550,7 +550,7 @@ std::string I8086Codegen::buildAssembleCommand(const std::string &assemblerPath,
 // directly - so it should never see this padding in the first place.
 std::optional<std::string> I8086Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
-    if (format == "bin") {
+    if (format == "raw") {
         std::string bootable = asmText + "\ntimes (510-($-$$)) db 0\ndw 0xAA55\n";
         return assembleI8086(bootable, I8086OutputFormat::Bin);
     }
@@ -559,13 +559,13 @@ std::optional<std::string> I8086Codegen::assembleInProcess(const std::string &as
     // is always allowed here, whole-program single-file compile or
     // not, deferred as a relocation for a future `--link` step.
     if (format == "coff") return assembleI8086(asmText, I8086OutputFormat::Coff, /*allowExternal=*/true);
-    // `--format=elf`, like `--format=bin`, is a *complete* self-
+    // `--format=elf`, like `--format=raw`, is a *complete* self-
     // contained program - an external/undefined symbol is a hard
-    // error (allowExternal defaults to false), same as "asm"/"bin",
+    // error (allowExternal defaults to false), same as "asm"/"raw",
     // not a relocation to defer to a future `--link` step the way
     // "coff" allows (see elf/ElfWriter.h's own header comment for why
     // this is a peer of `bin`'s "whole program" role, not of `coff`'s
-    // "relocatable object" one). Unlike "bin", there's no 510-byte
+    // "relocatable object" one). Unlike "raw", there's no 510-byte
     // sector limit to pad for - a real ELF file has no such
     // constraint - so `asmText` is assembled exactly as generate()
     // wrote it, with no boot-sector padding appended.

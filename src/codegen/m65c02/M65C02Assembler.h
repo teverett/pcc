@@ -24,7 +24,7 @@ namespace pcc {
 //
 // No relocations, no external symbols, no `--format=coff`: this
 // backend only supports a single, fully self-contained
-// `--format=bin` compile (see M65C02Codegen.h's own comment) - every
+// `--format=raw` compile (see M65C02Codegen.h's own comment) - every
 // symbol must resolve within the one file being assembled, a hard
 // error otherwise.
 //

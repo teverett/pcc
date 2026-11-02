@@ -31,7 +31,7 @@ namespace pcc {
 class I8086Linker : public TargetLinker {
    public:
     LinkedImage merge(const std::vector<CoffObject> &objects) const override;
-    std::vector<std::string> outputFormats() const override { return {"bin", "coff", "elf", "aout"}; }
+    std::vector<std::string> outputFormats() const override { return {"raw", "coff", "elf", "aout"}; }
 };
 
 }  // namespace pcc

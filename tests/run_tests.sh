@@ -167,7 +167,7 @@ case "$TARGET" in
         ;;
     i386)
         # Same qemu tool as `8086` above, but a completely different
-        # boot path: this backend's own `--format=bin` output is a
+        # boot path: this backend's own `--format=raw` output is a
         # real Multiboot image (see
         # ../src/codegen/i386/I386Codegen.cpp's own `generate()`
         # comment), loaded straight into 32-bit protected mode by
@@ -317,7 +317,7 @@ check_8086() {
     pkill -f qemu-system-i386 2>/dev/null
     sleep 1
 
-    if ! "$PCC" --target="$target" --format=bin \
+    if ! "$PCC" --target="$target" --format=raw \
             --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -405,7 +405,7 @@ check_i386() {
     pkill -f qemu-system-i386 2>/dev/null
     sleep 1
 
-    if ! "$PCC" --target=i386 --format=bin \
+    if ! "$PCC" --target=i386 --format=raw \
             --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -417,7 +417,7 @@ check_i386() {
     local outfile="$tmpdir/$name.out"
 
     # `-kernel "$binfile"`, no floppy/BIOS boot at all: this backend's
-    # own `--format=bin` output is a real Multiboot image (see
+    # own `--format=raw` output is a real Multiboot image (see
     # ../src/codegen/i386/I386Codegen.cpp's own `generate()` comment),
     # and qemu's own `-kernel` loader reads that header and lands this
     # program running in real 32-bit protected mode directly, the same
@@ -474,7 +474,7 @@ check_armv7a() {
     pkill -f qemu-system-arm 2>/dev/null
     sleep 1
 
-    if ! "$PCC" --target=armv7a --format=bin \
+    if ! "$PCC" --target=armv7a --format=raw \
             --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -552,7 +552,7 @@ check_armv8a() {
     pkill -f qemu-system-aarch64 2>/dev/null
     sleep 1
 
-    if ! "$PCC" --target=armv8a --format=bin \
+    if ! "$PCC" --target=armv8a --format=raw \
             --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -615,7 +615,7 @@ check_68000() {
     pkill -f qemu-system-m68k 2>/dev/null
     sleep 1
 
-    if ! "$PCC" --target=68000 --format=bin \
+    if ! "$PCC" --target=68000 --format=raw \
             --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -694,7 +694,7 @@ check_mc68328() {
     pkill -f qemu-system-m68k 2>/dev/null
     sleep 1
 
-    if ! "$PCC" --target=mc68328 --format=bin \
+    if ! "$PCC" --target=mc68328 --format=raw \
             --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -760,7 +760,7 @@ check_6502() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=6502 --format=bin \
+    if ! "$PCC" --target=6502 --format=raw \
             --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -825,7 +825,7 @@ check_65c02() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=65c02 --format=bin \
+    if ! "$PCC" --target=65c02 --format=raw \
             --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -891,7 +891,7 @@ check_8080() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=8080 --format=bin \
+    if ! "$PCC" --target=8080 --format=raw \
             --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -953,7 +953,7 @@ check_z80() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=z80 --format=bin \
+    if ! "$PCC" --target=z80 --format=raw \
             --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -1021,7 +1021,7 @@ check_8008() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=8008 --format=bin \
+    if ! "$PCC" --target=8008 --format=raw \
             --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -1245,7 +1245,7 @@ check_8051() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=8051 --format=bin \
+    if ! "$PCC" --target=8051 --format=raw \
             --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -1497,7 +1497,7 @@ check_stm32() {
     pkill -f qemu-system-arm 2>/dev/null
     sleep 1
 
-    if ! "$PCC" --target=stm32 --format=bin \
+    if ! "$PCC" --target=stm32 --format=raw \
             --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"

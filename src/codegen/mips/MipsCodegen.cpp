@@ -46,7 +46,7 @@ std::string MipsCodegen::generate(const ir::Program &prog, bool objectMode) {
     if (objectMode) {
         err(0,
             "the r10000 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=bin compile (see MipsCodegen.h's own header comment)");
+            "--format=raw compile (see MipsCodegen.h's own header comment)");
     }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
@@ -471,7 +471,7 @@ std::string MipsCodegen::buildAssembleCommand(const std::string &, const std::st
 
 std::optional<std::string> MipsCodegen::assembleInProcess(const std::string &asmText,
                                                             const std::string &format) const {
-    if (format == "bin") return assembleMips(asmText);
+    if (format == "raw") return assembleMips(asmText);
     return std::nullopt;
 }
 

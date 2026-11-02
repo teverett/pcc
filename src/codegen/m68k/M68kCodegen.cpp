@@ -44,7 +44,7 @@ std::string M68kCodegen::generate(const ir::Program &prog, bool objectMode) {
     if (objectMode) {
         err(0,
             "the 68000 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=bin compile (see M68kCodegen.h's own header comment)");
+            "--format=raw compile (see M68kCodegen.h's own header comment)");
     }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
@@ -444,7 +444,7 @@ std::string M68kCodegen::buildAssembleCommand(const std::string &, const std::st
 
 std::optional<std::string> M68kCodegen::assembleInProcess(const std::string &asmText,
                                                             const std::string &format) const {
-    if (format == "bin") return assembleM68k(asmText);
+    if (format == "raw") return assembleM68k(asmText);
     return std::nullopt;
 }
 

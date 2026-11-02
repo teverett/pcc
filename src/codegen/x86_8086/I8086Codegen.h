@@ -50,7 +50,7 @@ class I8086Codegen : public Backend {
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "8086"; }
     std::string sourceExtension() const override { return ".asm"; }
-    std::vector<std::string> assembledFormats() const override { return {"bin", "coff", "elf"}; }
+    std::vector<std::string> assembledFormats() const override { return {"raw", "coff", "elf"}; }
     std::string defaultAssemblerPath() const override { return "nasm"; }
     std::string buildAssembleCommand(const std::string &assemblerPath, const std::string &format,
                                       const std::string &srcPath, const std::string &outPath) const override;

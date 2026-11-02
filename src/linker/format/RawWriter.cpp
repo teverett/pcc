@@ -1,12 +1,12 @@
-#include "BinWriter.h"
+#include "RawWriter.h"
 
 #include <stdexcept>
 
 namespace pcc {
 
-std::string BinWriter::write(const LinkedImage &image) const {
+std::string RawWriter::write(const LinkedImage &image) const {
     if (image.unitBits != 8) {
-        throw std::runtime_error("BinWriter: expected a byte-addressed image, got unitBits=" +
+        throw std::runtime_error("RawWriter: expected a byte-addressed image, got unitBits=" +
                                   std::to_string(image.unitBits));
     }
     constexpr size_t kSectorSize = 512;

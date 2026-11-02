@@ -84,7 +84,7 @@ class M6502Codegen : public Backend {
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "6502"; }
     std::string sourceExtension() const override { return ".s65"; }
-    std::vector<std::string> assembledFormats() const override { return {"bin"}; }
+    std::vector<std::string> assembledFormats() const override { return {"raw"}; }
     std::string defaultAssemblerPath() const override { return ""; }
     std::string buildAssembleCommand(const std::string &assemblerPath, const std::string &format,
                                       const std::string &srcPath, const std::string &outPath) const override;

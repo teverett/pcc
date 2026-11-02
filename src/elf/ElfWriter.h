@@ -7,7 +7,7 @@
 namespace pcc {
 
 // A minimal, from-scratch 32-bit little-endian ELF executable writer,
-// the 8086 target's third peer of CoffWriter.h/BinWriter.h (shared
+// the 8086 target's third peer of CoffWriter.h/RawWriter.h (shared
 // the same way CoffWriter.h is - by codegen/x86_8086/I8086Assembler.cpp's
 // own in-process assembler, for a single self-contained --format=elf
 // compile, and by linker/format/ElfWriter.h's thin FormatWriter
@@ -28,7 +28,7 @@ namespace pcc {
 // *run* this (it expects 32-bit protected-mode code, not a 16-bit
 // real-mode boot sector) - same honestly-incomplete-executable
 // status as `--format=aout`, not a claim that this is bootable or
-// runnable by anything other than `--format=bin`'s own convention.
+// runnable by anything other than `--format=raw`'s own convention.
 std::string writeElfExecutable(uint32_t base, const std::vector<uint8_t> &bytes);
 
 }  // namespace pcc

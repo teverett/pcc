@@ -43,7 +43,7 @@ std::string M16cCodegen::generate(const ir::Program &prog, bool objectMode) {
     if (objectMode) {
         err(0,
             "the m16c backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=bin compile (see M16cCodegen.h's own header comment)");
+            "--format=raw compile (see M16cCodegen.h's own header comment)");
     }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
@@ -438,7 +438,7 @@ std::string M16cCodegen::buildAssembleCommand(const std::string &, const std::st
 
 std::optional<std::string> M16cCodegen::assembleInProcess(const std::string &asmText,
                                                            const std::string &format) const {
-    if (format == "bin") return assembleM16c(asmText);
+    if (format == "raw") return assembleM16c(asmText);
     return std::nullopt;
 }
 

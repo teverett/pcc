@@ -68,7 +68,7 @@ std::string M65C02Codegen::generate(const ir::Program &prog, bool objectMode) {
     if (objectMode) {
         err(0,
             "the 65C02 backend doesn't support real separate compilation yet - only a single self-contained "
-            "--format=bin compile (see M65C02Codegen.h's own header comment)");
+            "--format=raw compile (see M65C02Codegen.h's own header comment)");
     }
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
@@ -612,7 +612,7 @@ std::string M65C02Codegen::buildAssembleCommand(const std::string &, const std::
 
 std::optional<std::string> M65C02Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
-    if (format == "bin") return assembleM65C02(asmText);
+    if (format == "raw") return assembleM65C02(asmText);
     return std::nullopt;
 }
 

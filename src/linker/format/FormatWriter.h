@@ -11,7 +11,7 @@ namespace pcc {
 // purely "how do these final bytes get serialized", decoupled from
 // *how* the image got resolved (see Linker.h's TargetLinker, the
 // other half). One implementation per format - CoffLinkWriter,
-// RimWriter, PtrWriter, A7outWriter, ListWriter, BinWriter - each
+// RimWriter, PtrWriter, A7outWriter, ListWriter, RawWriter - each
 // free-standing: nothing here ties a writer to one particular
 // architecture. Wiring a writer up to a *new* architecture later is
 // just adding its name to that architecture's own

@@ -9,7 +9,7 @@ namespace pcc {
 // purpose 8080 assembler (no macros, no conditional assembly, no
 // relocations/external symbols/`--format=coff` - see
 // I8080Codegen.h's own header comment: this backend only supports a
-// single, fully self-contained `--format=bin` compile). Unlike the
+// single, fully self-contained `--format=raw` compile). Unlike the
 // 6502/68000 backends' own in-process assemblers (which invent a
 // narrow private mnemonic dialect - see M6502Assembler.h), this one
 // uses real, standard 8080 mnemonics and produces real 8080 machine

@@ -43,7 +43,7 @@ namespace pcc {
 // itself) and call `main`. Unlike `x86_8086`, this backend never
 // needs NASM's own `--format=coff`/`elf` real-separate-compilation
 // machinery (see generate()'s own comment) - every program here is
-// one flat, self-contained `--format=bin` image, the same scope every
+// one flat, self-contained `--format=raw` image, the same scope every
 // other newer backend here (`68000`/`mc68328`/`stm32`) has settled
 // on.
 class I386Codegen : public Backend {
@@ -51,7 +51,7 @@ class I386Codegen : public Backend {
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "i386"; }
     std::string sourceExtension() const override { return ".s386"; }
-    std::vector<std::string> assembledFormats() const override { return {"bin"}; }
+    std::vector<std::string> assembledFormats() const override { return {"raw"}; }
     std::string defaultAssemblerPath() const override { return ""; }
     std::string buildAssembleCommand(const std::string &assemblerPath, const std::string &format,
                                       const std::string &srcPath, const std::string &outPath) const override;
