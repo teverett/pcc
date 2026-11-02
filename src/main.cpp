@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -25,7 +26,11 @@
 #include <optional>
 #include <sstream>
 
+#ifdef _WIN32
+#include <direct.h>
+#else
 #include <sys/stat.h>
+#endif
 
 #include "ANTLRInputStream.h"
 #include "BaseErrorListener.h"
@@ -102,8 +107,20 @@ std::string baseName(const std::string &srcPath) {
 // default); writing a `build/<name>.o` from multi-file --format=coff
 // (see main()'s compileAndAssembleOne) wants binary, since a COFF
 // object is arbitrary bytes, not text.
+// mkdir()'s own signature differs by platform (MinGW's <io.h> one -
+// the only one available there, since it has no <sys/stat.h> mkdir -
+// takes no mode argument at all), so every caller goes through this
+// instead of calling mkdir() directly.
+void makeDir(const std::string &path) {
+#ifdef _WIN32
+    _mkdir(path.c_str());
+#else
+    mkdir(path.c_str(), 0755);
+#endif
+}
+
 void writeToBuildDir(const std::string &name, const std::string &content, bool binary = false) {
-    mkdir("build", 0755);  // ignore EEXIST and any other failure here; the ofstream below will fail loudly instead
+    makeDir("build");  // ignore EEXIST and any other failure here; the ofstream below will fail loudly instead
     std::ofstream out("build/" + name, binary ? std::ios::binary : std::ios::out);
     if (!out) {
         std::cerr << "warning: could not write build/" << name << "\n";
@@ -242,20 +259,33 @@ std::string assembleOne(const pcc::Backend &backend, const std::string &asmText,
 
     if (std::optional<std::string> result = backend.assembleInProcess(asmText, format)) return *result;
 
-    std::string tmpPathTemplate = "/tmp/pcc_XXXXXX" + backend.sourceExtension();
+    // mkstemp() (no suffix) is the only one of the two available on
+    // MinGW - mkstemps() (glibc/BSD only) isn't - so the input file's
+    // required extension (some real external assemblers key off it)
+    // is added with a rename afterward instead of mkstemps()'s own
+    // suffix argument. Neither hardcodes "/tmp" (not a real path on
+    // native Windows) - std::filesystem::temp_directory_path() is
+    // this platform's own actual temp directory on every target.
+    std::string tmpDir = std::filesystem::temp_directory_path().string();
+    std::string tmpPathTemplate = tmpDir + "/pcc_XXXXXX";
     std::vector<char> tmpPath(tmpPathTemplate.begin(), tmpPathTemplate.end());
     tmpPath.push_back('\0');
-    int fd = mkstemps(tmpPath.data(), static_cast<int>(backend.sourceExtension().size()));
+    int fd = mkstemp(tmpPath.data());
     if (fd < 0) throw std::runtime_error("could not create a temporary file for the generated assembly");
-    std::string tmpPathStr(tmpPath.data());
+    close(fd);
+    std::string tmpPathStr = std::string(tmpPath.data()) + backend.sourceExtension();
+    if (std::rename(tmpPath.data(), tmpPathStr.c_str()) != 0) {
+        std::remove(tmpPath.data());
+        throw std::runtime_error("could not create a temporary file for the generated assembly");
+    }
     {
         std::ofstream tmp(tmpPathStr);
         tmp << asmText;
     }
-    close(fd);
 
-    std::vector<char> outTmpPath = {'/', 't', 'm', 'p', '/', 'p', 'c', 'c', '_', 'o', 'u', 't', '_',
-                                     'X', 'X', 'X', 'X', 'X', 'X', '\0'};
+    std::string outTmpPathTemplate = tmpDir + "/pcc_out_XXXXXX";
+    std::vector<char> outTmpPath(outTmpPathTemplate.begin(), outTmpPathTemplate.end());
+    outTmpPath.push_back('\0');
     int outFd = mkstemp(outTmpPath.data());
     if (outFd < 0) {
         std::remove(tmpPathStr.c_str());
