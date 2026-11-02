@@ -5,7 +5,8 @@
 `src/optimizers/Optimizer.h`) between `IRBuilder` and whichever
 backend is selected — since every backend-specific decision
 (instruction selection, register/stack strategy) happens strictly
-after the IR exists, an optimizer written once benefits both targets.
+after the IR exists, an optimizer written once benefits every target
+(see `docs/platforms.md` for the full list).
 
 Today there are two, run in this order (`src/main.cpp`):
 

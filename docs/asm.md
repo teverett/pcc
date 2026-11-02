@@ -10,8 +10,9 @@ conventions) and interprets the parsed operand list according to its
 own target's real semantics.
 
 This is what `--format=asm` (compile mode's default output) writes,
-and what `--dump-asm` additionally saves to `build/<name><ext>`
-(`.s` for pdp7, `.asm` for 8086/8088).
+and what `--dump-asm` additionally saves to `build/<name><ext>` - see
+`docs/using.md`'s own `--dump-asm` row for every target's own
+extension.
 
 ## Shape
 
@@ -45,48 +46,50 @@ atom       : IDENT | NUMBER | '(' expr ')'
 ## Per-target semantics
 
 The grammar only captures the shared shape; what a parsed statement
-*means* is entirely up to each backend's own semantic layer:
+*means* is entirely up to each backend's own semantic layer. Every
+target in `docs/platforms.md` shares this exact grammar and parses
+against it with its own in-process assembler
+(`src/codegen/<target>/<Target>Assembler.cpp`) - what differs is only
+how each one interprets a parsed mnemonic/operand list. Two genuinely
+different interpretation styles exist, and every target follows one
+or the other:
 
-- **pdp7** — every syllable of every operand, plus the mnemonic token
-  itself, OR-combine (or `+`/`-` combine, if signed) into one 18-bit
-  expression value, matching real PDP-7 assembly: an "opcode" there is
-  just a symbol whose value happens to be an instruction's bit
-  pattern, indistinguishable at the syntax level from any other
-  symbol. An unsigned (no leading `+`/`-`) syllable ORs with whatever
-  came before it in the same operand (e.g. `jmp i F3` is one operand
-  made of two syllables, `i` and `F3`, OR'd together).
-- **8086/8088** — the mnemonic selects a real x86 instruction and each
-  comma-separated operand is a separate, structurally distinct
-  argument to it: ordinary NASM semantics. Multi-syllable `expr` is
-  only ever used for `+`/`-` arithmetic (`label+bx`, `510-($-$$)`); it
-  never relies on pdp7's "unsigned means OR" default.
-- **6502** — same shared grammar, parsed by its own in-process
-  assembler (`src/codegen/m6502/M6502Assembler.cpp`); see
-  `M6502Codegen.h`'s own header comment for the mnemonics and operand
-  conventions `M6502Codegen` emits (branch-range workarounds, the
-  three-register model, etc.).
-- **65c02** — the same dialect as `6502` above, plus exactly one
-  extra mnemonic pair (`stz`/`stzp`, for the CMOS-only STZ
-  instruction), parsed by its own in-process assembler
-  (`src/codegen/m65c02/M65C02Assembler.cpp`); see `M65C02Codegen.h`'s
-  own header comment.
+- **pdp7** — the one real outlier: every syllable of every operand,
+  plus the mnemonic token itself, OR-combine (or `+`/`-` combine, if
+  signed) into one 18-bit expression value, matching real PDP-7
+  assembly: an "opcode" there is just a symbol whose value happens to
+  be an instruction's bit pattern, indistinguishable at the syntax
+  level from any other symbol. An unsigned (no leading `+`/`-`)
+  syllable ORs with whatever came before it in the same operand (e.g.
+  `jmp i F3` is one operand made of two syllables, `i` and `F3`, OR'd
+  together).
+- **every other target** — the mnemonic selects a real target
+  instruction and each comma-separated operand is a separate,
+  structurally distinct argument to it, the same "ordinary NASM
+  semantics" **8086**/**8088** established first: multi-syllable
+  `expr` is only ever used for `+`/`-` arithmetic (`label+bx`,
+  `510-($-$$)`), never pdp7's "unsigned means OR" default. See each
+  target's own `<Target>Codegen.h` header comment (linked from its
+  own entry in `docs/platforms.md`) for the real mnemonics/operand
+  conventions it actually emits - register model, branch-range or
+  immediate-width workarounds, Harvard code/data split, and so on all
+  vary by target, but the grammar-level interpretation style doesn't.
 
 This grammar is deliberately not
 `../../pdp-assembler/grammar/Pdp7.g4` (the historical `as.s`/`as7`
 grammar, which handles real kernel sources with packed-char literals,
 numeric relative labels, `@local` directives, and `"`-comments) — this
-one is pcc's own, much narrower, and uses `;` for comments on both
-targets rather than inventing a third convention.
+one is pcc's own, much narrower, and uses `;` for comments on every
+target rather than inventing a third convention.
 
 ## Where it's used
 
 - `grammar/PccAsm.g4` is the single source grammar (lexer + parser
   combined); generated code lives in `src/generated/` and is checked
-  into git (see the top-level README's "Building" section for the
-  regeneration workflow).
-- `src/codegen/pdp7/Pdp7Assembler.cpp`,
+  into git (see `docs/building.md` for the regeneration workflow).
+- Every backend's own `src/codegen/<target>/<Target>Assembler.cpp`
+  (e.g. `src/codegen/pdp7/Pdp7Assembler.cpp`,
   `src/codegen/x86_8086/I8086Assembler.cpp`,
-  `src/codegen/m6502/M6502Assembler.cpp`, and
-  `src/codegen/m65c02/M65C02Assembler.cpp` each parse against this
-  grammar and then interpret the result per their own target
-  semantics, as above.
+  `src/codegen/sparc/SparcAssembler.cpp`) parses against this grammar
+  and then interprets the result per its own target semantics, as
+  above - see `docs/platforms.md` for the full target list.

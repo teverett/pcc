@@ -93,11 +93,10 @@ expr : NUMBER                                    // int literal
 - `src/ir/IRBuilder.h` builds a `Program` from the parsed C AST.
 - `src/ir/IRPrinter.h` renders it to this text (`--dump-ir`,
   `IRValidator.h`'s self-check).
-- `src/optimizers/` (see the top-level README's "Optimizers" section,
-  or `docs/optimization.md`) runs IR-to-IR passes between
-  `IRBuilder` and codegen — one optimizer written once benefits every
-  backend, since every target-specific decision happens strictly
-  after this IR exists.
+- `src/optimizers/` (see `docs/optimization.md`) runs IR-to-IR passes
+  between `IRBuilder` and codegen — one optimizer written once
+  benefits every backend, since every target-specific decision
+  happens strictly after this IR exists.
 - Every backend's codegen (`src/codegen/<target>/`) consumes a
   `Program` directly and lowers it to that target's own assembly
   dialect (`docs/asm.md`).
