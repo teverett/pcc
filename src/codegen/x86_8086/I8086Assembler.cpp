@@ -12,8 +12,8 @@
 #include "CommonTokenStream.h"
 #include "PccAsmLexer.h"
 #include "PccAsmParser.h"
-#include "coff/CoffWriter.h"
-#include "elf/ElfWriter.h"
+#include "fileformat/coff/CoffFormat.h"
+#include "fileformat/elf/ElfFormat.h"
 
 namespace pcc {
 
@@ -635,7 +635,7 @@ class Assembler {
     int stage_ = 1;
 };
 
-// COFF (see ../../coff/CoffWriter.h): the one `.text` section is just
+// COFF (see ../../fileformat/coff/CoffFormat.h): the one `.text` section is just
 // `bytes()` as-is (already byte-addressable, unlike pdp7's 18-bit
 // words), and each label's symbol value is its offset within that
 // section (its address minus `orgBase()`, the fixed boot-sector load
@@ -653,6 +653,7 @@ constexpr uint16_t kI8086CoffMachine = 0x0086;
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kI8086CoffMachine;
+    obj.base = a.orgBase();
     const auto &bytesVec = a.bytes();
     obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
 
@@ -677,10 +678,7 @@ ObjectFile buildObjectFile(const Assembler &a) {
     return obj;
 }
 
-std::string writeCoff(const Assembler &a) {
-    ObjectFile obj = buildObjectFile(a);
-    return writeCoffObject(obj.machineType, obj.textBytes, obj.symbols, obj.relocations, obj.dataSize);
-}
+std::string writeCoff(const Assembler &a) { return CoffFormatWriter().write(buildObjectFile(a)); }
 
 }  // namespace
 
@@ -695,10 +693,8 @@ std::string assembleI8086(const std::string &asmText, I8086OutputFormat format, 
         }
         case I8086OutputFormat::Coff:
             return writeCoff(assembler);
-        case I8086OutputFormat::Elf: {
-            const auto &bytes = assembler.bytes();
-            return writeElfExecutable(kI8086BaseAddress, bytes);
-        }
+        case I8086OutputFormat::Elf:
+            return ElfFormatWriter().write(buildObjectFile(assembler));
     }
     fail("unknown output format");
 }

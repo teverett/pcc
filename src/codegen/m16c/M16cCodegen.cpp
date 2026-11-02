@@ -4,7 +4,7 @@
 #include <stdexcept>
 
 #include "M16cAssembler.h"
-#include "objectformat/ObjectFormat.h"
+#include "fileformat/FileFormat.h"
 
 namespace pcc {
 
@@ -437,9 +437,9 @@ std::string M16cCodegen::buildAssembleCommand(const std::string &, const std::st
 std::optional<std::string> M16cCodegen::assembleInProcess(const std::string &asmText,
                                                            const std::string &format) const {
     if (format == "raw") return assembleM16c(asmText);
-    if (auto kind = objectFormatKindFromName(format)) {
+    if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleM16cObject(asmText);
-        return makeObjectFormatWriter(*kind)->write(obj);
+        return makeFileFormatWriter(*kind)->write(obj);
     }
     return std::nullopt;
 }

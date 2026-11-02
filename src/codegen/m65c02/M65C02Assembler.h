@@ -3,13 +3,13 @@
 #include <cstdint>
 #include <string>
 
-#include "objectformat/ObjectFile.h"
+#include "fileformat/ObjectFile.h"
 
 namespace pcc {
 
 // This target's own custom, non-registered COFF/object-format
 // machine ID (no real one exists for the 65C02 - see
-// ../../coff/CoffWriter.h's own header comment) - exported so
+// ../../fileformat/coff/CoffFormat.h's own header comment) - exported so
 // ../../linker/M65C02Linker.cpp can check an input object's embedded
 // machine type against `--target=65c02` without duplicating this
 // literal. Distinct from ../m6502/M6502Assembler.h's own
@@ -111,7 +111,7 @@ std::string assembleM65C02(const std::string &asmText);
 // header comment), the same convention ../z80/Z80Assembler.h's own
 // `assembleZ80Object` documents. Returns the format-neutral
 // ObjectFile a codegen backend builds once per compile (see
-// ../../objectformat/ObjectFile.h) - this function never touches a
+// ../../fileformat/ObjectFile.h) - this function never touches a
 // real COFF/ELF/Mach-O/a.out byte layout itself.
 ObjectFile assembleM65C02Object(const std::string &asmText);
 

@@ -3,13 +3,13 @@
 #include <cstdint>
 #include <string>
 
-#include "objectformat/ObjectFile.h"
+#include "fileformat/ObjectFile.h"
 
 namespace pcc {
 
 // This target's own custom, non-registered COFF/object-format
 // machine ID (no real one exists for the M16C - see
-// ../../coff/CoffWriter.h's own header comment) - exported so
+// ../../fileformat/coff/CoffFormat.h's own header comment) - exported so
 // ../../linker/factory/M16cLinkerFactory.cpp can check an input
 // object's embedded machine type against `--target=m16c` without
 // duplicating this literal.
@@ -90,7 +90,7 @@ std::string assembleM16c(const std::string &asmText);
 // `asmText` (generated with `org 0`, not `kBaseAddress` - see
 // M16cCodegen.cpp's own `generate()`) exactly like assembleM16c()
 // does, except an undefined symbol is deferred as a relocation (see
-// ../../objectformat/ObjectFile.h's own `ObjRelocation`) instead of a
+// ../../fileformat/ObjectFile.h's own `ObjRelocation`) instead of a
 // hard error, and *every* address reference - even to a label defined
 // in this same file - also gets an additional relocation against the
 // reserved pseudo-symbol ".." (this object's own eventual linked
@@ -101,8 +101,8 @@ std::string assembleM16c(const std::string &asmText);
 // Returns the format-neutral ObjectFile a codegen backend builds
 // once per compile (see ObjectFile.h) - this function never touches
 // a real COFF/ELF/Mach-O/a.out byte layout itself; that happens only
-// in whichever ObjectFormatWriter the caller picks for the requested
-// `--format` (see ../../objectformat/ObjectFormat.h).
+// in whichever FileFormatWriter the caller picks for the requested
+// `--format` (see ../../fileformat/FileFormat.h).
 ObjectFile assembleM16cObject(const std::string &asmText);
 
 }  // namespace pcc

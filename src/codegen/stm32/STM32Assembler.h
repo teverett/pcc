@@ -3,13 +3,13 @@
 #include <cstdint>
 #include <string>
 
-#include "objectformat/ObjectFile.h"
+#include "fileformat/ObjectFile.h"
 
 namespace pcc {
 
 // This target's own custom, non-registered COFF/object-format machine
 // ID (no real one exists for this project's own STM32/Cortex-M3
-// dialect - see ../../coff/CoffWriter.h's own header comment) -
+// dialect - see ../../fileformat/coff/CoffFormat.h's own header comment) -
 // exported so ../../linker/factory/STM32LinkerFactory.cpp can check an
 // input object's embedded machine type against `--target=stm32`
 // without duplicating this literal. ASCII "32" (`'3'=0x33,'2'=0x32`) -
@@ -162,7 +162,7 @@ std::string assembleSTM32(const std::string &asmText);
 // so this never comes up there.
 //
 // Returns the format-neutral ObjectFile a codegen backend builds once
-// per compile (see ../../objectformat/ObjectFile.h) - this function
+// per compile (see ../../fileformat/ObjectFile.h) - this function
 // never touches a real COFF/ELF/Mach-O/a.out byte layout itself.
 ObjectFile assembleSTM32Object(const std::string &asmText);
 

@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 
-#include "objectformat/ObjectFile.h"
+#include "fileformat/ObjectFile.h"
 
 namespace pcc {
 
@@ -81,7 +81,7 @@ std::string assemblePdp7(const std::string &asmText, Pdp7OutputFormat format, bo
 // not `kPdp7BaseAddress` - see this file's own `allowExternal`
 // comment above) exactly like `assemblePdp7(asmText, Coff, true)`
 // does, except it returns the format-neutral ObjectFile a codegen
-// backend builds once per compile (see ../../objectformat/ObjectFile.h)
+// backend builds once per compile (see ../../fileformat/ObjectFile.h)
 // directly, instead of already-serialized COFF bytes.
 // ../../linker/factory/Pdp7LinkerFactory.cpp's own `makePdp7Linker()`
 // uses this both for every real user object (via `--format=coff`,

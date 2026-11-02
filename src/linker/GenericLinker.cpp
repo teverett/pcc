@@ -64,13 +64,13 @@ void patchRel32(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value
 }
 }  // namespace RelocKinds
 
-LinkedImage GenericLinker::merge(const std::vector<ObjectFile> &userObjects) const {
+ObjectFile GenericLinker::merge(const std::vector<ObjectFile> &userObjects) const {
     if (userObjects.empty()) fail("no object files given");
     for (const auto &obj : userObjects) {
         // `machineType == 0` is tolerated unconditionally: a.out's
         // own real header has no machine-id field at all (see
-        // ../objectformat/aout/AoutObjectFormat.h's own header
-        // comment), so AoutObjectFormatReader::read() can only ever
+        // ../fileformat/aout/AoutFormat.h's own header
+        // comment), so AoutFileFormatReader::read() can only ever
         // report 0 - this is that format's own real, structural
         // limitation, not a weaker check for every other format
         // (which always carries this backend's own real non-zero
@@ -124,6 +124,7 @@ LinkedImage GenericLinker::merge(const std::vector<ObjectFile> &userObjects) con
                name.rfind("G_", 0) == 0 || name.rfind("P_", 0) == 0 || name.rfind("FN_", 0) == 0;
     };
     std::unordered_map<std::string, uint32_t> globalSymbols;
+    std::unordered_map<std::string, bool> globalSymbolIsData;
     std::unordered_map<std::string, size_t> definedBy;
     for (size_t i = 0; i < objects.size(); i++) {
         for (const auto &sym : objects[i].symbols) {
@@ -134,6 +135,7 @@ LinkedImage GenericLinker::merge(const std::vector<ObjectFile> &userObjects) con
                 fail("duplicate symbol '" + sym.name + "' defined in more than one object");
             }
             globalSymbols[sym.name] = addr;
+            globalSymbolIsData[sym.name] = sym.isData;
             definedBy[sym.name] = i;
         }
     }
@@ -174,36 +176,31 @@ LinkedImage GenericLinker::merge(const std::vector<ObjectFile> &userObjects) con
         }
     }
 
-    LinkedImage linked;
+    // --- build the linked ObjectFile. `textBytes` is already the
+    // packed-byte image exactly as every not-yet-linked object's own
+    // `.textBytes` is (see ObjectFile.h's own `unitBits`/`base`
+    // comment) - no decode/unpack step needed at all. ---
+    ObjectFile linked;
     linked.unitBits = config_.outputUnitBits;
     linked.base = config_.baseAddress / config_.addressUnitBytes;
     linked.machineType = config_.machineType;
-    if (config_.addressUnitBytes <= 1) {
-        linked.words.assign(image.begin(), image.end());
-    } else {
-        // Decode every `addressUnitBytes`-byte group back into one
-        // addressable word, big-endian (see Pdp7Assembler.cpp's own
-        // `buildObjectFile()` for the matching pack direction) -
-        // `image` is always laid out as a whole number of these
-        // groups, since every object's own `.textBytes` already is
-        // (every migrated word-addressed backend's own assembler
-        // only ever emits whole words).
-        linked.words.reserve(image.size() / config_.addressUnitBytes);
-        for (size_t off = 0; off + config_.addressUnitBytes <= image.size(); off += config_.addressUnitBytes) {
-            uint32_t w = 0;
-            for (uint32_t k = 0; k < config_.addressUnitBytes; k++) w = (w << 8) | image[off + k];
-            linked.words.push_back(w);
-        }
+    linked.textBytes = std::move(image);
+    linked.symbols.reserve(globalSymbols.size());
+    for (auto &kv : globalSymbols) {
+        bool isData = globalSymbolIsData[kv.first];
+        // A code symbol's own linked value is left relative to
+        // `.text`'s own start, not absolute (see ObjectFile.h's own
+        // header comment) - subtract the base this function just
+        // added, undoing it, the same way every not-yet-linked
+        // object's own symbol table is already relative to its own
+        // `org 0`. Only a code address is in the packed-byte scale
+        // `addressUnitBytes` describes at all; a data address is
+        // already the real, final, absolute value with nothing to
+        // convert (Harvard data is always byte-addressed 1:1 - see
+        // ObjSymbol::isData's own comment).
+        uint32_t value = isData ? kv.second : (kv.second - config_.baseAddress) / config_.addressUnitBytes;
+        linked.symbols.push_back({kv.first, value, /*isDefined=*/true, isData});
     }
-    // Every exported symbol address needs the same packed-byte-to-
-    // addressable-unit conversion as every relocation's own `value`
-    // above (a no-op for every byte-addressed target) - done once
-    // here, after every relocation above has already consumed
-    // `globalSymbols` in its own native packed-byte scale.
-    if (config_.addressUnitBytes > 1) {
-        for (auto &kv : globalSymbols) kv.second /= config_.addressUnitBytes;
-    }
-    linked.symbols = std::move(globalSymbols);
     return linked;
 }
 

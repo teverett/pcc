@@ -118,14 +118,14 @@ struct GenericLinkerConfig {
     // relocation's own patch function (a real word address, for
     // pdp7's own OR/`+`/`-` combine to operate on, not a byte
     // address), and every address this linker exposes outside its own
-    // packed-byte working image (`LinkedImage::base`,
-    // `LinkedImage::symbols`), need converting from this packed-byte
+    // packed-byte working image (`ObjectFile::base`,
+    // `ObjectFile::symbols`), need converting from this packed-byte
     // scale down to the real addressable-unit scale - see merge()'s
     // own comments for exactly where that conversion happens.
     uint32_t addressUnitBytes = 1;
 
-    // What `LinkedImage::unitBits` this target's own merge() output
-    // should report (see LinkedImage.h) - `8` (the default) for every
+    // What `ObjectFile::unitBits` this target's own merge() output
+    // should report (see ObjectFile.h) - `8` (the default) for every
     // byte-addressed target. Only meaningful together with
     // `addressUnitBytes > 1` (pdp7's own 18-bit words: `addressUnitBytes
     // = 3`, `outputUnitBits = 18` - the packed bytes carry 24 bits,
@@ -190,7 +190,7 @@ class GenericLinker : public TargetLinker {
    public:
     explicit GenericLinker(GenericLinkerConfig config) : config_(std::move(config)) {}
 
-    LinkedImage merge(const std::vector<ObjectFile> &objects) const override;
+    ObjectFile merge(const std::vector<ObjectFile> &objects) const override;
     std::vector<std::string> outputFormats() const override { return config_.outputFormats; }
 
    private:

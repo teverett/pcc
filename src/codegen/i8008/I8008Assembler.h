@@ -3,12 +3,12 @@
 #include <cstdint>
 #include <string>
 
-#include "objectformat/ObjectFile.h"
+#include "fileformat/ObjectFile.h"
 
 namespace pcc {
 
 // This target's own custom, non-registered COFF/object-format machine
-// ID (no real one exists for the 8008 - see ../../coff/CoffWriter.h's
+// ID (no real one exists for the 8008 - see ../../fileformat/coff/CoffFormat.h's
 // own header comment) - exported so
 // ../../linker/factory/I8008LinkerFactory.cpp can check an input
 // object's embedded machine type against `--target=8008` without

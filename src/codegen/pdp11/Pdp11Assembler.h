@@ -3,13 +3,13 @@
 #include <cstdint>
 #include <string>
 
-#include "objectformat/ObjectFile.h"
+#include "fileformat/ObjectFile.h"
 
 namespace pcc {
 
 // This target's own custom, non-registered COFF/object-format
 // machine ID (no real one exists for this project's own PDP-11
-// dialect - see ../../coff/CoffWriter.h's own header comment) -
+// dialect - see ../../fileformat/coff/CoffFormat.h's own header comment) -
 // exported so ../../linker/factory/Pdp11LinkerFactory.cpp can check
 // an input object's embedded machine type against `--target=pdp11`
 // without duplicating this literal.
@@ -100,7 +100,7 @@ std::string assemblePdp11(const std::string &asmText);
 // instead of a hard error - see `kPdp11RelocAbs16`/`kPdp11RelocRel16`
 // above for exactly which kind each operand shape needs. Returns the
 // format-neutral ObjectFile a codegen backend builds once per compile
-// (see ../../objectformat/ObjectFile.h) - this function never touches
+// (see ../../fileformat/ObjectFile.h) - this function never touches
 // a real COFF/ELF/Mach-O/a.out byte layout itself.
 ObjectFile assemblePdp11Object(const std::string &asmText);
 

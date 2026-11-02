@@ -3,13 +3,13 @@
 #include <cstdint>
 #include <string>
 
-#include "objectformat/ObjectFile.h"
+#include "fileformat/ObjectFile.h"
 
 namespace pcc {
 
 // This dialect's own custom, non-registered COFF/object-format
 // machine ID (no real one exists for this project's own PowerPC
-// dialect - see ../../coff/CoffWriter.h's own header comment) -
+// dialect - see ../../fileformat/coff/CoffFormat.h's own header comment) -
 // exported so ../../linker/factory/PowerPCLinkerFactory.cpp can check
 // an input object's embedded machine type against `--target=powerpc`
 // without duplicating this literal. ASCII "PC", the same ad-hoc
@@ -126,7 +126,7 @@ std::string assemblePowerPC(const std::string &asmText);
 // `kPowerPCRelocBranch`'s own comment above) - only a genuinely
 // external `bl` target gets a relocation at all. Returns the format-
 // neutral ObjectFile a codegen backend builds once per compile (see
-// ../../objectformat/ObjectFile.h) - this function never touches a
+// ../../fileformat/ObjectFile.h) - this function never touches a
 // real COFF/ELF/Mach-O/a.out byte layout itself.
 ObjectFile assemblePowerPCObject(const std::string &asmText);
 

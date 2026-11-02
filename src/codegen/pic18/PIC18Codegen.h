@@ -127,7 +127,7 @@ namespace pcc {
 // distinct globals get distinct, non-colliding linked data-space
 // addresses once merged by GenericLinker.cpp's own second, Harvard-
 // data-space layout pass, the actual fix this whole migration exists
-// for (see ../../objectformat/ObjectFile.h's own `ObjSymbol::isData`
+// for (see ../../fileformat/ObjectFile.h's own `ObjSymbol::isData`
 // comment).
 class PIC18Codegen : public Backend {
    public:

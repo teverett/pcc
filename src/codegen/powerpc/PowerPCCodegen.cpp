@@ -4,7 +4,7 @@
 #include <stdexcept>
 
 #include "PowerPCAssembler.h"
-#include "objectformat/ObjectFormat.h"
+#include "fileformat/FileFormat.h"
 
 namespace pcc {
 
@@ -484,11 +484,11 @@ std::optional<std::string> PowerPCCodegen::assembleInProcess(const std::string &
     // own assembler builds one format-neutral ObjectFile exactly once
     // (see PowerPCAssembler.h's own `assemblePowerPCObject`), and
     // whichever of these five names was asked for just picks that
-    // format's own ObjectFormatWriter (see
-    // objectformat/ObjectFormat.h) to serialize it.
-    if (auto kind = objectFormatKindFromName(format)) {
+    // format's own FileFormatWriter (see
+    // fileformat/FileFormat.h) to serialize it.
+    if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assemblePowerPCObject(asmText);
-        return makeObjectFormatWriter(*kind)->write(obj);
+        return makeFileFormatWriter(*kind)->write(obj);
     }
     return std::nullopt;
 }

@@ -3,13 +3,13 @@
 #include <cstdint>
 #include <string>
 
-#include "objectformat/ObjectFile.h"
+#include "fileformat/ObjectFile.h"
 
 namespace pcc {
 
 // This target's own custom, non-registered COFF/object-format
 // machine ID (no real one exists for the STM8 - see
-// ../../coff/CoffWriter.h's own header comment) - exported so
+// ../../fileformat/coff/CoffFormat.h's own header comment) - exported so
 // ../../linker/STM8LinkerFactory.cpp can check an input object's
 // embedded machine type against `--target=stm8` without duplicating
 // this literal.
@@ -78,7 +78,7 @@ std::string assembleSTM8(const std::string &asmText);
 // `asmText` (generated with `org 0`, not `kSTM8BaseAddress` - see
 // STM8Codegen.cpp's own `generate()`) exactly like assembleSTM8()
 // does, except an undefined symbol is deferred as a relocation (see
-// ../../objectformat/ObjectFile.h's own `ObjRelocation`) instead of a
+// ../../fileformat/ObjectFile.h's own `ObjRelocation`) instead of a
 // hard error, and *every* address reference - even to a label defined
 // in this same file - also gets an additional relocation against the
 // reserved pseudo-symbol ".." (this object's own eventual linked
@@ -89,8 +89,8 @@ std::string assembleSTM8(const std::string &asmText);
 // ObjectFile a codegen backend builds once per compile (see
 // ObjectFile.h) - this function never touches a real COFF/ELF/
 // Mach-O/a.out byte layout itself; that happens only in whichever
-// ObjectFormatWriter the caller picks for the requested `--format`
-// (see ../../objectformat/ObjectFormat.h).
+// FileFormatWriter the caller picks for the requested `--format`
+// (see ../../fileformat/FileFormat.h).
 ObjectFile assembleSTM8Object(const std::string &asmText);
 
 }  // namespace pcc

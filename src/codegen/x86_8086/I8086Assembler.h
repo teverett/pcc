@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 
-#include "objectformat/ObjectFile.h"
+#include "fileformat/ObjectFile.h"
 
 namespace pcc {
 
@@ -76,7 +76,7 @@ constexpr uint16_t kI8086RelocRel16 = 2;
 // - see I8086Codegen.cpp's own `generate()`) exactly like
 // `assembleI8086(asmText, Coff, true)` does, except it returns the
 // format-neutral ObjectFile a codegen backend builds once per compile
-// (see ../../objectformat/ObjectFile.h) directly, instead of already-
+// (see ../../fileformat/ObjectFile.h) directly, instead of already-
 // serialized COFF bytes. `--format=coff` compiles (see
 // I8086Codegen.h's own `objectMode`) still go through `assembleI8086`
 // as before; this function exists solely for

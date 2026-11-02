@@ -3,13 +3,13 @@
 #include <cstdint>
 #include <string>
 
-#include "objectformat/ObjectFile.h"
+#include "fileformat/ObjectFile.h"
 
 namespace pcc {
 
 // This target's own custom, non-registered COFF/object-format
 // machine ID (no real one exists for this project's own 68000
-// dialect - see ../../coff/CoffWriter.h's own header comment) -
+// dialect - see ../../fileformat/coff/CoffFormat.h's own header comment) -
 // exported so ../../linker/M68kLinkerFactory.cpp can check an input
 // object's embedded machine type against `--target=68000` without
 // duplicating this literal. Distinct from mc68328's own machine ID
@@ -86,7 +86,7 @@ std::string assembleM68k(const std::string &asmText);
 // text's own labels all resolve to "offset from this object's own
 // org 0" until that base is added). Returns the format-neutral
 // ObjectFile a codegen backend builds once per compile (see
-// ../../objectformat/ObjectFile.h) - this function never touches a
+// ../../fileformat/ObjectFile.h) - this function never touches a
 // real COFF/ELF/Mach-O/a.out byte layout itself.
 ObjectFile assembleM68kObject(const std::string &asmText);
 

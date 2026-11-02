@@ -3,13 +3,13 @@
 #include <cstdint>
 #include <string>
 
-#include "objectformat/ObjectFile.h"
+#include "fileformat/ObjectFile.h"
 
 namespace pcc {
 
 // This dialect's own custom, non-registered COFF/object-format
 // machine ID (no real one exists for this project's own MIPS dialect
-// - see ../../coff/CoffWriter.h's own header comment) - exported so
+// - see ../../fileformat/coff/CoffFormat.h's own header comment) - exported so
 // ../../linker/factory/MipsLinkerFactory.cpp can check an input
 // object's embedded machine type against `--target=r10000`/`r4000`
 // without duplicating this literal.
@@ -91,7 +91,7 @@ std::string assembleMips(const std::string &asmText);
 // relocation against the reserved pseudo-symbol ".." (see
 // ../../linker/GenericLinker.h's own header comment on why). Returns
 // the format-neutral ObjectFile a codegen backend builds once per
-// compile (see ../../objectformat/ObjectFile.h).
+// compile (see ../../fileformat/ObjectFile.h).
 ObjectFile assembleMipsObject(const std::string &asmText);
 
 }  // namespace pcc

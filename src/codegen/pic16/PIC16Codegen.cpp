@@ -4,7 +4,7 @@
 #include <stdexcept>
 
 #include "PIC16Assembler.h"
-#include "objectformat/ObjectFormat.h"
+#include "fileformat/FileFormat.h"
 
 namespace pcc {
 
@@ -748,11 +748,11 @@ std::optional<std::string> PIC16Codegen::assembleInProcess(const std::string &as
     // assembler builds one format-neutral ObjectFile exactly once
     // (see PIC16Assembler.h's own `assemblePIC16Object`), and
     // whichever of these four names was asked for just picks that
-    // format's own ObjectFormatWriter (see
-    // objectformat/ObjectFormat.h) to serialize it.
-    if (auto kind = objectFormatKindFromName(format)) {
+    // format's own FileFormatWriter (see
+    // fileformat/FileFormat.h) to serialize it.
+    if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assemblePIC16Object(asmText);
-        return makeObjectFormatWriter(*kind)->write(obj);
+        return makeFileFormatWriter(*kind)->write(obj);
     }
     return std::nullopt;
 }

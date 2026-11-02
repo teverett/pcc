@@ -4,7 +4,7 @@
 #include <stdexcept>
 
 #include "M68kAssembler.h"
-#include "objectformat/ObjectFormat.h"
+#include "fileformat/FileFormat.h"
 
 namespace pcc {
 
@@ -458,11 +458,11 @@ std::optional<std::string> M68kCodegen::assembleInProcess(const std::string &asm
     // own assembler builds one format-neutral ObjectFile exactly once
     // (see M68kAssembler.h's own `assembleM68kObject`), and whichever
     // of these five names was asked for just picks that format's own
-    // ObjectFormatWriter (see objectformat/ObjectFormat.h) to
+    // FileFormatWriter (see fileformat/FileFormat.h) to
     // serialize it.
-    if (auto kind = objectFormatKindFromName(format)) {
+    if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleM68kObject(asmText);
-        return makeObjectFormatWriter(*kind)->write(obj);
+        return makeFileFormatWriter(*kind)->write(obj);
     }
     return std::nullopt;
 }

@@ -4,7 +4,7 @@
 #include <stdexcept>
 
 #include "ArmAssembler.h"
-#include "objectformat/ObjectFormat.h"
+#include "fileformat/FileFormat.h"
 
 namespace pcc {
 
@@ -485,11 +485,11 @@ std::optional<std::string> ArmCodegen::assembleInProcess(const std::string &asmT
     // own assembler builds one format-neutral ObjectFile exactly once
     // (see ArmAssembler.h's own `assembleArmObject`), and whichever of
     // these five names was asked for just picks that format's own
-    // ObjectFormatWriter (see objectformat/ObjectFormat.h) to
+    // FileFormatWriter (see fileformat/FileFormat.h) to
     // serialize it.
-    if (auto kind = objectFormatKindFromName(format)) {
+    if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleArmObject(asmText);
-        return makeObjectFormatWriter(*kind)->write(obj);
+        return makeFileFormatWriter(*kind)->write(obj);
     }
     return std::nullopt;
 }

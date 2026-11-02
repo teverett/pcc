@@ -563,7 +563,7 @@ std::optional<std::string> I8086Codegen::assembleInProcess(const std::string &as
     // contained program - an external/undefined symbol is a hard
     // error (allowExternal defaults to false), same as "asm"/"raw",
     // not a relocation to defer to a future `--link` step the way
-    // "coff" allows (see elf/ElfWriter.h's own header comment for why
+    // "coff" allows (see fileformat/elf/ElfFormat.h's own header comment for why
     // this is a peer of `bin`'s "whole program" role, not of `coff`'s
     // "relocatable object" one). Unlike "raw", there's no 510-byte
     // sector limit to pad for - a real ELF file has no such

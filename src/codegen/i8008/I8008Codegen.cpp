@@ -4,7 +4,7 @@
 #include <stdexcept>
 
 #include "I8008Assembler.h"
-#include "objectformat/ObjectFormat.h"
+#include "fileformat/FileFormat.h"
 
 namespace pcc {
 
@@ -846,11 +846,11 @@ std::optional<std::string> I8008Codegen::assembleInProcess(const std::string &as
     // own assembler builds one format-neutral ObjectFile exactly once
     // (see I8008Assembler.h's own `assembleI8008Object`), and
     // whichever of these five names was asked for just picks that
-    // format's own ObjectFormatWriter (see
-    // objectformat/ObjectFormat.h) to serialize it.
-    if (auto kind = objectFormatKindFromName(format)) {
+    // format's own FileFormatWriter (see
+    // fileformat/FileFormat.h) to serialize it.
+    if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleI8008Object(asmText);
-        return makeObjectFormatWriter(*kind)->write(obj);
+        return makeFileFormatWriter(*kind)->write(obj);
     }
     return std::nullopt;
 }

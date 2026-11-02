@@ -3,13 +3,13 @@
 #include <cstdint>
 #include <string>
 
-#include "objectformat/ObjectFile.h"
+#include "fileformat/ObjectFile.h"
 
 namespace pcc {
 
 // This target's own custom, non-registered COFF/object-format
 // machine ID (no real one exists for the PIC18 - see
-// ../../coff/CoffWriter.h's own header comment) - exported so
+// ../../fileformat/coff/CoffFormat.h's own header comment) - exported so
 // ../../linker/factory/PIC18LinkerFactory.cpp can check an input
 // object's embedded machine type against `--target=pic18` without
 // duplicating this literal. Distinct from every other registered
@@ -137,7 +137,7 @@ std::string assemblePIC18(const std::string &asmText);
 // needed for a genuinely Harvard target, unlike every von-Neumann
 // target's own single ".."). Returns the format-neutral ObjectFile a
 // codegen backend builds once per compile (see
-// ../../objectformat/ObjectFile.h), with every CODE label's own
+// ../../fileformat/ObjectFile.h), with every CODE label's own
 // `ObjSymbol::value` a *byte* offset into `.textBytes` (word offset
 // times two - see `kPIC18RelocGotoCallLo`'s own comment on why
 // GenericLinker.cpp's own byte-wise layout needs that unit) and every

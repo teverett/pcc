@@ -67,7 +67,7 @@ class Backend {
     // `--format=elf` is a *complete* self-contained whole program for
     // `8086` (I8086Codegen.h's own peer of `raw`/`bin`) but a real
     // relocatable object file (see
-    // ../objectformat/ObjectFormat.h) for `z80` (Z80Codegen.h's own
+    // ../fileformat/FileFormat.h) for `z80` (Z80Codegen.h's own
     // peer of `coff`). The default - only "coff" - matches every
     // backend that predates the format-neutral object model (pdp7,
     // 8086); a backend that uses more than one object-file format

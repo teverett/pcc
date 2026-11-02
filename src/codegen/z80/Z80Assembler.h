@@ -3,13 +3,13 @@
 #include <cstdint>
 #include <string>
 
-#include "objectformat/ObjectFile.h"
+#include "fileformat/ObjectFile.h"
 
 namespace pcc {
 
 // This target's own custom, non-registered COFF/object-format
 // machine ID (no real one exists for the Z80 - see
-// ../../coff/CoffWriter.h's own header comment) - exported so
+// ../../fileformat/coff/CoffFormat.h's own header comment) - exported so
 // ../../linker/Z80Linker.cpp can check an input object's embedded
 // machine type against `--target=z80` without duplicating this
 // literal.
@@ -74,7 +74,7 @@ std::string assembleZ80(const std::string &asmText);
 // `asmText` (generated with `org 0`, not `kBaseAddress` - see
 // Z80Codegen.cpp's own `generate()`) exactly like assembleZ80() does,
 // except an undefined symbol is deferred as a relocation (see
-// ../../objectformat/ObjectFile.h's own `ObjRelocation`) instead of a
+// ../../fileformat/ObjectFile.h's own `ObjRelocation`) instead of a
 // hard error, and *every* address reference - even to a label defined
 // in this same file - also gets an additional relocation against the
 // reserved pseudo-symbol ".." (this object's own eventual linked
@@ -85,8 +85,8 @@ std::string assembleZ80(const std::string &asmText);
 // convention). Returns the format-neutral ObjectFile a codegen
 // backend builds once per compile (see ObjectFile.h) - this function
 // never touches a real COFF/ELF/Mach-O/a.out byte layout itself; that
-// happens only in whichever ObjectFormatWriter the caller picks for
-// the requested `--format` (see ../../objectformat/ObjectFormat.h).
+// happens only in whichever FileFormatWriter the caller picks for
+// the requested `--format` (see ../../fileformat/FileFormat.h).
 ObjectFile assembleZ80Object(const std::string &asmText);
 
 }  // namespace pcc

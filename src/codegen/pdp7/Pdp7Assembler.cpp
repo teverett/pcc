@@ -14,7 +14,7 @@
 #include "CommonTokenStream.h"
 #include "PccAsmLexer.h"
 #include "PccAsmParser.h"
-#include "coff/CoffWriter.h"
+#include "fileformat/coff/CoffFormat.h"
 
 namespace pcc {
 
@@ -452,7 +452,7 @@ std::string writePtrOrRim(const Assembler &a, bool rim) {
     return out.str();
 }
 
-// COFF (see ../../coff/CoffWriter.h): same "only memory from `..`
+// COFF (see ../../fileformat/coff/CoffFormat.h): same "only memory from `..`
 // upward" coverage as Ptr/Rim, packed 3 bytes per 18-bit word (the
 // top 6 bits of the 24-bit field are always zero, since no word ever
 // carries more than 18 significant bits) rather than Ptr/Rim's paper-
@@ -482,6 +482,8 @@ ObjectFile buildObjectFile(const Assembler &a) {
     const auto &mem = a.mem();
     ObjectFile obj;
     obj.machineType = kPdp7CoffMachine;
+    obj.unitBits = 18;
+    obj.base = base;
     for (size_t loc = base; loc < mem.size(); ++loc) {
         uint32_t w = (mem[loc] ? *mem[loc] : 0) & MASK18;
         obj.textBytes.push_back(static_cast<uint8_t>((w >> 16) & 0xFF));
@@ -514,10 +516,7 @@ ObjectFile buildObjectFile(const Assembler &a) {
     return obj;
 }
 
-std::string writeCoff(const Assembler &a) {
-    ObjectFile obj = buildObjectFile(a);
-    return writeCoffObject(obj.machineType, obj.textBytes, obj.symbols, obj.relocations, obj.dataSize);
-}
+std::string writeCoff(const Assembler &a) { return CoffFormatWriter().write(buildObjectFile(a)); }
 
 }  // namespace
 

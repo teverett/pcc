@@ -3,13 +3,13 @@
 #include <cstdint>
 #include <string>
 
-#include "objectformat/ObjectFile.h"
+#include "fileformat/ObjectFile.h"
 
 namespace pcc {
 
 // This target's own custom, non-registered COFF/object-format
 // machine ID (no real one exists for this project's own ARMv7-M
-// Thumb/Thumb-2 dialect - see ../../coff/CoffWriter.h's own header
+// Thumb/Thumb-2 dialect - see ../../fileformat/coff/CoffFormat.h's own header
 // comment) - exported so ../../linker/factory/ArmMLinkerFactory.cpp
 // can check an input object's embedded machine type against
 // `--target=cortex-m3`/`cortex-m4`/`cortex-m7` without duplicating
@@ -123,7 +123,7 @@ std::string assembleArmM(const std::string &asmText);
 // its own target is genuinely undefined in this file, the same
 // reasoning ../arm64/Arm64Assembler.h's own `b`/`bl` comment gives.
 // Returns the format-neutral ObjectFile a codegen backend builds
-// once per compile (see ../../objectformat/ObjectFile.h) - this
+// once per compile (see ../../fileformat/ObjectFile.h) - this
 // function never touches a real COFF/ELF/Mach-O/a.out byte layout
 // itself.
 ObjectFile assembleArmMObject(const std::string &asmText);

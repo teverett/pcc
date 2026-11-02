@@ -3,13 +3,13 @@
 #include <cstdint>
 #include <string>
 
-#include "objectformat/ObjectFile.h"
+#include "fileformat/ObjectFile.h"
 
 namespace pcc {
 
 // This target's own custom, non-registered COFF/object-format
 // machine ID (no real one exists for this project's own AArch64
-// dialect - see ../../coff/CoffWriter.h's own header comment) -
+// dialect - see ../../fileformat/coff/CoffFormat.h's own header comment) -
 // exported so ../../linker/factory/Arm64LinkerFactory.cpp can check
 // an input object's embedded machine type against `--target=armv8a`
 // without duplicating this literal.
@@ -98,7 +98,7 @@ std::string assembleArm64(const std::string &asmText);
 // text's own labels all resolve to "offset from this object's own
 // org 0" until that base is added). Returns the format-neutral
 // ObjectFile a codegen backend builds once per compile (see
-// ../../objectformat/ObjectFile.h).
+// ../../fileformat/ObjectFile.h).
 ObjectFile assembleArm64Object(const std::string &asmText);
 
 }  // namespace pcc

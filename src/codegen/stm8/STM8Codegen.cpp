@@ -4,7 +4,7 @@
 #include <stdexcept>
 
 #include "STM8Assembler.h"
-#include "objectformat/ObjectFormat.h"
+#include "fileformat/FileFormat.h"
 
 namespace pcc {
 
@@ -589,12 +589,12 @@ std::optional<std::string> STM8Codegen::assembleInProcess(const std::string &asm
     // own assembler builds one format-neutral ObjectFile exactly once
     // (see STM8Assembler.h's own `assembleSTM8Object`), and whichever
     // of these names was asked for just picks that format's own
-    // ObjectFormatWriter (see objectformat/ObjectFormat.h) to
+    // FileFormatWriter (see fileformat/FileFormat.h) to
     // serialize it - this file never touches a real COFF/ELF/Mach-O/
     // a.out byte layout itself.
-    if (auto kind = objectFormatKindFromName(format)) {
+    if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleSTM8Object(asmText);
-        return makeObjectFormatWriter(*kind)->write(obj);
+        return makeFileFormatWriter(*kind)->write(obj);
     }
     return std::nullopt;
 }

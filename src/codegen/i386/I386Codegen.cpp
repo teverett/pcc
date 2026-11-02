@@ -4,7 +4,7 @@
 #include <stdexcept>
 
 #include "I386Assembler.h"
-#include "objectformat/ObjectFormat.h"
+#include "fileformat/FileFormat.h"
 
 namespace pcc {
 
@@ -465,11 +465,11 @@ std::optional<std::string> I386Codegen::assembleInProcess(const std::string &asm
     // own assembler builds one format-neutral ObjectFile exactly once
     // (see I386Assembler.h's own `assembleI386Object`), and whichever
     // of these five names was asked for just picks that format's own
-    // ObjectFormatWriter (see objectformat/ObjectFormat.h) to
+    // FileFormatWriter (see fileformat/FileFormat.h) to
     // serialize it.
-    if (auto kind = objectFormatKindFromName(format)) {
+    if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleI386Object(asmText);
-        return makeObjectFormatWriter(*kind)->write(obj);
+        return makeFileFormatWriter(*kind)->write(obj);
     }
     return std::nullopt;
 }

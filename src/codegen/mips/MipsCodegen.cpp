@@ -4,7 +4,7 @@
 #include <stdexcept>
 
 #include "MipsAssembler.h"
-#include "objectformat/ObjectFormat.h"
+#include "fileformat/FileFormat.h"
 
 namespace pcc {
 
@@ -483,11 +483,11 @@ std::optional<std::string> MipsCodegen::assembleInProcess(const std::string &asm
     // own assembler builds one format-neutral ObjectFile exactly once
     // (see MipsAssembler.h's own `assembleMipsObject`), and whichever
     // of these five names was asked for just picks that format's own
-    // ObjectFormatWriter (see objectformat/ObjectFormat.h) to
+    // FileFormatWriter (see fileformat/FileFormat.h) to
     // serialize it.
-    if (auto kind = objectFormatKindFromName(format)) {
+    if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleMipsObject(asmText);
-        return makeObjectFormatWriter(*kind)->write(obj);
+        return makeFileFormatWriter(*kind)->write(obj);
     }
     return std::nullopt;
 }

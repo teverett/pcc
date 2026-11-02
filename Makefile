@@ -66,31 +66,43 @@ SPACE +=
 # Each backend lives in its own subdirectory under src/codegen/ -
 # see Codegen.h. Adding a new backend means adding its .cpp here and
 # to BACKEND_DIRS below (for vpath), plus wiring it into main.cpp's
-# makeBackend(). src/ast/, src/ir/, src/coff/ and src/preprocessor/
-# hold code shared across backends (AST.h/BuildAst.*;
-# IR.h/IRBuilder.*/IRPrinter.*; CoffWriter.* - the `--format=coff`
-# writer both assemblers use; Preprocessor.* - the `#include`/
-# `#define`/`#if` etc. pass that runs on every source file before
-# ANTLR ever sees it) - not backend-specific, but still their own
-# subdirectories needing the same vpath treatment.
+# makeBackend(). src/ast/, src/ir/, src/fileformat/ and
+# src/preprocessor/ hold code shared across backends (AST.h/
+# BuildAst.*; IR.h/IRBuilder.*/IRPrinter.*; FileFormat.h/the per-
+# format Reader/Writer pairs under src/fileformat/<name>/ every
+# backend's own assembler and every TargetLinker share;
+# Preprocessor.* - the `#include`/`#define`/`#if` etc. pass that runs
+# on every source file before ANTLR ever sees it) - not backend-
+# specific, but still their own subdirectories needing the same vpath
+# treatment.
 BACKEND_DIRS := $(SRC_DIR)/codegen/pdp7 $(SRC_DIR)/codegen/x86_8086 $(SRC_DIR)/codegen/m6502 $(SRC_DIR)/codegen/m65c02 $(SRC_DIR)/codegen/m68k $(SRC_DIR)/codegen/mc68328 $(SRC_DIR)/codegen/pdp11 $(SRC_DIR)/codegen/i8080 $(SRC_DIR)/codegen/pic16 $(SRC_DIR)/codegen/pic18 $(SRC_DIR)/codegen/z80 $(SRC_DIR)/codegen/i8008 $(SRC_DIR)/codegen/stm8 $(SRC_DIR)/codegen/m16c $(SRC_DIR)/codegen/mips $(SRC_DIR)/codegen/mcs51 $(SRC_DIR)/codegen/stm32 $(SRC_DIR)/codegen/i386 $(SRC_DIR)/codegen/armm $(SRC_DIR)/codegen/arm $(SRC_DIR)/codegen/arm64 $(SRC_DIR)/codegen/powerpc
 AST_DIR      := $(SRC_DIR)/ast
 IR_DIR       := $(SRC_DIR)/ir
-COFF_DIR     := $(SRC_DIR)/coff
-ELF_DIR      := $(SRC_DIR)/elf
 LINKER_DIR   := $(SRC_DIR)/linker
-FORMAT_DIR   := $(LINKER_DIR)/format
 FACTORY_DIR  := $(LINKER_DIR)/factory
 PREPROCESSOR_DIR := $(SRC_DIR)/preprocessor
 OPTIMIZERS_DIR    := $(SRC_DIR)/optimizers
-OBJECTFORMAT_DIR  := $(SRC_DIR)/objectformat
-OBJECTFORMAT_DIRS := $(OBJECTFORMAT_DIR) $(OBJECTFORMAT_DIR)/coff $(OBJECTFORMAT_DIR)/raw $(OBJECTFORMAT_DIR)/elf $(OBJECTFORMAT_DIR)/macho $(OBJECTFORMAT_DIR)/aout
+# Every file format this project reads/writes lives under one
+# subdirectory each here - see src/fileformat/FileFormat.h's own
+# header comment - instead of being split across src/coff/, src/elf/,
+# src/objectformat/ and src/linker/format/ the way it used to be.
+FILEFORMAT_DIR  := $(SRC_DIR)/fileformat
+FILEFORMAT_DIRS := $(FILEFORMAT_DIR) $(FILEFORMAT_DIR)/coff $(FILEFORMAT_DIR)/elf $(FILEFORMAT_DIR)/macho $(FILEFORMAT_DIR)/aout $(FILEFORMAT_DIR)/flat $(FILEFORMAT_DIR)/raw $(FILEFORMAT_DIR)/rim $(FILEFORMAT_DIR)/ptr $(FILEFORMAT_DIR)/a7out $(FILEFORMAT_DIR)/list
 
 HAND_SRCS := \
     $(SRC_DIR)/main.cpp \
-    $(COFF_DIR)/CoffWriter.cpp \
-    $(COFF_DIR)/CoffReader.cpp \
-    $(ELF_DIR)/ElfWriter.cpp \
+    $(FILEFORMAT_DIR)/FileFormat.cpp \
+    $(FILEFORMAT_DIR)/Pdp7TapePacking.cpp \
+    $(FILEFORMAT_DIR)/coff/CoffFormat.cpp \
+    $(FILEFORMAT_DIR)/elf/ElfFormat.cpp \
+    $(FILEFORMAT_DIR)/macho/MachOFormat.cpp \
+    $(FILEFORMAT_DIR)/aout/AoutFormat.cpp \
+    $(FILEFORMAT_DIR)/flat/FlatFormat.cpp \
+    $(FILEFORMAT_DIR)/raw/RawFormat.cpp \
+    $(FILEFORMAT_DIR)/rim/RimFormat.cpp \
+    $(FILEFORMAT_DIR)/ptr/PtrFormat.cpp \
+    $(FILEFORMAT_DIR)/a7out/A7outFormat.cpp \
+    $(FILEFORMAT_DIR)/list/ListFormat.cpp \
     $(LINKER_DIR)/GenericLinker.cpp \
     $(FACTORY_DIR)/Z80LinkerFactory.cpp \
     $(FACTORY_DIR)/M6502LinkerFactory.cpp \
@@ -114,22 +126,6 @@ HAND_SRCS := \
     $(FACTORY_DIR)/PIC18LinkerFactory.cpp \
     $(FACTORY_DIR)/I8086LinkerFactory.cpp \
     $(FACTORY_DIR)/Pdp7LinkerFactory.cpp \
-    $(FORMAT_DIR)/Pdp7TapePacking.cpp \
-    $(FORMAT_DIR)/CoffLinkWriter.cpp \
-    $(FORMAT_DIR)/ElfLinkWriter.cpp \
-    $(FORMAT_DIR)/RimWriter.cpp \
-    $(FORMAT_DIR)/PtrWriter.cpp \
-    $(FORMAT_DIR)/A7outWriter.cpp \
-    $(FORMAT_DIR)/ListWriter.cpp \
-    $(FORMAT_DIR)/RawWriter.cpp \
-    $(FORMAT_DIR)/FlatWriter.cpp \
-    $(FORMAT_DIR)/AoutWriter.cpp \
-    $(OBJECTFORMAT_DIR)/ObjectFormat.cpp \
-    $(OBJECTFORMAT_DIR)/coff/CoffObjectFormat.cpp \
-    $(OBJECTFORMAT_DIR)/raw/RawObjectFormat.cpp \
-    $(OBJECTFORMAT_DIR)/elf/ElfObjectFormat.cpp \
-    $(OBJECTFORMAT_DIR)/macho/MachOObjectFormat.cpp \
-    $(OBJECTFORMAT_DIR)/aout/AoutObjectFormat.cpp \
     $(PREPROCESSOR_DIR)/Preprocessor.cpp \
     $(AST_DIR)/BuildAst.cpp \
     $(IR_DIR)/IRBuilder.cpp \
@@ -185,7 +181,7 @@ HAND_SRCS := \
 ALL_SRCS := $(GENERATED_SRCS) $(HAND_SRCS)
 OBJS     := $(patsubst %,$(OBJ_DIR)/%.o,$(notdir $(ALL_SRCS)))
 
-vpath %.cpp $(GEN_DIR):$(SRC_DIR):$(AST_DIR):$(IR_DIR):$(COFF_DIR):$(ELF_DIR):$(LINKER_DIR):$(FORMAT_DIR):$(FACTORY_DIR):$(PREPROCESSOR_DIR):$(OPTIMIZERS_DIR):$(subst $(SPACE),:,$(BACKEND_DIRS)):$(subst $(SPACE),:,$(OBJECTFORMAT_DIRS))
+vpath %.cpp $(GEN_DIR):$(SRC_DIR):$(AST_DIR):$(IR_DIR):$(LINKER_DIR):$(FACTORY_DIR):$(PREPROCESSOR_DIR):$(OPTIMIZERS_DIR):$(subst $(SPACE),:,$(BACKEND_DIRS)):$(subst $(SPACE),:,$(FILEFORMAT_DIRS))
 
 .PHONY: all clean generate build test
 

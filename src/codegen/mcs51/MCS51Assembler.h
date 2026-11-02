@@ -3,13 +3,13 @@
 #include <cstdint>
 #include <string>
 
-#include "objectformat/ObjectFile.h"
+#include "fileformat/ObjectFile.h"
 
 namespace pcc {
 
 // This target's own custom, non-registered COFF/object-format
 // machine ID (no real one exists for the MCS-51 family - see
-// ../../coff/CoffWriter.h's own header comment) - exported so
+// ../../fileformat/coff/CoffFormat.h's own header comment) - exported so
 // ../../linker/factory/MCS51LinkerFactory.cpp can check an input
 // object's embedded machine type against `--target=8051`/`8052`/
 // `8031`/`8032` without duplicating this literal. Checked against
@@ -153,7 +153,7 @@ std::string assembleMCS51(const std::string &asmText);
 // `resolveDataSyllable()`'s own "no XDATA address" error - a loud
 // compile-time failure, never a silent miscompile. Returns the
 // format-neutral ObjectFile a codegen backend builds once per compile
-// (see ../../objectformat/ObjectFile.h) - this function never touches a
+// (see ../../fileformat/ObjectFile.h) - this function never touches a
 // real COFF/ELF/Mach-O/a.out byte layout itself.
 ObjectFile assembleMCS51Object(const std::string &asmText);
 

@@ -67,8 +67,7 @@
 #include "codegen/arm/ArmCodegen.h"
 #include "codegen/arm64/Arm64Codegen.h"
 #include "codegen/powerpc/PowerPCCodegen.h"
-#include "coff/CoffReader.h"
-#include "objectformat/ObjectFormat.h"
+#include "fileformat/FileFormat.h"
 #include "linker/Linker.h"
 #include "linker/factory/I8086LinkerFactory.h"
 #include "linker/factory/Pdp7LinkerFactory.h"
@@ -92,16 +91,6 @@
 #include "linker/factory/MCS51LinkerFactory.h"
 #include "linker/factory/PIC16LinkerFactory.h"
 #include "linker/factory/PIC18LinkerFactory.h"
-#include "linker/format/A7outWriter.h"
-#include "linker/format/AoutWriter.h"
-#include "linker/format/RawWriter.h"
-#include "linker/format/FlatWriter.h"
-#include "linker/format/CoffLinkWriter.h"
-#include "linker/format/ElfLinkWriter.h"
-#include "linker/format/FormatWriter.h"
-#include "linker/format/ListWriter.h"
-#include "linker/format/PtrWriter.h"
-#include "linker/format/RimWriter.h"
 
 namespace {
 
@@ -264,23 +253,6 @@ std::unique_ptr<pcc::TargetLinker> makeLinker(const std::string &target) {
     return nullptr;
 }
 
-// One FormatWriter implementation per `--link` output format (see
-// linker/FormatWriter.h) - decoupled from which TargetLinker
-// produced the LinkedImage being written; a given `--target`'s own
-// TargetLinker::outputFormats() lists which of these names it
-// actually offers today.
-std::unique_ptr<pcc::FormatWriter> makeFormatWriter(const std::string &format) {
-    if (format == "coff") return std::make_unique<pcc::CoffLinkWriter>();
-    if (format == "rim") return std::make_unique<pcc::RimWriter>();
-    if (format == "ptr") return std::make_unique<pcc::PtrWriter>();
-    if (format == "a7out") return std::make_unique<pcc::A7outWriter>();
-    if (format == "list") return std::make_unique<pcc::ListWriter>();
-    if (format == "raw") return std::make_unique<pcc::RawWriter>();
-    if (format == "elf") return std::make_unique<pcc::ElfLinkWriter>();
-    if (format == "aout") return std::make_unique<pcc::AoutWriter>();
-    if (format == "flat") return std::make_unique<pcc::FlatWriter>();
-    return nullptr;
-}
 
 // Parses one file's own source into its own Program (BuildAst
 // doesn't know or care that there might be others), then appends its
@@ -501,11 +473,12 @@ int main(int argc, char **argv) {
     }
 
     // --- --link mode: combine already-compiled .o files - no
-    // frontend, no Backend. Merging them into a resolved image (this
-    // target's own TargetLinker - see linker/Linker.h) and writing
-    // that image out in a given format (a separate FormatWriter -
-    // see linker/FormatWriter.h) are two decoupled steps; `target`
-    // only picks the first one, `format` the second. ---
+    // frontend, no Backend. Merging them into a resolved, linked
+    // ObjectFile (this target's own TargetLinker - see
+    // linker/Linker.h) and writing that out in a given format (a
+    // separate FileFormatWriter - see fileformat/FileFormat.h) are
+    // two decoupled steps; `target` only picks the first one,
+    // `format` the second. ---
     if (link) {
         std::unique_ptr<pcc::TargetLinker> linker = makeLinker(target);
         if (!linker) {
@@ -521,11 +494,12 @@ int main(int argc, char **argv) {
             std::cerr << ")\n";
             return 1;
         }
-        std::unique_ptr<pcc::FormatWriter> writer = makeFormatWriter(format);
+        auto outKind = pcc::fileFormatKindFromName(format);
         // formatOk above already confirmed `format` is one of
-        // `linker->outputFormats()`'s own names, and every one of
-        // those always names a real FormatWriter (see
-        // makeFormatWriter) - this can't actually be null.
+        // `linker->outputFormats()`'s own names, and every target's
+        // own outputFormats() only ever lists a real FileFormatKind's
+        // own name - this can't actually be nullopt.
+        std::unique_ptr<pcc::FileFormatWriter> writer = pcc::makeFileFormatWriter(*outKind);
         try {
             std::vector<pcc::ObjectFile> objects;
             for (const std::string &path : srcPaths) {
@@ -535,15 +509,15 @@ int main(int argc, char **argv) {
                 ss << in.rdbuf();
                 std::string bytes = ss.str();
                 // Each input .o can be in any supported object format
-                // (see objectformat/ObjectFormat.h) - sniffed from its
+                // (see fileformat/FileFormat.h) - sniffed from its
                 // own leading bytes, not assumed to be COFF, so a
                 // link step can freely combine objects compiled with
                 // different `--format` choices.
-                pcc::ObjectFormatKind kind = pcc::detectObjectFormat(bytes);
-                objects.push_back(pcc::makeObjectFormatReader(kind)->read(bytes));
+                pcc::FileFormatKind kind = pcc::detectFileFormat(bytes);
+                objects.push_back(pcc::makeFileFormatReader(kind)->read(bytes));
             }
-            pcc::LinkedImage image = linker->merge(objects);
-            writeResult(outPath, writer->write(image));
+            pcc::ObjectFile linked = linker->merge(objects);
+            writeResult(outPath, writer->write(linked));
         } catch (const std::exception &e) {
             std::cerr << e.what() << "\n";
             return 1;

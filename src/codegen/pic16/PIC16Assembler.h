@@ -3,13 +3,13 @@
 #include <cstdint>
 #include <string>
 
-#include "objectformat/ObjectFile.h"
+#include "fileformat/ObjectFile.h"
 
 namespace pcc {
 
 // This target's own custom, non-registered COFF/object-format
 // machine ID (no real one exists for the PIC16 mid-range core - see
-// ../../coff/CoffWriter.h's own header comment) - exported so
+// ../../fileformat/coff/CoffFormat.h's own header comment) - exported so
 // ../../linker/factory/PIC16LinkerFactory.cpp can check an input
 // object's embedded machine type against `--target=pic16` without
 // duplicating this literal.
@@ -161,7 +161,7 @@ std::string assemblePIC16(const std::string &asmText);
 // every object regardless of where it's linked, see
 // PIC16Assembler.cpp's own `equateNames_`. Returns the format-neutral
 // ObjectFile a codegen backend builds once per compile (see
-// ../../objectformat/ObjectFile.h) - this function never touches a
+// ../../fileformat/ObjectFile.h) - this function never touches a
 // real COFF/ELF/a.out byte layout itself.
 ObjectFile assemblePIC16Object(const std::string &asmText);
 
