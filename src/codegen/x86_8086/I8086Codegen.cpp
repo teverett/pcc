@@ -212,12 +212,32 @@ void I8086Codegen::genStmt(const ir::Stmt &s) {
         case ir::StmtKind::While: {
             std::string Lstart = newLabel();
             std::string Lend = newLabel();
+            // `continue` jumps here if this loop has its own post-
+            // statement (a desugared for-loop's - see IR.h's
+            // Stmt::postStmt), so post still runs before the condition
+            // is retested; otherwise it's just Lstart itself, since
+            // there's nothing else to run first.
+            std::string Lcont = s.postStmt ? newLabel() : Lstart;
             code_ << Lstart << ":\n";
             genExpr(*s.cond);
             code_ << "    cmp ax, 0\n    je " << Lend << "\n";
+            loopLabels_.push_back({Lcont, Lend});
             genStmt(*s.loopBody);
+            loopLabels_.pop_back();
+            if (s.postStmt) {
+                code_ << Lcont << ":\n";
+                genStmt(*s.postStmt);
+            }
             code_ << "    jmp " << Lstart << "\n";
             code_ << Lend << ":\n";
+            return;
+        }
+        case ir::StmtKind::Break: {
+            code_ << "    jmp " << loopLabels_.back().second << "\n";
+            return;
+        }
+        case ir::StmtKind::Continue: {
+            code_ << "    jmp " << loopLabels_.back().first << "\n";
             return;
         }
         case ir::StmtKind::Return: {

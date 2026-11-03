@@ -43,6 +43,10 @@ public:
 
     virtual std::any visitReturnStmt(PccIRParser::ReturnStmtContext *context) = 0;
 
+    virtual std::any visitBreakStmt(PccIRParser::BreakStmtContext *context) = 0;
+
+    virtual std::any visitContinueStmt(PccIRParser::ContinueStmtContext *context) = 0;
+
     virtual std::any visitLocalDeclStmt(PccIRParser::LocalDeclStmtContext *context) = 0;
 
     virtual std::any visitAsmStmt(PccIRParser::AsmStmtContext *context) = 0;

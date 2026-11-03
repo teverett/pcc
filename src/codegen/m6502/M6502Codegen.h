@@ -3,6 +3,7 @@
 #include <map>
 #include <optional>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 #include "codegen/Codegen.h"
@@ -284,6 +285,10 @@ class M6502Codegen : public Backend {
     // read its own params().size() (see frameByteOffset()), since a
     // Local/Param's frame layout depends on which function owns it.
     const ir::Function *curFunction_ = nullptr;
+    // One entry per currently-open loop (innermost last) - {continue
+    // label, break label} - pushed/popped by genStmt's own While
+    // case, consulted by its Break/Continue cases.
+    std::vector<std::pair<std::string, std::string>> loopLabels_;
 };
 
 }  // namespace pcc

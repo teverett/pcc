@@ -54,6 +54,8 @@ enum class StmtKind {
     If,
     While,
     Return,
+    Break,     // see Stmt's own comment on While's loopBody/postStmt for what it targets
+    Continue,  // see Stmt's own comment on While's loopBody/postStmt for what it targets
     LocalDecl,
     ExprStmt,
     Empty,
@@ -68,6 +70,15 @@ struct Stmt {
     ExprPtr cond;                                // If / While
     std::unique_ptr<Stmt> thenStmt, elseStmt;    // If
     std::unique_ptr<Stmt> loopBody;              // While
+    // A `for(init;cond;post)` is desugared into `{ init; while(cond)
+    // ... }` right here in BuildAst.cpp - but `post` is kept as its
+    // OWN field, never folded into loopBody, specifically so
+    // `continue` inside the loop body can skip the rest of loopBody
+    // while still running post before the condition is retested (a
+    // real While has no postStmt at all - null here - so its own
+    // `continue` just jumps straight back to the condition check,
+    // same as always). Null for a real `while`.
+    std::unique_ptr<Stmt> postStmt;              // While (for-loop desugaring only)
     std::string declName;                        // LocalDecl
     ExprPtr initOrReturnOrExpr;                   // LocalDecl init / Return value / ExprStmt expr
     int arraySize = 0;                            // LocalDecl: >0 means an array of this many words

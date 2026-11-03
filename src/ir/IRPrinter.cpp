@@ -116,6 +116,15 @@ void printStmt(const ir::Stmt &s, std::ostream &out, int indent) {
             printExpr(*s.cond, out);
             out << ")\n";
             printStmt(*s.loopBody, out, indent + 2);
+            // A for-loop's own post-statement (see IR.h's
+            // Stmt::postStmt) - printed as its own `post` clause,
+            // never folded into loopBody, so `continue`'s real
+            // target (run post, then retest cond) stays visible in
+            // the dump instead of looking like an ordinary `while`.
+            if (s.postStmt) {
+                out << pad << "post\n";
+                printStmt(*s.postStmt, out, indent + 2);
+            }
             return;
         case ir::StmtKind::Return:
             out << pad << "return";
@@ -124,6 +133,12 @@ void printStmt(const ir::Stmt &s, std::ostream &out, int indent) {
                 printExpr(*s.initOrReturnOrExpr, out);
             }
             out << ";\n";
+            return;
+        case ir::StmtKind::Break:
+            out << pad << "break;\n";
+            return;
+        case ir::StmtKind::Continue:
+            out << pad << "continue;\n";
             return;
         case ir::StmtKind::LocalDecl:
             out << pad << "local " << slotRef(s.declSlot);

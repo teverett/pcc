@@ -79,6 +79,14 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitBreakStmt(CParser::BreakStmtContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitContinueStmt(CParser::ContinueStmtContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitAsmStmt(CParser::AsmStmtContext *ctx) override {
     return visitChildren(ctx);
   }

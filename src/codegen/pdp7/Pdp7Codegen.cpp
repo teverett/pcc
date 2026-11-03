@@ -25,7 +25,57 @@ namespace {
 // (lac, comparisons, etc.) still sees the same value as before -
 // only how it's spelled in the generated assembly text changes.
 long pdp7Word(long v) { return v & 0777777; }
+
+// See Pdp7Codegen.h's own "Leaf fast path" comment for what this is
+// for. `exprMakesCall` walks every sub-expression a Call/CallPtr
+// could be hiding in; `stmtRulesOutLeaf` adds the one other
+// disqualifier (a Local/Param array - excluded from the leaf path
+// purely to keep its own static storage simple, not for any
+// deeper safety reason the way "no calls" is).
+bool exprMakesCall(const ir::Expr *e) {
+    if (!e) return false;
+    if (e->kind == ir::ExprKind::Call || e->kind == ir::ExprKind::CallPtr) return true;
+    if (exprMakesCall(e->lhs.get())) return true;
+    if (exprMakesCall(e->rhs.get())) return true;
+    for (const auto &a : e->args) {
+        if (exprMakesCall(a.get())) return true;
+    }
+    return false;
+}
+
+bool stmtRulesOutLeaf(const ir::Stmt *s) {
+    if (!s) return false;
+    if (s->kind == ir::StmtKind::LocalDecl && s->declSlot && s->declSlot->arraySize > 0) return true;
+    // Raw inline assembly is opaque text, not an IR shape this
+    // analysis can see into - it might embed its own assumptions
+    // about exactly how a Param/Local gets addressed (frame-relative
+    // vs. this fast path's static cells) or about the precise
+    // instruction sequence/timing around it (e.g. a hardware IOT
+    // protocol). Confirmed directly that this isn't just caution for
+    // its own sake: sys/s4.c's `dsktrans` (real RB09 disk IOT
+    // instructions interleaved with bare parameter-reference
+    // statements) hung for real under the pdp7 simulator when this
+    // fast path was applied to it, before this exclusion was added.
+    if (s->kind == ir::StmtKind::Asm) return true;
+    if (exprMakesCall(s->cond.get())) return true;
+    if (exprMakesCall(s->initOrReturnOrExpr.get())) return true;
+    for (const auto &c : s->body) {
+        if (stmtRulesOutLeaf(c.get())) return true;
+    }
+    if (stmtRulesOutLeaf(s->thenStmt.get())) return true;
+    if (stmtRulesOutLeaf(s->elseStmt.get())) return true;
+    if (stmtRulesOutLeaf(s->loopBody.get())) return true;
+    if (stmtRulesOutLeaf(s->postStmt.get())) return true;
+    return false;
+}
 }  // namespace
+
+bool Pdp7Codegen::computeIsLeaf(const ir::Function *fn, const ir::Stmt *body) {
+    for (const ir::Slot *p : fn->params) {
+        if (p->arraySize > 0) return false;
+    }
+    return !stmtRulesOutLeaf(body);
+}
 
 std::string Pdp7Codegen::allocTemp() { return "T" + std::to_string(tempCounter_++); }
 
@@ -206,30 +256,65 @@ std::string Pdp7Codegen::generate(const ir::Program &prog, bool objectMode) {
     // Function) - attributed to main's own file, the same
     // conceptual "where the program starts" home the entry sequence
     // above gets.
-    size_t sharedStart = trailer_.size();
-    trailer_.push_back("__one: 1");
-    trailer_.push_back("__zero: 0");
-    // The software stack/frame mechanism every function now uses
-    // (see Pdp7Codegen.h's own header comment and pushAC()/
-    // emitPrologue()'s comments) - `__sp` starts at a fixed high-
-    // memory address, well above where this backend's own code/data
-    // naturally grows from (`kPdp7BaseAddress`, see Pdp7Assembler.h),
-    // and grows downward from there; `__fp`'s own starting value is
-    // never read before the very first call (to `main`) gives it a
-    // real one, so 0 is just a placeholder. `__stmp`/`__addr`/
-    // `__retval`/`__retaddr` are this mechanism's own shared scratch
-    // cells - see their use sites' comments for why one shared cell
-    // each is safe under recursion (every use is a single short,
-    // call-free sequence).
-    trailer_.push_back("__sp: 8100");
-    trailer_.push_back("__fp: 0");
-    trailer_.push_back("__stmp: 0");
-    trailer_.push_back("__stmp2: 0");
-    trailer_.push_back("__addr: 0");
-    trailer_.push_back("__retval: 0");
-    trailer_.push_back("__retaddr: 0");
-    ensureDivModRoutine();
-    trailerRanges.push_back({homeFile, sharedStart, trailer_.size()});
+    //
+    // Only emitted here in WHOLE-PROGRAM mode (`!objectMode`), where
+    // this is the one and only compiled file, so defining them here
+    // is correct and sufficient. Under real separate compilation
+    // (`objectMode`), every `.c` file is assembled as its own
+    // completely independent object (see generate()'s own header
+    // comment and main.cpp's "each file compiles completely
+    // independently" note) - if every one of them *also* pushed its
+    // own copy of these cells here, as this code used to do
+    // unconditionally, each file's software stack/frame mechanism
+    // would operate on its OWN private, file-local `__sp`/`__fp`/
+    // `__retaddr`/etc. (this assembler resolves an in-file-defined
+    // label like `__sp` to a local address entirely within that
+    // file's own pass - see Pdp7Assembler.cpp's resolveSyllable/
+    // `wasExternal` - so the linker's own cross-object symbol
+    // merging, keyed on the `g_`/`p_`/`fn_`/`G_`/`P_`/`FN_` naming
+    // convention - see GenericLinker.cpp's `isGlobalName` - never
+    // even sees these as symbols needing unification, unlike a real
+    // `FN_foo` call target), silently corrupting any call that
+    // crosses an object-file boundary (confirmed directly: a
+    // function in one file calling a function in another hangs,
+    // jumping through a `__retaddr` that was never actually written
+    // by the call that mattered, because the caller and callee
+    // disagree on which `__retaddr` cell that even is). Under
+    // `objectMode`, every file instead leaves these as genuine
+    // external references (nothing here defines them, so
+    // `allowExternal_` lets the reference through, same as any other
+    // cross-file name), and `Pdp7LinkerFactory::makePdp7Linker()`'s
+    // `config.entryObject` - already the one object every link
+    // includes exactly once, regardless of how many user files there
+    // are - supplies the one real, shared definition instead. See
+    // that factory's own comment for why this is the right home for
+    // it.
+    if (!objectMode) {
+        size_t sharedStart = trailer_.size();
+        trailer_.push_back("__one: 1");
+        trailer_.push_back("__zero: 0");
+        // The software stack/frame mechanism every function now uses
+        // (see Pdp7Codegen.h's own header comment and pushAC()/
+        // emitPrologue()'s comments) - `__sp` starts at a fixed high-
+        // memory address, well above where this backend's own code/data
+        // naturally grows from (`kPdp7BaseAddress`, see Pdp7Assembler.h),
+        // and grows downward from there; `__fp`'s own starting value is
+        // never read before the very first call (to `main`) gives it a
+        // real one, so 0 is just a placeholder. `__stmp`/`__addr`/
+        // `__retval`/`__retaddr` are this mechanism's own shared scratch
+        // cells - see their use sites' comments for why one shared cell
+        // each is safe under recursion (every use is a single short,
+        // call-free sequence).
+        trailer_.push_back("__sp: 8100");
+        trailer_.push_back("__fp: 0");
+        trailer_.push_back("__stmp: 0");
+        trailer_.push_back("__stmp2: 0");
+        trailer_.push_back("__addr: 0");
+        trailer_.push_back("__retval: 0");
+        trailer_.push_back("__retaddr: 0");
+        ensureDivModRoutine();
+        trailerRanges.push_back({homeFile, sharedStart, trailer_.size()});
+    }
 
     std::string codeStr = code_.str();
     perFileAsm_.clear();
@@ -250,13 +335,24 @@ void Pdp7Codegen::genFunction(const ir::FunctionBody &fn) {
     curFunctionLabel_ = label(fn.func);
     code_ << curFunctionLabel_ << ": 0  ; fn " << fn.func->sourceName << "\n";
 
-    emitPrologue(fn.func);
-    genStmt(*fn.body);
-    // Falls through here if the body doesn't end with an explicit
-    // `return` on every path - same "default return" behavior as
-    // this backend's old bare trailing `jmp i curFunctionLabel_` had
-    // (dead code whenever every path already returned explicitly).
-    emitEpilogueAndReturn(/*hasValue=*/false);
+    // See Pdp7Codegen.h's "Leaf fast path" comment - every other
+    // method that treats a Local/Param differently reads this same
+    // flag, set once here for whichever function is being generated.
+    currentFunctionIsLeaf_ = computeIsLeaf(fn.func, fn.body.get());
+    if (currentFunctionIsLeaf_) {
+        emitLeafParamBinding(fn.func);
+        genStmt(*fn.body);
+        // Falls through here if the body doesn't end with an explicit
+        // `return` on every path - same "default return" behavior as
+        // this backend's old bare trailing `jmp i curFunctionLabel_`
+        // had (dead code whenever every path already returned
+        // explicitly).
+        emitLeafReturn(/*hasValue=*/false);
+    } else {
+        emitPrologue(fn.func);
+        genStmt(*fn.body);
+        emitEpilogueAndReturn(/*hasValue=*/false);
+    }
 }
 
 void Pdp7Codegen::pushAC() {
@@ -302,9 +398,43 @@ void Pdp7Codegen::emitEpilogueAndReturn(bool hasValue) {
     code_ << "   jmp __retaddr i\n";
 }
 
+void Pdp7Codegen::emitLeafParamBinding(const ir::Function *fn) {
+    // Params sit on the stack at entry, closest-first (Param 0 was
+    // pushed LAST by the caller - see the `Call` case in genExpr),
+    // so Param k's own value is at `__sp+k` - but this reads it
+    // through there WITHOUT advancing `__sp`, unlike popAC(): the
+    // caller's own post-call cleanup (incrementing `__sp` past every
+    // argument it pushed, right after the call - see that same
+    // `Call` case) runs completely unconditionally, with no idea
+    // whether the callee happened to be a leaf, and still expects to
+    // find every argument sitting exactly where it left them. An
+    // earlier version of this used popAC() per param instead, which
+    // DOES advance `__sp` - double-consuming each argument together
+    // with the caller's own cleanup, and corrupting `__sp` for every
+    // leaf call made (confirmed directly: tests/mix.c's `square`/
+    // `fact` calls landed on the wrong answer, 27 instead of 34).
+    for (ir::Slot *p : fn->params) {
+        code_ << "   lac __sp\n";
+        code_ << "   tad " << literalLabel(p->paramIndex) << "\n";
+        code_ << "   dac __addr\n";
+        code_ << "   lac __addr i\n";
+        trailer_.push_back(leafLabel(p) + ": 0");
+        code_ << "   dac " << leafLabel(p) << "\n";
+    }
+}
+
+void Pdp7Codegen::emitLeafReturn(bool hasValue) {
+    (void)hasValue;  // AC already holds the return value, if any - nothing else to do
+    code_ << "   jmp i " << curFunctionLabel_ << "\n";
+}
+
 void Pdp7Codegen::emitLoadSlotAddress(const ir::Slot *slot) {
     if (slot->kind == ir::SlotKind::Global) {
         code_ << "   law " << label(slot) << "\n";
+        return;
+    }
+    if (currentFunctionIsLeaf_) {
+        code_ << "   law " << leafLabel(slot) << "\n";
         return;
     }
     long offset = (slot->kind == ir::SlotKind::Param) ? (slot->paramIndex + 2) : -slot->frameOffset;
@@ -317,6 +447,10 @@ void Pdp7Codegen::emitLoadSlot(const ir::Slot *slot) {
         code_ << "   lac " << label(slot) << "\n";
         return;
     }
+    if (currentFunctionIsLeaf_) {
+        code_ << "   lac " << leafLabel(slot) << "\n";
+        return;
+    }
     emitLoadSlotAddress(slot);
     code_ << "   dac __addr\n";
     code_ << "   lac __addr i\n";
@@ -325,6 +459,10 @@ void Pdp7Codegen::emitLoadSlot(const ir::Slot *slot) {
 void Pdp7Codegen::emitStoreSlot(const ir::Slot *slot) {
     if (slot->kind == ir::SlotKind::Global) {
         code_ << "   dac " << label(slot) << "\n";
+        return;
+    }
+    if (currentFunctionIsLeaf_) {
+        code_ << "   dac " << leafLabel(slot) << "\n";
         return;
     }
     code_ << "   dac __stmp\n";
@@ -387,11 +525,16 @@ void Pdp7Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::If: {
             genExpr(*s.cond);
-            std::string Lthen = newLabel();
             std::string Lelse = newLabel();
             std::string Ldone = newLabel();
-            code_ << "   sza\n   jmp " << Lthen << "\n   jmp " << (s.elseStmt ? Lelse : Ldone) << "\n";
-            code_ << Lthen << ":\n";
+            // `sna` (skip if AC!=0 - see this file's own opcode-table
+            // comment near genCompare) skips the branch to Lelse/
+            // Ldone exactly when the condition is true, falling
+            // straight through into thenStmt's own code right below
+            // with no separate "jmp Lthen" (and no Lthen label)
+            // needed at all - one word cheaper per `if` than jumping
+            // to an explicit "then" label would be.
+            code_ << "   sna\n   jmp " << (s.elseStmt ? Lelse : Ldone) << "\n";
             genStmt(*s.thenStmt);
             if (s.elseStmt) {
                 code_ << "   jmp " << Ldone << "\n";
@@ -403,27 +546,63 @@ void Pdp7Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::While: {
             std::string Lstart = newLabel();
-            std::string Lbody = newLabel();
             std::string Lend = newLabel();
+            // `continue` jumps here if this loop has its own post-
+            // statement (a desugared for-loop's - see IR.h's
+            // Stmt::postStmt), so post still runs before the condition
+            // is retested; otherwise it's just Lstart itself, since
+            // there's nothing else to run first - see e.g.
+            // I8086Codegen.cpp's own While case for the same pattern.
+            std::string Lcont = s.postStmt ? newLabel() : Lstart;
             code_ << Lstart << ":\n";
             genExpr(*s.cond);
-            code_ << "   sza\n   jmp " << Lbody << "\n   jmp " << Lend << "\n";
-            code_ << Lbody << ":\n";
+            // Same one-word-cheaper trick as `If` above: `sna` skips
+            // the branch to Lend exactly when the condition is true,
+            // falling straight through into loopBody's own code with
+            // no separate "jmp Lbody"/Lbody label needed.
+            code_ << "   sna\n   jmp " << Lend << "\n";
+            loopLabels_.push_back({Lcont, Lend});
             genStmt(*s.loopBody);
+            loopLabels_.pop_back();
+            if (s.postStmt) {
+                code_ << Lcont << ":\n";
+                genStmt(*s.postStmt);
+            }
             code_ << "   jmp " << Lstart << "\n";
             code_ << Lend << ":\n";
+            return;
+        }
+        case ir::StmtKind::Break: {
+            code_ << "   jmp " << loopLabels_.back().second << "\n";
+            return;
+        }
+        case ir::StmtKind::Continue: {
+            code_ << "   jmp " << loopLabels_.back().first << "\n";
             return;
         }
         case ir::StmtKind::Return: {
             bool hasValue = s.initOrReturnOrExpr != nullptr;
             if (hasValue) genExpr(*s.initOrReturnOrExpr);
-            emitEpilogueAndReturn(hasValue);
+            if (currentFunctionIsLeaf_) {
+                emitLeafReturn(hasValue);
+            } else {
+                emitEpilogueAndReturn(hasValue);
+            }
             return;
         }
         case ir::StmtKind::LocalDecl: {
             if (s.declSlot->arraySize > 0) {
                 emitLocalArrayInit(s.declSlot);
             } else {
+                // A leaf function's own Local gets a static cell
+                // the first (and only - genStmt visits each
+                // LocalDecl node exactly once, however many times
+                // the real control flow re-runs it) time its own
+                // declaration is generated - see Pdp7Codegen.h's
+                // "Leaf fast path" comment.
+                if (currentFunctionIsLeaf_) {
+                    trailer_.push_back(leafLabel(s.declSlot) + ": 0");
+                }
                 if (s.initOrReturnOrExpr) {
                     genExpr(*s.initOrReturnOrExpr);
                 } else {

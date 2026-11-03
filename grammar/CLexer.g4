@@ -18,6 +18,8 @@ ELSE_KW  : 'else' ;
 WHILE_KW : 'while' ;
 FOR_KW   : 'for' ;
 RETURN_KW: 'return' ;
+BREAK_KW : 'break' ;
+CONTINUE_KW: 'continue' ;
 LPAREN   : '(' ;
 RPAREN   : ')' ;
 LBRACK   : '[' ;

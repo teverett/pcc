@@ -13,13 +13,13 @@ class  PccIRParser : public antlr4::Parser {
 public:
   enum {
     GLOBALS_HEADER = 1, FUNCTIONS_HEADER = 2, INT_KW = 3, LOCAL_KW = 4, 
-    IF_KW = 5, ELSE_KW = 6, WHILE_KW = 7, RETURN_KW = 8, LPAREN = 9, RPAREN = 10, 
-    LBRACK = 11, RBRACK = 12, LBRACE = 13, RBRACE = 14, SEMI = 15, COMMA = 16, 
-    ASSIGN = 17, HASH = 18, STAR = 19, AMP = 20, MINUS = 21, BANG = 22, 
-    TILDE = 23, SLASH = 24, PERCENT = 25, PLUS = 26, SHL = 27, SHR = 28, 
-    LE = 29, GE = 30, LT = 31, GT = 32, EQ = 33, NE = 34, CARET = 35, PIPE = 36, 
-    ANDAND = 37, OROR = 38, IDENT = 39, NUMBER = 40, WS = 41, ASM_BEGIN = 42, 
-    ASM_TEXT = 43, ASM_END = 44
+    IF_KW = 5, ELSE_KW = 6, WHILE_KW = 7, RETURN_KW = 8, BREAK_KW = 9, CONTINUE_KW = 10, 
+    POST_KW = 11, LPAREN = 12, RPAREN = 13, LBRACK = 14, RBRACK = 15, LBRACE = 16, 
+    RBRACE = 17, SEMI = 18, COMMA = 19, ASSIGN = 20, HASH = 21, STAR = 22, 
+    AMP = 23, MINUS = 24, BANG = 25, TILDE = 26, SLASH = 27, PERCENT = 28, 
+    PLUS = 29, SHL = 30, SHR = 31, LE = 32, GE = 33, LT = 34, GT = 35, EQ = 36, 
+    NE = 37, CARET = 38, PIPE = 39, ANDAND = 40, OROR = 41, IDENT = 42, 
+    NUMBER = 43, WS = 44, ASM_BEGIN = 45, ASM_TEXT = 46, ASM_END = 47
   };
 
   enum {
@@ -253,7 +253,9 @@ public:
     antlr4::tree::TerminalNode *LPAREN();
     ExprContext *expr();
     antlr4::tree::TerminalNode *RPAREN();
-    StmtContext *stmt();
+    std::vector<StmtContext *> stmt();
+    StmtContext* stmt(size_t i);
+    antlr4::tree::TerminalNode *POST_KW();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
@@ -282,6 +284,16 @@ public:
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
 
+  class  BreakStmtContext : public StmtContext {
+  public:
+    BreakStmtContext(StmtContext *ctx);
+
+    antlr4::tree::TerminalNode *BREAK_KW();
+    antlr4::tree::TerminalNode *SEMI();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
   class  EmptyStmtContext : public StmtContext {
   public:
     EmptyStmtContext(StmtContext *ctx);
@@ -298,6 +310,16 @@ public:
     antlr4::tree::TerminalNode *RETURN_KW();
     antlr4::tree::TerminalNode *SEMI();
     ExprContext *expr();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  ContinueStmtContext : public StmtContext {
+  public:
+    ContinueStmtContext(StmtContext *ctx);
+
+    antlr4::tree::TerminalNode *CONTINUE_KW();
+    antlr4::tree::TerminalNode *SEMI();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };

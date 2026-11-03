@@ -3,6 +3,7 @@
 #include <map>
 #include <optional>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 #include "codegen/Codegen.h"
@@ -210,6 +211,10 @@ class STM8Codegen : public Backend {
     // genFunction() around its own genStmt(*fn.body) call; never
     // null while generating a function body.
     const ir::Function *currentFunction_ = nullptr;
+    // One entry per currently-open loop (innermost last) - {continue
+    // label, break label} - pushed/popped by genStmt's own While
+    // case, consulted by its Break/Continue cases.
+    std::vector<std::pair<std::string, std::string>> loopLabels_;
 };
 
 }  // namespace pcc

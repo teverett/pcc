@@ -301,13 +301,28 @@ void STM8Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::While: {
             std::string Lstart = newLabel(), Lend = newLabel();
+            std::string Lcont = s.postStmt ? newLabel() : Lstart;
             code_ << Lstart << ":\n";
             genExpr(*s.cond);
             code_ << "    ldw x, ac\n    tnzw x\n";
             code_ << "    jreq " << Lend << "\n";
+            loopLabels_.push_back({Lcont, Lend});
             genStmt(*s.loopBody);
+            loopLabels_.pop_back();
+            if (s.postStmt) {
+                code_ << Lcont << ":\n";
+                genStmt(*s.postStmt);
+            }
             code_ << "    jp " << Lstart << "\n";
             code_ << Lend << ":\n";
+            return;
+        }
+        case ir::StmtKind::Break: {
+            code_ << "    jp " << loopLabels_.back().second << "\n";
+            return;
+        }
+        case ir::StmtKind::Continue: {
+            code_ << "    jp " << loopLabels_.back().first << "\n";
             return;
         }
         case ir::StmtKind::Return: {
@@ -504,8 +519,7 @@ void STM8Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genSlotAddress(slot);  // x = slot's own storage address (Global/Local/Param alike)
     if (slot->arraySize > 0) {
         if (slot->kind == ir::SlotKind::Global) {
-            code_ << "    ldw y, x\n";  // y = base (the array's own address)
-            code_ << "    ldw x, ptr\n    addw x, y\n    ldw ptr, x\n";  // ptr = base + index*2
+            code_ << "    ldw y, ptr\n    addw x, y\n    ldw ptr, x\n";  // ptr = base + index*2
         } else {
             // A Local/Param array's own words sit at *decreasing*
             // addresses as its own element index increases

@@ -27,11 +27,14 @@ int assignFrameOffsets(ir::Stmt *s, int nextOffset) {
             nextOffset = assignFrameOffsets(s->thenStmt.get(), nextOffset);
             return assignFrameOffsets(s->elseStmt.get(), nextOffset);
         case ir::StmtKind::While:
-            return assignFrameOffsets(s->loopBody.get(), nextOffset);
+            nextOffset = assignFrameOffsets(s->loopBody.get(), nextOffset);
+            return assignFrameOffsets(s->postStmt.get(), nextOffset);
         case ir::StmtKind::LocalDecl:
             s->declSlot->frameOffset = nextOffset;
             return nextOffset + (s->declSlot->arraySize > 0 ? s->declSlot->arraySize : 1);
         case ir::StmtKind::Return:
+        case ir::StmtKind::Break:
+        case ir::StmtKind::Continue:
         case ir::StmtKind::ExprStmt:
         case ir::StmtKind::Empty:
         case ir::StmtKind::Asm:
@@ -406,14 +409,26 @@ class Builder {
                 out->thenStmt = buildStmt(*s.thenStmt);
                 if (s.elseStmt) out->elseStmt = buildStmt(*s.elseStmt);
                 return out;
-            case StmtKind::While:
+            case StmtKind::While: {
                 out->kind = ir::StmtKind::While;
                 out->cond = buildExpr(*s.cond);
+                ++loopDepth_;
                 out->loopBody = buildStmt(*s.loopBody);
+                if (s.postStmt) out->postStmt = buildStmt(*s.postStmt);
+                --loopDepth_;
                 return out;
+            }
             case StmtKind::Return:
                 out->kind = ir::StmtKind::Return;
                 if (s.initOrReturnOrExpr) out->initOrReturnOrExpr = buildExpr(*s.initOrReturnOrExpr);
+                return out;
+            case StmtKind::Break:
+                if (loopDepth_ == 0) err(s.line, "'break' statement not inside a loop");
+                out->kind = ir::StmtKind::Break;
+                return out;
+            case StmtKind::Continue:
+                if (loopDepth_ == 0) err(s.line, "'continue' statement not inside a loop");
+                out->kind = ir::StmtKind::Continue;
                 return out;
             case StmtKind::LocalDecl: {
                 out->kind = ir::StmtKind::LocalDecl;
@@ -446,6 +461,7 @@ class Builder {
     int nextSlotId_ = 0;
     int nextFuncId_ = 0;
     bool allowExternal_ = false;
+    int loopDepth_ = 0;  // >0 while building a While's own loopBody/postStmt - see Break/Continue
 };
 
 }  // namespace

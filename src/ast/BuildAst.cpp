@@ -307,17 +307,15 @@ StmtPtr buildStmt(CParser::StatementContext *ctx) {
     if (auto *c = dynamic_cast<CParser::ForStmtContext *>(ctx)) {
         int line = c->getStart()->getLine();
 
-        // Desugar: { init; while (cond) { body; post; } }
+        // Desugar: { init; while (cond) body; } - post is kept as its
+        // own field (Stmt::postStmt), NOT appended into the loop body,
+        // specifically so `continue` can skip the rest of the body
+        // while still running post before the condition is retested;
+        // see AST.h's own comment on Stmt::postStmt.
         StmtPtr init = c->init ? buildSimpleStmt(c->init) : nullptr;
         ExprPtr cond = c->cond ? buildExpr(c->cond) : nullptr;
         StmtPtr post = c->post ? buildSimpleStmt(c->post) : nullptr;
         StmtPtr body = buildStmt(c->statement());
-
-        auto whileBody = std::make_unique<Stmt>();
-        whileBody->kind = StmtKind::Block;
-        whileBody->line = line;
-        whileBody->body.push_back(std::move(body));
-        if (post) whileBody->body.push_back(std::move(post));
 
         auto whileStmt = std::make_unique<Stmt>();
         whileStmt->kind = StmtKind::While;
@@ -329,7 +327,8 @@ StmtPtr buildStmt(CParser::StatementContext *ctx) {
             whileStmt->cond->kind = ExprKind::IntLit;
             whileStmt->cond->intValue = 1;
         }
-        whileStmt->loopBody = std::move(whileBody);
+        whileStmt->loopBody = std::move(body);
+        whileStmt->postStmt = std::move(post);
 
         auto outer = std::make_unique<Stmt>();
         outer->kind = StmtKind::Block;
@@ -344,6 +343,20 @@ StmtPtr buildStmt(CParser::StatementContext *ctx) {
         s->kind = StmtKind::Return;
         s->line = c->getStart()->getLine();
         if (auto *e = c->expr()) s->initOrReturnOrExpr = buildExpr(e);
+        return s;
+    }
+
+    if (auto *c = dynamic_cast<CParser::BreakStmtContext *>(ctx)) {
+        auto s = std::make_unique<Stmt>();
+        s->kind = StmtKind::Break;
+        s->line = c->getStart()->getLine();
+        return s;
+    }
+
+    if (auto *c = dynamic_cast<CParser::ContinueStmtContext *>(ctx)) {
+        auto s = std::make_unique<Stmt>();
+        s->kind = StmtKind::Continue;
+        s->line = c->getStart()->getLine();
         return s;
     }
 

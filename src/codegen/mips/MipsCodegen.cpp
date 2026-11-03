@@ -202,12 +202,27 @@ void MipsCodegen::genStmt(const ir::Stmt &s) {
         case ir::StmtKind::While: {
             std::string Lstart = newLabel();
             std::string Lend = newLabel();
+            std::string Lcont = s.postStmt ? newLabel() : Lstart;
             code_ << Lstart << ":\n";
             genExpr(*s.cond);
             code_ << "    beq t0,zero," << Lend << "\n    nop\n";
+            loopLabels_.push_back({Lcont, Lend});
             genStmt(*s.loopBody);
+            loopLabels_.pop_back();
+            if (s.postStmt) {
+                code_ << Lcont << ":\n";
+                genStmt(*s.postStmt);
+            }
             code_ << "    j " << Lstart << "\n    nop\n";
             code_ << Lend << ":\n";
+            return;
+        }
+        case ir::StmtKind::Break: {
+            code_ << "    j " << loopLabels_.back().second << "\n    nop\n";
+            return;
+        }
+        case ir::StmtKind::Continue: {
+            code_ << "    j " << loopLabels_.back().first << "\n    nop\n";
             return;
         }
         case ir::StmtKind::Return: {

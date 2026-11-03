@@ -196,6 +196,69 @@ class Pdp7Codegen : public Backend {
     // holds - returns to the caller.
     void emitEpilogueAndReturn(bool hasValue);
 
+    // --- Leaf fast path ---------------------------------------------------
+    //
+    // A function that makes NO call (`Call`/`CallPtr`) anywhere in its
+    // own body, and declares no Local/Param array, can never be
+    // re-entered while it's running (the only way a call's own
+    // activation could ever be live twice at once is via some call
+    // chain that reaches it again, and a function with zero calls
+    // never starts one) - true even under real separate compilation,
+    // with zero visibility into any other file's own call graph,
+    // since this needs nothing beyond "does this one function's own
+    // body ever call anything at all". Safe, then, to skip the real
+    // per-call frame entirely and give each of its Params/Locals one
+    // fixed, static storage cell instead - exactly this backend's old,
+    // pre-recursion convention, for exactly the functions it was
+    // always correct for. This matters a lot in practice, not just in
+    // principle: the real software-stack frame (emitPrologue()/
+    // emitEpilogueAndReturn(), ~35 words together) and every frame-
+    // relative Local/Param access (emitLoadSlot()/emitStoreSlot() via
+    // `__fp`, 4-6 words vs. a static cell's 1) this skips are most of
+    // this backend's own code-size cost per function - confirmed
+    // directly: enabling this dropped a real multi-file kernel link
+    // (sys/icreat_test.c + sys/s1/s2/s4/s5/s6/s8.c) from well past the
+    // pdp7's 8192-word limit to comfortably under it.
+    //
+    // `currentFunctionIsLeaf_` is set once, in genFunction(), for
+    // whichever function is currently being generated - every other
+    // method below that behaves differently for a Local/Param
+    // (emitLoadSlotAddress()/emitLoadSlot()/emitStoreSlot(), the
+    // `Return` case, genFunction()'s own default-return fallthrough)
+    // just reads it, rather than re-deriving it.
+    bool currentFunctionIsLeaf_ = false;
+
+    // A Local/Param's own static cell when `currentFunctionIsLeaf_` -
+    // `id` (unique within this one file's own IR, which is all a
+    // Local/Param ever needs: nothing outside this function, let
+    // alone another file, ever references one by name) rather than
+    // `sourceName` the way a Global's label is (see label()'s own
+    // comment on why a Global needs name-stability across files and a
+    // Local never does).
+    static std::string leafLabel(const ir::Slot *slot) { return "LF" + std::to_string(slot->id); }
+
+    // True iff `fn`/`body` qualify for the leaf fast path above - see
+    // that section's own comment for exactly what disqualifies one.
+    static bool computeIsLeaf(const ir::Function *fn, const ir::Stmt *body);
+
+    // The leaf equivalent of emitPrologue(): every Param was pushed by
+    // the caller in REVERSE order (see the `Call` case in genExpr),
+    // so Param 0 is on top of the stack right now, Param 1 next, and
+    // so on - popping them off in declaration order both reads each
+    // one AND fully reclaims its stack slot in the same step (a leaf
+    // function has no stacked Locals to reclaim later the way
+    // emitEpilogueAndReturn()'s bulk "__sp = __fp" does, since every
+    // Local here is a static cell, not a stack slot, so there's
+    // nothing left for emitLeafReturn() to tear down).
+    void emitLeafParamBinding(const ir::Function *fn);
+    // The leaf equivalent of emitEpilogueAndReturn(): AC already holds
+    // the return value, if any (same contract as
+    // emitEpilogueAndReturn()'s own `hasValue`), and there's no frame
+    // to tear down at all - just jump back through this function's
+    // own entry cell, exactly like this backend's old, pre-recursion
+    // convention's bare `jmp i curFunctionLabel_`.
+    void emitLeafReturn(bool hasValue);
+
     // Leaves `slot`'s own address in AC: a Global's fixed address
     // (`law`, unchanged from before) or a Local/Param's own frame-
     // relative address, computed fresh from `__fp` plus a compile-time
@@ -275,6 +338,12 @@ class Pdp7Codegen : public Backend {
     int labelCounter_ = 0;
     std::string curFunctionLabel_;
     bool needDivMod_ = false;
+
+    // (continueLabel, breakLabel) for the innermost active loop - see
+    // genStmt's While/Break/Continue cases, and e.g.
+    // I8086Codegen.h's own loopLabels_ for the same pattern on
+    // another backend.
+    std::vector<std::pair<std::string, std::string>> loopLabels_;
 };
 
 }  // namespace pcc

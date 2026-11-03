@@ -52,8 +52,10 @@ block      : '{' stmt* '}'
 
 stmt : block
      | 'if' '(' expr ')' stmt ('else' stmt)?
-     | 'while' '(' expr ')' stmt
+     | 'while' '(' expr ')' stmt ('post' stmt)?
      | 'return' expr? ';'
+     | 'break' ';'
+     | 'continue' ';'
      | 'local' ref ('[' NUMBER ']' ('=' initList)? | ('=' expr)?) ';'
      | 'asm' '{' <raw target text> '}'
      | ';'
@@ -82,8 +84,15 @@ expr : NUMBER                                    // int literal
 - A local array's initializer is always an `initList` (`= {1, 2, 3}`),
   never a general `expr` the way a scalar local's can be — exactly
   the same literal-or-symbol list a global array carries (see `IR.h`'s
-  `ArrayInitElem`), since every local is laid out statically too (see
-  this file's own "The IR is AST.h's tree shape..." header comment).
+  `ArrayInitElem`); a backend re-applies that same list to the array's
+  own per-call frame storage on every activation, since (unlike a
+  global) it's never a single static cell.
+- `while`'s own optional `post` clause is a desugared `for` loop's
+  post-statement (`for (init; cond; post) body` becomes `{ init;
+  while (cond) body` with `post` printed as that `while`'s own
+  trailing `post` clause, not folded into the loop body - see `IR.h`'s
+  `Stmt::postStmt`) - `continue` needs to run it before the condition
+  is retested, even though it skips the rest of the loop body.
 - `asm { ... }` is a `Stmt::Asm` node: raw target-specific assembly
   text, carried through the IR verbatim and printed back out
   unparsed — this is the only place a backend's own assembly syntax

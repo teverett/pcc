@@ -85,6 +85,8 @@ statement
     | 'while' '(' expr ')' statement                              # whileStmt
     | 'for' '(' init=simpleStmt? ';' cond=expr? ';' post=simpleStmt? ')' statement # forStmt
     | 'return' expr? ';'                                          # returnStmt
+    | 'break' ';'                                                 # breakStmt
+    | 'continue' ';'                                              # continueStmt
     | ASM_BEGIN text=ASM_TEXT? ASM_END                             # asmStmt
     | simpleStmt ';'                                              # simpleStmtWrapper
     | ';'                                                         # emptyStmt

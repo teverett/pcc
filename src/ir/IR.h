@@ -219,7 +219,7 @@ using ExprPtr = std::unique_ptr<Expr>;
 
 // --- Statements -----------------------------------------------------------
 
-enum class StmtKind { Block, If, While, Return, LocalDecl, ExprStmt, Empty, Asm };
+enum class StmtKind { Block, If, While, Return, Break, Continue, LocalDecl, ExprStmt, Empty, Asm };
 
 struct Stmt {
     StmtKind kind;
@@ -229,6 +229,13 @@ struct Stmt {
     ExprPtr cond;                               // If / While
     std::unique_ptr<Stmt> thenStmt, elseStmt;   // If
     std::unique_ptr<Stmt> loopBody;              // While
+    // A for-loop's own post-statement, kept separate from loopBody -
+    // see AST.h's Stmt::postStmt (same reasoning: `continue` needs to
+    // run this before the condition is retested, without running the
+    // rest of loopBody). Null for a real `while` (every backend's own
+    // genStmt already needs to run this, if present, right where
+    // `continue` lands - see each backend's own While case).
+    std::unique_ptr<Stmt> postStmt;              // While (for-loop desugaring only)
     Slot *declSlot = nullptr;                     // LocalDecl
     ExprPtr initOrReturnOrExpr;                    // LocalDecl init / Return value / ExprStmt expr
     std::string asmText;                           // Asm: raw target text, emitted verbatim - see

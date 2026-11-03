@@ -346,13 +346,28 @@ void PIC18Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::While: {
             std::string Lstart = newLabel(), Lend = newLabel();
+            std::string Lcont = s.postStmt ? newLabel() : Lstart;
             code_ << Lstart << ":\n";
             genExpr(*s.cond);
             testAcZero();
             gotoIfZero(Lend);
+            loopLabels_.push_back({Lcont, Lend});
             genStmt(*s.loopBody);
+            loopLabels_.pop_back();
+            if (s.postStmt) {
+                code_ << Lcont << ":\n";
+                genStmt(*s.postStmt);
+            }
             code_ << "    goto " << Lstart << "\n";
             code_ << Lend << ":\n";
+            return;
+        }
+        case ir::StmtKind::Break: {
+            code_ << "    goto " << loopLabels_.back().second << "\n";
+            return;
+        }
+        case ir::StmtKind::Continue: {
+            code_ << "    goto " << loopLabels_.back().first << "\n";
             return;
         }
         case ir::StmtKind::Return: {

@@ -51,6 +51,10 @@ public:
 
     virtual std::any visitReturnStmt(CParser::ReturnStmtContext *context) = 0;
 
+    virtual std::any visitBreakStmt(CParser::BreakStmtContext *context) = 0;
+
+    virtual std::any visitContinueStmt(CParser::ContinueStmtContext *context) = 0;
+
     virtual std::any visitAsmStmt(CParser::AsmStmtContext *context) = 0;
 
     virtual std::any visitSimpleStmtWrapper(CParser::SimpleStmtWrapperContext *context) = 0;

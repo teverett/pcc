@@ -63,7 +63,59 @@ std::unique_ptr<TargetLinker> makePdp7Linker() {
     GenericLinkerConfig config;
     config.baseAddress = kPdp7BaseAddress * 3;
     config.machineType = kPdp7CoffMachine;
-    config.entryObject = assemblePdp7Object("jms FN_main\nhlt\n");
+    // Beyond the entry sequence itself, this object is also the one
+    // place that defines the software stack/frame mechanism's shared
+    // runtime cells (`__sp`/`__fp`/`__stmp`/`__stmp2`/`__addr`/
+    // `__retval`/`__retaddr` - see Pdp7Codegen.h's own header comment
+    // and pushAC()/emitPrologue()'s comments for what each one does)
+    // and the shared division/modulo routine (`__divmod` and its own
+    // `__dm_a`/`__dm_b`/`__dm_q`, exactly Pdp7Codegen::
+    // ensureDivModRoutine()'s own body) - under real separate
+    // compilation, Pdp7Codegen::generate() deliberately leaves every
+    // one of these as a plain external reference in every object file
+    // instead of defining its own copy (see that function's own
+    // comment on why: each file assembling its own private copy,
+    // never unified by the linker, silently broke any call crossing
+    // an object-file boundary - confirmed directly). `config.
+    // entryObject` is already the one object every link includes
+    // exactly once regardless of how many user files there are, so
+    // it's the natural single owner of these too. The divmod routine
+    // is included unconditionally (a handful of extra words) rather
+    // than only when some linked file needs it, since this object is
+    // built once, here, with no visibility into what any later link's
+    // own input files will actually use.
+    config.entryObject = assemblePdp7Object(
+        "jms FN_main\n"
+        "hlt\n"
+        "__one: 1\n"
+        "__zero: 0\n"
+        "__sp: 8100\n"
+        "__fp: 0\n"
+        "__stmp: 0\n"
+        "__stmp2: 0\n"
+        "__addr: 0\n"
+        "__retval: 0\n"
+        "__retaddr: 0\n"
+        "__dm_a: 0\n"
+        "__dm_b: 0\n"
+        "__dm_q: 0\n"
+        "__divmod: 0\n"
+        "   dzm __dm_q\n"
+        "J_dmloop:\n"
+        "   lac __dm_b\n"
+        "   cma\n"
+        "   tad __one\n"
+        "   tad __dm_a\n"
+        "   sma\n"
+        "   jmp J_dmbody\n"
+        "   jmp J_dmdone\n"
+        "J_dmbody:\n"
+        "   dac __dm_a\n"
+        "   isz __dm_q\n"
+        "   jmp J_dmloop\n"
+        "J_dmdone:\n"
+        "   lac __dm_q\n"
+        "   jmp i __divmod\n");
     config.relocPatchers[kPdp7RelocOr] = patchPdp7Or;
     config.relocPatchers[kPdp7RelocAdd] = patchPdp7Add;
     config.relocPatchers[kPdp7RelocSub] = patchPdp7Sub;

@@ -66,8 +66,10 @@ block
 stmt
     : block                                                                        # blockStmt
     | IF_KW LPAREN expr RPAREN stmt (ELSE_KW stmt)?                                 # ifStmt
-    | WHILE_KW LPAREN expr RPAREN stmt                                              # whileStmt
+    | WHILE_KW LPAREN expr RPAREN stmt (POST_KW stmt)?                               # whileStmt
     | RETURN_KW expr? SEMI                                                          # returnStmt
+    | BREAK_KW SEMI                                                                 # breakStmt
+    | CONTINUE_KW SEMI                                                              # continueStmt
     | LOCAL_KW ref (LBRACK NUMBER RBRACK (ASSIGN initList)? | (ASSIGN expr)?) SEMI  # localDeclStmt
     | ASM_BEGIN ASM_TEXT ASM_END                                                    # asmStmt
     | SEMI                                                                          # emptyStmt

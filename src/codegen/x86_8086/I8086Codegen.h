@@ -3,6 +3,7 @@
 #include <map>
 #include <optional>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 #include "codegen/Codegen.h"
@@ -138,6 +139,10 @@ class I8086Codegen : public Backend {
     int tempCounter_ = 0;
     int labelCounter_ = 0;
     std::string curFunctionLabel_;
+    // One entry per currently-open loop (innermost last) - {continue
+    // label, break label} - pushed/popped by genStmt's own While
+    // case, consulted by its Break/Continue cases.
+    std::vector<std::pair<std::string, std::string>> loopLabels_;
 };
 
 }  // namespace pcc

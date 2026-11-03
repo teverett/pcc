@@ -3,6 +3,7 @@
 #include <map>
 #include <optional>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 #include "codegen/Codegen.h"
@@ -217,6 +218,10 @@ class ArmCodegen : public Backend {
     std::map<std::string, std::string> perFileAsm_;
 
     int labelCounter_ = 0;
+    // One entry per currently-open loop (innermost last) - {continue
+    // label, break label} - pushed/popped by genStmt's own While
+    // case, consulted by its Break/Continue cases.
+    std::vector<std::pair<std::string, std::string>> loopLabels_;
 };
 
 }  // namespace pcc

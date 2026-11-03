@@ -3,6 +3,7 @@
 #include <map>
 #include <optional>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 #include "codegen/Codegen.h"
@@ -348,6 +349,10 @@ class I8008Codegen : public Backend {
     // wordIndexOf()'s own comment; set once per genFunction() call,
     // for the whole of that function's own body.
     int currentParamCount_ = 0;
+    // One entry per currently-open loop (innermost last) - {continue
+    // label, break label} - pushed/popped by genStmt's own While
+    // case, consulted by its Break/Continue cases.
+    std::vector<std::pair<std::string, std::string>> loopLabels_;
 };
 
 }  // namespace pcc

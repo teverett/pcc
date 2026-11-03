@@ -63,6 +63,14 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitBreakStmt(PccIRParser::BreakStmtContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitContinueStmt(PccIRParser::ContinueStmtContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitLocalDeclStmt(PccIRParser::LocalDeclStmtContext *ctx) override {
     return visitChildren(ctx);
   }
