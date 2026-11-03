@@ -28,14 +28,28 @@ constexpr uint32_t kStackTop = 0xFF00;
 
 void Z80Codegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": db 0, 0"); }
 
-void Z80Codegen::declareArray(const std::string &lbl, const std::vector<long> &values) {
+// A literal element's own decimal text, or a symbol element's (a
+// dispatch-table address-of-function/global, see IR.h's
+// ArrayInitElem) own label - the referenced Slot's or Function's own
+// label() text, exactly the shape `ld hl, nn`'s own 16-bit operand
+// already takes (see genAddrOf()). declareArray() below hands this
+// straight to a `dw` directive rather than computing a numeric
+// low/high split itself - Z80Assembler.cpp's own `emit16` already
+// resolves a symbol's full 16-bit address once every label is bound,
+// the same single evaluator call `ld hl, nn`'s own operand goes
+// through.
+std::string Z80Codegen::arrayElemText(const ir::ArrayInitElem &e) {
+    if (!e.isSymbol) return std::to_string(e.value);
+    return e.slot ? label(e.slot) : label(e.func);
+}
+
+void Z80Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values) {
     if (values.empty()) return;
     std::ostringstream line;
-    line << lbl << ": db ";
+    line << lbl << ": dw ";
     for (size_t i = 0; i < values.size(); i++) {
-        uint16_t v16 = static_cast<uint16_t>(values[i]);
         if (i > 0) line << ", ";
-        line << static_cast<int>(v16 & 0xFF) << ", " << static_cast<int>((v16 >> 8) & 0xFF);
+        line << arrayElemText(values[i]);
     }
     trailer_.push_back(line.str());
 }
@@ -309,6 +323,28 @@ void Z80Codegen::genExpr(const ir::Expr &e) {
             code_ << "    call " << label(e.func) << "\n";
             return;
         }
+        case ir::ExprKind::CallPtr: {
+            // e.args is always empty here - IRBuilder.cpp rejects any
+            // argument on this kind before it ever reaches a backend
+            // (see IR.h's ExprKind::CallPtr). Like the 8080 (see
+            // ../i8080/I8080Codegen.cpp's own CallPtr comment), the
+            // Z80 has no indirect-CALL instruction, only `JP (HL)`
+            // (spelled "jp [hl]" in this dialect - see
+            // Z80Assembler.h's own header comment on bracket syntax),
+            // object-code-identical to the 8080's `PCHL`. A real CALL
+            // is emulated the same way: push the return address (the
+            // label right after `jp [hl]`) onto the real hardware
+            // stack, then jump to the callee through HL. The callee's
+            // own `ret` pops that address back into PC.
+            genExpr(*e.lhs);  // ac = the callee's own entry address
+            std::string Lret = newLabel();
+            code_ << "    ld hl, [ac]\n";  // HL = callee's address - jp [hl]'s own implicit target
+            code_ << "    ld de, " << Lret << "\n";
+            code_ << "    push de\n";
+            code_ << "    jp [hl]\n";
+            code_ << Lret << ":\n";
+            return;
+        }
         case ir::ExprKind::Binary: {
             genBinary(e);
             return;
@@ -364,6 +400,10 @@ void Z80Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Index) {
         genIndexAddr(operand.slot, *operand.lhs);
         copy16("ac", "ptr");
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Func) {
+        code_ << "    ld hl, " << label(operand.func) << "\n    ld [ac], hl\n";
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");

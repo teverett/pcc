@@ -175,11 +175,9 @@ std::string PIC18Codegen::generate(const ir::Program &prog, bool objectMode) {
         if (slot->arraySize > 0) {
             declareRam(lbl, slot->arraySize * 2, false);
             for (size_t i = 0; i < slot->arrayInit.size(); i++) {
-                uint16_t v16 = static_cast<uint16_t>(slot->arrayInit[i]);
                 std::string base = lbl + "+" + std::to_string(i * 2);
                 std::string hi = lbl + "+" + std::to_string(i * 2 + 1);
-                emitInitByte(globalInit, base, static_cast<uint8_t>(v16 & 0xFF));
-                emitInitByte(globalInit, hi, static_cast<uint8_t>((v16 >> 8) & 0xFF));
+                emitInitElem(globalInit, base, hi, slot->arrayInit[i]);
             }
         } else {
             declareRam(lbl, 2, false);
@@ -419,6 +417,32 @@ void PIC18Codegen::genIndex(const ir::Expr &e) {
     loadAcIndirect();
 }
 
+// A literal element's own value, split into two compile-time-known
+// bytes and loaded via emitInitByte()'s usual clrf/movlw+movwf
+// choice; a symbol element (a dispatch-table address-of-function/
+// global, see IR.h's ArrayInitElem) has no compile-time byte value at
+// all - a Function's own real program-memory address is split low
+// byte/high byte the same way genAddrOf()'s own Func case does
+// (`movlwcl`/`movlwch`), and a Slot's own one-byte RAM address is
+// loaded with a zero high byte, the same way genAddrOf()'s own Var
+// case does.
+void PIC18Codegen::emitInitElem(std::ostream &out, const std::string &loLbl, const std::string &hiLbl,
+                                 const ir::ArrayInitElem &e) {
+    if (e.isSymbol) {
+        if (e.func) {
+            out << "    movlwcl " << label(e.func) << "\n    movwf " << loLbl << "\n";
+            out << "    movlwch " << label(e.func) << "\n    movwf " << hiLbl << "\n";
+        } else {
+            out << "    movlw " << label(e.slot) << "\n    movwf " << loLbl << "\n";
+            out << "    clrf " << hiLbl << "\n";
+        }
+        return;
+    }
+    uint16_t v16 = static_cast<uint16_t>(e.value);
+    emitInitByte(out, loLbl, static_cast<uint8_t>(v16 & 0xFF));
+    emitInitByte(out, hiLbl, static_cast<uint8_t>((v16 >> 8) & 0xFF));
+}
+
 void PIC18Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
         code_ << "    movlw " << label(operand.slot) << "\n    movwf ac\n";
@@ -428,6 +452,36 @@ void PIC18Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Index) {
         genIndexAddr(operand.slot, *operand.lhs);
         code_ << "    movf ptr,w\n    movwf ac\n    clrf ac+1\n";
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Func) {
+        // `ac` ends up holding `fn`'s own real program-memory *byte*
+        // address, split low byte/high byte across two literal loads
+        // (see PIC18Assembler.cpp's own `movlwcl`/`movlwch` comment) -
+        // GOTO/CALL always encode their own target directly in the
+        // instruction word, so there's no single real instruction for
+        // taking a function's address as plain data either.
+        //
+        // There's deliberately no `ir::ExprKind::CallPtr` case in
+        // genExpr()'s own switch above. Unlike PIC16, this core does
+        // have a real, documented mechanism that could call through a
+        // computed address - PUSH (pushes a return address onto the
+        // real hardware call stack with no branch of its own) followed
+        // by loading PCLATH/PCLATU and then writing PCL (a write to
+        // PCL latches PCLATH/PCLATU into the PC and jumps - the same
+        // real "computed GOTO" idiom actual PIC18 C compilers use for
+        // a classic, non-enhanced core with no CALLW). What's missing
+        // isn't a real instruction, it's a way to verify the exact
+        // return-address arithmetic (PUSH's own "PC+2" is measured
+        // from PUSH's own address, not from the end of the whole
+        // PCLATH/PCL sequence that has to follow it before the actual
+        // jump happens, and this target has no simulator in this
+        // project to catch an off-by-one-instruction mistake there) -
+        // getting that wrong would corrupt the return-address stack
+        // silently rather than failing loudly, so it's left
+        // unimplemented rather than guessed at.
+        code_ << "    movlwcl " << label(operand.func) << "\n    movwf ac\n";
+        code_ << "    movlwch " << label(operand.func) << "\n    movwf ac+1\n";
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");

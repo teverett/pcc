@@ -63,19 +63,28 @@ void checkAsmSyntax(const std::string &asmText, int sourceLine) {
 
 ExprPtr buildExpr(CParser::ExprContext *ctx);
 
-std::vector<long> buildArrayInit(CParser::ArrayInitContext *ctx) {
-    std::vector<long> values;
+std::vector<ArrayInitElem> buildArrayInit(CParser::ArrayInitContext *ctx) {
+    std::vector<ArrayInitElem> values;
     if (!ctx) return values;
-    for (auto *tok : ctx->NUMBER()) values.push_back(std::stol(tok->getText()));
+    for (auto *elem : ctx->elem) {
+        ArrayInitElem e;
+        if (auto *num = dynamic_cast<CParser::NumArrayElemContext *>(elem)) {
+            e.value = std::stol(num->NUMBER()->getText());
+        } else if (auto *sym = dynamic_cast<CParser::SymArrayElemContext *>(elem)) {
+            e.isSymbol = true;
+            e.symbolName = sym->IDENT()->getText();
+        }
+        values.push_back(std::move(e));
+    }
     return values;
 }
 
-void padArrayInit(std::vector<long> &values, int size, antlr4::ParserRuleContext *ctx) {
+void padArrayInit(std::vector<ArrayInitElem> &values, int size, antlr4::ParserRuleContext *ctx) {
     if (static_cast<int>(values.size()) > size) {
         err(ctx, "array initializer has more elements (" + std::to_string(values.size()) +
                      ") than the array's declared size (" + std::to_string(size) + ")");
     }
-    values.resize(size, 0);
+    values.resize(size);  // default ArrayInitElem is a literal 0
 }
 
 ExprPtr buildCondExpr(CParser::CondExprContext *ctx);
@@ -98,6 +107,16 @@ ExprPtr buildCondExpr(CParser::CondExprContext *ctx) {
         e->kind = ExprKind::Call;
         e->line = c->getStart()->getLine();
         e->name = c->IDENT()->getText();
+        if (auto *al = c->argList()) {
+            for (auto *ae : al->expr()) e->args.push_back(buildExpr(ae));
+        }
+        return e;
+    }
+    if (auto *c = dynamic_cast<CParser::CallPtrExprContext *>(ctx)) {
+        auto e = std::make_unique<Expr>();
+        e->kind = ExprKind::CallPtr;
+        e->line = c->getStart()->getLine();
+        e->lhs = buildExpr(c->expr());
         if (auto *al = c->argList()) {
             for (auto *ae : al->expr()) e->args.push_back(buildExpr(ae));
         }

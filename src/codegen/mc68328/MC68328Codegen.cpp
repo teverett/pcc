@@ -36,13 +36,25 @@ constexpr uint32_t kStartAddress = 8;
 
 void MC68328Codegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": dl 0"); }
 
-void MC68328Codegen::declareArray(const std::string &lbl, const std::vector<long> &values) {
+// A literal element is its own decimal text; a symbol element (a
+// dispatch-table address-of-function/global, see IR.h's
+// ArrayInitElem) is the referenced Slot's or Function's own label,
+// written out bare - `dl`'s own expression evaluator
+// (MC68328Assembler.cpp's Line::Dl) already resolves a bare symbol
+// the same way `leal label,a0` already does for an address held in a
+// register (see genAddrOf).
+std::string MC68328Codegen::arrayElemText(const ir::ArrayInitElem &e) {
+    if (!e.isSymbol) return std::to_string(static_cast<int32_t>(static_cast<uint32_t>(e.value)));
+    return e.slot ? label(e.slot) : label(e.func);
+}
+
+void MC68328Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values) {
     if (values.empty()) return;
     std::ostringstream line;
     line << lbl << ": dl ";
     for (size_t i = 0; i < values.size(); i++) {
         if (i > 0) line << ", ";
-        line << static_cast<int32_t>(static_cast<uint32_t>(values[i]));
+        line << arrayElemText(values[i]);
     }
     trailer_.push_back(line.str());
 }
@@ -257,6 +269,20 @@ void MC68328Codegen::genExpr(const ir::Expr &e) {
             code_ << "    jsr " << label(e.func) << "\n";
             return;
         }
+        case ir::ExprKind::CallPtr: {
+            // e.args is always empty here - IRBuilder.cpp rejects any
+            // argument on this kind before it ever reaches a backend
+            // (see IR.h's ExprKind::CallPtr): there's no per-callee
+            // p_<fn>_<i> cell to write one into until the callee is
+            // known, which it never is at compile time for this kind.
+            // "jsrind a0" is MC68328Assembler.cpp's own (An)-indirect
+            // JSR encoding (mode 0b010) - a real near call through
+            // whatever address a0 holds.
+            genExpr(*e.lhs);  // d0 = the callee's own entry address
+            code_ << "    movel d0,a0\n";
+            code_ << "    jsrind a0\n";
+            return;
+        }
         case ir::ExprKind::Binary: {
             genBinary(e);
             return;
@@ -310,6 +336,11 @@ void MC68328Codegen::genAddrOf(const ir::Expr &operand) {
     }
     if (operand.kind == ir::ExprKind::Index) {
         genIndexAddr(operand.slot, *operand.lhs);
+        code_ << "    movel a0,d0\n";
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Func) {
+        code_ << "    leal " << label(operand.func) << ",a0\n";
         code_ << "    movel a0,d0\n";
         return;
     }

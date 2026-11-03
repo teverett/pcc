@@ -180,6 +180,33 @@ void PIC16Codegen::popPtrCell() {
     code_ << "    movf INDF,w\n    movwf ptr\n";
 }
 
+// A literal element's own value, split into two compile-time-known
+// bytes and loaded via emitInitByte()'s usual clrf/movlw+movwf
+// choice; a symbol element (a dispatch-table address-of-function/
+// global, see IR.h's ArrayInitElem) has no compile-time byte value at
+// all - a Function's own real program-memory *word* address is split
+// low byte/high byte the same way genAddrOf()'s own Func case does
+// (`movlwcl`/`movlwch`), and a Slot's own one-byte RAM address (data
+// space, always 0-255 on this baseline/mid-range target) is loaded
+// with a zero high byte, the same way genAddrOf()'s own Var case
+// does.
+void PIC16Codegen::emitInitElem(std::ostream &out, const std::string &loLbl, const std::string &hiLbl,
+                                 const ir::ArrayInitElem &e) {
+    if (e.isSymbol) {
+        if (e.func) {
+            out << "    movlwcl " << label(e.func) << "\n    movwf " << loLbl << "\n";
+            out << "    movlwch " << label(e.func) << "\n    movwf " << hiLbl << "\n";
+        } else {
+            out << "    movlw " << label(e.slot) << "\n    movwf " << loLbl << "\n";
+            out << "    clrf " << hiLbl << "\n";
+        }
+        return;
+    }
+    uint16_t v16 = static_cast<uint16_t>(e.value);
+    emitInitByte(out, loLbl, static_cast<uint8_t>(v16 & 0xFF));
+    emitInitByte(out, hiLbl, static_cast<uint8_t>((v16 >> 8) & 0xFF));
+}
+
 std::string PIC16Codegen::generate(const ir::Program &prog, bool objectMode) {
     objectMode_ = objectMode;
     const ir::Function *mainFn = nullptr;
@@ -224,11 +251,9 @@ std::string PIC16Codegen::generate(const ir::Program &prog, bool objectMode) {
         if (slot->arraySize > 0) {
             declareRam(lbl, slot->arraySize * 2, false);
             for (size_t i = 0; i < slot->arrayInit.size(); i++) {
-                uint16_t v16 = static_cast<uint16_t>(slot->arrayInit[i]);
                 std::string base = lbl + "+" + std::to_string(i * 2);
                 std::string hi = lbl + "+" + std::to_string(i * 2 + 1);
-                emitInitByte(globalInit, base, static_cast<uint8_t>(v16 & 0xFF));
-                emitInitByte(globalInit, hi, static_cast<uint8_t>((v16 >> 8) & 0xFF));
+                emitInitElem(globalInit, base, hi, slot->arrayInit[i]);
             }
         } else {
             declareRam(lbl, 2, false);
@@ -513,6 +538,24 @@ void PIC16Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Index) {
         genIndexAddr(operand.slot, *operand.lhs);
         code_ << "    movf ptr,w\n    movwf ac\n    clrf ac+1\n";
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Func) {
+        // `ac` ends up holding `fn`'s own real program-memory *word*
+        // address (never a call target here, just a value - see
+        // PIC16Assembler.cpp's own `movlwcl`/`movlwch` comment), split
+        // low byte/high byte across two literal loads the way every
+        // narrow-literal-field core here needs for a wider-than-8-bit
+        // address. There's deliberately no `ir::ExprKind::CallPtr` case
+        // in genExpr()'s own switch above - real baseline/mid-range
+        // PIC16 has no indirect CALL/GOTO at all (its one hardware
+        // call/return stack isn't software-addressable, and CALL/GOTO
+        // only ever take an inline literal target - see
+        // PIC16Codegen.h's own header comment), so a value produced
+        // here can be stored, compared, or passed around, but never
+        // actually called through on this target.
+        code_ << "    movlwcl " << label(operand.func) << "\n    movwf ac\n";
+        code_ << "    movlwch " << label(operand.func) << "\n    movwf ac+1\n";
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");

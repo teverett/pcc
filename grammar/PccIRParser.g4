@@ -29,7 +29,16 @@ globalDecl
     ;
 
 initList
-    : LBRACE (NUMBER (COMMA NUMBER)*)? RBRACE
+    : LBRACE (initElem (COMMA initElem)*)? RBRACE
+    ;
+
+// A plain literal, or a symbol reference standing for that Slot's or
+// Function's own address (see IR.h's ArrayInitElem) - identical shape
+// to varExpr's bare `ref`, just not wrapped as a full `expr` since an
+// initList element is never anything else (no operators, no calls).
+initElem
+    : NUMBER
+    | ref
     ;
 
 // "int name#id(int p#id, ...)\n{ ... }\n" - see IRPrinter.cpp's own
@@ -52,10 +61,8 @@ block
 
 // One alternative per ir::StmtKind (see IR.h); shapes match
 // IRPrinter.cpp's printStmt() exactly, including that `local`'s array
-// form never carries `= expr` the way its scalar form can (see
-// IR.h's Slot::arrayInit comment: a local array's elements are
-// zero-filled then assigned at runtime by ordinary statements, never
-// inline here).
+// form always carries an `initList`, never a general `= expr` the
+// way its scalar form can (see IR.h's ArrayInitElem).
 stmt
     : block                                                                        # blockStmt
     | IF_KW LPAREN expr RPAREN stmt (ELSE_KW stmt)?                                 # ifStmt
@@ -85,6 +92,7 @@ expr
     | (MINUS | BANG | TILDE | AMP) LPAREN expr RPAREN               # unaryExpr
     | LPAREN expr binOp expr RPAREN                                 # binaryExpr
     | ref LPAREN argList? RPAREN                                    # callExpr
+    | LPAREN expr RPAREN LPAREN RPAREN                              # callPtrExpr      // CallPtr - always 0 args, see IR.h
     | IDENT LPAREN RPAREN                                           # intrinsicExpr    // "_ion()" / "_iof()"
     | ref                                                           # varExpr
     ;

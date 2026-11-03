@@ -63,6 +63,7 @@ expr : NUMBER                                    // int literal
      | ('-'|'!'|'~'|'&') '(' expr ')'              // unary
      | '(' expr binOp expr ')'                    // binary
      | ref '(' (expr (',' expr)*)? ')'            // call
+     | '(' expr ')' '(' ')'                       // call through a computed address - always 0 args
      | IDENT '(' ')'                               // intrinsic, e.g. _ion()
      | ref                                        // variable reference
 ```
@@ -74,11 +75,11 @@ expr : NUMBER                                    // int literal
   the printer, so the grammar needs no operator-precedence table at
   all — it only has to accept the exact shapes `IRPrinter.cpp` ever
   writes.
-- A local array's elements are never given an inline `= expr` the
-  way a scalar local can be — they're zero-filled, then assigned at
-  runtime by ordinary statements (see `IR.h`'s `Slot::arrayInit`
-  comment). A global array *can* carry an initializer list, because
-  globals are laid out once, statically.
+- A local array's initializer is always an `initList` (`= {1, 2, 3}`),
+  never a general `expr` the way a scalar local's can be — exactly
+  the same literal-or-symbol list a global array carries (see `IR.h`'s
+  `ArrayInitElem`), since every local is laid out statically too (see
+  this file's own "The IR is AST.h's tree shape..." header comment).
 - `asm { ... }` is a `Stmt::Asm` node: raw target-specific assembly
   text, carried through the IR verbatim and printed back out
   unparsed — this is the only place a backend's own assembly syntax

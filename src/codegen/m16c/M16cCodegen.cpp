@@ -29,13 +29,23 @@ constexpr uint32_t kInitialSp = 0xE000;
 
 void M16cCodegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": dw 0"); }
 
-void M16cCodegen::declareArray(const std::string &lbl, const std::vector<long> &values) {
+// A literal element's own decimal text, or a symbol element's own
+// label text (the referenced Slot's or Function's own address) -
+// M16cAssembler.cpp's own `dw` directive already evaluates any expr
+// operand, symbol included, the same way `lea`/`jsr`'s own label
+// operand already does.
+std::string M16cCodegen::arrayElemText(const ir::ArrayInitElem &e) {
+    if (!e.isSymbol) return std::to_string(static_cast<int>(static_cast<uint16_t>(e.value)));
+    return e.slot ? label(e.slot) : label(e.func);
+}
+
+void M16cCodegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values) {
     if (values.empty()) return;
     std::ostringstream line;
     line << lbl << ": dw ";
     for (size_t i = 0; i < values.size(); i++) {
         if (i > 0) line << ", ";
-        line << static_cast<int>(static_cast<uint16_t>(values[i]));
+        line << arrayElemText(values[i]);
     }
     trailer_.push_back(line.str());
 }
@@ -220,6 +230,29 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
             code_ << "    jsr.w " << label(e.func) << "\n";
             return;
         }
+        case ir::ExprKind::CallPtr: {
+            // e.args is always empty here - IRBuilder.cpp rejects any
+            // argument on this kind before it ever reaches a backend
+            // (see IR.h's ExprKind::CallPtr): there's no per-callee
+            // p_<fn>_<i> cell to write one into until the callee is
+            // known, which it never is at compile time for this kind.
+            //
+            // The real M16C `JSRI.W` indirect-call instruction doesn't
+            // treat its own operand's address as the callee directly -
+            // it fetches the actual entry address from the WORD stored
+            // there (see M16cAssembler.cpp's own comment), so the
+            // callee's own address (just computed into r0) is spilled
+            // to a fresh temp word cell first, then `jsri.w` is pointed
+            // at that cell - a real hardware instruction, used exactly
+            // the way it calls through an ordinary function-pointer
+            // variable in memory.
+            genExpr(*e.lhs);  // r0 = the callee's own entry address
+            std::string T = allocTemp();
+            declareTemp(T);
+            code_ << "    mov.w r0," << T << "\n";
+            code_ << "    jsri.w " << T << "\n";
+            return;
+        }
         case ir::ExprKind::Binary: {
             genBinary(e);
             return;
@@ -267,6 +300,10 @@ void M16cCodegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Index) {
         genIndexAddr(operand.slot, *operand.lhs);
         code_ << "    mov.w a0,r0\n";
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Func) {
+        code_ << "    lea " << label(operand.func) << ",r0\n";
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");

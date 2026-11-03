@@ -274,7 +274,14 @@ class Assembler {
                 for (const auto &e : line.exprList) emit16(static_cast<uint16_t>(evalExpr(e)));
                 return;
             case Line::Dd:
-                for (const auto &e : line.exprList) emit32(evalExpr(e));
+                // Routed through the same emitAbs32() choke point a bare
+                // label used as a 32-bit immediate goes through (see its
+                // own header comment) - a "dd" word holding a symbol (an
+                // array initializer's dispatch-table element, see
+                // I386Codegen.cpp's own arrayElemText) gets the exact same
+                // relocation treatment, while a plain numeric word's value
+                // comes out unchanged.
+                for (const auto &e : line.exprList) emitAbs32(e);
                 return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
@@ -565,6 +572,21 @@ class Assembler {
             uint8_t src = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
             emit8(it->second);
             emit8(static_cast<uint8_t>(0xC0 | (src << 3) | dst));
+            return;
+        }
+        if (mnemonic == "call" && requireOperand(ops, 0, mnemonic).kind == Operand::Reg) {
+            // `call eax` (I386Codegen.cpp's new ExprKind::CallPtr) - a
+            // real, direct near-indirect call through a register: FF
+            // /2, the same "group FF" ModRM-register form `not`/
+            // `imul`/`idiv` above already use, just with reg field
+            // 0b010 ("CALL r/m32, near indirect") - confirmed against
+            // a real toolchain's own encoding. No REX prefix concern
+            // here (this dialect is pure 32-bit protected mode, not
+            // long mode), and the plain register-direct ModRM byte
+            // (mod=11) needs no disp32 extension.
+            uint8_t r = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            emit8(0xFF);
+            emit8(static_cast<uint8_t>(0xC0 | (2 << 3) | r));
             return;
         }
         if (mnemonic == "call" || mnemonic == "jmp") {

@@ -44,11 +44,44 @@ void MCS51Codegen::declareGlobalTemp(const std::string &lbl, long initValue) {
 // assumption.
 void MCS51Codegen::declareArray(const std::string &lbl, int arraySize) { allocXdata(lbl, arraySize * 2); }
 
-void MCS51Codegen::declareGlobalArray(const std::string &lbl, int arraySize, const std::vector<long> &values) {
+// Writes array element `e`'s own value into the already-allocated
+// XDATA cell at `elemExpr`. A literal element is written byte-by-byte
+// through a plain immediate (`movai`), same as declareGlobalTemp()'s
+// own scalar case. A symbol element (a dispatch-table address-of-
+// function/global, see IR.h's ArrayInitElem) has no compile-time byte
+// value at all - its own address is loaded into `bc` first, through
+// the same `dpl`/`dph` split loadCodeAddress()/loadXdataAddress()
+// already use (a Function's address against the CODE label table via
+// `movdptrc`, a Slot's against the XDATA one via `movdptr` - the two
+// address spaces this target keeps genuinely separate), then written
+// out through `bc` exactly like storeXdata() writes any other
+// runtime-computed value.
+void MCS51Codegen::genArrayElementInit(const std::string &elemExpr, const ir::ArrayInitElem &e) {
+    if (e.isSymbol) {
+        if (e.func) {
+            initCode_ << "    movdptrc " << label(e.func) << "\n";
+        } else {
+            initCode_ << "    movdptr " << label(e.slot) << "\n";
+        }
+        initCode_ << "    mova dpl\n    movd bc\n";
+        initCode_ << "    mova dph\n    movd bc+1\n";
+        initCode_ << "    movdptr " << elemExpr << "\n";
+        initCode_ << "    mova bc\n    movxw\n";
+        initCode_ << "    incdptr\n";
+        initCode_ << "    mova bc+1\n    movxw\n";
+        return;
+    }
+    uint16_t v16 = static_cast<uint16_t>(e.value);
+    initCode_ << "    movdptr " << elemExpr << "\n";
+    initCode_ << "    movai " << (v16 & 0xFF) << "\n    movxw\n";
+    initCode_ << "    incdptr\n";
+    initCode_ << "    movai " << ((v16 >> 8) & 0xFF) << "\n    movxw\n";
+}
+
+void MCS51Codegen::declareGlobalArray(const std::string &lbl, int arraySize,
+                                       const std::vector<ir::ArrayInitElem> &values) {
     allocXdata(lbl, arraySize * 2);
     for (int i = 0; i < arraySize; i++) {
-        long v = (static_cast<size_t>(i) < values.size()) ? values[i] : 0;
-        uint16_t v16 = static_cast<uint16_t>(v);
         // Element `i`'s own `movdptr` operand - `lbl` itself for the
         // first element, `lbl+<byte offset>` otherwise: this
         // assembler's own expression grammar resolves the symbol part
@@ -58,10 +91,9 @@ void MCS51Codegen::declareGlobalArray(const std::string &lbl, int arraySize, con
         // comment) rather than something this function has to resolve
         // to a number itself.
         std::string elemExpr = (i == 0) ? lbl : lbl + "+" + std::to_string(i * 2);
-        initCode_ << "    movdptr " << elemExpr << "\n";
-        initCode_ << "    movai " << (v16 & 0xFF) << "\n    movxw\n";
-        initCode_ << "    incdptr\n";
-        initCode_ << "    movai " << ((v16 >> 8) & 0xFF) << "\n    movxw\n";
+        static const ir::ArrayInitElem kZero{};
+        const ir::ArrayInitElem &e = (static_cast<size_t>(i) < values.size()) ? values[i] : kZero;
+        genArrayElementInit(elemExpr, e);
     }
 }
 
@@ -86,6 +118,12 @@ void MCS51Codegen::storeXdata(const std::string &xdataExpr, const std::string &s
 
 void MCS51Codegen::loadXdataAddress(const std::string &dstReg, const std::string &xdataExpr) {
     code_ << "    movdptr " << xdataExpr << "\n";
+    code_ << "    mova dpl\n    movd " << dstReg << "\n";
+    code_ << "    mova dph\n    movd " << dstReg << "+1\n";
+}
+
+void MCS51Codegen::loadCodeAddress(const std::string &dstReg, const std::string &codeExpr) {
+    code_ << "    movdptrc " << codeExpr << "\n";
     code_ << "    mova dpl\n    movd " << dstReg << "\n";
     code_ << "    mova dph\n    movd " << dstReg << "+1\n";
 }
@@ -404,6 +442,35 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
             code_ << "    lcall " << label(e.func) << "\n";
             return;
         }
+        case ir::ExprKind::CallPtr: {
+            // e.args is always empty here - IRBuilder.cpp rejects any
+            // argument on this kind before it ever reaches a backend
+            // (see IR.h's ExprKind::CallPtr): there's no per-callee
+            // p_<fn>_<i> XDATA slot to write one into until the callee
+            // is known, which it never is at compile time for this
+            // kind.
+            //
+            // The real 8051 has no indirect CALL at all - only `JMP
+            // @A+DPTR`, a real indirect *jump* (address = DPTR + A).
+            // A call through a computed address is faked by manually
+            // reproducing LCALL's own real push order onto the
+            // hardware stack - low return-address byte pushed first,
+            // high byte second, via two 8-bit PUSH-direct instructions
+            // (the real SP/PUSH/POP only ever move one internal-RAM
+            // byte at a time - see MCS51Codegen.h's own header
+            // comment) - before jumping, so that the callee's own
+            // `ret` (RET pops high then low, the exact mirror order)
+            // returns here exactly as if a real LCALL had reached it.
+            genExpr(*e.lhs);  // ac = the callee's own entry address
+            std::string ret = newLabel();
+            loadCodeAddress("bc", ret);  // bc = this call's own return address
+            code_ << "    push bc\n    push bc+1\n";
+            code_ << "    movdpl ac\n    movdph ac+1\n";  // dptr = callee address
+            code_ << "    clra\n";                        // a = 0, so @A+DPTR == DPTR exactly
+            code_ << "    jmpadptr\n";
+            code_ << ret << ":\n";
+            return;
+        }
         case ir::ExprKind::Binary: {
             genBinary(e);
             return;
@@ -460,6 +527,10 @@ void MCS51Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Index) {
         genIndexAddr(operand.slot, *operand.lhs);
         copy16("ac", "ptr");
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Func) {
+        loadCodeAddress("ac", label(operand.func));
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");

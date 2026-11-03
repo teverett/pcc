@@ -238,6 +238,20 @@ class MCS51Codegen : public Backend {
     // rather than as something to MOVX through.
     void loadXdataAddress(const std::string &dstReg, const std::string &xdataExpr);
 
+    // Loads `codeExpr`'s own CODE-space address (a function's entry
+    // label, or a locally-generated return-address label - never the
+    // bytes stored there, there being no "bytes stored there" to a
+    // function label at all) into a pseudo-register pair: `movdptrc
+    // codeExpr` resolves and (in object mode) relocates the address
+    // into DPTR via the real `MOV DPTR,#data16` encoding, exactly like
+    // loadXdataAddress() above, just against this assembler's CODE-
+    // space symbol table instead of its XDATA-space one - then `dpl`/
+    // `dph` are copied out the same way. Used by genAddrOf() (`&fn`)
+    // and genExpr()'s own `CallPtr` handling (to get a synthesized
+    // return-address label's value into a pseudo-register pair before
+    // pushing it).
+    void loadCodeAddress(const std::string &dstReg, const std::string &codeExpr);
+
     // "the short branch Bcc almost reaches, plus an always-in-range
     // LJMP from there" - see this file's own header comment.
     // `branchMnemonic` is one of MCS51Assembler.cpp's own short
@@ -294,7 +308,8 @@ class MCS51Codegen : public Backend {
     void declareTemp(const std::string &lbl);
     void declareGlobalTemp(const std::string &lbl, long initValue);
     void declareArray(const std::string &lbl, int arraySize);
-    void declareGlobalArray(const std::string &lbl, int arraySize, const std::vector<long> &values);
+    void declareGlobalArray(const std::string &lbl, int arraySize, const std::vector<ir::ArrayInitElem> &values);
+    void genArrayElementInit(const std::string &elemExpr, const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 
     std::ostringstream code_;

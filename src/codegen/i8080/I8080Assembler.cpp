@@ -33,8 +33,8 @@ struct Syllable {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Org, Db, Instr } kind = None;
-    std::vector<std::vector<Syllable>> exprList;  // Org (1) / Db (N)
+    enum Kind { None, Org, Db, Dw, Instr } kind = None;
+    std::vector<std::vector<Syllable>> exprList;  // Org (1) / Db (N) / Dw (N)
     std::string mnemonic;                          // Instr
     std::vector<std::vector<Syllable>> operands;   // Instr
 };
@@ -108,6 +108,18 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
     }
     if (mnemonic == "db") {
         line.kind = Line::Db;
+        for (auto *op : instr->operand()) line.exprList.push_back(buildOperand(op));
+        return line;
+    }
+    // `dw` - a full little-endian 16-bit data word, resolved exactly
+    // like `lxi`/`lhld`/`shld`'s own 16-bit operand (I8080Codegen.cpp's
+    // own `arrayElemText()`/`declareArray()` uses this for a dispatch-
+    // table array element that names a function/global directly: a
+    // symbol's own address is only known to the assembler, once every
+    // label is bound, never to the codegen that writes this directive
+    // out).
+    if (mnemonic == "dw") {
+        line.kind = Line::Dw;
         for (auto *op : instr->operand()) line.exprList.push_back(buildOperand(op));
         return line;
     }
@@ -196,6 +208,9 @@ class Assembler {
             case Line::Db:
                 for (const auto &e : line.exprList) emitByteOperand(e);
                 return;
+            case Line::Dw:
+                for (const auto &e : line.exprList) emit16(e);
+                return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
                 return;
@@ -267,9 +282,9 @@ class Assembler {
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
 
-    // addr16/imm16 - little-endian, full 16-bit resolved value, no
-    // range check (any symbol in this program's own 64KB address
-    // space is valid here).
+    // addr16/imm16, and `dw`'s own data word - little-endian, full
+    // 16-bit resolved value, no range check (any symbol in this
+    // program's own 64KB address space is valid here).
     void emit16(const std::vector<Syllable> &e) {
         std::string externalName;
         bool needsBaseShift = false;
@@ -349,7 +364,7 @@ class Assembler {
         static const std::unordered_map<std::string, uint8_t> implied = {
             {"nop", 0x00}, {"rlc", 0x07}, {"rrc", 0x0F}, {"ral", 0x17}, {"rar", 0x1F}, {"cma", 0x2F},
             {"stc", 0x37}, {"cmc", 0x3F}, {"xchg", 0xEB}, {"ret", 0xC9}, {"ei", 0xFB},  {"di", 0xF3},
-            {"hlt", 0x76},
+            {"hlt", 0x76}, {"pchl", 0xE9},
         };
         if (auto it = implied.find(mnemonic); it != implied.end()) {
             if (!ops.empty()) fail("'" + mnemonic + "' takes no operand");

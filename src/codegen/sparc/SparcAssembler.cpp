@@ -245,7 +245,23 @@ class Assembler {
                 orgBase_ = evalExpr(line.exprList.at(0));
                 return;
             case Line::Dw:
-                for (const auto &e : line.exprList) emit32(evalExpr(e));
+                // Each word's own expression goes through the exact same
+                // external-name/base-shift tracking as `sethi`/`or`'s own
+                // Hi/Lo immediate (see encodeInstr()) - a bare symbol here
+                // (an array initializer's address-of-function/global
+                // element) resolves and relocates as a plain additive
+                // 32-bit word (kSparcRelocAbs32), rather than the split
+                // Hi/Lo pair an instruction's own immediate field needs.
+                for (const auto &e : line.exprList) {
+                    std::string externalName;
+                    bool needsBaseShift = false;
+                    uint32_t v = evalExpr(e, &externalName, &needsBaseShift);
+                    if (stage_ == 2 && allowExternal_) {
+                        if (needsBaseShift) relocations_.push_back({offset_, "..", kSparcRelocAbs32});
+                        if (!externalName.empty()) relocations_.push_back({offset_, externalName, kSparcRelocAbs32});
+                    }
+                    emit32(v);
+                }
                 return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
@@ -516,6 +532,26 @@ class Assembler {
         emitNop();
     }
 
+    // `jmpl rs1,rd` - real SPARC JMPL (format 3, op=2, op3=0x38),
+    // register-indirect form (i=0, rs2=%g0, so the effective target
+    // is simply rs1's own value - the same fixed-zero-displacement
+    // convention ldind/stind already use, see SparcCodegen.h's own
+    // header comment): PC <- rs1, rd <- the address of this
+    // instruction itself, the identical return-address convention
+    // `call` already leaves in its own target register for a direct
+    // call - see encodeCall()'s own comment - so SparcCodegen.cpp's
+    // own CallPtr case can target `lr` here and let the callee's
+    // already-existing `retl` ("jmpl lr+8,g0") epilogue return
+    // correctly either way. Always immediately followed by a
+    // synthesized `nop` delay slot, same as every other real
+    // control-transfer here.
+    void encodeJmpl(const std::vector<Operand> &ops) {
+        uint8_t rs1 = requireReg(requireOperand(ops, 0, "jmpl"), "jmpl");
+        uint8_t rd = requireReg(requireOperand(ops, 1, "jmpl"), "jmpl");
+        emit32((2u << 30) | (static_cast<uint32_t>(rd) << 25) | (0x38u << 19) | (static_cast<uint32_t>(rs1) << 14));
+        emitNop();
+    }
+
     // Bicc - format 2: op=0 a(1)=0 cond(4) op2=010(3) disp22(22).
     // `cond`'s own real SPARC encoding - see SparcCodegen.cpp's own
     // `genCompare()` for which comparison operator picks which one.
@@ -573,6 +609,10 @@ class Assembler {
         }
         if (mnemonic == "call") {
             encodeCall(ops);
+            return;
+        }
+        if (mnemonic == "jmpl") {
+            encodeJmpl(ops);
             return;
         }
         if (mnemonic == "retl") {

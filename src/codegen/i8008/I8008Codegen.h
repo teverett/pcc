@@ -213,11 +213,12 @@ class I8008Codegen : public Backend {
 
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
     void declareTemp(const std::string &lbl);
-    void declareArray(const std::string &lbl, const std::vector<long> &values);
+    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
+    std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 
     std::ostringstream code_;
-    std::vector<std::string> trailer_;  // "label: db lo, hi, ..." data lines, emitted once at the end
+    std::vector<std::string> trailer_;  // "label: db lo, hi, ..." / "label: dw ..." data lines, emitted once at the end
     std::map<std::string, std::string> perFileAsm_;
 
     int tempCounter_ = 0;

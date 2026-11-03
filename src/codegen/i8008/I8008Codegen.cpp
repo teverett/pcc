@@ -102,14 +102,24 @@ void I8008Codegen::decHL() {
 
 void I8008Codegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": db 0, 0"); }
 
-void I8008Codegen::declareArray(const std::string &lbl, const std::vector<long> &values) {
+// A literal element's own decimal text, or a symbol element's own
+// label text (the referenced Slot's or Function's own address) - the
+// shared assembler's own "dw" directive (I8008Assembler.cpp's emit16)
+// resolves either one into a real, full 16-bit value and writes it
+// out low byte then high byte, the same split a `jmp`/`cal` operand
+// already gets.
+std::string I8008Codegen::arrayElemText(const ir::ArrayInitElem &e) {
+    if (!e.isSymbol) return std::to_string(e.value);
+    return e.slot ? label(e.slot) : label(e.func);
+}
+
+void I8008Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values) {
     if (values.empty()) return;
     std::ostringstream line;
-    line << lbl << ": db ";
+    line << lbl << ": dw ";
     for (size_t i = 0; i < values.size(); i++) {
-        uint16_t v16 = static_cast<uint16_t>(values[i]);
         if (i > 0) line << ", ";
-        line << static_cast<int>(v16 & 0xFF) << ", " << static_cast<int>((v16 >> 8) & 0xFF);
+        line << arrayElemText(values[i]);
     }
     trailer_.push_back(line.str());
 }
@@ -436,6 +446,44 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
             code_ << "    cal " << label(e.func) << "\n";
             return;
         }
+        case ir::ExprKind::CallPtr: {
+            // e.args is always empty here - IRBuilder.cpp rejects any
+            // argument on this kind before it ever reaches a backend
+            // (see IR.h's ExprKind::CallPtr). The 8008 has no
+            // indirect call or jump of any kind - every real `CAL`/
+            // `JMP` operand is a fixed 14-bit address baked into the
+            // instruction's own bytes at assemble time, and there's
+            // no "jump to the address in a register pair" instruction
+            // the way the 8080/Z80 have `PCHL`/`JP (HL)` (see
+            // I8008Codegen.h's own header comment) - so a computed
+            // call is instead emulated with self-modifying code: the
+            // placeholder `cal 0` below is a real CAL instruction
+            // whose own operand bytes (`Lcal+1`/`Lcal+2`, immediately
+            // following its opcode byte at `Lcal`) get overwritten
+            // with the callee's own address - already computed into
+            // `ac` - right before the CPU falls through and executes
+            // it. The instruction the CPU then fetches is a perfectly
+            // ordinary CAL to that address; the real internal
+            // hardware call stack handles the return exactly as it
+            // would for `cal <label>`. Safe because this backend has
+            // no interrupts and no concurrency (see I8008Codegen.h's
+            // own header comment) - nothing can observe or race the
+            // placeholder bytes between the patch and the CAL that
+            // immediately follows it, even across recursive calls
+            // through this same call site.
+            genExpr(*e.lhs);  // ac = the callee's own entry address
+            std::string Lcal = newLabel();
+            pointAt("ac");
+            code_ << "    mov a, m\n";
+            pointAt(Lcal + "+1");
+            code_ << "    mov m, a\n";
+            pointAt("ac+1");
+            code_ << "    mov a, m\n";
+            pointAt(Lcal + "+2");
+            code_ << "    mov m, a\n";
+            code_ << Lcal << ": cal 0\n";
+            return;
+        }
         case ir::ExprKind::Binary: {
             genBinary(e);
             return;
@@ -518,6 +566,10 @@ void I8008Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Index) {
         genIndexAddr(operand.slot, *operand.lhs);
         copy16("ac", "ptr");
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Func) {
+        storeImmediate16("ac", label(operand.func));
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");

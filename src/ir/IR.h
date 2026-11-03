@@ -26,6 +26,23 @@ namespace pcc::ir {
 
 enum class SlotKind { Global, Local, Param };
 
+struct Slot;      // defined below - ArrayInitElem only ever needs a pointer to it
+struct Function;  // defined below - ArrayInitElem/Slot only ever need a pointer to it
+
+// One element of an array initializer - either a plain literal value,
+// or a symbol reference (a Slot's or a Function's own address, the
+// dispatch-table idiom, e.g. "int t[] = {f, g};") - exactly one of
+// `slot`/`func` is set when `isSymbol`, matching whether the source
+// name resolved to a variable or a function (see IRBuilder.cpp's
+// resolveArrayInit, which resolves it the same way it resolves a bare
+// "&name" expression).
+struct ArrayInitElem {
+    bool isSymbol = false;
+    long value = 0;
+    Slot *slot = nullptr;
+    Function *func = nullptr;
+};
+
 // One storage location for one value (or, for an array, arraySize of
 // them) - a global, a local, or a parameter. Every Slot in a Program
 // has a unique `id`; `sourceName` is the original C identifier, kept
@@ -38,8 +55,7 @@ struct Slot {
     int arraySize = 0;                 // 0 = scalar
     bool hasInit = false;               // scalar: literal initializer given
     long initValue = 0;                  // scalar initializer value
-    std::vector<long> arrayInit;          // array initializer (globals only; locals are zero-filled
-                                           // then assigned at runtime by ordinary statements)
+    std::vector<ArrayInitElem> arrayInit;  // array initializer, global or local - see ArrayInitElem
 
     // '@' addr from source (Global only - the grammar has no syntax
     // for it on a local/param, so IRBuilder never sets this for
@@ -123,6 +139,22 @@ enum class ExprKind {
     Unary,        // op in {"-", "!", "~", "*", "&"}; "*"/"&" operate on rhs
     Binary,       // op in {"+","-","*","/","%","<<",">>","==","!=","<","<=",">",">=","&","^","|","&&","||"}
     Call,
+    // A bare function name used as "&"'s operand (e.g. "&dispatch") -
+    // the function's own entry address, never a call. Never appears
+    // anywhere else a Var could (there's no way to read, assign to,
+    // or index a function) - see IRBuilder's buildAddressableOperand,
+    // the only place that ever produces one. `func` holds the
+    // Function; `slot` is unused.
+    Func,
+    // A call through a computed address rather than a literal
+    // function name (e.g. "(table[i])()") - `lhs` is the callee
+    // expression (evaluates to the target address); `args` is its
+    // argument list, same as Call, except IRBuilder's buildExpr
+    // always leaves it empty: there's no per-callee ABI slot a
+    // backend could put an argument in until the callee is known,
+    // which for this kind it never is at compile time - see
+    // IRBuilder.cpp's own comment at the one place that builds this.
+    CallPtr,
     // A source-level primitive with no portable C expression and no
     // per-target calling convention to speak of - just one bare
     // instruction, chosen per backend, with `op` naming which one
@@ -141,12 +173,13 @@ struct Expr {
 
     long intValue = 0;  // IntLit
     Slot *slot = nullptr;  // Var / Index / Assign target (never null for those kinds)
-    Function *func = nullptr;  // Call
+    Function *func = nullptr;  // Call / Func
     std::string op;            // Unary / Binary / Intrinsic ("ion" or "iof")
 
-    std::unique_ptr<Expr> lhs;  // Binary lhs; Index/indexed-Assign subscript; DerefAssign's pointer
+    std::unique_ptr<Expr> lhs;  // Binary lhs; Index/indexed-Assign subscript; DerefAssign's pointer;
+                                  // CallPtr's callee (evaluates to the target address)
     std::unique_ptr<Expr> rhs;  // Binary rhs; Assign/DerefAssign value; Unary operand
-    std::vector<std::unique_ptr<Expr>> args;  // Call arguments
+    std::vector<std::unique_ptr<Expr>> args;  // Call arguments (CallPtr's is always empty - see ExprKind::CallPtr)
 };
 
 using ExprPtr = std::unique_ptr<Expr>;

@@ -71,6 +71,11 @@ constexpr uint16_t kSparcRelocLo = 2;
 // `call` - calling a function defined in some *other* input file -
 // needs deferring.
 constexpr uint16_t kSparcRelocCall = 3;
+// `kSparcRelocAbs32`: a plain, contiguous 32-bit data word (a `dw`
+// line's own word - see SparcAssembler.cpp's own `Line::Dw` handling) -
+// an ordinary additive patch, unlike the Hi/Lo split or the Call
+// field's shifted encoding above.
+constexpr uint16_t kSparcRelocAbs32 = 4;
 
 // A from-scratch, in-process two-pass assembler for exactly the
 // narrow 32-bit SPARC V8 dialect SparcCodegen.cpp emits - not a

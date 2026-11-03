@@ -535,6 +535,38 @@ class Assembler {
             return;
         }
 
+        // MOVLW with the low 8 bits / next 8 bits of a CODE-space
+        // label's own real *byte* address (`labels_` holds the same
+        // word index `controlAddr20()` above uses for GOTO/CALL's own
+        // field, doubled here to get a real byte address, matching
+        // every other backend's own pointer representation) -
+        // PIC18Codegen.cpp's own `genAddrOf()` uses this pair to get a
+        // function's entry address into a plain 16-bit value: GOTO/
+        // CALL always encode their own target directly in the
+        // instruction word, so taking a function's address as *data*
+        // has no single real instruction either - this splits it
+        // across two literal loads instead, the same byte-at-a-time
+        // idiom ../pic16/PIC16Assembler.cpp's own `movlwcl`/`movlwch`
+        // use for the identical problem on that core. Object-mode
+        // relocation of a split code-space address isn't implemented
+        // (same reasoning as that file's own comment) - taking a
+        // function's address under real separate compilation is a
+        // loud compile error here instead of a silently wrong value.
+        if (mnemonic == "movlwcl" || mnemonic == "movlwch") {
+            std::string externalName;
+            bool needsBaseShift = false;
+            uint32_t wordAddr = evalExpr(operandAt(ops, 0, mnemonic, 1), &externalName, &needsBaseShift);
+            if (stage_ == 2 && (needsBaseShift || !externalName.empty())) {
+                fail("'" + mnemonic + "': taking a function's address isn't supported under separate compilation "
+                     "on this target");
+            }
+            uint32_t byteAddr = wordAddr * 2;
+            uint8_t k = mnemonic == "movlwcl" ? static_cast<uint8_t>(byteAddr & 0xFF)
+                                               : static_cast<uint8_t>((byteAddr >> 8) & 0xFF);
+            emitWord(static_cast<uint16_t>(0x0E00 | k));
+            return;
+        }
+
         if (mnemonic == "movff") {
             uint16_t fs = fileAddr12(operandAt(ops, 0, mnemonic, 2), mnemonic, /*wordDelta=*/0);
             uint16_t fd = fileAddr12(operandAt(ops, 1, mnemonic, 2), mnemonic, /*wordDelta=*/1);

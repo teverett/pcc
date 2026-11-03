@@ -241,7 +241,23 @@ class Assembler {
                 orgBase_ = evalExpr(line.exprList.at(0));
                 return;
             case Line::Dw:
-                for (const auto &e : line.exprList) emit32(evalExpr(e));
+                // Each word's own expression goes through the exact same
+                // external-name/base-shift tracking as `lui`/`ori`'s own
+                // Hi/Lo immediate (see encodeHiLo()) - a bare symbol here
+                // (an array initializer's address-of-function/global
+                // element) resolves and relocates as a plain additive
+                // 32-bit word (kMipsRelocAbs32), rather than the split
+                // Hi/Lo pair an instruction's own immediate field needs.
+                for (const auto &e : line.exprList) {
+                    std::string externalName;
+                    bool needsBaseShift = false;
+                    uint32_t v = evalExpr(e, &externalName, &needsBaseShift);
+                    if (stage_ == 2 && allowExternal_) {
+                        if (needsBaseShift) relocations_.push_back({offset_, "..", kMipsRelocAbs32});
+                        if (!externalName.empty()) relocations_.push_back({offset_, externalName, kMipsRelocAbs32});
+                    }
+                    emit32(v);
+                }
                 return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
@@ -498,6 +514,18 @@ class Assembler {
         if (mnemonic == "jr") {
             uint8_t rs = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             emitR(0, rs, 0, 0, 0, 0x08);
+            return;
+        }
+        // JALR - dialect order: mnemonic rd,rs (real MIPS field
+        // order: rs(21) rt=0(16) rd(11) shamt=0(6) funct=0x09). A
+        // real Jump-And-Link-Register: jumps to whatever address rs
+        // holds and leaves the return address in rd, the hardware
+        // mechanism for a call whose target isn't a compile-time
+        // label (unlike JAL's own 26-bit pseudo-absolute field).
+        if (mnemonic == "jalr") {
+            uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            uint8_t rs = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+            emitR(0, rs, 0, rd, 0, 0x09);
             return;
         }
         if (mnemonic == "j" || mnemonic == "jal") {

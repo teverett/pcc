@@ -231,7 +231,22 @@ class Assembler {
                 orgBase_ = evalExpr(line.exprList.at(0));
                 return;
             case Line::Dl:
-                for (const auto &e : line.exprList) emit32(evalExpr(e));
+                // Each word's own expression goes through the exact same
+                // external-name/base-shift tracking as a `Mem` operand's
+                // extension word (see emitEAExtension) - a bare symbol here
+                // (an array initializer's address-of-function/global
+                // element) resolves and relocates identically to one used
+                // as an instruction's absolute address.
+                for (const auto &e : line.exprList) {
+                    std::string externalName;
+                    bool needsBaseShift = false;
+                    uint32_t v = evalExpr(e, &externalName, &needsBaseShift);
+                    if (stage_ == 2 && allowExternal_) {
+                        if (needsBaseShift) relocations_.push_back({offset_, ".."});
+                        if (!externalName.empty()) relocations_.push_back({offset_, externalName});
+                    }
+                    emit32(v);
+                }
                 return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
@@ -549,6 +564,18 @@ class Assembler {
             EA e = classifyEA(target);
             emit16(static_cast<uint16_t>(0x4E80 | (e.mode << 3) | e.reg));
             emitEAExtension(target);
+            return;
+        }
+        // "JSR (An)" - a real near call through whatever address An
+        // holds, mode 0b010 - same "(An) gets its own mnemonic rather
+        // than a generic bracketed operand" convention ldind/stind
+        // already use (classifyEA's Areg case is register DIRECT,
+        // mode 0b001, which the real MC68EC000 ISA doesn't accept as a
+        // JSR target at all - this needs the true indirect mode, not
+        // what "jsr a0" would otherwise encode).
+        if (mnemonic == "jsrind") {
+            uint8_t an = requireAreg(requireOperand(ops, 0, mnemonic), mnemonic);
+            emit16(static_cast<uint16_t>(0x4E80 | (0b010 << 3) | an));
             return;
         }
         static const std::unordered_map<std::string, uint8_t> branchCond = {

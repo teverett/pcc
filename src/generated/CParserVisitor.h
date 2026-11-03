@@ -35,6 +35,10 @@ public:
 
     virtual std::any visitArrayInit(CParser::ArrayInitContext *context) = 0;
 
+    virtual std::any visitNumArrayElem(CParser::NumArrayElemContext *context) = 0;
+
+    virtual std::any visitSymArrayElem(CParser::SymArrayElemContext *context) = 0;
+
     virtual std::any visitBlock(CParser::BlockContext *context) = 0;
 
     virtual std::any visitBlockStmt(CParser::BlockStmtContext *context) = 0;
@@ -72,6 +76,8 @@ public:
     virtual std::any visitAddrOfExpr(CParser::AddrOfExprContext *context) = 0;
 
     virtual std::any visitOrExpr(CParser::OrExprContext *context) = 0;
+
+    virtual std::any visitCallPtrExpr(CParser::CallPtrExprContext *context) = 0;
 
     virtual std::any visitNumExpr(CParser::NumExprContext *context) = 0;
 

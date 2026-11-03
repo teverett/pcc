@@ -479,6 +479,25 @@ class Assembler {
             emitAddr16(ops[0].expr);
             return;
         }
+        // `JSRI.W` - the real M16C indirect-call instruction: unlike
+        // `jsr`, whose Mem operand's own address IS the subroutine
+        // entry point, `jsri`'s operand names the memory location
+        // *holding* the entry point - the word stored there becomes
+        // the new PC (after the return address is pushed, same as
+        // `jsr`). The real hardware form supports a general EA for
+        // that memory location (register-relative, absolute, etc.);
+        // this dialect only ever needs the absolute-address case
+        // (M16cCodegen.cpp's own genExpr() always spills the callee's
+        // address to a temp word cell first, then points `jsri` at
+        // that cell's own label - see that file's own CallPtr
+        // comment).
+        if (mnemonic == "jsri") {
+            requireOperandCount(ops, 1, mnemonic);
+            if (ops[0].kind != Operand::Mem) fail("'jsri': target must be a label");
+            emit8(0x1D);
+            emitAddr16(ops[0].expr);
+            return;
+        }
         if (mnemonic == "rts") {
             requireOperandCount(ops, 0, mnemonic);
             emit8(0x13);

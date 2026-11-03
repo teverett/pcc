@@ -16,12 +16,22 @@ std::string I8086Codegen::allocTemp() { return "t" + std::to_string(tempCounter_
 
 void I8086Codegen::declareTemp(const std::string &label) { trailer_.push_back(label + ": dw 0"); }
 
-void I8086Codegen::declareArray(const std::string &label, const std::vector<long> &values) {
+// A literal element is its own decimal text; a symbol element is the
+// referenced Slot's or Function's own label, written out bare - NASM-
+// style "dw" (I8086Assembler.cpp's Line::Dw) already evaluates any
+// expr operand, symbol included, the same way "mov ax, fn_f" already
+// does for an immediate (see genAddrOf).
+std::string I8086Codegen::arrayElemText(const ir::ArrayInitElem &e) {
+    if (!e.isSymbol) return std::to_string(e.value);
+    return e.slot ? label(e.slot) : label(e.func);
+}
+
+void I8086Codegen::declareArray(const std::string &label, const std::vector<ir::ArrayInitElem> &values) {
     std::ostringstream line;
     line << label << ": dw ";
     for (size_t i = 0; i < values.size(); i++) {
         if (i > 0) line << ", ";
-        line << values[i];
+        line << arrayElemText(values[i]);
     }
     trailer_.push_back(line.str());
 }
@@ -133,7 +143,7 @@ std::string I8086Codegen::generate(const ir::Program &prog, bool objectMode) {
             line << lbl << ": dw ";
             for (size_t i = 0; i < slot->arrayInit.size(); i++) {
                 if (i > 0) line << ", ";
-                line << slot->arrayInit[i];
+                line << arrayElemText(slot->arrayInit[i]);
             }
             line << "  ; " << slot->sourceName;
             trailer_.push_back(line.str());
@@ -309,6 +319,19 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
             code_ << "    call " << label(e.func) << "\n";
             return;
         }
+        case ir::ExprKind::CallPtr: {
+            // e.args is always empty here - IRBuilder.cpp rejects any
+            // argument on this kind before it ever reaches a backend
+            // (see IR.h's ExprKind::CallPtr): there's no per-callee
+            // p_<fn>_<i> cell to write one into until the callee is
+            // known, which it never is at compile time for this kind.
+            // "call ax" (I8086Assembler.cpp's new FF /2 encoding) is a
+            // real, direct near-indirect call through a register -
+            // unlike pdp7's jms, no temp cell is needed at all.
+            genExpr(*e.lhs);  // ax = the callee's own entry address
+            code_ << "    call ax\n";
+            return;
+        }
         case ir::ExprKind::Binary: {
             genBinary(e);
             return;
@@ -357,9 +380,11 @@ void I8086Codegen::genIndex(const ir::Expr &e) {
     code_ << "    mov ax, " << addr << "\n";
 }
 
-// &operand: a plain variable/array (&slot -> its own address) or an
-// array element (&slot[idx] -> that element's address) - nothing
-// else in this subset has an address worth taking.
+// &operand: a plain variable/array (&slot -> its own address), an
+// array element (&slot[idx] -> that element's address), or a bare
+// function name (&fn -> fn's own entry label - the same address a
+// direct `call label(fn)` already targets; see label()'s own
+// comment) - nothing else in this subset has an address worth taking.
 void I8086Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
         code_ << "    mov ax, " << label(operand.slot) << "\n";
@@ -374,6 +399,10 @@ void I8086Codegen::genAddrOf(const ir::Expr &operand) {
         } else {
             code_ << "    add ax, [" << lbl << "]\n";
         }
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Func) {
+        code_ << "    mov ax, " << label(operand.func) << "\n";
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");

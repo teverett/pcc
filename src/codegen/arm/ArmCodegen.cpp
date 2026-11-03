@@ -29,13 +29,25 @@ constexpr uint32_t kInitialSP = 0x100000u;
 
 void ArmCodegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": dw 0"); }
 
-void ArmCodegen::declareArray(const std::string &lbl, const std::vector<long> &values) {
+// A literal element is its own decimal text; a symbol element (a
+// dispatch-table address-of-function/global, see IR.h's
+// ArrayInitElem) is the referenced Slot's or Function's own label,
+// written out bare - `dw`'s own expression evaluator
+// (ArmAssembler.cpp's Line::Dw) already resolves a bare symbol the
+// same way `movw`/`movt`'s own label operand already does for an
+// address loaded into a register (see loadAddress/genAddrOf).
+std::string ArmCodegen::arrayElemText(const ir::ArrayInitElem &e) {
+    if (!e.isSymbol) return std::to_string(static_cast<int32_t>(static_cast<uint32_t>(e.value)));
+    return e.slot ? label(e.slot) : label(e.func);
+}
+
+void ArmCodegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values) {
     if (values.empty()) return;
     std::ostringstream line;
     line << lbl << ": dw ";
     for (size_t i = 0; i < values.size(); i++) {
         if (i > 0) line << ", ";
-        line << static_cast<int32_t>(static_cast<uint32_t>(values[i]));
+        line << arrayElemText(values[i]);
     }
     trailer_.push_back(line.str());
 }
@@ -262,6 +274,22 @@ void ArmCodegen::genExpr(const ir::Expr &e) {
             code_ << "    bl " << label(e.func) << "\n";
             return;
         }
+        case ir::ExprKind::CallPtr: {
+            // e.args is always empty here - IRBuilder.cpp rejects any
+            // argument on this kind before it ever reaches a backend
+            // (see IR.h's ExprKind::CallPtr): there's no per-callee
+            // p_<fn>_<i> cell to write one into until the callee is
+            // known, which it never is at compile time for this kind.
+            // `blx r2` is this dialect's own ARMv7-A `BLX (register)`
+            // encoding (see ArmAssembler.cpp's own encodeBlx()) - a
+            // real near call through whatever address r2 holds,
+            // setting `lr` to the return address exactly like `bl`
+            // does.
+            genExpr(*e.lhs);  // r0 = the callee's own entry address
+            code_ << "    mov r2,r0\n";
+            code_ << "    blx r2\n";
+            return;
+        }
         case ir::ExprKind::Binary: {
             genBinary(e);
             return;
@@ -310,6 +338,11 @@ void ArmCodegen::genAddrOf(const ir::Expr &operand) {
     }
     if (operand.kind == ir::ExprKind::Index) {
         genIndexAddr(operand.slot, *operand.lhs);
+        code_ << "    mov r0,r2\n";
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Func) {
+        loadAddress("r2", label(operand.func));
         code_ << "    mov r0,r2\n";
         return;
     }

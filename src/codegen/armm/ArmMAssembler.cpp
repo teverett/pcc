@@ -516,6 +516,18 @@ class Assembler {
     void encodeBl(const std::vector<Operand> &ops) { encodeWideBranch(0xD000, requireOperand(ops, 0, "bl"), "bl"); }
     void encodeBWide(const std::vector<Operand> &ops) { encodeWideBranch(0x9000, requireOperand(ops, 0, "b"), "b"); }
 
+    // BLX Rm (T1 "BLX (register)" - a real, single 16-bit Thumb-1
+    // instruction, universal across every M-profile core including
+    // baseline, unlike `bl`'s own label-only wide Thumb-2 form above):
+    // 0100 0111 1 Rm(4) 000 - branches to the address in Rm (which
+    // must be even - a real Thumb target always is, every label this
+    // dialect ever resolves being halfword-aligned) and sets `lr` to
+    // the return address, exactly like `bl` does for a label target.
+    void encodeBlx(const std::vector<Operand> &ops) {
+        uint8_t rm = requireReg(requireOperand(ops, 0, "blx"), "blx");
+        emit16(static_cast<uint16_t>(0x4780 | (rm << 3)));
+    }
+
     // The conditional-branch dialect mnemonics
     // (`beq`/`bne`/`blt`/`ble`/`bgt`/`bge`) each expand to two real
     // instructions: a short `Bcc` using the *inverted* condition,
@@ -569,6 +581,7 @@ class Assembler {
             return;
         }
         if (mnemonic == "bl") return encodeBl(ops);
+        if (mnemonic == "blx") return encodeBlx(ops);
         if (mnemonic == "b") return encodeBWide(ops);
         static const std::unordered_map<std::string, uint8_t> condBranch = {
             // Thumb condition codes, inverted (what encodeConditionalBranch's

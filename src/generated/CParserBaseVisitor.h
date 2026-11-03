@@ -47,6 +47,14 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitNumArrayElem(CParser::NumArrayElemContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitSymArrayElem(CParser::SymArrayElemContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitBlock(CParser::BlockContext *ctx) override {
     return visitChildren(ctx);
   }
@@ -120,6 +128,10 @@ public:
   }
 
   virtual std::any visitOrExpr(CParser::OrExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitCallPtrExpr(CParser::CallPtrExprContext *ctx) override {
     return visitChildren(ctx);
   }
 

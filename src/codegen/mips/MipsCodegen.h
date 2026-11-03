@@ -157,7 +157,8 @@ class MipsCodegen : public Backend {
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
     void declareTemp(const std::string &lbl);
-    void declareArray(const std::string &lbl, const std::vector<long> &values);
+    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
+    std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 
     std::ostringstream code_;

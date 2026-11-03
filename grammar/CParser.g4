@@ -57,10 +57,22 @@ globalDecl
     | 'int' IDENT ('=' sign='-'? val=NUMBER)? ('@' addr=NUMBER)? ';'              # globalScalarDecl
     ;
 
-// Elements are plain (non-negative) literals - no per-element sign;
-// see ../README.md's "Scope and limitations".
+// Elements are plain (non-negative) literals, or a bare function/
+// global name standing for that symbol's own address (the dispatch-
+// table idiom a jump table like unix v6/v7's s1.s .sysloc/locsw/locn
+// needs: an array of code/data addresses, not values) - no per-
+// element sign on the literal form; see ../README.md's "Scope and
+// limitations". Resolving a symbol element to its real linked address
+// is BuildAst/IRBuilder/the linker's job, same as '&' elsewhere in
+// this grammar (condExpr's addrOfExpr) and functionDecl's/
+// globalDecl's own '@' addr - this rule only admits the syntax.
 arrayInit
-    : LBRACE elem+=NUMBER (',' elem+=NUMBER)* RBRACE
+    : LBRACE elem+=arrayInitElem (',' elem+=arrayInitElem)* RBRACE
+    ;
+
+arrayInitElem
+    : NUMBER   # numArrayElem
+    | IDENT    # symArrayElem
     ;
 
 block
@@ -104,6 +116,18 @@ expr
 // instructions it does have).
 condExpr
     : IDENT '(' argList? ')'                          # callExpr
+    // Calling through a computed function address (e.g.
+    // (table[i])(), (fp)()) rather than a literal function name -
+    // the dispatch-table idiom's other half, alongside '&' on a
+    // function name (addrOfExpr above). The callee is any
+    // parenthesized expr, not just IDENT, same as parenExpr below -
+    // ANTLR's lookahead tells the two apart by whether a '(' argList?
+    // ')' follows the closing paren. See IRBuilder's buildExpr for
+    // this subset's real restriction: no arguments, only ever a bare
+    // (expr)() - there's no per-callee ABI slot to put an argument in
+    // until the callee is known, which for this alternative it isn't,
+    // at compile time.
+    | '(' expr ')' '(' argList? ')'                   # callPtrExpr
     | IDENT '[' expr ']'                              # indexExpr
     | IDENT                                           # varExpr
     | NUMBER                                          # numExpr

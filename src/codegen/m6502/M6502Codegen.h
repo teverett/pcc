@@ -117,7 +117,7 @@ class M6502Codegen : public Backend {
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
     void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft);
     void genIndex(const ir::Expr &e);         // slot[idx] read
-    void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genAddrOf(const ir::Expr &operand);  // &slot, &slot[idx], or &fn
 
     // Leaves slot[idxExpr]'s own effective address in `ptr` - the
     // only thing in this whole backend that has to live in zero
@@ -166,11 +166,12 @@ class M6502Codegen : public Backend {
 
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
     void declareTemp(const std::string &lbl);
-    void declareArray(const std::string &lbl, const std::vector<long> &values);
+    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
+    std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 
     std::ostringstream code_;
-    std::vector<std::string> trailer_;  // "label: db lo, hi, ..." data lines, emitted once at the end
+    std::vector<std::string> trailer_;  // "label: dblo e" / "dbhi e" data lines, emitted once at the end
     std::map<std::string, std::string> perFileAsm_;
 
     int tempCounter_ = 0;

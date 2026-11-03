@@ -24,18 +24,23 @@ constexpr uint32_t kStackTop = 0xFF00;
 
 void STM8Codegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": db 0, 0"); }
 
-void STM8Codegen::declareArray(const std::string &lbl, const std::vector<long> &values) {
+// A literal element's own decimal text, or a symbol element's own
+// label text (the referenced Slot's or Function's own address) - the
+// shared assembler's own "dw" directive (STM8Assembler.cpp's emit16)
+// resolves either into a real, full 16-bit value and writes it out
+// big-endian, the same order a `ldwi`/`call` operand already gets.
+std::string STM8Codegen::arrayElemText(const ir::ArrayInitElem &e) {
+    if (!e.isSymbol) return std::to_string(e.value);
+    return e.slot ? label(e.slot) : label(e.func);
+}
+
+void STM8Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values) {
     if (values.empty()) return;
     std::ostringstream line;
-    line << lbl << ": db ";
+    line << lbl << ": dw ";
     for (size_t i = 0; i < values.size(); i++) {
-        uint16_t v16 = static_cast<uint16_t>(values[i]);
         if (i > 0) line << ", ";
-        // High byte first, low byte second - the STM8 is big-endian
-        // (see this file's own header comment), the opposite order
-        // from the little-endian i8080/6502 backends' own
-        // declareArray().
-        line << static_cast<int>((v16 >> 8) & 0xFF) << ", " << static_cast<int>(v16 & 0xFF);
+        line << arrayElemText(values[i]);
     }
     trailer_.push_back(line.str());
 }
@@ -293,6 +298,29 @@ void STM8Codegen::genExpr(const ir::Expr &e) {
             code_ << "    call " << label(e.func) << "\n";
             return;
         }
+        case ir::ExprKind::CallPtr: {
+            // e.args is always empty here - IRBuilder.cpp rejects any
+            // argument on this kind before it ever reaches a backend
+            // (see IR.h's ExprKind::CallPtr): there's no per-callee
+            // p_<fn>_<i> cell to write one into until the callee is
+            // known, which it never is at compile time for this kind.
+            //
+            // The real STM8 `CALL [mem]` Indirect addressing mode
+            // doesn't treat its own operand's address as the callee
+            // directly - it fetches the actual entry address from the
+            // word stored there (see STM8Assembler.cpp's own
+            // `callind` comment), so the callee's own address (just
+            // computed into `ac`) is spilled to a fresh temp cell
+            // first, then `callind` is pointed at that cell - a real
+            // hardware addressing mode, used exactly the way it calls
+            // through an ordinary function-pointer variable in memory.
+            genExpr(*e.lhs);  // ac = the callee's own entry address
+            std::string T = allocTemp();
+            declareTemp(T);
+            copy16(T, "ac");
+            code_ << "    callind " << T << "\n";
+            return;
+        }
         case ir::ExprKind::Binary: {
             genBinary(e);
             return;
@@ -339,6 +367,10 @@ void STM8Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Index) {
         genIndexAddr(operand.slot, *operand.lhs);
         copy16("ac", "ptr");
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Func) {
+        code_ << "    ldwi x, " << label(operand.func) << "\n    ldw ac, x\n";
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");

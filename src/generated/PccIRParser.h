@@ -23,9 +23,9 @@ public:
   };
 
   enum {
-    RuleProgram = 0, RuleGlobalDecl = 1, RuleInitList = 2, RuleFuncDecl = 3, 
-    RuleParamList = 4, RuleParam = 5, RuleBlock = 6, RuleStmt = 7, RuleRef = 8, 
-    RuleExpr = 9, RuleArgList = 10, RuleBinOp = 11
+    RuleProgram = 0, RuleGlobalDecl = 1, RuleInitList = 2, RuleInitElem = 3, 
+    RuleFuncDecl = 4, RuleParamList = 5, RuleParam = 6, RuleBlock = 7, RuleStmt = 8, 
+    RuleRef = 9, RuleExpr = 10, RuleArgList = 11, RuleBinOp = 12
   };
 
   explicit PccIRParser(antlr4::TokenStream *input);
@@ -48,6 +48,7 @@ public:
   class ProgramContext;
   class GlobalDeclContext;
   class InitListContext;
+  class InitElemContext;
   class FuncDeclContext;
   class ParamListContext;
   class ParamContext;
@@ -103,8 +104,8 @@ public:
     virtual size_t getRuleIndex() const override;
     antlr4::tree::TerminalNode *LBRACE();
     antlr4::tree::TerminalNode *RBRACE();
-    std::vector<antlr4::tree::TerminalNode *> NUMBER();
-    antlr4::tree::TerminalNode* NUMBER(size_t i);
+    std::vector<InitElemContext *> initElem();
+    InitElemContext* initElem(size_t i);
     std::vector<antlr4::tree::TerminalNode *> COMMA();
     antlr4::tree::TerminalNode* COMMA(size_t i);
 
@@ -114,6 +115,20 @@ public:
   };
 
   InitListContext* initList();
+
+  class  InitElemContext : public antlr4::ParserRuleContext {
+  public:
+    InitElemContext(antlr4::ParserRuleContext *parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    antlr4::tree::TerminalNode *NUMBER();
+    RefContext *ref();
+
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+   
+  };
+
+  InitElemContext* initElem();
 
   class  FuncDeclContext : public antlr4::ParserRuleContext {
   public:
@@ -398,6 +413,19 @@ public:
     ExprContext* expr(size_t i);
     BinOpContext *binOp();
     antlr4::tree::TerminalNode *RPAREN();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  CallPtrExprContext : public ExprContext {
+  public:
+    CallPtrExprContext(ExprContext *ctx);
+
+    std::vector<antlr4::tree::TerminalNode *> LPAREN();
+    antlr4::tree::TerminalNode* LPAREN(size_t i);
+    ExprContext *expr();
+    std::vector<antlr4::tree::TerminalNode *> RPAREN();
+    antlr4::tree::TerminalNode* RPAREN(size_t i);
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };

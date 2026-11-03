@@ -27,6 +27,10 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitInitElem(PccIRParser::InitElemContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitFuncDecl(PccIRParser::FuncDeclContext *ctx) override {
     return visitChildren(ctx);
   }
@@ -104,6 +108,10 @@ public:
   }
 
   virtual std::any visitCallExpr(PccIRParser::CallExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitCallPtrExpr(PccIRParser::CallPtrExprContext *ctx) override {
     return visitChildren(ctx);
   }
 

@@ -447,7 +447,7 @@ class Assembler {
             {"ret", 0x22},    {"reti", 0x32},  {"nop", 0x00},    {"clra", 0xE4},   {"cpla", 0xF4},
             {"clrc", 0xC3},   {"rla", 0x23},   {"rra", 0x03},    {"rlca", 0x33},   {"rrca", 0x13},
             {"mul", 0xA4},    {"div", 0x84},   {"incdptr", 0xA3}, {"movxr", 0xE0}, {"movxw", 0xF0},
-            {"movc", 0x93},
+            {"movc", 0x93},   {"jmpadptr", 0x73},
         };
         if (auto it = implied.find(mnemonic); it != implied.end()) {
             if (!ops.empty()) fail("'" + mnemonic + "' takes no operand");
@@ -519,6 +519,19 @@ class Assembler {
         if (mnemonic == "movdptr") {
             emit8(0x90);
             emitDataPtrOperand(one());
+            return;
+        }
+        // The same real `MOV DPTR,#data16` encoding as `movdptr`
+        // above (opcode 0x90), but with a CODE-space operand (a
+        // function or branch-target label, resolved and relocated via
+        // `emitAbsOperand()` exactly like `ljmp`/`lcall`'s own target)
+        // instead of an XDATA-space one - used wherever a function's
+        // own entry address, or any other CODE-space address, is
+        // needed as a plain 16-bit value rather than as something to
+        // jump/call to.
+        if (mnemonic == "movdptrc") {
+            emit8(0x90);
+            emitAbsOperand(one());
             return;
         }
         if (mnemonic == "movdi") {  // MOV direct,#imm

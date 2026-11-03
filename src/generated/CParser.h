@@ -24,9 +24,9 @@ public:
 
   enum {
     RuleProgram = 0, RuleTopLevelDecl = 1, RuleFunctionDecl = 2, RuleParamList = 3, 
-    RuleParam = 4, RuleGlobalDecl = 5, RuleArrayInit = 6, RuleBlock = 7, 
-    RuleStatement = 8, RuleSimpleStmt = 9, RuleExpr = 10, RuleCondExpr = 11, 
-    RuleArgList = 12
+    RuleParam = 4, RuleGlobalDecl = 5, RuleArrayInit = 6, RuleArrayInitElem = 7, 
+    RuleBlock = 8, RuleStatement = 9, RuleSimpleStmt = 10, RuleExpr = 11, 
+    RuleCondExpr = 12, RuleArgList = 13
   };
 
   explicit CParser(antlr4::TokenStream *input);
@@ -53,6 +53,7 @@ public:
   class ParamContext;
   class GlobalDeclContext;
   class ArrayInitContext;
+  class ArrayInitElemContext;
   class BlockContext;
   class StatementContext;
   class SimpleStmtContext;
@@ -197,14 +198,14 @@ public:
 
   class  ArrayInitContext : public antlr4::ParserRuleContext {
   public:
-    antlr4::Token *numberToken = nullptr;
-    std::vector<antlr4::Token *> elem;
+    CParser::ArrayInitElemContext *arrayInitElemContext = nullptr;
+    std::vector<ArrayInitElemContext *> elem;
     ArrayInitContext(antlr4::ParserRuleContext *parent, size_t invokingState);
     virtual size_t getRuleIndex() const override;
     antlr4::tree::TerminalNode *LBRACE();
     antlr4::tree::TerminalNode *RBRACE();
-    std::vector<antlr4::tree::TerminalNode *> NUMBER();
-    antlr4::tree::TerminalNode* NUMBER(size_t i);
+    std::vector<ArrayInitElemContext *> arrayInitElem();
+    ArrayInitElemContext* arrayInitElem(size_t i);
     std::vector<antlr4::tree::TerminalNode *> COMMA();
     antlr4::tree::TerminalNode* COMMA(size_t i);
 
@@ -214,6 +215,39 @@ public:
   };
 
   ArrayInitContext* arrayInit();
+
+  class  ArrayInitElemContext : public antlr4::ParserRuleContext {
+  public:
+    ArrayInitElemContext(antlr4::ParserRuleContext *parent, size_t invokingState);
+   
+    ArrayInitElemContext() = default;
+    void copyFrom(ArrayInitElemContext *context);
+    using antlr4::ParserRuleContext::copyFrom;
+
+    virtual size_t getRuleIndex() const override;
+
+   
+  };
+
+  class  SymArrayElemContext : public ArrayInitElemContext {
+  public:
+    SymArrayElemContext(ArrayInitElemContext *ctx);
+
+    antlr4::tree::TerminalNode *IDENT();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  NumArrayElemContext : public ArrayInitElemContext {
+  public:
+    NumArrayElemContext(ArrayInitElemContext *ctx);
+
+    antlr4::tree::TerminalNode *NUMBER();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  ArrayInitElemContext* arrayInitElem();
 
   class  BlockContext : public antlr4::ParserRuleContext {
   public:
@@ -503,6 +537,20 @@ public:
     std::vector<CondExprContext *> condExpr();
     CondExprContext* condExpr(size_t i);
     antlr4::tree::TerminalNode *OROR();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  CallPtrExprContext : public CondExprContext {
+  public:
+    CallPtrExprContext(CondExprContext *ctx);
+
+    std::vector<antlr4::tree::TerminalNode *> LPAREN();
+    antlr4::tree::TerminalNode* LPAREN(size_t i);
+    ExprContext *expr();
+    std::vector<antlr4::tree::TerminalNode *> RPAREN();
+    antlr4::tree::TerminalNode* RPAREN(size_t i);
+    ArgListContext *argList();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };

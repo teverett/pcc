@@ -1504,6 +1504,8 @@ for _ in range(20_000_000):
         wr_direct(d, newv)
         if newv != 0:
             pc = target
+    elif op == 0x73:  # JMP @A+DPTR
+        pc = (((DPH << 8) | DPL) + A) & 0xFFFF
     else:
         raise RuntimeError("unimplemented opcode 0x%02x at pc=0x%04x" % (op, pc - 1))
 else:

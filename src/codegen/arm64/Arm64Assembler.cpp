@@ -406,6 +406,16 @@ class Assembler {
         emit32((static_cast<uint32_t>(sf) << 31) | (0b011010u << 25) | (static_cast<uint32_t>(op) << 24) |
                ((static_cast<uint32_t>(relWords) & 0x7FFFFu) << 5) | rt);
     }
+    // Unconditional branch (register) - the same instruction family
+    // `ret`'s own fixed 0xD65F03C0 encoding above belongs to (there,
+    // `opc`=0b010, Rn hardcoded to x30): `1101011 0 opc(3) 11111
+    // 000000 Rn 00000`, `opc`=0b001 for "BLR Xn" (branch with link to
+    // register, setting x30 to the return address exactly like `bl`
+    // does), with Rn here this dialect's own chosen register rather
+    // than a fixed one.
+    void emitBranchReg(uint32_t opc, uint8_t rn) {
+        emit32((0b1101011u << 25) | (opc << 21) | (0b11111u << 16) | (static_cast<uint32_t>(rn) << 5));
+    }
 
     void encodeAddSub(int op, const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
@@ -578,6 +588,12 @@ class Assembler {
             }
             int64_t rel = (static_cast<int64_t>(targetAddr) - static_cast<int64_t>(orgBase_ + offset_)) / 4;
             emitBranchImm(opc, rel);
+            return;
+        }
+        if (mnemonic == "blr") {
+            const Operand &rnOp = requireOperand(ops, 0, mnemonic);
+            if (rnOp.width != 1) fail("'blr' needs a 64-bit ('x') register operand");
+            emitBranchReg(/*opc=*/0b001u, requireReg(rnOp, mnemonic));
             return;
         }
         if (mnemonic == "cbz" || mnemonic == "cbnz") {

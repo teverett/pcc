@@ -46,6 +46,11 @@ constexpr uint16_t kMipsRelocLo = 2;
 // index field (`instr_index = (address & 0x0FFFFFFF) >> 2`) - see
 // MipsAssembler.cpp's own `emitJ`.
 constexpr uint16_t kMipsRelocJump = 3;
+// `kMipsRelocAbs32`: a plain, contiguous 32-bit data word (a `dw`
+// line's own word - see MipsAssembler.cpp's own `Line::Dw` handling) -
+// an ordinary additive patch, unlike the Hi/Lo split or the Jump
+// field's shifted encoding above.
+constexpr uint16_t kMipsRelocAbs32 = 4;
 
 // A from-scratch, in-process two-pass assembler for exactly the
 // narrow MIPS dialect MipsCodegen.cpp emits - not a general-purpose

@@ -33,8 +33,8 @@ struct Syllable {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Org, Db, Instr } kind = None;
-    std::vector<std::vector<Syllable>> exprList;  // Org (1) / Db (N)
+    enum Kind { None, Org, Db, Dw, Instr } kind = None;
+    std::vector<std::vector<Syllable>> exprList;  // Org (1) / Db (N) / Dw (N)
     std::string mnemonic;                          // Instr
     std::vector<std::vector<Syllable>> operands;   // Instr
 };
@@ -110,6 +110,16 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
     }
     if (mnemonic == "db") {
         line.kind = Line::Db;
+        for (auto *op : instr->operand()) line.exprList.push_back(buildOperand(op));
+        return line;
+    }
+    // "dw" is a full, real 16-bit value (same shape as `ldwi`/`call`'s
+    // own operand - see emit16()'s own comment) written out big-
+    // endian - unlike `db`, its own expression can resolve to any
+    // 16-bit value, symbol address included, not just one that fits
+    // in a single byte.
+    if (mnemonic == "dw") {
+        line.kind = Line::Dw;
         for (auto *op : instr->operand()) line.exprList.push_back(buildOperand(op));
         return line;
     }
@@ -204,6 +214,9 @@ class Assembler {
                 return;
             case Line::Db:
                 for (const auto &e : line.exprList) emitByteOperand(e);
+                return;
+            case Line::Dw:
+                for (const auto &e : line.exprList) emit16(e);
                 return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
@@ -438,6 +451,21 @@ class Assembler {
         }
         if (mnemonic == "call" || mnemonic == "jp") {
             emit8(mnemonic == "call" ? 0x60 : 0x61);
+            emit16(operandAt(ops, 0, mnemonic, 1));
+            return;
+        }
+        // The real STM8 `CALL [mem]` Indirect addressing mode: unlike
+        // plain `call`, whose operand's own address IS the subroutine
+        // entry point, this mode's operand names the memory location
+        // *holding* the entry point - the word stored there becomes
+        // the new PC (after the return address is pushed, same as
+        // `call`). The shared grammar's `[` already means "bracketed
+        // memory operand isn't part of this dialect" (see this file's
+        // own header comment on `ldxind`/`stxind`'s identical problem),
+        // so this real addressing mode gets its own mnemonic instead of
+        // a literal `[mem]` operand.
+        if (mnemonic == "callind") {
+            emit8(0x66);
             emit16(operandAt(ops, 0, mnemonic, 1));
             return;
         }

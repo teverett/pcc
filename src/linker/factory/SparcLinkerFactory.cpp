@@ -87,6 +87,14 @@ void patchSparcLo(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t val
     put32BE(image, siteOffset, word);
 }
 
+// A `dw` data word (`kSparcRelocAbs32`) - a plain, contiguous 32-bit
+// field, so (unlike the Hi/Lo split above) the resolved value just
+// adds straight onto whatever this site's own pre-patch word already
+// holds.
+void patchSparcAbs32(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t) {
+    put32BE(image, siteOffset, get32BE(image, siteOffset) + value);
+}
+
 // `1024`/`0` are `kInitialSP`'s (0x00100000, SparcCodegen.cpp's own
 // private constant) upper-22/lower-10 bits, split exactly as that
 // file's own entry sequence already does for a plain (non-label)
@@ -110,6 +118,7 @@ std::unique_ptr<TargetLinker> makeSparcLinker() {
     config.relocPatchers[kSparcRelocHi] = patchSparcHi;
     config.relocPatchers[kSparcRelocLo] = patchSparcLo;
     config.relocPatchers[kSparcRelocCall] = patchSparcCall30;
+    config.relocPatchers[kSparcRelocAbs32] = patchSparcAbs32;
     config.outputFormats = {"flat", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }

@@ -241,7 +241,24 @@ class Assembler {
                 orgBase_ = evalExpr(line.exprList.at(0));
                 return;
             case Line::Dw:
-                for (const auto &e : line.exprList) emit32(evalExpr(e));
+                // Each word's own expression goes through the exact same
+                // external-name/base-shift tracking as `lis`/`ori`'s own
+                // Hi/Lo immediate (see encodeInstr()) - a bare symbol here
+                // (an array initializer's address-of-function/global
+                // element) resolves and relocates as a plain additive
+                // 32-bit word (kPowerPCRelocAbs32), rather than the split
+                // Hi/Lo pair an instruction's own immediate field needs.
+                for (const auto &e : line.exprList) {
+                    std::string externalName;
+                    bool needsBaseShift = false;
+                    uint32_t v = evalExpr(e, &externalName, &needsBaseShift);
+                    if (stage_ == 2 && allowExternal_) {
+                        if (needsBaseShift) relocations_.push_back({offset_, "..", kPowerPCRelocAbs32});
+                        if (!externalName.empty())
+                            relocations_.push_back({offset_, externalName, kPowerPCRelocAbs32});
+                    }
+                    emit32(v);
+                }
                 return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
@@ -562,6 +579,29 @@ class Assembler {
         if (mnemonic == "blr") {
             if (!ops.empty()) fail("'blr' takes no operand");
             emit32(0x4E800020u);
+            return;
+        }
+        // --- count register (the indirect-call idiom - see
+        // PowerPCCodegen.cpp's own CallPtr case) ---
+        // mtctr rS - a real `mtspr 9,rS` (spr 9 is CTR): opcode 31,
+        // rS<<21, spr split across bits 20-16/15-11 (9 fits entirely
+        // in the low half, so the high half is 0), XO=467, exactly
+        // the same field layout as `mtlr` above (spr 8) with the base
+        // word's spr bits changed from 8 to 9 (0x7C0803A6 -> 0x7C0903A6).
+        if (mnemonic == "mtctr") {
+            emitMoveLr(0x7C0903A6u, requireReg(requireOperand(ops, 0, mnemonic), mnemonic));
+            return;
+        }
+        // bctrl - Branch to Count Register, with Link: opcode 19,
+        // BO=10100 (branch always), BI=0, XO=528, LK=1 - the real
+        // documented PowerPC encoding 0x4E800421, the standard
+        // second half of the `mtctr`/`bctrl` indirect-call idiom
+        // (same relationship to `blr`'s own 0x4E800020 as `bctr`'s
+        // XO field, 528, has to `bclr`'s, 16: 528<<1 = 0x420, so
+        // bctrl's low halfword is 0x421 = 0x420 | the LK bit).
+        if (mnemonic == "bctrl") {
+            if (!ops.empty()) fail("'bctrl' takes no operand");
+            emit32(0x4E800421u);
             return;
         }
         // --- dedicated zero-displacement load/store - see

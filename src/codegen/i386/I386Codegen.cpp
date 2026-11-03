@@ -44,12 +44,24 @@ constexpr uint32_t kMbChecksum = static_cast<uint32_t>(-(static_cast<int64_t>(kM
 
 void I386Codegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": dd 0"); }
 
-void I386Codegen::declareArray(const std::string &lbl, const std::vector<long> &values) {
+// A literal element's own decimal text; a symbol element is the
+// referenced Slot's or Function's own label, written out bare - "dd"
+// (I386Assembler.cpp's Line::Dd) already evaluates any expr operand,
+// symbol included, through the same emitAbs32 choke point a bare
+// label used as a 32-bit immediate already goes through for
+// genAddrOf()'s "mov eax,<label>" form, so a relocation is recorded
+// for it exactly the same way.
+std::string I386Codegen::arrayElemText(const ir::ArrayInitElem &e) {
+    if (!e.isSymbol) return std::to_string(e.value);
+    return e.slot ? label(e.slot) : label(e.func);
+}
+
+void I386Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values) {
     std::ostringstream line;
     line << lbl << ": dd ";
     for (size_t i = 0; i < values.size(); i++) {
         if (i > 0) line << ", ";
-        line << values[i];
+        line << arrayElemText(values[i]);
     }
     trailer_.push_back(line.str());
 }
@@ -254,6 +266,20 @@ void I386Codegen::genExpr(const ir::Expr &e) {
             code_ << "    call " << label(e.func) << "\n";
             return;
         }
+        case ir::ExprKind::CallPtr: {
+            // e.args is always empty here - IRBuilder.cpp rejects any
+            // argument on this kind before it ever reaches a backend
+            // (see IR.h's ExprKind::CallPtr): there's no per-callee
+            // p_<fn>_<i> cell to write one into until the callee is
+            // known, which it never is at compile time for this kind.
+            // "call eax" (I386Assembler.cpp's new FF /2 encoding) is a
+            // real, direct near-indirect call through a register -
+            // same shape as I8086Codegen.cpp's own "call ax", just 32
+            // bits wide.
+            genExpr(*e.lhs);  // eax = the callee's own entry address
+            code_ << "    call eax\n";
+            return;
+        }
         case ir::ExprKind::Binary: {
             genBinary(e);
             return;
@@ -309,6 +335,10 @@ void I386Codegen::genAddrOf(const ir::Expr &operand) {
         } else {
             code_ << "    add eax,[" << lbl << "]\n";
         }
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Func) {
+        code_ << "    mov eax," << label(operand.func) << "\n";
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");

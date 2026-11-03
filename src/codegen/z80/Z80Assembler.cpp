@@ -41,8 +41,8 @@ struct Operand {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Org, Db, Instr } kind = None;
-    std::vector<std::vector<Syllable>> exprList;  // Org (1) / Db (N)
+    enum Kind { None, Org, Db, Dw, Instr } kind = None;
+    std::vector<std::vector<Syllable>> exprList;  // Org (1) / Db (N) / Dw (N)
     std::string mnemonic;                          // Instr
     std::vector<Operand> operands;                 // Instr
 };
@@ -119,6 +119,21 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         line.kind = Line::Db;
         for (auto *op : instr->operand()) {
             if (op->LBRACKET()) fail("'db' takes plain byte values, not a bracketed memory operand");
+            line.exprList.push_back(exprToSyllables(op->expr()));
+        }
+        return line;
+    }
+    // `dw` - a full little-endian 16-bit data word, resolved exactly
+    // like `ld hl, nn`'s own 16-bit immediate operand
+    // (Z80Codegen.cpp's own `arrayElemText()`/`declareArray()` uses
+    // this for a dispatch-table array element that names a function/
+    // global directly: a symbol's own address is only known to the
+    // assembler, once every label is bound, never to the codegen that
+    // writes this directive out).
+    if (mnemonic == "dw") {
+        line.kind = Line::Dw;
+        for (auto *op : instr->operand()) {
+            if (op->LBRACKET()) fail("'dw' takes plain word values, not a bracketed memory operand");
             line.exprList.push_back(exprToSyllables(op->expr()));
         }
         return line;
@@ -209,6 +224,9 @@ class Assembler {
             case Line::Db:
                 for (const auto &e : line.exprList) emitByteOperand(e);
                 return;
+            case Line::Dw:
+                for (const auto &e : line.exprList) emit16(Operand{/*isMemory=*/false, e});
+                return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
                 return;
@@ -279,6 +297,10 @@ class Assembler {
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
 
+    // A 16-bit immediate/absolute operand, little-endian, no range
+    // check (any symbol in this program's own 64KB address space is
+    // valid here) - `ld hl, nn`'s own operand, and `dw`'s own data
+    // word.
     void emit16(const Operand &op) {
         std::string externalName;
         bool needsBaseShift = false;
@@ -568,6 +590,20 @@ class Assembler {
             return;
         }
         if (mnemonic == "jp") {
+            // "jp [hl]" - the real Z80 `JP (HL)` (opcode 0xE9, same
+            // encoding as the 8080's `PCHL` - see I8080Assembler.h's
+            // own comment): jumps to the address *in* HL, not the
+            // value stored at that address, even though it's spelled
+            // with this dialect's own "[expr]" bracket syntax (see
+            // this file's own header comment) - the one place that
+            // syntax names a jump target rather than a true memory
+            // operand.
+            if (ops.size() == 1 && ops[0].isMemory) {
+                auto name = asBareIdent(ops[0]);
+                if (!name || *name != "hl") fail("'jp [mem]' is only supported as 'jp [hl]' (JP (HL))");
+                emit8(0xE9);
+                return;
+            }
             static const std::unordered_map<std::string, uint8_t> condJump = {
                 {"nz", 0xC2}, {"z", 0xCA}, {"nc", 0xD2}, {"c", 0xDA},
                 {"po", 0xE2}, {"pe", 0xEA}, {"p", 0xF2},  {"m", 0xFA},

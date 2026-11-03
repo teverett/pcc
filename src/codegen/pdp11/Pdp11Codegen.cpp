@@ -31,13 +31,25 @@ constexpr uint32_t kInitialSp = 0xE000;
 
 void Pdp11Codegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": dw 0"); }
 
-void Pdp11Codegen::declareArray(const std::string &lbl, const std::vector<long> &values) {
+// A literal element's own decimal text, truncated to this target's
+// own 16-bit word width; a symbol element is the referenced Slot's or
+// Function's own label, written out bare - "dw" (Pdp11Assembler.cpp's
+// Line::Dw) already evaluates any expr operand, symbol included, and
+// now also records the same external-name/base-shift relocation
+// (kPdp11RelocAbs16) a label used as `lea`'s own absolute extension
+// word already gets.
+std::string Pdp11Codegen::arrayElemText(const ir::ArrayInitElem &e) {
+    if (!e.isSymbol) return std::to_string(static_cast<int>(static_cast<uint16_t>(e.value)));
+    return e.slot ? label(e.slot) : label(e.func);
+}
+
+void Pdp11Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values) {
     if (values.empty()) return;
     std::ostringstream line;
     line << lbl << ": dw ";
     for (size_t i = 0; i < values.size(); i++) {
         if (i > 0) line << ", ";
-        line << static_cast<int>(static_cast<uint16_t>(values[i]));
+        line << arrayElemText(values[i]);
     }
     trailer_.push_back(line.str());
 }
@@ -248,6 +260,23 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
             code_ << "    jsr " << label(e.func) << "\n";
             return;
         }
+        case ir::ExprKind::CallPtr: {
+            // e.args is always empty here - IRBuilder.cpp rejects any
+            // argument on this kind before it ever reaches a backend
+            // (see IR.h's ExprKind::CallPtr): there's no per-callee
+            // p_<fn>_<i> cell to write one into until the callee is
+            // known, which it never is at compile time for this kind.
+            // "jsrind r2" is Pdp11Assembler.cpp's real `JSR PC,@Rn`
+            // encoding (register-DEFERRED mode, not register-direct -
+            // see that file's own comment) - a genuine, standard PDP-
+            // 11 call through whatever address r2 holds, the same way
+            // real PDP-11 software routinely calls through a function
+            // pointer.
+            genExpr(*e.lhs);  // r0 = the callee's own entry address
+            code_ << "    mov r0,r2\n";
+            code_ << "    jsrind r2\n";
+            return;
+        }
         case ir::ExprKind::Binary: {
             genBinary(e);
             return;
@@ -298,6 +327,10 @@ void Pdp11Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Index) {
         genIndexAddr(operand.slot, *operand.lhs);
         code_ << "    mov r2,r0\n";
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Func) {
+        code_ << "    lea " << label(operand.func) << ",r0\n";
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");

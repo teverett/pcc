@@ -564,6 +564,18 @@ class Assembler {
         uint8_t rm = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         emit32((0xEu << 28) | 0x012FFF10u | rm);
     }
+    // `blx rn` (`BLX (register)`) - the real ARMv7-A encoding for a
+    // near call through a register rather than a label (`bl`'s own
+    // operand is always `Mem`, a PC-relative label - see
+    // encodeBranch()'s own comment): cond 0001 0010 1111 1111 1111
+    // 0011 Rm - identical to `bx`'s own encoding except bits 7:4 are
+    // 0011 rather than 0001 (the bit that additionally makes this a
+    // "with Link" branch, writing the return address into `lr`,
+    // instead of a plain register branch).
+    void encodeBlx(const std::vector<Operand> &ops, const std::string &mnemonic) {
+        uint8_t rm = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+        emit32((0xEu << 28) | 0x012FFF30u | rm);
+    }
 
     // The full instruction vocabulary ../ArmCodegen.cpp ever emits -
     // see ArmAssembler.h's own header comment. Not a general A32
@@ -641,11 +653,15 @@ class Assembler {
             encodeBx(ops, mnemonic);
             return;
         }
+        if (mnemonic == "blx") {
+            encodeBlx(ops, mnemonic);
+            return;
+        }
         if (mnemonic == "bl") {
             encodeBranch(0xE, /*link=*/true, ops, mnemonic);
             return;
         }
-        if (mnemonic.size() >= 1 && mnemonic[0] == 'b' && mnemonic != "bl" && mnemonic != "bx") {
+        if (mnemonic.size() >= 1 && mnemonic[0] == 'b' && mnemonic != "bl" && mnemonic != "bx" && mnemonic != "blx") {
             // `b`/`beq`/`bne` - the condition suffix is whatever
             // follows the leading 'b'.
             encodeBranch(condOf(mnemonic.substr(1)), /*link=*/false, ops, mnemonic);

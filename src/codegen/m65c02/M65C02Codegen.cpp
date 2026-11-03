@@ -26,16 +26,30 @@ void M65C02Codegen::declareTemp(const std::string &lbl) {
     trailer_.push_back("db 0");
 }
 
-void M65C02Codegen::declareArray(const std::string &lbl, const std::vector<long> &values) {
+// A literal element's own decimal text, or a symbol element's (a
+// dispatch-table address-of-function/global, see IR.h's
+// ArrayInitElem) own label - the referenced Slot's or Function's own
+// label() text. declareArray() below never has a resolved numeric
+// value for a symbol element at codegen time (only the assembler,
+// once every label is bound, does), so unlike a plain literal it
+// can't be split into its own low/high byte here - each half is
+// instead written out as its own `dblo`/`dbhi` directive and left for
+// the assembler to resolve, the same way genAddrOf()/genIndexAddr()
+// already get a label's low/high byte via `ldai`/`ldai_hi` (see
+// M65C02Assembler.cpp's own `emitImmLow`/`emitImmHigh`).
+std::string M65C02Codegen::arrayElemText(const ir::ArrayInitElem &e) {
+    if (!e.isSymbol) return std::to_string(e.value);
+    return e.slot ? label(e.slot) : label(e.func);
+}
+
+void M65C02Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values) {
     if (values.empty()) return;
-    std::ostringstream line;
-    line << lbl << ": db ";
     for (size_t i = 0; i < values.size(); i++) {
-        uint16_t v16 = static_cast<uint16_t>(values[i]);
-        if (i > 0) line << ", ";
-        line << static_cast<int>(v16 & 0xFF) << ", " << static_cast<int>((v16 >> 8) & 0xFF);
+        std::string text = arrayElemText(values[i]);
+        if (i == 0) trailer_.push_back(lbl + ": dblo " + text);
+        else trailer_.push_back("dblo " + text);
+        trailer_.push_back("dbhi " + text);
     }
-    trailer_.push_back(line.str());
 }
 
 void M65C02Codegen::copy16(const std::string &dst, const std::string &src) {
@@ -309,6 +323,37 @@ void M65C02Codegen::genExpr(const ir::Expr &e) {
             code_ << "    jsr " << label(e.func) << "\n";
             return;
         }
+        case ir::ExprKind::CallPtr: {
+            // e.args is always empty here - IRBuilder.cpp rejects any
+            // argument on this kind before it ever reaches a backend
+            // (see IR.h's ExprKind::CallPtr): there's no per-callee
+            // p_<fn>_<i> cell to write one into until the callee is
+            // known, which it never is at compile time for this kind.
+            //
+            // The 65C02, like the plain 6502, has no indirect-call
+            // instruction - only `jmp (addr)` ("jmpi" in this dialect,
+            // M65C02Assembler.cpp's own encoding of real opcode $6C,
+            // indirect JMP). A call through a computed address is
+            // built by hand out of that and a real JSR's own return-
+            // address convention: JSR pushes (return address - 1),
+            // high byte then low byte, and RTS pulls low then high
+            // and adds 1 back before jumping. Pushing (Lret-1) the
+            // same way, then jumping indirectly through `ptr` (the
+            // fixed zero-page cell holding the callee's own entry
+            // address, set just below), leaves the real hardware
+            // stack in exactly the state a `jsr` to the same callee
+            // would have, so the callee's own `rts` returns here, to
+            // the instruction right after "jmpi ptr", the same as any
+            // other call.
+            genExpr(*e.lhs);  // ac = the callee's own entry address
+            copy16("ptr", "ac");
+            std::string Lret = newLabel();
+            code_ << "    ldai_hi " << Lret << "-1\n    pha\n";
+            code_ << "    ldai " << Lret << "-1\n    pha\n";
+            code_ << "    jmpi ptr\n";
+            code_ << Lret << ":\n";
+            return;
+        }
         case ir::ExprKind::Binary: {
             genBinary(e);
             return;
@@ -366,6 +411,12 @@ void M65C02Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Index) {
         genIndexAddr(operand.slot, *operand.lhs);
         copy16("ac", "ptr");
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Func) {
+        std::string lbl = label(operand.func);
+        code_ << "    ldai " << lbl << "\n    sta ac\n";
+        code_ << "    ldai_hi " << lbl << "\n    sta ac+1\n";
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");

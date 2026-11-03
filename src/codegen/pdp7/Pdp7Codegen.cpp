@@ -31,7 +31,19 @@ std::string Pdp7Codegen::allocTemp() { return "T" + std::to_string(tempCounter_+
 
 void Pdp7Codegen::declareTemp(const std::string &label) { trailer_.push_back(label + ": 0"); }
 
-void Pdp7Codegen::declareArray(const std::string &label, const std::vector<long> &values) {
+// A literal element is this backend's own two's-complement word text
+// (see pdp7Word's comment); a symbol element is the referenced Slot's
+// or Function's own label, written out bare - the shared assembler
+// (Pdp7Assembler.cpp's buildSegment) treats a bare identifier with no
+// operands as a one-syllable expression evaluating to that symbol's
+// resolved address, the exact same mechanism "jmp i F3" ORs several
+// syllables together with, just with only one syllable here.
+std::string Pdp7Codegen::arrayElemText(const ir::ArrayInitElem &e) {
+    if (!e.isSymbol) return std::to_string(pdp7Word(e.value));
+    return e.slot ? label(e.slot) : label(e.func);
+}
+
+void Pdp7Codegen::declareArray(const std::string &label, const std::vector<ir::ArrayInitElem> &values) {
     // One value per line, label on the first - the shared grammar
     // (../../../../grammar/PccAsm.g4) uses ';' for comments, not as a
     // multi-statement-per-line separator the way as.s's own
@@ -39,9 +51,9 @@ void Pdp7Codegen::declareArray(const std::string &label, const std::vector<long>
     // src-assem/tests/fork_test.s's "childmsg: <ch>; <il>; <d 012")
     // does - see that grammar's own header comment.
     if (values.empty()) return;
-    trailer_.push_back(label + ": " + std::to_string(pdp7Word(values[0])));
+    trailer_.push_back(label + ": " + arrayElemText(values[0]));
     for (size_t i = 1; i < values.size(); i++) {
-        trailer_.push_back(std::to_string(pdp7Word(values[i])));
+        trailer_.push_back(arrayElemText(values[i]));
     }
 }
 
@@ -175,10 +187,10 @@ std::string Pdp7Codegen::generate(const ir::Program &prog, bool objectMode) {
             // for comments, not as a multi-statement-per-line
             // separator the way the historical as.s/as7 dialect does
             // - see that grammar's own header comment.
-            trailer_.push_back(label(slot.get()) + ": " + std::to_string(pdp7Word(slot->arrayInit[0])) + "  ; " +
+            trailer_.push_back(label(slot.get()) + ": " + arrayElemText(slot->arrayInit[0]) + "  ; " +
                                 slot->sourceName);
             for (size_t i = 1; i < slot->arrayInit.size(); i++) {
-                trailer_.push_back(std::to_string(pdp7Word(slot->arrayInit[i])));
+                trailer_.push_back(arrayElemText(slot->arrayInit[i]));
             }
         } else {
             long v = slot->hasInit ? slot->initValue : 0;
@@ -374,6 +386,27 @@ void Pdp7Codegen::genExpr(const ir::Expr &e) {
             code_ << "   jms " << label(e.func) << "\n";
             return;
         }
+        case ir::ExprKind::CallPtr: {
+            // e.args is always empty here - IRBuilder.cpp rejects any
+            // argument on this kind before it ever reaches a backend
+            // (see IR.h's ExprKind::CallPtr): there's no per-callee
+            // P_<fn>_<i> cell to write one into until the callee is
+            // known, which it never is at compile time for this kind.
+            // The callee's own address goes through a temp cell (jms
+            // has no "indirect through AC" form - only through a
+            // memory location) and the trailing " i" is this
+            // assembler's real indirect-addressing bit (see
+            // genIndex/DerefAssign's own " i" uses above): "jms T i"
+            // jumps-and-saves through whatever address T holds, the
+            // real pdp7 mechanism for a call whose target isn't a
+            // compile-time label.
+            genExpr(*e.lhs);  // AC = the callee's own entry address
+            std::string T = allocTemp();
+            declareTemp(T);
+            code_ << "   dac " << T << "\n";
+            code_ << "   jms " << T << " i\n";
+            return;
+        }
         case ir::ExprKind::Binary: {
             genBinary(e);
             return;
@@ -431,9 +464,13 @@ void Pdp7Codegen::genIndex(const ir::Expr &e) {
     code_ << "   lac " << addr << " i\n";
 }
 
-// &operand: only a plain variable/array (&slot -> its own address) or
-// an array element (&slot[idx] -> that element's address) are valid -
-// there's nothing else in this subset with an address worth taking.
+// &operand: a plain variable/array (&slot -> its own address), an
+// array element (&slot[idx] -> that element's address), or a bare
+// function name (&fn -> fn's own entry label, the same address a
+// direct `jms label(fn)` call site already targets - see label()'s
+// own comment; calling through it later is `jms i` on whatever holds
+// this address, not this function's concern) are valid - there's
+// nothing else in this subset with an address worth taking.
 void Pdp7Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
         code_ << "   law " << label(operand.slot) << "\n";
@@ -442,6 +479,10 @@ void Pdp7Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Index) {
         std::string addr = computeElementAddress(operand.slot, *operand.lhs);
         code_ << "   lac " << addr << "\n";  // addr already holds the address itself
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Func) {
+        code_ << "   law " << label(operand.func) << "\n";
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");

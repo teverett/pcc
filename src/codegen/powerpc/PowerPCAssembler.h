@@ -74,6 +74,11 @@ constexpr uint16_t kPowerPCRelocLo = 2;
 // reference needs a relocation" reasoning as Arm64Assembler.cpp's own
 // `b`/`bl` handling.
 constexpr uint16_t kPowerPCRelocBranch = 3;
+// `kPowerPCRelocAbs32`: a plain, contiguous 32-bit data word (a `dw`
+// line's own word - see PowerPCAssembler.cpp's own `Line::Dw`
+// handling) - an ordinary additive patch, unlike the Hi/Lo split or
+// the Branch field's shifted encoding above.
+constexpr uint16_t kPowerPCRelocAbs32 = 4;
 
 // A from-scratch, in-process two-pass assembler for exactly the
 // narrow PowerPC dialect PowerPCCodegen.cpp emits - not a general-

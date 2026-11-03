@@ -17,6 +17,7 @@ enum class ExprKind {
     Unary,        // op applied to one sub-expression: '-', '!', '*' (deref) or '&' (address-of)
     Binary,       // + - * / % == != < <= > >= && ||
     Call,
+    CallPtr,      // (lhs)(args) - callee is a computed address, not a name; see IRBuilder's buildExpr
 };
 
 struct Expr {
@@ -26,14 +27,27 @@ struct Expr {
     long intValue = 0;        // IntLit
     std::string name;         // Var / Index / Assign (target) / Call (callee)
     std::string op;           // Unary / Binary operator text
-    std::unique_ptr<Expr> lhs;  // Binary lhs, Index/indexed-Assign subscript, DerefAssign's pointer
+    std::unique_ptr<Expr> lhs;  // Binary lhs, Index/indexed-Assign subscript, DerefAssign's pointer,
+                                 // CallPtr's callee expression
     std::unique_ptr<Expr> rhs;                  // Binary rhs, Assign/DerefAssign rhs, Unary operand
-    std::vector<std::unique_ptr<Expr>> args;    // Call arguments
+    std::vector<std::unique_ptr<Expr>> args;    // Call / CallPtr arguments
 };
 
 using ExprPtr = std::unique_ptr<Expr>;
 
 // --- Statements ---------------------------------------------------------
+
+// One element of an array initializer list - either a plain literal,
+// or a bare name standing for that symbol's (a function's or a
+// global's) own address, the dispatch-table idiom (e.g. "int t[] =
+// {f, g};") - see grammar/CParser.g4's arrayInitElem and IRBuilder.cpp,
+// which resolves `symbolName` to a Slot or a Function the same way it
+// resolves a bare "&name" expression.
+struct ArrayInitElem {
+    bool isSymbol = false;
+    long value = 0;            // literal value, when !isSymbol
+    std::string symbolName;     // identifier text, when isSymbol
+};
 
 enum class StmtKind {
     Block,
@@ -57,7 +71,7 @@ struct Stmt {
     std::string declName;                        // LocalDecl
     ExprPtr initOrReturnOrExpr;                   // LocalDecl init / Return value / ExprStmt expr
     int arraySize = 0;                            // LocalDecl: >0 means an array of this many words
-    std::vector<long> arrayInit;                  // LocalDecl array: literal initializer (padded with 0s)
+    std::vector<ArrayInitElem> arrayInit;         // LocalDecl array: initializer (padded with 0s)
     std::string asmText;                           // Asm: raw text between the braces, verbatim
 };
 
@@ -85,7 +99,7 @@ struct GlobalVar {
     long initValue = 0;
     int line = 0;
     int arraySize = 0;            // >0 means an array of this many words
-    std::vector<long> arrayInit;  // array: literal initializer (padded with 0s); unused for scalars
+    std::vector<ArrayInitElem> arrayInit;  // array: initializer (padded with 0s); unused for scalars
     bool hasAddress = false;       // '@' addr given - see IR.h's Slot::hasAddress
     long address = 0;
     std::string sourceFile;        // which .c file this came from - see IR.h's Slot::sourceFile

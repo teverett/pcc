@@ -36,9 +36,9 @@ struct Syllable {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Equate, Org, Db, Instr } kind = None;
+    enum Kind { None, Equate, Org, Db, DbLo, DbHi, Instr } kind = None;
     std::string equateName;                         // Equate
-    std::vector<std::vector<Syllable>> exprList;     // Equate (1)/Org (1)/Db (N)
+    std::vector<std::vector<Syllable>> exprList;     // Equate (1)/Org (1)/Db/DbLo/DbHi (N)
     std::string mnemonic;                             // Instr
     std::vector<std::vector<Syllable>> operands;      // Instr
 };
@@ -128,6 +128,21 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
     }
     if (mnemonic == "db") {
         line.kind = Line::Db;
+        for (auto *op : instr->operand()) line.exprList.push_back(buildOperand(op));
+        return line;
+    }
+    // `dblo`/`dbhi` - a data byte that's the low/high byte of a 16-bit
+    // expression (a label's own address included) rather than an
+    // already-8-bit value, used for a dispatch-table array element
+    // that names a function/global directly (M6502Codegen.cpp's own
+    // `arrayElemText()`/`declareArray()`): there's no 16-bit load on
+    // this target to resolve a symbol's address in one piece the way
+    // `jsr`/`jmp`'s own absolute operand does, so each half is written
+    // out as its own directive instead, resolved the same way
+    // `ldai`/`ldai_hi`'s own immediate operand already is (see
+    // `emitImmLow`/`emitImmHigh` below).
+    if (mnemonic == "dblo" || mnemonic == "dbhi") {
+        line.kind = mnemonic == "dblo" ? Line::DbLo : Line::DbHi;
         for (auto *op : instr->operand()) line.exprList.push_back(buildOperand(op));
         return line;
     }
@@ -221,6 +236,12 @@ class Assembler {
             case Line::Db:
                 for (const auto &e : line.exprList) emitByteOperand(e);
                 return;
+            case Line::DbLo:
+                for (const auto &e : line.exprList) emitImmLow(e);
+                return;
+            case Line::DbHi:
+                for (const auto &e : line.exprList) emitImmHigh(e);
+                return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
                 return;
@@ -307,17 +328,19 @@ class Assembler {
         emit8(static_cast<uint8_t>((v >> 8) & 0xFF));
     }
 
-    // `ldai`/`adci`/`andi`/`eori`/`ldyi`'s own immediate operand - the
-    // LOW byte of whatever `e` resolves to, whether that's already a
-    // plain literal (M6502Codegen.cpp always keeps those <256 itself)
+    // `ldai`/`adci`/`andi`/`eori`/`ldyi`'s own immediate operand, and
+    // `dblo`'s own data byte - the LOW byte of whatever `e` resolves
+    // to, whether that's already a plain literal (M6502Codegen.cpp
+    // always keeps an *instruction* operand's own literal <256 itself)
     // or a label's own address (M6502Codegen.cpp's genAddrOf()/
-    // genIndexAddr() - taking just the low byte of a resolved address
-    // this way is exactly what a real assembler's `#<label` low-byte
-    // operator means, just spelled as a plain mnemonic here instead
-    // of needing a grammar token for `<`/`>` that doesn't exist). See
-    // M6502Assembler.h's own `kM6502RelocAbs16Lo` comment: a plain
-    // Abs16 patch can't be reused here since only one byte of the
-    // resolved value is ever written to this field.
+    // genIndexAddr()/arrayElemText() - taking just the low byte of a
+    // resolved address this way is exactly what a real assembler's
+    // `#<label` low-byte operator means, just spelled as a plain
+    // mnemonic here instead of needing a grammar token for `<`/`>`
+    // that doesn't exist). See M6502Assembler.h's own
+    // `kM6502RelocAbs16Lo` comment: a plain Abs16 patch can't be
+    // reused here since only one byte of the resolved value is ever
+    // written to this field.
     void emitImmLow(const std::vector<Syllable> &e) {
         std::string externalName;
         bool needsBaseShift = false;
@@ -328,10 +351,11 @@ class Assembler {
         }
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
-    // `ldai_hi`/`adci_hi`'s own immediate operand - the HIGH byte of
-    // the resolved value (a real assembler's `#>label`) - see
-    // `kM6502RelocAbs16Hi`'s own comment, the high-byte counterpart
-    // of `emitImmLow`'s own relocation handling above.
+    // `ldai_hi`/`adci_hi`'s own immediate operand, and `dbhi`'s own
+    // data byte - the HIGH byte of the resolved value (a real
+    // assembler's `#>label`) - see `kM6502RelocAbs16Hi`'s own comment,
+    // the high-byte counterpart of `emitImmLow`'s own relocation
+    // handling above.
     void emitImmHigh(const std::vector<Syllable> &e) {
         std::string externalName;
         bool needsBaseShift = false;
@@ -392,6 +416,12 @@ class Assembler {
             {"lda", 0xAD}, {"sta", 0x8D}, {"adc", 0x6D}, {"sbc", 0xED}, {"and", 0x2D}, {"ora", 0x0D}, {"eor", 0x4D},
             {"asl", 0x0E}, {"lsr", 0x4E}, {"rol", 0x2E}, {"ror", 0x6E}, {"inc", 0xEE}, {"dec", 0xCE},
             {"jmp", 0x4C}, {"jsr", 0x20},
+            // Real opcode $6C, JMP indirect: the operand is the
+            // address of a two-byte cell holding the actual jump
+            // target, little-endian, encoded exactly like every other
+            // absolute operand above - the only difference is what the
+            // real CPU does with it at runtime, not how it's assembled.
+            {"jmpi", 0x6C},
         };
         if (auto it = absolute.find(mnemonic); it != absolute.end()) {
             emit8(it->second);

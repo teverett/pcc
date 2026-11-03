@@ -26,13 +26,24 @@ constexpr uint32_t kInitialSP = 0x00200000u;
 
 void PowerPCCodegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": dw 0"); }
 
-void PowerPCCodegen::declareArray(const std::string &lbl, const std::vector<long> &values) {
+// A literal element's own decimal text; a symbol element is the
+// referenced Slot's or Function's own label, written out bare - "dw"
+// (PowerPCAssembler.cpp's Line::Dw) already evaluates any expr
+// operand, symbol included, and now also records the same external-
+// name/base-shift relocation (kPowerPCRelocAbs32) a label used as
+// `lis`/`ori`'s own split address immediate already gets.
+std::string PowerPCCodegen::arrayElemText(const ir::ArrayInitElem &e) {
+    if (!e.isSymbol) return std::to_string(static_cast<int32_t>(static_cast<uint32_t>(e.value)));
+    return e.slot ? label(e.slot) : label(e.func);
+}
+
+void PowerPCCodegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values) {
     if (values.empty()) return;
     std::ostringstream line;
     line << lbl << ": dw ";
     for (size_t i = 0; i < values.size(); i++) {
         if (i > 0) line << ", ";
-        line << static_cast<int32_t>(static_cast<uint32_t>(values[i]));
+        line << arrayElemText(values[i]);
     }
     trailer_.push_back(line.str());
 }
@@ -265,6 +276,25 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
             code_ << "    bl " << label(e.func) << "\n";
             return;
         }
+        case ir::ExprKind::CallPtr: {
+            // e.args is always empty here - IRBuilder.cpp rejects any
+            // argument on this kind before it ever reaches a backend
+            // (see IR.h's ExprKind::CallPtr): there's no per-callee
+            // p_<fn>_<i> cell to write one into until the callee is
+            // known, which it never is at compile time for this kind.
+            // Real PowerPC has no single-instruction indirect call -
+            // `bl`'s own target is always a compile-time-relative
+            // displacement, never a register. The standard two-
+            // instruction idiom every real PowerPC compiler uses
+            // instead: `mtctr` moves the callee's own address into
+            // the Count Register, then `bctrl` branches to whatever
+            // address CTR holds and sets the link register, exactly
+            // like `bl` does for a compile-time-known target.
+            genExpr(*e.lhs);  // t0 = the callee's own entry address
+            code_ << "    mtctr t0\n";
+            code_ << "    bctrl\n";
+            return;
+        }
         case ir::ExprKind::Binary: {
             genBinary(e);
             return;
@@ -314,6 +344,11 @@ void PowerPCCodegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Index) {
         genIndexAddr(operand.slot, *operand.lhs);
         code_ << "    or t0,t2,t2\n";  // t0 = t2
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Func) {
+        loadAddress("t2", label(operand.func));
+        code_ << "    or t0,t2,t2\n";  // t0 = t2 (real PowerPC "mr" idiom)
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");

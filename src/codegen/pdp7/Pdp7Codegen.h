@@ -89,7 +89,8 @@ class Pdp7Codegen : public Backend {
 
     std::string allocTemp();
     void declareTemp(const std::string &label);
-    void declareArray(const std::string &label, const std::vector<long> &values);
+    void declareArray(const std::string &label, const std::vector<ir::ArrayInitElem> &values);
+    std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string literalLabel(long value);
     std::string newLabel();
 

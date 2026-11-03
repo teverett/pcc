@@ -34,7 +34,7 @@ struct Syllable {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Equate, Org, Db, Instr } kind = None;
+    enum Kind { None, Equate, Org, Db, Dw, Instr } kind = None;
     std::string equateName;                        // Equate
     std::vector<std::vector<Syllable>> exprList;    // Equate (1)/Org (1)/Db (N)
     std::string mnemonic;                            // Instr
@@ -112,6 +112,16 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
     }
     if (mnemonic == "db") {
         line.kind = Line::Db;
+        for (auto *op : instr->operand()) line.exprList.push_back(buildOperand(op));
+        return line;
+    }
+    // "dw" is a full, real 16-bit value (same shape as a `jmp`/`cal`
+    // operand - see emit16()'s own comment) written out low byte then
+    // high byte - unlike `db`, its own expression can resolve to any
+    // 16-bit value, symbol address included, not just one that fits
+    // in a single byte.
+    if (mnemonic == "dw") {
+        line.kind = Line::Dw;
         for (auto *op : instr->operand()) line.exprList.push_back(buildOperand(op));
         return line;
     }
@@ -207,6 +217,9 @@ class Assembler {
                 return;
             case Line::Db:
                 for (const auto &e : line.exprList) emitByteOperand(e);
+                return;
+            case Line::Dw:
+                for (const auto &e : line.exprList) emit16(e);
                 return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);

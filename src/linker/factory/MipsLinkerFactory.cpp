@@ -75,6 +75,14 @@ void patchMipsJump(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t va
     put32BE(image, siteOffset, (word & 0xFC000000u) | index);
 }
 
+// A `dw` data word (`kMipsRelocAbs32`) - a plain, contiguous 32-bit
+// field, so (unlike the Hi/Lo split above) the resolved value just
+// adds straight onto whatever this site's own pre-patch word already
+// holds.
+void patchMipsAbs32(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t) {
+    put32BE(image, siteOffset, get32BE(image, siteOffset) + value);
+}
+
 // `32784`/`0` is `0x80100000`'s own high/low 16-bit halves - the same
 // initial-stack-pointer value as MipsCodegen.cpp's own (private)
 // `kInitialSP` - comfortably above the loaded program and its data,
@@ -101,6 +109,7 @@ std::unique_ptr<TargetLinker> makeMipsLinker() {
     config.relocPatchers[kMipsRelocHi] = patchMipsHi;
     config.relocPatchers[kMipsRelocLo] = patchMipsLo;
     config.relocPatchers[kMipsRelocJump] = patchMipsJump;
+    config.relocPatchers[kMipsRelocAbs32] = patchMipsAbs32;
     config.outputFormats = {"flat", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }

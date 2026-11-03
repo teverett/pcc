@@ -540,7 +540,23 @@ class Assembler {
         if (mnemonic == "idiv") { requireReg(ops, 1); emitModRegRM(0xF7, 0b11, 0b111, static_cast<uint8_t>(ops[0].reg)); return; }
 
         if (mnemonic == "jmp")  { if (ops.size()!=1) fail("'jmp' needs one operand"); emitRel16(0xE9, ops[0]); return; }
-        if (mnemonic == "call") { if (ops.size()!=1) fail("'call' needs one operand"); emitRel16(0xE8, ops[0]); return; }
+        // A direct `call label` (the only form used before indirect
+        // calls through a computed function-pointer value existed -
+        // see I8086Codegen.cpp's genExpr ExprKind::Call) is still the
+        // fixed-size rel16 form above every other jmp/call shares.
+        // `call reg16` (I8086Codegen.cpp's new ExprKind::CallPtr) is a
+        // genuinely different encoding - FF /2, the same "group FF"
+        // ModRM-register form `not`/`imul`/`idiv` above already use,
+        // just with reg field 0b010 ("CALL r/m16, near indirect").
+        if (mnemonic == "call") {
+            if (ops.size() != 1) fail("'call' needs one operand");
+            if (ops[0].kind == Operand::Reg) {
+                emitModRegRM(0xFF, 0b11, 0b010, static_cast<uint8_t>(ops[0].reg));
+                return;
+            }
+            emitRel16(0xE8, ops[0]);
+            return;
+        }
         if (mnemonic == "je")   { emitRel8(0x74, ops.at(0)); return; }
         if (mnemonic == "jne")  { emitRel8(0x75, ops.at(0)); return; }
         if (mnemonic == "jl")   { emitRel8(0x7C, ops.at(0)); return; }

@@ -38,9 +38,31 @@ constexpr uint32_t kInitialSP = 0x20002000;
 
 void STM32Codegen::declareTemp(const std::string &lbl) { ramTrailer_.push_back(lbl + ": ds 1"); }
 
-void STM32Codegen::declareArray(const std::string &lbl, const std::vector<long> &values) {
+void STM32Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values) {
     if (values.empty()) return;
     ramTrailer_.push_back(lbl + ": ds " + std::to_string(values.size()));
+}
+
+// A literal element's own value via `movl`; a symbol element's
+// address via the same `lea` genAddrOf() uses for &slot, with that
+// same function's own thumb-bit adjustment (`+1`, for `blx` - see
+// genAddrOf()'s own comment) when the element names a Function
+// rather than a Slot. Either way the loaded value then gets copied
+// into the RAM word `lbl+offset` resolves to - see genGlobalInit()'s
+// own comment on why RAM needs this explicit one-time copy at all.
+void STM32Codegen::genArrayElemInit(const std::string &lbl, size_t offset, const ir::ArrayInitElem &e) {
+    if (!e.isSymbol && e.value == 0) return;  // RAM already starts zeroed - nothing to copy
+    if (e.isSymbol) {
+        code_ << "    lea " << (e.slot ? label(e.slot) : label(e.func)) << ",r0\n";
+        if (!e.slot) {
+            code_ << "    movl 1,r1\n";
+            code_ << "    add r0,r0,r1\n";
+        }
+    } else {
+        code_ << "    movl " << static_cast<int32_t>(static_cast<uint32_t>(e.value)) << ",r0\n";
+    }
+    code_ << "    lea " << lbl << "+" << offset << ",r2\n";
+    code_ << "    str r0,[r2]\n";
 }
 
 // Flash-resident code that writes `value` into the RAM word `lbl`
@@ -109,11 +131,7 @@ std::string STM32Codegen::generate(const ir::Program &prog, bool objectMode) {
             // multi-object `--link`.
             if (!objectMode) {
                 for (size_t i = 0; i < slot->arrayInit.size(); i++) {
-                    if (slot->arrayInit[i] == 0) continue;
-                    code_ << "    movl " << static_cast<int32_t>(static_cast<uint32_t>(slot->arrayInit[i]))
-                          << ",r0\n";
-                    code_ << "    lea " << lbl << "+" << (i * 4) << ",r2\n";
-                    code_ << "    str r0,[r2]\n";
+                    genArrayElemInit(lbl, i * 4, slot->arrayInit[i]);
                 }
             }
         } else {
@@ -200,11 +218,7 @@ void STM32Codegen::genStmt(const ir::Stmt &s) {
             if (s.declSlot->arraySize > 0) {
                 declareArray(lbl, s.declSlot->arrayInit);
                 for (size_t i = 0; i < s.declSlot->arrayInit.size(); i++) {
-                    if (s.declSlot->arrayInit[i] == 0) continue;
-                    code_ << "    movl " << static_cast<int32_t>(static_cast<uint32_t>(s.declSlot->arrayInit[i]))
-                          << ",r0\n";
-                    code_ << "    lea " << lbl << "+" << (i * 4) << ",r2\n";
-                    code_ << "    str r0,[r2]\n";
+                    genArrayElemInit(lbl, i * 4, s.declSlot->arrayInit[i]);
                 }
             } else {
                 declareTemp(lbl);
@@ -291,6 +305,19 @@ void STM32Codegen::genExpr(const ir::Expr &e) {
             code_ << "    bl " << label(e.func) << "\n";
             return;
         }
+        case ir::ExprKind::CallPtr: {
+            // e.args is always empty here - IRBuilder.cpp rejects any
+            // argument on this kind before it ever reaches a backend
+            // (see IR.h's ExprKind::CallPtr): there's no per-callee
+            // p_<fn>_<i> cell to write one into until the callee is
+            // known, which it never is at compile time for this kind.
+            // "blx r0" (STM32Assembler.cpp's new register-indirect
+            // branch-with-link encoding) is a real Thumb indirect call
+            // through whatever address r0 holds.
+            genExpr(*e.lhs);  // r0 = the callee's own entry address
+            code_ << "    blx r0\n";
+            return;
+        }
         case ir::ExprKind::Binary: {
             genBinary(e);
             return;
@@ -343,6 +370,21 @@ void STM32Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Index) {
         genIndexAddr(operand.slot, *operand.lhs);
         code_ << "    mov r0,r2\n";
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Func) {
+        // Real Cortex-M (Thumb-only) interworking: a function's own
+        // numeric address value must carry the Thumb-select bit
+        // (LSB=1) for `blx` (CallPtr's own register-indirect call,
+        // below) to branch into it correctly - same convention this
+        // backend's own vector table already uses for `_start`'s own
+        // reset-handler entry (see STM32Assembler.h's own `dlt`
+        // comment). Every function label here is always even (Thumb
+        // instructions are 2-byte aligned), so this is exactly
+        // "address + 1".
+        code_ << "    lea " << label(operand.func) << ",r0\n";
+        code_ << "    movl 1,r1\n";
+        code_ << "    add r0,r0,r1\n";
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");

@@ -133,7 +133,14 @@ class STM32Codegen : public Backend {
     void declareTemp(const std::string &lbl);
     // Reserves `values.size()` RAM words for an array slot, and emits
     // a startup copy (see genGlobalInit()) for every nonzero element.
-    void declareArray(const std::string &lbl, const std::vector<long> &values);
+    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
+    // Flash-resident code that writes one array element into the RAM
+    // word at `lbl+offset` - a literal's own value loaded via `movl`
+    // (skipped when it's 0, since RAM already starts zeroed), or a
+    // symbol element's address loaded the same way genAddrOf() loads
+    // &slot/&fn, including that function case's own thumb-bit
+    // adjustment.
+    void genArrayElemInit(const std::string &lbl, size_t offset, const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 
     std::ostringstream code_;       // flash: vector table + _start + every function body

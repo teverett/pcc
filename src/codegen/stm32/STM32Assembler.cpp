@@ -627,6 +627,19 @@ class Assembler {
             encodeBranch25(requireOperand(ops, 0, mnemonic), /*isLink=*/mnemonic == "bl", mnemonic);
             return;
         }
+        if (mnemonic == "blx") {
+            // Real Thumb "BLX Rm" (register branch with link/exchange)
+            // - a 16-bit instruction, 0100 0111 1 Rm(4) 000, i.e.
+            // 0x4780 | (Rm << 3): a real indirect call through
+            // whatever address Rm holds, confirmed against a real
+            // toolchain's own encoding. Unlike every two/three-register
+            // Thumb-1 form above, its Rm field is the full 4-bit
+            // register number (any r0-r14), not restricted to a low
+            // register.
+            uint8_t rm = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            emit16(static_cast<uint16_t>(0x4780 | (rm << 3)));
+            return;
+        }
         static const std::unordered_map<std::string, uint8_t> branchCond = {
             {"beq", 0x0}, {"bne", 0x1}, {"blt", 0xB}, {"ble", 0xD}, {"bgt", 0xC}, {"bge", 0xA},
         };

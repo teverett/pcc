@@ -199,6 +199,13 @@ class PIC18Codegen : public Backend {
     void pushPtrCell();
     void popPtrCell();
 
+    // Emits the globalInit startup code that writes one array
+    // element's own value into its already-reserved two RAM bytes
+    // (`loLbl`/`hiLbl`) - see generate()'s own call site for how
+    // those are named.
+    void emitInitElem(std::ostream &out, const std::string &loLbl, const std::string &hiLbl,
+                       const ir::ArrayInitElem &e);
+
     static std::string label(const ir::Slot *slot) {
         if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
         if (slot->kind == ir::SlotKind::Param) {

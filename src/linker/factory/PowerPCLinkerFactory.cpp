@@ -83,6 +83,14 @@ void patchPowerPCLo(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t v
     put32BE(image, siteOffset, word);
 }
 
+// A `dw` data word (`kPowerPCRelocAbs32`) - a plain, contiguous
+// 32-bit field, so (unlike the Hi/Lo split above) the resolved value
+// just adds straight onto whatever this site's own pre-patch word
+// already holds.
+void patchPowerPCAbs32(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t) {
+    put32BE(image, siteOffset, get32BE(image, siteOffset) + value);
+}
+
 // `32`/`0` are `kInitialSP`'s (0x00200000, PowerPCCodegen.cpp's own
 // private constant) upper/lower 16 bits, split exactly as that file's
 // own entry sequence already does for a plain (non-label) immediate -
@@ -106,6 +114,7 @@ std::unique_ptr<TargetLinker> makePowerPCLinker() {
     config.relocPatchers[kPowerPCRelocHi] = patchPowerPCHi;
     config.relocPatchers[kPowerPCRelocLo] = patchPowerPCLo;
     config.relocPatchers[kPowerPCRelocBranch] = patchPowerPCBranch24;
+    config.relocPatchers[kPowerPCRelocAbs32] = patchPowerPCAbs32;
     config.outputFormats = {"flat", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }

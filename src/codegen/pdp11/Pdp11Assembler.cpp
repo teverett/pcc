@@ -228,7 +228,22 @@ class Assembler {
                 orgBase_ = evalExpr(line.exprList.at(0));
                 return;
             case Line::Dw:
-                for (const auto &e : line.exprList) emit16(static_cast<uint16_t>(evalExpr(e)));
+                // Each word's own expression goes through the exact same
+                // external-name/base-shift tracking as `lea`'s own
+                // absolute extension word (see encodeLea()) - a bare
+                // symbol here (an array initializer's address-of-
+                // function/global element) resolves and relocates
+                // identically to one used as `lea`'s own source.
+                for (const auto &e : line.exprList) {
+                    std::string externalName;
+                    bool needsBaseShift = false;
+                    uint32_t v = evalExpr(e, &externalName, &needsBaseShift);
+                    if (stage_ == 2 && allowExternal_) {
+                        if (needsBaseShift) relocations_.push_back({offset_, "..", kPdp11RelocAbs16});
+                        if (!externalName.empty()) relocations_.push_back({offset_, externalName, kPdp11RelocAbs16});
+                    }
+                    emit16(static_cast<uint16_t>(v));
+                }
                 return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
@@ -509,6 +524,22 @@ class Assembler {
             EA e = classifyEA(requireOperand(ops, 0, mnemonic));
             emit16(static_cast<uint16_t>(0x0800 | (7 << 6) | (e.mode << 3) | e.reg));
             emitEAExtension(requireOperand(ops, 0, mnemonic));
+            return;
+        }
+        // "JSR PC,@Rn" - a real, standard register-DEFERRED call
+        // (mode 0b001): the target is the address *stored in* Rn, not
+        // Rn's own bare numeric value - a bare `jsr Rn` would instead
+        // classify as register-DIRECT (mode 0b000) via classifyEA
+        // above, which isn't a legal control-transfer destination on
+        // real hardware (there's no memory address to fetch from) -
+        // this dialect has no `(Rn)`/`@Rn` deferred-addressing syntax
+        // at all (see this file's own header comment on `Operand`),
+        // so this needs its own mnemonic, the same "(Rn) gets its own
+        // mnemonic rather than a generic bracketed operand" idiom
+        // ldind/stind above already use.
+        if (mnemonic == "jsrind") {
+            uint8_t rn = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            emit16(static_cast<uint16_t>(0x0800 | (7 << 6) | (0b001 << 3) | rn));
             return;
         }
         if (mnemonic == "rts") {

@@ -9,6 +9,19 @@ namespace {
 std::string slotRef(const ir::Slot *s) { return s->sourceName + "#" + std::to_string(s->id); }
 std::string funcRef(const ir::Function *f) { return f->sourceName + "#" + std::to_string(f->id); }
 
+// A plain literal, or a symbol element's `ref` - see IR.h's
+// ArrayInitElem and grammar/PccIRParser.g4's initElem, which this
+// shape matches exactly.
+void printArrayElem(const ir::ArrayInitElem &e, std::ostream &out) {
+    if (!e.isSymbol) {
+        out << e.value;
+    } else if (e.slot) {
+        out << slotRef(e.slot);
+    } else {
+        out << funcRef(e.func);
+    }
+}
+
 void printExpr(const ir::Expr &e, std::ostream &out) {
     switch (e.kind) {
         case ir::ExprKind::IntLit:
@@ -21,6 +34,13 @@ void printExpr(const ir::Expr &e, std::ostream &out) {
             out << slotRef(e.slot) << "[";
             printExpr(*e.lhs, out);
             out << "]";
+            return;
+        case ir::ExprKind::Func:
+            // Same "name#id" shape as slotRef - a bare `ref` already
+            // covers this in grammar/PccIRParser.g4, so this needs no
+            // grammar change; only ever reached as "&"'s operand (see
+            // IR.h's ExprKind::Func).
+            out << funcRef(e.func);
             return;
         case ir::ExprKind::Assign:
             if (e.lhs) {
@@ -57,6 +77,15 @@ void printExpr(const ir::Expr &e, std::ostream &out) {
                 printExpr(*e.args[i], out);
             }
             out << ")";
+            return;
+        case ir::ExprKind::CallPtr:
+            // Always 0 args (see IR.h's ExprKind::CallPtr) - the
+            // callee is an arbitrary expr, not a `ref`, so this can't
+            // reuse callExpr's "ref(...)" shape; grammar/
+            // PccIRParser.g4's callPtrExpr rule matches this exactly.
+            out << "(";
+            printExpr(*e.lhs, out);
+            out << ")()";
             return;
         case ir::ExprKind::Intrinsic:
             out << "_" << e.op << "()";
@@ -102,7 +131,7 @@ void printStmt(const ir::Stmt &s, std::ostream &out, int indent) {
                 out << "[" << s.declSlot->arraySize << "] = {";
                 for (size_t i = 0; i < s.declSlot->arrayInit.size(); i++) {
                     if (i > 0) out << ", ";
-                    out << s.declSlot->arrayInit[i];
+                    printArrayElem(s.declSlot->arrayInit[i], out);
                 }
                 out << "}";
             } else if (s.initOrReturnOrExpr) {
@@ -141,7 +170,7 @@ std::string printIR(const ir::Program &prog, const std::string &sourceFile) {
                 out << " = {";
                 for (size_t i = 0; i < slot->arrayInit.size(); i++) {
                     if (i > 0) out << ", ";
-                    out << slot->arrayInit[i];
+                    printArrayElem(slot->arrayInit[i], out);
                 }
                 out << "}";
             }

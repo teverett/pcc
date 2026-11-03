@@ -507,6 +507,37 @@ class Assembler {
             return;
         }
 
+        // MOVLW with the low 8 bits / high bits of a CODE-space
+        // label's own word address (resolved against `labels_`, the
+        // same table GOTO/CALL's own `controlAddr()` below uses) -
+        // PIC16Codegen.cpp's own `genAddrOf()` uses this pair to get a
+        // function's real program-memory entry address into a plain
+        // 16-bit value: real baseline/mid-range PIC16 CALL/GOTO always
+        // encode their own target directly in the instruction word, so
+        // taking a function's address as *data* has no single real
+        // instruction either - this splits it across two literal loads
+        // instead, the same byte-at-a-time idiom every other narrow-
+        // literal-field target here uses for a wider address (e.g.
+        // ../i8008/I8008Assembler.cpp's own `mvi`/`mvihi`). Object-mode
+        // relocation of a split code-space address isn't implemented
+        // (the existing relocation kinds each patch one whole field in
+        // place, never half of a word-address split across two
+        // separate instruction cells) - taking a function's address
+        // under real separate compilation is a loud compile error here
+        // instead of a silently wrong value.
+        if (mnemonic == "movlwcl" || mnemonic == "movlwch") {
+            std::string externalName;
+            bool needsBaseShift = false;
+            uint32_t v = evalExpr(operandAt(ops, 0, mnemonic, 1), &externalName, &needsBaseShift);
+            if (stage_ == 2 && (needsBaseShift || !externalName.empty())) {
+                fail("'" + mnemonic + "': taking a function's address isn't supported under separate compilation "
+                     "on this target");
+            }
+            uint8_t k = mnemonic == "movlwcl" ? static_cast<uint8_t>(v & 0xFF) : static_cast<uint8_t>((v >> 8) & 0xFF);
+            emitWord(static_cast<uint16_t>(0x3000 | k));
+            return;
+        }
+
         if (mnemonic == "goto" || mnemonic == "call") {
             uint16_t k = controlAddr(operandAt(ops, 0, mnemonic, 1), mnemonic);
             emitWord(static_cast<uint16_t>((mnemonic == "goto" ? 0x2800 : 0x2000) | k));

@@ -42,7 +42,11 @@ class Builder {
             ir::Slot *slot = allocSlot(ir::SlotKind::Global, g.name, g.arraySize);
             slot->hasInit = g.hasInit;
             slot->initValue = g.initValue;
-            slot->arrayInit = g.arrayInit;
+            // arrayInit is resolved in a second pass below, once
+            // every global/function name in this file is registered
+            // - an element can forward-reference a function or
+            // global declared later in the same file (see
+            // resolveArrayInit).
             slot->hasAddress = g.hasAddress;
             slot->address = g.address;
             slot->sourceFile = g.sourceFile;
@@ -73,6 +77,48 @@ class Builder {
         if (funcByName_.count("main") && !funcByName_["main"]->params.empty()) {
             throw std::runtime_error("'main' must take no parameters");
         }
+
+        // Second pass: every global's own arrayInit, now that every
+        // global/function name in this file is registered (so an
+        // element can name one declared later in the same file).
+        for (const auto &g : prog.globals) {
+            globalByName_[g.name]->arrayInit = resolveArrayInit(g.arrayInit, g.line);
+        }
+    }
+
+    // Resolves each AST-level ArrayInitElem to its IR form: a plain
+    // literal passes through unchanged; a symbol element is resolved
+    // exactly the same way buildAddressableOperand resolves a bare
+    // "&name" expression - try a variable first (this scope's locals,
+    // if any are active, then this file's globals), then a function,
+    // then fall back to treating it as an external global (the same
+    // default a plain, non-'&' reference to an unknown name under
+    // separate compilation has always gotten). Shared between a
+    // global's own initializer (no active scope) and a LocalDecl's
+    // (scopes_ may have locals in it).
+    std::vector<ir::ArrayInitElem> resolveArrayInit(const std::vector<ArrayInitElem> &elems, int line) {
+        std::vector<ir::ArrayInitElem> out;
+        out.reserve(elems.size());
+        for (const auto &e : elems) {
+            ir::ArrayInitElem ie;
+            if (!e.isSymbol) {
+                ie.value = e.value;
+                out.push_back(ie);
+                continue;
+            }
+            ie.isSymbol = true;
+            if (ir::Slot *slot = resolveVarOrNull(e.symbolName)) {
+                ie.slot = slot;
+            } else if (auto fit = funcByName_.find(e.symbolName); fit != funcByName_.end()) {
+                ie.func = fit->second;
+            } else if (ir::Slot *ext = resolveExternalVar(e.symbolName)) {
+                ie.slot = ext;
+            } else {
+                err(line, "undefined variable or function '" + e.symbolName + "' in array initializer");
+            }
+            out.push_back(ie);
+        }
+        return out;
     }
 
     // Looks up `name`, creating (and caching) an external one on a
@@ -124,13 +170,23 @@ class Builder {
         scopes_.back()[sourceName] = slot;
     }
 
-    ir::Slot *resolveVar(const std::string &name, int line) {
+    // Local scopes and this-file globals only - no external-var
+    // auto-creation, no error on a miss. Used by resolveVar below and
+    // by buildAddressableOperand, which has to tell "not a variable
+    // at all" (worth trying as a function name) apart from "not
+    // declared anywhere".
+    ir::Slot *resolveVarOrNull(const std::string &name) {
         for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
             auto found = it->find(name);
             if (found != it->end()) return found->second;
         }
         auto git = globalByName_.find(name);
         if (git != globalByName_.end()) return git->second;
+        return nullptr;
+    }
+
+    ir::Slot *resolveVar(const std::string &name, int line) {
+        if (ir::Slot *slot = resolveVarOrNull(name)) return slot;
         if (ir::Slot *ext = resolveExternalVar(name)) return ext;
         err(line, "undefined variable '" + name + "'");
     }
@@ -174,16 +230,44 @@ class Builder {
         if (slot->isExternal && slot->arraySize == 0) slot->arraySize = 1;
     }
 
-    // Resolves a Var/Index operand without the "bare array" check
-    // below - used only for `&`, where a bare array name is exactly
-    // the point (&arr means the array's own address).
+    // Resolves a Var/Index/function-name operand without the "bare
+    // array" check below - used only for `&`, where a bare array
+    // name is exactly the point (&arr means the array's own address),
+    // and where a bare function name is also valid (&f means f's own
+    // entry address, never a call - see IR.h's ExprKind::Func).
+    //
+    // A bare IDENT that isn't a variable in this file is tried as a
+    // function name next (this file's own, or - under real separate
+    // compilation - one already seen at a call site elsewhere in it)
+    // before falling back to creating it as an external global, the
+    // same default a plain, non-'&' reference to an unknown name
+    // under separate compilation has always gotten; a name genuinely
+    // declared as an external function but never called anywhere in
+    // this file still resolves correctly once something does call it
+    // first, same as resolveFunc's own lazy external-function
+    // creation - this only has to pick a default for a name this file
+    // has no information about at all.
     ir::ExprPtr buildAddressableOperand(const Expr &e) {
         auto out = std::make_unique<ir::Expr>();
         out->line = e.line;
         if (e.kind == ExprKind::Var) {
-            out->kind = ir::ExprKind::Var;
-            out->slot = resolveVar(e.name, e.line);
-            return out;
+            if (ir::Slot *slot = resolveVarOrNull(e.name)) {
+                out->kind = ir::ExprKind::Var;
+                out->slot = slot;
+                return out;
+            }
+            auto fit = funcByName_.find(e.name);
+            if (fit != funcByName_.end()) {
+                out->kind = ir::ExprKind::Func;
+                out->func = fit->second;
+                return out;
+            }
+            if (ir::Slot *ext = resolveExternalVar(e.name)) {
+                out->kind = ir::ExprKind::Var;
+                out->slot = ext;
+                return out;
+            }
+            err(e.line, "undefined variable or function '" + e.name + "'");
         }
         if (e.kind == ExprKind::Index) {
             out->kind = ir::ExprKind::Index;
@@ -192,7 +276,7 @@ class Builder {
             out->lhs = buildExpr(*e.lhs);
             return out;
         }
-        err(e.line, "'&' requires a plain variable or array element, e.g. &x or &arr[i]");
+        err(e.line, "'&' requires a plain variable, array element, or function name, e.g. &x, &arr[i], or &f");
     }
 
     ir::ExprPtr buildExpr(const Expr &e) {
@@ -255,6 +339,22 @@ class Builder {
                 out->func = resolveFunc(e.name, e.args.size(), e.line);
                 for (const auto &a : e.args) out->args.push_back(buildExpr(*a));
                 return out;
+            case ExprKind::CallPtr:
+                // No per-callee ABI slot to put an argument in until
+                // the callee is known - which, by definition, this
+                // kind never is at compile time (see IR.h's
+                // ExprKind::CallPtr) - so, unlike Call above, this
+                // subset only supports a bare (expr)() with no
+                // arguments at all.
+                if (!e.args.empty()) {
+                    err(e.line, "a call through a computed function address ((expr)(...)) can't take "
+                                 "arguments - there's no per-callee calling-convention slot to put one in "
+                                 "until the callee is known, which it isn't at compile time; only a "
+                                 "0-argument (expr)() is supported");
+                }
+                out->kind = ir::ExprKind::CallPtr;
+                out->lhs = buildExpr(*e.lhs);
+                return out;
         }
         err(e.line, "internal: unhandled expr kind");
     }
@@ -288,7 +388,7 @@ class Builder {
             case StmtKind::LocalDecl: {
                 out->kind = ir::StmtKind::LocalDecl;
                 ir::Slot *slot = allocSlot(ir::SlotKind::Local, s.declName, s.arraySize);
-                slot->arrayInit = s.arrayInit;
+                slot->arrayInit = resolveArrayInit(s.arrayInit, s.line);
                 declareLocal(s.declName, slot, s.line);
                 out->declSlot = slot;
                 if (s.arraySize == 0 && s.initOrReturnOrExpr) out->initOrReturnOrExpr = buildExpr(*s.initOrReturnOrExpr);

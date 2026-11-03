@@ -29,13 +29,24 @@ constexpr uint32_t kInitialSP = 0x00100000u;
 
 void SparcCodegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": dw 0"); }
 
-void SparcCodegen::declareArray(const std::string &lbl, const std::vector<long> &values) {
+// A literal element's own decimal text; a symbol element is the
+// referenced Slot's or Function's own label, written out bare - "dw"
+// (SparcAssembler.cpp's Line::Dw) already evaluates any expr operand,
+// symbol included, and now also records the same external-name/base-
+// shift relocation (kSparcRelocAbs32) a label used as `sethi`/`or`'s
+// own split address immediate already gets.
+std::string SparcCodegen::arrayElemText(const ir::ArrayInitElem &e) {
+    if (!e.isSymbol) return std::to_string(static_cast<int32_t>(static_cast<uint32_t>(e.value)));
+    return e.slot ? label(e.slot) : label(e.func);
+}
+
+void SparcCodegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values) {
     if (values.empty()) return;
     std::ostringstream line;
     line << lbl << ": dw ";
     for (size_t i = 0; i < values.size(); i++) {
         if (i > 0) line << ", ";
-        line << static_cast<int32_t>(static_cast<uint32_t>(values[i]));
+        line << arrayElemText(values[i]);
     }
     trailer_.push_back(line.str());
 }
@@ -273,6 +284,28 @@ void SparcCodegen::genExpr(const ir::Expr &e) {
             code_ << "    call " << label(e.func) << "\n";
             return;
         }
+        case ir::ExprKind::CallPtr: {
+            // e.args is always empty here - IRBuilder.cpp rejects any
+            // argument on this kind before it ever reaches a backend
+            // (see IR.h's ExprKind::CallPtr): there's no per-callee
+            // p_<fn>_<i> cell to write one into until the callee is
+            // known, which it never is at compile time for this kind.
+            // "jmpl t0,lr" is the real SPARC JMPL instruction
+            // (SparcAssembler.cpp's own new `jmpl rs1,rd` mnemonic):
+            // it transfers control to whatever address t0 holds and
+            // leaves the address of this jmpl instruction itself in
+            // lr, exactly the same return-address convention a direct
+            // `call` already leaves there (see genFunction()'s own
+            // comment on `retl`'s "lr+8" assumption) - so a function
+            // reached this way returns correctly with the exact same
+            // `retl` epilogue every function already uses regardless
+            // of how it was called. The assembler synthesizes the
+            // real delay-slot `nop` right after it automatically,
+            // same as `call` already relies on.
+            genExpr(*e.lhs);  // t0 = the callee's own entry address
+            code_ << "    jmpl t0,lr\n";
+            return;
+        }
         case ir::ExprKind::Binary: {
             genBinary(e);
             return;
@@ -320,6 +353,11 @@ void SparcCodegen::genAddrOf(const ir::Expr &operand) {
     }
     if (operand.kind == ir::ExprKind::Index) {
         genIndexAddr(operand.slot, *operand.lhs);
+        movReg("t0", "t2");
+        return;
+    }
+    if (operand.kind == ir::ExprKind::Func) {
+        loadAddress("t2", label(operand.func));
         movReg("t0", "t2");
         return;
     }
