@@ -6,6 +6,17 @@
 namespace pcc {
 
 namespace {
+// `fp`/`sp` mirror ../../codegen/m6502/M6502Codegen.cpp's own
+// generate() - the software frame pointer and frame-stack bump
+// allocator every Local/Param access goes through (see
+// M6502Codegen.h's own header comment) - every object, this
+// synthesized entry one included, has to declare them identically.
+// `sp` also needs the exact same one-time initialization
+// M6502Codegen.cpp's own `_start` gives it in whole-program mode,
+// before the very first call - `kFrameStackBase` there (0x0200) is
+// duplicated here as a plain literal for the same reason
+// `kM6502BaseAddress`/`kBaseAddress` already are between this file
+// and that one (see that constant's own comment).
 constexpr const char *kEntryAsm =
     "org 0\n"
     "ptr = 0\n"
@@ -13,7 +24,14 @@ constexpr const char *kEntryAsm =
     "bc = 4\n"
     "cx = 6\n"
     "dx = 8\n"
+    "fp = 10\n"
+    "sp = 12\n"
+    "aBase = 14\n"
     "_start:\n"
+    "    ldai 0\n"
+    "    sta sp\n"
+    "    ldai 2\n"
+    "    sta sp+1\n"
     "    jsr fn_main\n"
     "    lda ac\n"
     "halt:\n"

@@ -85,16 +85,19 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
 // register's role): `g0`=0 (the real hardwired-zero register), `t0`=8
 // (%o0 - also the real SPARC ABI's own return-value register, though
 // that convention is otherwise unused here), `t1`=9 (%o1), `t2`=10
-// (%o2), `sp`=14 (%o6 - the real SPARC stack-pointer register number,
-// even though this dialect never executes a real `save`/`restore`
-// window shift), `lr`=15 (%o7 - the real SPARC register `call`
-// itself writes the return address into). The encoded bit patterns
-// below match genuine SPARC register numbers exactly, even though
-// this dialect only ever names this one subset of the 32 integer
-// registers. Returns -1 if `name` isn't one of them.
+// (%o2), `fp`=11 (%o3 - this dialect's own dedicated frame-pointer
+// register, not real SPARC's windowed `%fp`/`%i6`, since this dialect
+// never executes a real `save`/`restore` window shift at all - see
+// SparcCodegen.h's own header comment), `sp`=14 (%o6 - the real SPARC
+// stack-pointer register number), `lr`=15 (%o7 - the real SPARC
+// register `call` itself writes the return address into). The
+// encoded bit patterns below match genuine SPARC register numbers
+// exactly, even though this dialect only ever names this one subset
+// of the 32 integer registers. Returns -1 if `name` isn't one of
+// them.
 int regNumber(const std::string &lower) {
     static const std::unordered_map<std::string, int> names = {
-        {"g0", 0}, {"t0", 8}, {"t1", 9}, {"t2", 10}, {"sp", 14}, {"lr", 15},
+        {"g0", 0}, {"t0", 8}, {"t1", 9}, {"t2", 10}, {"fp", 11}, {"sp", 14}, {"lr", 15},
     };
     auto it = names.find(lower);
     return it == names.end() ? -1 : it->second;
@@ -523,10 +526,15 @@ class Assembler {
     }
 
     // `retl` - real SPARC `jmpl %lr+8,%g0` (format 3, op=2, op3=0x38
-    // JMPL): the leaf-routine return idiom this dialect's own flat
-    // calling convention always uses (no real register-window
-    // `save`/`restore` - see SparcCodegen.h's own header comment),
-    // immediately followed by a synthesized `nop` delay slot.
+    // JMPL): the real leaf-routine return idiom (reading the return
+    // address straight back out of `%o7`, since no real register
+    // window ever rotated it into `%i7` - see SparcCodegen.h's own
+    // header comment on why), used by every function this dialect
+    // emits regardless of whether it's actually a leaf, since `lr`
+    // is always spilled to this call's own frame and reloaded first -
+    // see SparcCodegen.cpp's own genFunction()/emitEpilogue()
+    // comments. Immediately followed by a synthesized `nop` delay
+    // slot.
     void encodeRetl() {
         emit32((2u << 30) | (0u << 25) | (0x38u << 19) | (15u << 14) | (1u << 13) | 8u);
         emitNop();

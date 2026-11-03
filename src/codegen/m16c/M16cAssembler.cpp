@@ -32,13 +32,17 @@ struct Syllable {
 // One operand, classified from a bare expression - see
 // M16cAssembler.h's own header comment on why there's no real
 // `[A0]`/`#n` MACRO-style syntax here. `Reg` comes from recognizing a
-// bare `r0`-`r3`/`a0`/`a1`/`sp` identifier; `Imm` from a bare
-// (optionally signed) number; anything else (a label, or `label+N`)
-// is `Mem` - an absolute address.
+// bare `r0`-`r3`/`a0`/`a1`/`sp`/`fb` identifier; `Imm` from a bare
+// (optionally signed) number; anything else without a bracket (a
+// label, or `label+N`) is `Mem` - an absolute address. `Disp` is the
+// one bracketed shape this dialect does support - `[fb+N]`/`[fb-N]`,
+// a frame-base-register-relative address (see M16cCodegen.h's
+// `frameOperand()`): `reg` holds the base register, `expr` the
+// (possibly negative) word-offset displacement.
 struct Operand {
-    enum Kind { Reg, Imm, Mem } kind = Imm;
+    enum Kind { Reg, Imm, Mem, Disp } kind = Imm;
     int reg = -1;
-    std::vector<Syllable> expr;  // Imm/Mem
+    std::vector<Syllable> expr;  // Imm/Mem/Disp
 };
 
 struct Line {
@@ -77,24 +81,58 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
 }
 
 // `r0`-`r3` (case-insensitive, matching how mnemonics are lowercased
-// too), plus `a0`/`a1` (address registers) and `sp` (the real hardware
-// stack pointer) - returns -1 if `name` is none of those. Register
-// codes 0-3 are R0-R3, 4-5 are A0-A1, 6 is SP - an arbitrary but fixed
-// numbering, this dialect's own (see M16cAssembler.h's own header
-// comment: not Renesas's real register-field encoding).
+// too), plus `a0`/`a1` (address registers), `sp` (the real hardware
+// stack pointer) and `fb` (the real hardware frame-base register,
+// used for every Local/Param's own per-call frame address - see
+// M16cCodegen.h's `frameOperand()`) - returns -1 if `name` is none of
+// those. Register codes 0-3 are R0-R3, 4-5 are A0-A1, 6 is SP, 7 is
+// FB - an arbitrary but fixed numbering, this dialect's own (see
+// M16cAssembler.h's own header comment: not Renesas's real
+// register-field encoding).
 int regNumber(const std::string &lower) {
     if (lower.size() == 2 && lower[0] == 'r' && lower[1] >= '0' && lower[1] <= '3') return lower[1] - '0';
     if (lower == "a0") return 4;
     if (lower == "a1") return 5;
     if (lower == "sp") return 6;
+    if (lower == "fb") return 7;
     return -1;
 }
 
 Operand buildOperand(PccAsmParser::OperandContext *ctx) {
     if (ctx->LBRACKET()) {
-        fail("bracketed memory operands aren't part of this target's dialect - M16C memory access through an "
-             "address register always goes through the dedicated 'ld'/'st' mnemonics instead (see "
-             "M16cCodegen.h)");
+        // The one bracketed memory-operand shape this dialect
+        // supports - `[fb+N]`/`[fb-N]` (see Operand's own header
+        // comment) - classified here by finding the one syllable
+        // that names a register among the bracket's own summed
+        // expression; every other syllable (there's always exactly
+        // one more, the displacement) sums into `expr`, same as
+        // every other multi-syllable expression elsewhere in this
+        // file. Every other address through a register (array/
+        // pointer dereference, `*`/`&`) still goes through the
+        // dedicated `ld`/`st` mnemonics instead (see M16cCodegen.h).
+        std::vector<Syllable> syls = exprToSyllables(ctx->expr());
+        int baseReg = -1;
+        size_t baseIdx = 0;
+        for (size_t i = 0; i < syls.size(); i++) {
+            if (syls[i].kind != SylKind::Symbol) continue;
+            if (int r = regNumber(toLower(syls[i].text)); r >= 0) {
+                baseReg = r;
+                baseIdx = i;
+                break;
+            }
+        }
+        if (baseReg < 0) {
+            fail("bracketed memory operand needs a base register, e.g. '[fb-4]' - this target's own dialect "
+                 "has no other bracketed addressing mode (see M16cCodegen.h)");
+        }
+        Operand op;
+        op.kind = Operand::Disp;
+        op.reg = baseReg;
+        for (size_t i = 0; i < syls.size(); i++) {
+            if (i != baseIdx) op.expr.push_back(syls[i]);
+        }
+        if (op.expr.empty()) op.expr.push_back({0, SylKind::Number, "0", {}});
+        return op;
     }
     std::vector<Syllable> syls = exprToSyllables(ctx->expr());
     Operand op;
@@ -329,10 +367,12 @@ class Assembler {
     // This dialect's own invented, simply-decodable operand shape -
     // see M16cAssembler.h's own header comment: not real M16C object
     // code. A one-byte tag (0=register, 1=immediate, 2=absolute
-    // address) followed by that mode's own value bytes (one byte for
-    // a register code, two little-endian bytes for an immediate/
-    // absolute-address word).
-    static constexpr uint8_t kTagReg = 0, kTagImm = 1, kTagMem = 2;
+    // address, 3=frame-base-relative) followed by that mode's own
+    // value bytes: one byte for a register code, two little-endian
+    // bytes for an immediate/absolute-address word, or (for `Disp`)
+    // one base-register byte then two little-endian displacement
+    // bytes.
+    static constexpr uint8_t kTagReg = 0, kTagImm = 1, kTagMem = 2, kTagDisp = 3;
 
     void encodeOperand(const Operand &op) {
         switch (op.kind) {
@@ -347,6 +387,16 @@ class Assembler {
             case Operand::Mem:
                 emit8(kTagMem);
                 emitAddr16(op.expr);
+                return;
+            case Operand::Disp:
+                // Never an address needing a relocation (a frame
+                // displacement is a pure compile-time integer, always
+                // resolved relative to a runtime register value, never
+                // to this program's own load address) - a plain
+                // evalExpr, same as Imm's.
+                emit8(kTagDisp);
+                emit8(static_cast<uint8_t>(op.reg));
+                emit16(static_cast<uint16_t>(evalExpr(op.expr)));
                 return;
         }
     }
@@ -465,10 +515,21 @@ class Assembler {
         }
         if (mnemonic == "lea") {
             requireOperandCount(ops, 2, mnemonic);
-            if (ops[0].kind != Operand::Mem) fail("'lea': source must be a label");
+            // Source is either an absolute label (`Mem`, a Global's
+            // own address) or a frame-relative `[fb+N]`/`[fb-N]`
+            // (`Disp`, a Local/Param's own address - see
+            // M16cCodegen.h's `frameOperand()`) - every other kind is
+            // never a real address. Checked explicitly against both
+            // allowed kinds (not just "!= Mem") so a future third
+            // memory-operand shape can't silently fall through this
+            // check the way an exclusion list checked against only
+            // the OLD shapes would.
+            if (ops[0].kind != Operand::Mem && ops[0].kind != Operand::Disp) {
+                fail("'lea': source must be a label or a frame-relative '[fb+N]'/'[fb-N]' address");
+            }
             uint8_t dst = requireReg(ops[1], mnemonic);
             emit8(0x11);
-            emitAddr16(ops[0].expr);
+            encodeOperand(ops[0]);
             emit8(dst);
             return;
         }

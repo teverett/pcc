@@ -14,57 +14,74 @@ namespace {
 }
 
 // Where this backend's own fixed memory cells live - `ac`/`bc`/`cx`/
-// `dx`/`ptr`/`sp` plus the real runtime stack `sp` points into (see
-// I8008Codegen.h's own header comment) - pinned to known, fixed
-// addresses (via the assembler's own `name = expr` equate support,
-// unlike every other backend's own `ac` etc., which are ordinary
-// sequentially-laid-out temps) purely so tests/run_tests.sh's own
-// from-scratch Python 8008 emulator can read the final result
-// straight out of memory at a known address, without needing to
-// parse this assembler's own symbol table at all. Comfortably above
-// where this backend's own generated code and globals could ever
-// reach for an ordinary test program, and comfortably inside the
-// 8008's real 14-bit (16KB) address space.
+// `dx`/`ptr`/`sp`/`fp`/`fnext`/`fpsp`, plus the two real runtime
+// stacks `sp` and `fpsp` point into (see I8008Codegen.h's own header
+// comment) - pinned to known, fixed addresses (via the assembler's
+// own `name = expr` equate support, unlike every other backend's own
+// `ac` etc., which are ordinary sequentially-laid-out temps) purely
+// so tests/run_tests.sh's own from-scratch Python 8008 emulator can
+// read the final result straight out of memory at a known address,
+// without needing to parse this assembler's own symbol table at all.
+// Comfortably above where this backend's own generated code and
+// globals could ever reach for an ordinary test program, and
+// comfortably inside the 8008's real 14-bit (16KB) address space.
 constexpr uint32_t kPseudoBase = 0x3000;
-// How many 16-bit values this backend's own software stack can hold
-// at once across the whole program - generous for ordinary test
-// programs (every binary op, `*`, `/`, comparison, and indexed/deref
-// assignment pushes at most one value for the lifetime of evaluating
-// one subexpression), but a real, fixed limit with no overflow
-// check - see pushAc()'s own comment.
+// How many 16-bit values this backend's own subexpression-save
+// stack (`sp`) can hold at once across the whole program - generous
+// for ordinary test programs (every binary op, `*`, `/`, comparison,
+// indexed/deref assignment, and function-call argument pushes at
+// most one value for the lifetime of evaluating one subexpression),
+// but a real, fixed limit with no overflow check - see pushCell()'s
+// own comment.
 [[maybe_unused]] constexpr int kStackSize = 32;  // documents the reserved region's size; nothing needs to read it
                                                   // back since the stack's own content is never initialized
-constexpr uint32_t kStackBase = kPseudoBase + 12;
+constexpr uint32_t kStackBase = kPseudoBase + 18;
+// How many nested `fp` saves the frame-pointer chain (`fpsp`) can
+// hold at once - every save corresponds to exactly one real `CAL`
+// still in flight, so this is bounded in practice by the 8008's own
+// 7-level hardware call-nesting limit (see I8008Codegen.h's own
+// header comment); comfortably larger than that real limit, with no
+// overflow check of its own either.
+constexpr int kFpStackCapacity = 16;
+constexpr uint32_t kFpStackBase = kStackBase + kStackSize * 2;
+// Where the per-call Local/Param frame bump allocator (`fnext`/`fp` -
+// see genFunction()'s own comment) starts claiming words from - the
+// last of this backend's own reserved regions, with no upper bound
+// or overflow check of its own either, for the same reason as
+// `kStackSize` above.
+constexpr uint32_t kFrameBase = kFpStackBase + kFpStackCapacity * 2;
 }  // namespace
 
-// Pushes `ac`'s current value onto this backend's own real runtime
-// stack: read `ac`'s two bytes into B/C first (computing `sp`'s own
-// value needs HL, which would otherwise clobber `ac` itself mid-read
-// - same reasoning as storeAcIndirect()), then write them at the
-// current top of stack and advance `sp` by one word.
-void I8008Codegen::pushAc() {
-    pointAt("ac");
+// Pushes `srcCell`'s current value onto the real runtime stack
+// pointed to by `spCell`: read `srcCell`'s two bytes into B/C first
+// (computing `spCell`'s own value needs HL, which would otherwise
+// clobber `srcCell` itself mid-read if the two happened to be the
+// same cell - same reasoning as storeAcIndirect()), then write them
+// at the current top of stack and advance `spCell` by one word.
+void I8008Codegen::pushCell(const std::string &srcCell, const std::string &spCell) {
+    pointAt(srcCell);
     code_ << "    mov a, m\n    mov b, a\n";
-    pointAt("ac+1");
+    pointAt(srcCell + "+1");
     code_ << "    mov a, m\n    mov c, a\n";
-    loadHLFromCell("sp");
+    loadHLFromCell(spCell);
     code_ << "    mov a, b\n    mov m, a\n";
     incHL();
     code_ << "    mov a, c\n    mov m, a\n";
     incHL();
-    storeHLToCell("sp");
+    storeHLToCell(spCell);
 }
 
-// The reverse: retreats `sp` by one word first, then reads the two
-// bytes now at the top of stack into `dst` - never touches `ac`
-// itself unless `dst` happens to be "ac". Doesn't call
-// storeHLToCell() - writing the decremented address back to `sp`
-// needs pointAt("sp"), which would repoint the real HL away from the
-// very address this function still needs to read the popped word
-// from, so the decremented address is stashed in D/E first instead
-// and `sp` is written from there once the read is already done.
-void I8008Codegen::popInto(const std::string &dst) {
-    loadHLFromCell("sp");  // HL = current sp (one past the last pushed word)
+// The reverse: retreats `spCell` by one word first, then reads the
+// two bytes now at the top of that stack into `dstCell` - never
+// touches any other cell unless `dstCell` happens to name it.
+// Doesn't call storeHLToCell() - writing the decremented address
+// back to `spCell` needs pointAt(spCell), which would repoint the
+// real HL away from the very address this function still needs to
+// read the popped word from, so the decremented address is stashed
+// in D/E first instead and `spCell` is written from there once the
+// read is already done.
+void I8008Codegen::popCell(const std::string &dstCell, const std::string &spCell) {
+    loadHLFromCell(spCell);  // HL = current top-of-stack pointer (one past the last pushed word)
     decHL();
     decHL();  // HL = the address of the word being popped
     code_ << "    mov a, l\n    mov d, a\n";  // stash the decremented address in D/E
@@ -72,13 +89,13 @@ void I8008Codegen::popInto(const std::string &dst) {
     code_ << "    mov a, m\n    mov b, a\n";  // read the popped word while HL still points at it
     incHL();
     code_ << "    mov a, m\n    mov c, a\n";
-    pointAt("sp");
+    pointAt(spCell);
     code_ << "    mov a, d\n    mov m, a\n";
-    pointAt("sp+1");
+    pointAt(spCell + "+1");
     code_ << "    mov a, e\n    mov m, a\n";
-    pointAt(dst);
+    pointAt(dstCell);
     code_ << "    mov a, b\n    mov m, a\n";
-    pointAt(dst + "+1");
+    pointAt(dstCell + "+1");
     code_ << "    mov a, c\n    mov m, a\n";
 }
 
@@ -99,8 +116,6 @@ void I8008Codegen::decHL() {
     code_ << Lskip << ":\n";
     code_ << "    dcr l\n";
 }
-
-void I8008Codegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": db 0, 0"); }
 
 // A literal element's own decimal text, or a symbol element's own
 // label text (the referenced Slot's or Function's own address) - the
@@ -185,6 +200,105 @@ void I8008Codegen::copy16(const std::string &dst, const std::string &src) {
     code_ << "    mov a, c\n    mov m, a\n";
 }
 
+int I8008Codegen::wordIndexOf(const ir::Slot *slot) const {
+    if (slot->kind == ir::SlotKind::Param) return slot->paramIndex;
+    return currentParamCount_ + slot->frameOffset - 1;
+}
+
+// Adds `byteOffset` to the real H,L register pair in place: low byte
+// through a plain ADI (also the only source of a possible carry
+// out), high byte through ACI, so the carry an ADI leaves behind
+// always lands correctly in the high byte's own sum, even when
+// `byteOffset`'s own high byte is 0.
+void I8008Codegen::addConstToHL(int byteOffset) {
+    int lo = byteOffset & 0xFF;
+    int hi = (byteOffset >> 8) & 0xFF;
+    code_ << "    mov a, l\n    adi " << lo << "\n    mov l, a\n";
+    code_ << "    mov a, h\n    aci " << hi << "\n    mov h, a\n";
+}
+
+// The same add, against a named 16-bit memory cell instead of the
+// real H,L pair - same ADI/ACI carry chain, through the accumulator,
+// since there's no way to add to a memory operand directly (every
+// ALU instruction here takes its second operand from a register or
+// `m`, never an immediate *and* a memory destination at once).
+void I8008Codegen::addConstToCell(const std::string &cell, int amount) {
+    int lo = amount & 0xFF;
+    int hi = (amount >> 8) & 0xFF;
+    pointAt(cell);
+    code_ << "    mov a, m\n    adi " << lo << "\n    mov m, a\n";
+    pointAt(cell + "+1");
+    code_ << "    mov a, m\n    aci " << hi << "\n    mov m, a\n";
+}
+
+void I8008Codegen::pointAtSlot(const ir::Slot *slot, int wordOffset, bool highByte) {
+    int byteOffset = wordOffset * 2 + (highByte ? 1 : 0);
+    if (slot->kind == ir::SlotKind::Global) {
+        pointAt(byteOffset == 0 ? label(slot) : (label(slot) + "+" + std::to_string(byteOffset)));
+        return;
+    }
+    loadHLFromCell("fp");
+    addConstToHL(wordIndexOf(slot) * 2 + byteOffset);
+}
+
+void I8008Codegen::copy16FromSlot(const std::string &dst, const ir::Slot *slot) {
+    pointAtSlot(slot, 0, false);
+    code_ << "    mov a, m\n    mov b, a\n";
+    pointAtSlot(slot, 0, true);
+    code_ << "    mov a, m\n    mov c, a\n";
+    pointAt(dst);
+    code_ << "    mov a, b\n    mov m, a\n";
+    pointAt(dst + "+1");
+    code_ << "    mov a, c\n    mov m, a\n";
+}
+
+void I8008Codegen::copy16ToSlot(const ir::Slot *slot, const std::string &src) {
+    pointAt(src);
+    code_ << "    mov a, m\n    mov b, a\n";
+    pointAt(src + "+1");
+    code_ << "    mov a, m\n    mov c, a\n";
+    pointAtSlot(slot, 0, false);
+    code_ << "    mov a, b\n    mov m, a\n";
+    pointAtSlot(slot, 0, true);
+    code_ << "    mov a, c\n    mov m, a\n";
+}
+
+void I8008Codegen::storeImmediate16ToSlot(const ir::Slot *slot, int elemOffset, const std::string &exprText) {
+    pointAtSlot(slot, elemOffset, false);
+    code_ << "    mvi a, " << exprText << "\n    mov m, a\n";
+    pointAtSlot(slot, elemOffset, true);
+    code_ << "    mvihi a, " << exprText << "\n    mov m, a\n";
+}
+
+// Pops the top of the `sp` stack straight into `slot`'s own storage -
+// the same body as popCell(), with the final write-back aimed at
+// pointAtSlot() instead of a plain named cell's own pointAt().
+void I8008Codegen::popIntoSlot(const ir::Slot *slot) {
+    loadHLFromCell("sp");
+    decHL();
+    decHL();
+    code_ << "    mov a, l\n    mov d, a\n";
+    code_ << "    mov a, h\n    mov e, a\n";
+    code_ << "    mov a, m\n    mov b, a\n";
+    incHL();
+    code_ << "    mov a, m\n    mov c, a\n";
+    pointAt("sp");
+    code_ << "    mov a, d\n    mov m, a\n";
+    pointAt("sp+1");
+    code_ << "    mov a, e\n    mov m, a\n";
+    pointAtSlot(slot, 0, false);
+    code_ << "    mov a, b\n    mov m, a\n";
+    pointAtSlot(slot, 0, true);
+    code_ << "    mov a, c\n    mov m, a\n";
+}
+
+// Gives this call's own frame back to the bump allocator and
+// restores the caller's own `fp` - see genFunction()'s own comment.
+void I8008Codegen::emitEpilogue() {
+    copy16("fnext", "fp");
+    popCell("fp", "fpsp");
+}
+
 // One in-place 1-bit rotate of the 16-bit memory cell `lbl`, through
 // the accumulator (the 8008's only rotates - RLC/RRC/RAL/RAR - work
 // on A alone, unlike the Z80 backend's own register-targeted `RL r`/
@@ -241,12 +355,27 @@ std::string I8008Codegen::generate(const ir::Program &prog, bool objectMode) {
     code_ << "dx = " << (kPseudoBase + 6) << "\n";
     code_ << "ptr = " << (kPseudoBase + 8) << "\n";
     code_ << "sp = " << (kPseudoBase + 10) << "\n";
+    // `fp` holds the *current* call's own frame base address; `fnext`
+    // the bump allocator's own next-free-word pointer; `fpsp` the
+    // top-of-stack pointer for the chain of saved `fp`s a nested call
+    // restores from on return (see genFunction()'s own comment and
+    // I8008Codegen.h's own header comment). `fp` itself needs no
+    // initial value here - the first function ever entered (`main`)
+    // overwrites it from `fnext` before reading it at all.
+    code_ << "fp = " << (kPseudoBase + 12) << "\n";
+    code_ << "fnext = " << (kPseudoBase + 14) << "\n";
+    code_ << "fpsp = " << (kPseudoBase + 16) << "\n";
     if (!objectMode) {
         code_ << "\n_start:\n";
-        // The software stack grows up from `kStackBase`; `sp` always
-        // holds the address *just past* the last pushed word (see
-        // pushAc()/popInto()).
+        // The subexpression-save stack grows up from `kStackBase`;
+        // `sp` always holds the address *just past* the last pushed
+        // word (see pushCell()/popCell()). The frame-pointer chain
+        // grows up from `kFpStackBase` the same way, via `fpsp`; the
+        // frame bump allocator starts out with its own next-free word
+        // at `kFrameBase`.
         storeImmediate16("sp", std::to_string(kStackBase));
+        storeImmediate16("fpsp", std::to_string(kFpStackBase));
+        storeImmediate16("fnext", std::to_string(kFrameBase));
         code_ << "    cal " << label(mainFn) << "\n";
         // The program's own final result sits in `ac` the moment
         // execution reaches `halt` below - the authoritative (and, on
@@ -289,10 +418,30 @@ std::string I8008Codegen::generate(const ir::Program &prog, bool objectMode) {
 // backend's own perFileAsm().
 std::map<std::string, std::string> I8008Codegen::perFileAsm() const { return perFileAsm_; }
 
+// A function's own prologue builds this call's own fresh Local/Param
+// frame: saves the caller's `fp` onto the `fpsp` chain, takes the
+// bump allocator's current `fnext` as this call's own frame base,
+// claims this function's own whole word count
+// (`params.size() + frameSize`) by bumping `fnext` past it, then
+// pops each of its own incoming argument values - pushed by the
+// caller, in argument order, onto the `sp` stack (see genExpr()'s
+// own Call case) - straight into that fresh frame, in reverse
+// (`sp` is a stack: the last argument pushed is the first one
+// popped, so the loop below walks `params` back to front). Every
+// Local/Param access for the rest of this function's own body (see
+// pointAtSlot()) is relative to `fp`, which this prologue is the only
+// place that ever changes - `currentParamCount_` records this
+// function's own param count for wordIndexOf() to use throughout.
 void I8008Codegen::genFunction(const ir::FunctionBody &fn) {
+    currentParamCount_ = static_cast<int>(fn.func->params.size());
+    const int totalWords = currentParamCount_ + fn.func->frameSize;
     code_ << label(fn.func) << ":\n";
-    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
+    pushCell("fp", "fpsp");
+    copy16("fp", "fnext");
+    if (totalWords > 0) addConstToCell("fnext", totalWords * 2);
+    for (int i = currentParamCount_ - 1; i >= 0; i--) popIntoSlot(fn.func->params[static_cast<size_t>(i)]);
     genStmt(*fn.body);
+    emitEpilogue();
     code_ << "    ret\n\n";
 }
 
@@ -336,19 +485,28 @@ void I8008Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
+            emitEpilogue();
             code_ << "    ret\n";
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
+            // A Local's own storage is this call's own frame (see
+            // genFunction()'s own comment) - never a fixed, compile-
+            // time label the way a Global's is - so, unlike a Global
+            // array's own literal initializer (baked into the binary
+            // once, in generate()'s own loop below), a Local array's
+            // own initializer is written out at runtime, every time
+            // this declaration is reached (so a declaration inside a
+            // loop body re-initializes its own array each iteration,
+            // the same call's own frame being reused for every one of
+            // them).
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arrayInit);
-            } else {
-                declareTemp(lbl);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    copy16(lbl, "ac");
+                for (size_t i = 0; i < s.declSlot->arrayInit.size(); i++) {
+                    storeImmediate16ToSlot(s.declSlot, static_cast<int>(i), arrayElemText(s.declSlot->arrayInit[i]));
                 }
+            } else if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                copy16ToSlot(s.declSlot, "ac");
             }
             return;
         }
@@ -373,7 +531,7 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
-            copy16("ac", label(e.slot));
+            copy16FromSlot("ac", e.slot);
             return;
         }
         case ir::ExprKind::Index: {
@@ -391,7 +549,7 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
                 return;
             }
             genExpr(*e.rhs);
-            copy16(label(e.slot), "ac");
+            copy16ToSlot(e.slot, "ac");
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -439,9 +597,20 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
+            // Each argument is pushed onto the real `sp` stack, in
+            // argument order, rather than written through any cell
+            // named after the callee's own params - a shared per-
+            // function cell would break the moment this same call
+            // site's own later argument's own evaluation makes
+            // another call to the same function (direct recursion)
+            // before this call's `cal` below ever runs, overwriting
+            // the earlier argument's own cell before it's even been
+            // used. The callee's own prologue (genFunction()) pops
+            // every one of these, in reverse, straight into that
+            // call's own fresh frame.
             for (size_t i = 0; i < e.args.size(); i++) {
                 genExpr(*e.args[i]);
-                copy16("p_" + e.func->sourceName + "_" + std::to_string(i), "ac");
+                pushAc();
             }
             code_ << "    cal " << label(e.func) << "\n";
             return;
@@ -502,14 +671,27 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
 // Leaves slot[idxExpr]'s own effective address in the `ptr` memory
 // cell. `idxExpr` is always evaluated first, and alone - see
 // ../i8080/I8080Codegen.cpp's own genIndexAddr() comment on why.
-// `slot->arraySize > 0` means the base is a compile-time-known
-// address (loaded via `mvi`/`mvihi` directly, same split-byte trick
-// as everywhere else in this backend); otherwise `slot` is a plain
-// pointer variable and the base instead comes from *reading* that
-// variable's own stored value. Either way there's no hardware 16-bit
-// add here (no `DAD` - see I8008Codegen.h's own header comment), so
-// the doubled index and the base are added byte-wise through the
-// accumulator with the carry chained from low into high.
+// `slot->arraySize > 0` means the base is the array's own first
+// word - a compile-time-known address for a Global, loaded via
+// `mvi`/`mvihi` directly (same split-byte trick as everywhere else in
+// this backend), or a runtime one (`fp` plus a word offset) for a
+// Local; otherwise `slot` is a plain pointer variable and the base
+// instead comes from *reading* that variable's own stored value
+// (again either a Global's fixed address or a Local/Param's own
+// runtime one - see pointAtSlot()). Either way there's no hardware
+// 16-bit add here (no `DAD` - see I8008Codegen.h's own header
+// comment), so the doubled index and the base are added byte-wise
+// through the accumulator with the carry chained from low into high.
+// A Local array's own element `i` therefore sits at this same base
+// *plus* `i` words, the array's own word index growing the same
+// direction as its own element index - unlike a frame scheme that
+// addresses a Local by a *negative* offset from its own frame
+// pointer (where element `i` would sit at the array's base *minus*
+// `i` words instead - see I386Codegen.h's own `addr()` comment),
+// this backend's own `fp` is the start, not the middle, of each
+// call's own frame (see genFunction()'s own comment), so every
+// Local/Param address here - scalar or array element alike - only
+// ever adds a non-negative word offset to it, never subtracts one.
 void I8008Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
     // ptr = index*2 (doubling, via self-add - words are 2 bytes on
@@ -526,14 +708,29 @@ void I8008Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     pointAt("ptr+1");
     code_ << "    mov a, e\n    mov m, a\n";
 
-    std::string lbl = label(slot);
-    if (slot->arraySize > 0) {
+    if (slot->arraySize > 0 && slot->kind == ir::SlotKind::Global) {
+        // A Global array's own address is a compile-time constant -
+        // loaded directly into B,C, same immediate split-byte trick
+        // as everywhere else in this backend (no need to round-trip
+        // it through H,L and `m` first).
+        std::string lbl = label(slot);
         code_ << "    mvi b, " << lbl << "\n";     // b = low byte of the array's own address
         code_ << "    mvihi c, " << lbl << "\n";    // c = high byte
+    } else if (slot->arraySize > 0) {
+        // A Local array's own address is this call's own frame plus
+        // a runtime offset (see pointAtSlot()) - computed into H,L
+        // first, then copied into B,C, since B,C (not H,L) is where
+        // the rest of this function needs the base.
+        pointAtSlot(slot, 0, false);
+        code_ << "    mov a, l\n    mov b, a\n";
+        code_ << "    mov a, h\n    mov c, a\n";
     } else {
-        pointAt(lbl);
+        // `slot` is a plain pointer variable - the base comes from
+        // *reading* its own stored value (Global, Local, or Param -
+        // pointAtSlot() handles all three).
+        pointAtSlot(slot, 0, false);
         code_ << "    mov a, m\n    mov b, a\n";
-        pointAt(lbl + "+1");
+        pointAtSlot(slot, 0, true);
         code_ << "    mov a, m\n    mov c, a\n";
     }
     pointAt("ptr");
@@ -560,7 +757,16 @@ void I8008Codegen::genIndex(const ir::Expr &e) {
 
 void I8008Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        storeImmediate16("ac", label(operand.slot));
+        if (operand.slot->kind == ir::SlotKind::Global) {
+            storeImmediate16("ac", label(operand.slot));
+        } else {
+            // A Local/Param's own address is only known at runtime
+            // (this call's own `fp` plus a word offset - see
+            // pointAtSlot()), never a compile-time immediate the way
+            // a Global's is.
+            pointAtSlot(operand.slot, 0, false);  // H,L = this call's own copy of operand.slot
+            storeHLToCell("ac");
+        }
         return;
     }
     if (operand.kind == ir::ExprKind::Index) {

@@ -8,10 +8,16 @@ namespace pcc {
 namespace {
 // `65280` (0xFF00) is the same stack-top value as STM8Codegen.cpp's
 // own (private) `kStackTop`.
+// `57344` (0xE000) is the same software-frame-stack initial top as
+// STM8Codegen.cpp's own (private) `kFrameStackTop`.
 constexpr const char *kEntryAsm =
     "org 0\n"
     "_start:\n"
     "    ldwi sp, 65280\n"
+    "    ldwi x, 57344\n"
+    "    ldw fsp, x\n"
+    "    ldwi x, 0\n"
+    "    ldw fp, x\n"
     "    call fn_main\n"
     "    ldw x, ac\n"
     "halt:\n"
@@ -21,6 +27,8 @@ constexpr const char *kEntryAsm =
     "cx: db 0, 0\n"
     "dx: db 0, 0\n"
     "ptr: db 0, 0\n"
+    "fp: db 0, 0\n"
+    "fsp: db 0, 0\n"
     "lc: db 0\n";
 }  // namespace
 

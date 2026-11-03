@@ -42,8 +42,6 @@ constexpr uint32_t kMbFlags = 0x10000;
 constexpr uint32_t kMbChecksum = static_cast<uint32_t>(-(static_cast<int64_t>(kMbMagic) + kMbFlags));
 }  // namespace
 
-void I386Codegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": dd 0"); }
-
 // A literal element's own decimal text; a symbol element is the
 // referenced Slot's or Function's own label, written out bare - "dd"
 // (I386Assembler.cpp's Line::Dd) already evaluates any expr operand,
@@ -138,8 +136,12 @@ std::map<std::string, std::string> I386Codegen::perFileAsm() const { return perF
 
 void I386Codegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
-    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
+    code_ << "    push ebp\n    mov ebp,esp\n";
+    if (fn.func->frameSize > 0) code_ << "    sub esp," << (fn.func->frameSize * 4) << "\n";
+
     genStmt(*fn.body);
+
+    code_ << "    mov esp,ebp\n    pop ebp\n";
     code_ << "    ret\n\n";
 }
 
@@ -176,19 +178,16 @@ void I386Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
+            code_ << "    mov esp,ebp\n    pop ebp\n";
             code_ << "    ret\n";
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arrayInit);
-            } else {
-                declareTemp(lbl);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    code_ << "    mov [" << lbl << "],eax\n";
-                }
+                genLocalArrayInit(s.declSlot);
+            } else if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                code_ << "    mov " << addr(s.declSlot) << ",eax\n";
             }
             return;
         }
@@ -213,7 +212,7 @@ void I386Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
-            code_ << "    mov eax,[" << label(e.slot) << "]\n";
+            code_ << "    mov eax," << operandOf(e.slot) << "\n";
             return;
         }
         case ir::ExprKind::Index: {
@@ -230,7 +229,7 @@ void I386Codegen::genExpr(const ir::Expr &e) {
                 return;
             }
             genExpr(*e.rhs);
-            code_ << "    mov [" << label(e.slot) << "],eax\n";
+            code_ << "    mov " << operandOf(e.slot) << ",eax\n";
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -259,11 +258,17 @@ void I386Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            for (size_t i = 0; i < e.args.size(); i++) {
+            // Real cdecl-style argument passing - push right-to-left
+            // so param 0 ends up closest to the return address (see
+            // I8086Codegen.h's own `addr()` comment), caller cleans up
+            // with `add esp,N` after the call returns. See
+            // I8086Codegen.cpp's own identical `Call` case.
+            for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                code_ << "    mov [p_" << e.func->sourceName << "_" << i << "],eax\n";
+                code_ << "    push eax\n";
             }
             code_ << "    call " << label(e.func) << "\n";
+            if (!e.args.empty()) code_ << "    add esp," << (e.args.size() * 4) << "\n";
             return;
         }
         case ir::ExprKind::CallPtr: {
@@ -304,32 +309,61 @@ void I386Codegen::genExpr(const ir::Expr &e) {
 // `computeElementAddr` - identical role and reasoning, just 32 bits
 // throughout (`shl eax,2` instead of `shl ax,1`).
 std::string I386Codegen::computeElementAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
-    std::string lbl = label(slot);
     genExpr(idxExpr);
     code_ << "    shl eax,2\n";
-    if (slot->arraySize > 0) {
-        code_ << "    mov ebx,eax\n";
-        return "[" + lbl + "+ebx]";
-    }
-    code_ << "    add eax,[" << lbl << "]\n";
     code_ << "    mov ebx,eax\n";
+    if (slot->arraySize > 0) {
+        if (slot->kind == ir::SlotKind::Global) {
+            code_ << "    add ebx," << label(slot) << "\n";
+        } else {
+            // A Local array's words sit at decreasing addresses as
+            // its own element index increases (addr(slot) is the
+            // array's *first* word, closest to `ebp`; later words are
+            // further below it - see I386Codegen.h's own `addr()`
+            // comment) - the mirror image of a Global array's
+            // increasing-address layout above, so this is base-minus-
+            // scaled-index, not base-plus. Same shape as
+            // I8086Codegen.cpp's own identical case.
+            code_ << "    lea eax," << addr(slot) << "\n    sub eax,ebx\n    mov ebx,eax\n";
+        }
+    } else {
+        code_ << "    add ebx," << operandOf(slot) << "\n";
+    }
     return "[ebx]";
 }
 
+void I386Codegen::genLocalArrayInit(const ir::Slot *slot) {
+    for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+        code_ << "    mov eax," << arrayElemText(slot->arrayInit[i]) << "\n";
+        code_ << "    mov [ebp-" << (4 * (slot->frameOffset + static_cast<int>(i))) << "],eax\n";
+    }
+}
+
 void I386Codegen::genIndex(const ir::Expr &e) {
-    std::string addr = computeElementAddr(e.slot, *e.lhs);
-    code_ << "    mov eax," << addr << "\n";
+    std::string memOperand = computeElementAddr(e.slot, *e.lhs);
+    code_ << "    mov eax," << memOperand << "\n";
 }
 
 void I386Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        code_ << "    mov eax," << label(operand.slot) << "\n";
+        if (operand.slot->kind == ir::SlotKind::Global) {
+            code_ << "    mov eax," << label(operand.slot) << "\n";
+        } else {
+            code_ << "    lea eax," << addr(operand.slot) << "\n";
+        }
         return;
     }
     if (operand.kind == ir::ExprKind::Index) {
-        std::string lbl = label(operand.slot);
         genExpr(*operand.lhs);
         code_ << "    shl eax,2\n";
+        if (operand.slot->kind != ir::SlotKind::Global) {
+            // See computeElementAddr()'s own identical comment - a
+            // Local array's element address is base-minus-scaled-
+            // index.
+            code_ << "    mov ebx,eax\n    lea eax," << addr(operand.slot) << "\n    sub eax,ebx\n";
+            return;
+        }
+        std::string lbl = label(operand.slot);
         if (operand.slot->arraySize > 0) {
             code_ << "    add eax," << lbl << "\n";
         } else {

@@ -63,6 +63,34 @@ void ArmMCodegen::loadImm32(const std::string &reg, uint32_t value) {
     code_ << "    movt " << reg << "," << static_cast<int32_t>((value >> 16) & 0xFFFFu) << "\n";
 }
 
+void ArmMCodegen::loadFrameWordAddr(const std::string &reg, int wordsFromFp) {
+    code_ << "    mov " << reg << ",r7\n";
+    if (wordsFromFp == 0) return;
+    loadImm32("r3", static_cast<uint32_t>((wordsFromFp > 0 ? wordsFromFp : -wordsFromFp) * 4));
+    code_ << "    " << (wordsFromFp > 0 ? "adds" : "subs") << " " << reg << "," << reg << ",r3\n";
+}
+
+void ArmMCodegen::loadFrameAddr(const std::string &reg, const ir::Slot *slot) {
+    int wordsFromFp = slot->kind == ir::SlotKind::Param ? (2 + slot->paramIndex) : -slot->frameOffset;
+    loadFrameWordAddr(reg, wordsFromFp);
+}
+
+void ArmMCodegen::loadSlotAddr(const std::string &reg, const ir::Slot *slot) {
+    if (slot->kind == ir::SlotKind::Global) {
+        loadAddress(reg, label(slot));
+    } else {
+        loadFrameAddr(reg, slot);
+    }
+}
+
+void ArmMCodegen::loadArrayInitElem(const std::string &reg, const ir::ArrayInitElem &e) {
+    if (!e.isSymbol) {
+        loadImm32(reg, static_cast<uint32_t>(e.value));
+        return;
+    }
+    loadAddress(reg, e.slot ? label(e.slot) : label(e.func));
+}
+
 std::string ArmMCodegen::generate(const ir::Program &prog, bool objectMode) {
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
@@ -122,13 +150,33 @@ std::map<std::string, std::string> ArmMCodegen::perFileAsm() const { return perF
 // Every function here saves/restores `lr` around its own body -
 // same reasoning (and the same risk: exactly one link register) as
 // MipsCodegen.cpp's own comment, just one real instruction on either
-// side here (`pushlr`/`poppc`) instead of MIPS's two.
+// side here (`pushlr`/`poppc`) instead of MIPS's two - already
+// reentrant on its own, since `pushlr`/`poppc` are ordinary real
+// `sp`-relative push/pop. `push r7`/`mov r7,sp` on top of that gives
+// this call its own frame pointer (see this file's own header
+// comment), and one dummy `push r0` per word of `frameSize` reserves
+// this call's own fresh Local storage - the pushed value is never
+// read, only the resulting `sp` displacement matters, so there's no
+// need for this dialect's assembler to grow a `sub sp,#imm`
+// instruction of its own just for this. emitEpilogue() undoes exactly
+// this, in reverse, at every `return` and once more here as the
+// fall-off-the-end default.
 void ArmMCodegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
     code_ << "    pushlr\n";
-    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
+    code_ << "    push r7\n";
+    code_ << "    mov r7,sp\n";
+    frameSize_ = fn.func->frameSize;
+    for (int i = 0; i < frameSize_; i++) code_ << "    push r0\n";
     genStmt(*fn.body);
-    code_ << "    poppc\n\n";
+    emitEpilogue();
+    code_ << "\n";
+}
+
+void ArmMCodegen::emitEpilogue() {
+    for (int i = 0; i < frameSize_; i++) code_ << "    pop r1\n";
+    code_ << "    pop r7\n";
+    code_ << "    poppc\n";
 }
 
 void ArmMCodegen::genStmt(const ir::Stmt &s) {
@@ -165,21 +213,26 @@ void ArmMCodegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            code_ << "    poppc\n";
+            // Early exit - genFunction()'s own fall-off-the-end
+            // epilogue never runs for this path, so it needs this
+            // same frame teardown inline.
+            emitEpilogue();
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arrayInit);
-            } else {
-                declareTemp(lbl);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    loadAddress("r2", lbl);
-                    code_ << "    stind r2,r0\n";
-                }
+                genLocalArrayInit(s.declSlot);
+            } else if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                loadFrameAddr("r2", s.declSlot);
+                code_ << "    stind r2,r0\n";
             }
+            // No "else" case for a bare, uninitialized scalar: its
+            // own frame word already exists (genFunction()'s own
+            // reserve-pushes already made room for it) - same as a
+            // real, ordinary C automatic variable, its value is
+            // simply whatever was already in that stack slot until
+            // something assigns it.
             return;
         }
         case ir::StmtKind::ExprStmt: {
@@ -203,7 +256,7 @@ void ArmMCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
-            loadAddress("r2", label(e.slot));
+            loadSlotAddr("r2", e.slot);
             code_ << "    ldind r2,r0\n";
             return;
         }
@@ -221,7 +274,7 @@ void ArmMCodegen::genExpr(const ir::Expr &e) {
                 return;
             }
             genExpr(*e.rhs);
-            loadAddress("r2", label(e.slot));
+            loadSlotAddr("r2", e.slot);
             code_ << "    stind r2,r0\n";
             return;
         }
@@ -252,12 +305,25 @@ void ArmMCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            for (size_t i = 0; i < e.args.size(); i++) {
+            // Arguments are pushed onto the real stack, last-declared
+            // one first, so the first argument ends up closest to the
+            // return address `bl` is about to set `lr` for - matching
+            // the address every Param already addresses itself by
+            // (see this file's own header comment: paramIndex 0 is
+            // `r7+8`, the lowest positive offset). Each callee lays
+            // them into ITS OWN frame itself; nothing here needs to
+            // know anything about the callee's own parameter count or
+            // names beyond `e.args.size()`. The caller cleans the
+            // pushed words back off afterward with one dummy `pop r1`
+            // per argument (no `add sp,#imm` instruction exists in
+            // this dialect - see genFunction()'s own identical
+            // reasoning for the Local-frame reserve/release).
+            for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                loadAddress("r2", "p_" + e.func->sourceName + "_" + std::to_string(i));
-                code_ << "    stind r2,r0\n";
+                code_ << "    push r0\n";
             }
             code_ << "    bl " << label(e.func) << "\n";
+            for (size_t i = 0; i < e.args.size(); i++) code_ << "    pop r1\n";
             return;
         }
         case ir::ExprKind::CallPtr: {
@@ -300,21 +366,32 @@ void ArmMCodegen::genExpr(const ir::Expr &e) {
 
 // `r2` holds the computed address, no zero-page-style placement
 // restriction the way the 6502 backend's own `ptr` has. `arraySize >
-// 0` means the base is a compile-time-known label (an *address*);
-// otherwise `slot` is a plain pointer variable, so the base instead
-// comes from *reading* that variable's own stored value first.
+// 0` means the base is the array's own first word - a compile-time-
+// known label for a Global, or (see loadFrameAddr()) a runtime
+// r7-relative address for a Local/Param; otherwise `slot` is a plain
+// pointer variable, so the base instead comes from *reading* that
+// variable's own stored value first (again from a label or an r7-
+// relative address, depending on `slot->kind`). A Local/Param array's
+// own element i sits *below* element 0 (addresses decrease as the
+// index increases - see this file's own header comment), the mirror
+// image of a Global array's increasing-address layout, so this is
+// base-minus-scaled-index there, not base-plus.
 void ArmMCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // r0 = index
     code_ << "    lsli r0,r0,2\n";  // r0 *= 4 (words are 4 bytes on this target)
-    std::string lbl = label(slot);
     if (slot->arraySize > 0) {
-        loadAddress("r2", lbl);
-        code_ << "    adds r2,r2,r0\n";
-    } else {
-        loadAddress("r1", lbl);
-        code_ << "    ldind r1,r1\n";  // r1 = the pointer variable's own stored value
-        code_ << "    adds r2,r1,r0\n";
+        if (slot->kind == ir::SlotKind::Global) {
+            loadAddress("r2", label(slot));
+            code_ << "    adds r2,r2,r0\n";
+        } else {
+            loadFrameAddr("r2", slot);
+            code_ << "    subs r2,r2,r0\n";
+        }
+        return;
     }
+    loadSlotAddr("r1", slot);
+    code_ << "    ldind r1,r1\n";  // r1 = the pointer variable's own stored value
+    code_ << "    adds r2,r1,r0\n";
 }
 
 void ArmMCodegen::genIndex(const ir::Expr &e) {
@@ -322,9 +399,26 @@ void ArmMCodegen::genIndex(const ir::Expr &e) {
     code_ << "    ldind r2,r0\n";
 }
 
+// Stores arrayInit into `slot`'s own frame slots - every call needs
+// this re-run, since (unlike a Global's one static trailer) a
+// Local's storage is this activation's own fresh frame region, not
+// pre-set to anything; arrayInit is always fully populated up to
+// arraySize, so this always leaves the whole array in a known state,
+// same as a Global array's static trailer always did. An element's
+// own address is slot->frameOffset+i words below r7, the same
+// arithmetic loadFrameAddr() uses for the array's own first word,
+// just advanced by i.
+void ArmMCodegen::genLocalArrayInit(const ir::Slot *slot) {
+    for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+        loadArrayInitElem("r0", slot->arrayInit[i]);
+        loadFrameWordAddr("r2", -(slot->frameOffset + static_cast<int>(i)));
+        code_ << "    stind r2,r0\n";
+    }
+}
+
 void ArmMCodegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        loadAddress("r2", label(operand.slot));
+        loadSlotAddr("r2", operand.slot);
         code_ << "    mov r0,r2\n";
         return;
     }

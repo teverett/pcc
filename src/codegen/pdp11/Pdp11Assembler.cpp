@@ -34,11 +34,19 @@ struct Syllable {
 // `(Rn)`/`#n` syntax here. `Reg` comes from recognizing a bare
 // `r0`-`r7`/`sp`/`pc` identifier; `Imm` from a bare (optionally
 // signed) number; anything else (a label, or `label+N`) is `Mem` -
-// PC-relative addressing to the value stored there.
+// PC-relative addressing to the value stored there. `Indexed` is the
+// one addressing mode this dialect *does* write with the grammar's
+// own generic `[expr]` bracket syntax (otherwise unused here) -
+// `[Rn+N]`/`[Rn-N]`: a real PDP-11 index-mode operand, `X(Rn)`, whose
+// base is `Rn`'s own runtime value plus a compile-time-constant
+// displacement `N` - used by Pdp11Codegen.cpp's own frame-pointer-
+// relative Local/Param addressing (`[r5+N]`/`[r5-N]`), never PC-
+// relative and never a symbol (see buildOperand() below).
 struct Operand {
-    enum Kind { Reg, Imm, Mem } kind = Imm;
+    enum Kind { Reg, Imm, Mem, Indexed } kind = Imm;
     int reg = -1;
-    std::vector<Syllable> expr;  // Imm/Mem
+    std::vector<Syllable> expr;  // Imm/Mem: the operand's own value/target.
+                                  // Indexed: the displacement added to `reg` (empty means 0).
 };
 
 struct Line {
@@ -88,7 +96,29 @@ int regNumber(const std::string &lower) {
 }
 
 Operand buildOperand(PccAsmParser::OperandContext *ctx) {
-    if (ctx->LBRACKET()) fail("bracketed memory operands aren't part of this target's dialect");
+    if (ctx->LBRACKET()) {
+        // `[Rn+N]`/`[Rn-N]` - the one bracketed form this dialect
+        // accepts (see Operand::Indexed's own comment above): the
+        // first syllable must be a bare, unsigned base register, and
+        // every remaining syllable a literal number (never a symbol -
+        // Pdp11Codegen.cpp only ever uses this for a compile-time-
+        // constant frame-pointer displacement, so there's no case to
+        // support, and no relocation to ever record for one).
+        std::vector<Syllable> syls = exprToSyllables(ctx->expr());
+        if (syls.empty() || syls[0].sign != 0 || syls[0].kind != SylKind::Symbol) {
+            fail("'[...]' operand must start with a bare base register, e.g. '[r5+4]'");
+        }
+        int baseReg = regNumber(toLower(syls[0].text));
+        if (baseReg < 0) fail("'[...]' operand's base must be a register");
+        for (size_t i = 1; i < syls.size(); i++) {
+            if (syls[i].kind != SylKind::Number) fail("'[...]' operand's displacement must be a literal number");
+        }
+        Operand op;
+        op.kind = Operand::Indexed;
+        op.reg = baseReg;
+        op.expr.assign(syls.begin() + 1, syls.end());
+        return op;
+    }
     std::vector<Syllable> syls = exprToSyllables(ctx->expr());
     Operand op;
     if (syls.size() == 1 && syls[0].sign == 0 && syls[0].kind == SylKind::Symbol) {
@@ -308,11 +338,14 @@ class Assembler {
     // 010, "(PC)+": the extension word that follows is the literal
     // value) or relative (mode 110, "X(PC)": the extension word is a
     // *displacement* from the extension word's own address to the
-    // real target - see Pdp11Assembler.h's own header comment). No
-    // other addressing mode (register-deferred, autoincrement,
-    // indexed-by-a-non-PC-register, ...) is ever produced by this
-    // classifier - Pdp11Codegen.cpp's own dedicated mnemonics
-    // (`ldind`/`stind`/`push`/`pop`/`lea`) cover every one of those.
+    // real target - see Pdp11Assembler.h's own header comment), or -
+    // via any other register - index mode (mode 110, "X(Rn)": the
+    // extension word is a plain additive displacement to that
+    // register's own runtime value, see Operand::Indexed's own
+    // comment). No other addressing mode (register-deferred,
+    // autoincrement, ...) is ever produced by this classifier -
+    // Pdp11Codegen.cpp's own dedicated mnemonics (`ldind`/`stind`/
+    // `push`/`pop`/`lea`) cover every one of those.
     struct EA {
         uint8_t mode;
         uint8_t reg;
@@ -325,6 +358,8 @@ class Assembler {
                 return {0b010, 7};
             case Operand::Mem:
                 return {0b110, 7};
+            case Operand::Indexed:
+                return {0b110, static_cast<uint8_t>(op.reg)};
         }
         fail("internal: unhandled operand kind");
     }
@@ -351,6 +386,12 @@ class Assembler {
                 relocations_.push_back({offset_, externalName, kPdp11RelocRel16});
             }
             emit16(static_cast<uint16_t>(target - extAddr));
+        } else if (op.kind == Operand::Indexed) {
+            // A plain additive displacement, never PC-relative and
+            // never a symbol (buildOperand() only ever lets a literal
+            // number through here) - so, unlike Mem above, this never
+            // records a relocation.
+            emit16(static_cast<uint16_t>(evalExpr(op.expr)));
         }
     }
 

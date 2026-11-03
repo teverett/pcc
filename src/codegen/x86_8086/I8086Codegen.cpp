@@ -14,8 +14,6 @@ namespace {
 
 std::string I8086Codegen::allocTemp() { return "t" + std::to_string(tempCounter_++); }
 
-void I8086Codegen::declareTemp(const std::string &label) { trailer_.push_back(label + ": dw 0"); }
-
 // A literal element is its own decimal text; a symbol element is the
 // referenced Slot's or Function's own label, written out bare - NASM-
 // style "dw" (I8086Assembler.cpp's Line::Dw) already evaluates any
@@ -169,13 +167,25 @@ std::string I8086Codegen::generate(const ir::Program &prog, bool objectMode) {
 
 std::map<std::string, std::string> I8086Codegen::perFileAsm() const { return perFileAsm_; }
 
+// Every activation gets its own real stack frame: `push bp` saves
+// the caller's frame pointer, `mov bp,sp` makes `bp` the fixed point
+// every Local/Param in this call addresses relative to (see
+// I8086Codegen.h's `addr()`), and `sub sp,N` reserves this
+// function's own locals below it. The epilogue's `mov sp,bp` tears
+// the whole frame down in one instruction regardless of how many
+// locals it had, then `pop bp` restores the caller's own frame -
+// this is what lets two overlapping activations of the same
+// function (direct or indirect recursion) never share storage: each
+// `call` gets a fresh `bp`/frame of its own.
 void I8086Codegen::genFunction(const ir::FunctionBody &fn) {
     curFunctionLabel_ = label(fn.func);
     code_ << curFunctionLabel_ << ":\n";
+    code_ << "    push bp\n    mov bp, sp\n";
+    if (fn.func->frameSize > 0) code_ << "    sub sp, " << (fn.func->frameSize * 2) << "\n";
 
-    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
     genStmt(*fn.body);
 
+    code_ << "    mov sp, bp\n    pop bp\n";
     code_ << "    ret\n\n";
 }
 
@@ -212,20 +222,26 @@ void I8086Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
+            // Early exit from the function - genFunction()'s own
+            // fall-through epilogue never runs for this path, so it
+            // needs this same frame teardown inline (see its own
+            // comment for what each instruction does).
+            code_ << "    mov sp, bp\n    pop bp\n";
             code_ << "    ret\n";
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arrayInit);
-            } else {
-                declareTemp(lbl);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    code_ << "    mov [" << lbl << "], ax\n";
-                }
+                genLocalArrayInit(s.declSlot);
+            } else if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                code_ << "    mov " << addr(s.declSlot) << ", ax\n";
             }
+            // No "else" case for a bare, uninitialized scalar: its
+            // own frame word already exists (genFunction()'s own
+            // `sub sp,N` reserved it) - same as a real, ordinary C
+            // automatic variable, its value is simply whatever was
+            // already in that stack slot until something assigns it.
             return;
         }
         case ir::StmtKind::ExprStmt: {
@@ -256,7 +272,7 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
             // IRBuilder already rejects a bare array Var outside of
             // `&` (which bypasses this path), so e.slot is always a
             // scalar here.
-            code_ << "    mov ax, [" << label(e.slot) << "]\n";
+            code_ << "    mov ax, " << operandOf(e.slot) << "\n";
             return;
         }
         case ir::ExprKind::Index: {
@@ -265,15 +281,15 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
         }
         case ir::ExprKind::Assign: {
             if (e.lhs) {  // slot[idx] = rhs
-                std::string addr = computeElementAddr(e.slot, *e.lhs);
+                std::string memOperand = computeElementAddr(e.slot, *e.lhs);
                 code_ << "    push bx\n";
                 genExpr(*e.rhs);
                 code_ << "    pop bx\n";
-                code_ << "    mov " << addr << ", ax\n";
+                code_ << "    mov " << memOperand << ", ax\n";
                 return;
             }
             genExpr(*e.rhs);
-            code_ << "    mov [" << label(e.slot) << "], ax\n";
+            code_ << "    mov " << operandOf(e.slot) << ", ax\n";
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -302,21 +318,26 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            // Builds each argument cell's label directly from
-            // (e.func->sourceName, argument index) - exactly label()'s
-            // own "p_<ownerFunctionName>_<paramIndex>" convention for
-            // a Param Slot - rather than indexing e.func->params[i]:
-            // an external function (real separate compilation, see
-            // IR.h's `isExternal`) has no real parameter list at all
-            // (there's no other file's own signature left to see),
-            // so params[i] would read past an empty vector. See
-            // Pdp7Codegen.cpp's own version of this same fix for why
-            // this is exactly as correct for a LOCAL function too.
-            for (size_t i = 0; i < e.args.size(); i++) {
+            // Arguments are pushed onto the real stack, last-declared
+            // one first, so the first argument ends up closest to the
+            // return address `call` is about to push - matching the
+            // address every Param already addresses itself by (see
+            // I8086Codegen.h's `addr()`: paramIndex 0 is `bp+4`, the
+            // lowest positive offset). Each callee lays them into ITS
+            // OWN frame itself; nothing here needs to know anything
+            // about the callee's parameter count or names beyond
+            // `e.args.size()` (true of a real separate-compilation
+            // external function too, same as before this convention
+            // existed - see IR.h's `isExternal`). The caller cleans
+            // the pushed words back off afterward (`add sp,N`) -
+            // cdecl's own convention, chosen here only because it
+            // needs no cooperation from the callee at all.
+            for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                code_ << "    mov [p_" << e.func->sourceName << "_" << i << "], ax\n";
+                code_ << "    push ax\n";
             }
             code_ << "    call " << label(e.func) << "\n";
+            if (!e.args.empty()) code_ << "    add sp, " << (e.args.size() * 2) << "\n";
             return;
         }
         case ir::ExprKind::CallPtr: {
@@ -351,33 +372,47 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
     }
 }
 
-// slot[idxExpr]'s effective-address operand text, e.g. "[arr3+bx]",
-// with bx already loaded with idx*2 (words are 2 bytes on this
-// byte-addressed target, unlike pdp7's word-addressed memory).
+// slot[idxExpr]'s effective-address operand text, e.g. "[bx]", with
+// bx already loaded with the final effective address (idx*2 - words
+// are 2 bytes on this byte-addressed target, unlike pdp7's word-
+// addressed memory - plus the array's or pointer's own base).
 //
 // slot is only the base address itself when it's a declared array
 // (slot->arraySize > 0) - slot[idx] on a plain variable means that
 // variable holds a pointer, and the base to index from is its
-// runtime VALUE (loaded with `add ax, [label]`), not the compile-time
-// address `label` itself folded into the addressing mode. Indexing a
-// pointer parameter (e.g. p[1] inside a function taking `int p`)
-// needs this distinction.
+// runtime VALUE, not its own address. A Global array's base folds
+// into a compile-time immediate the same way its own address always
+// does (see genAddrOf below); a Local array's base needs `lea`
+// instead, since it's only known at runtime relative to `bp` (see
+// I8086Codegen.h's `addr()`) - every activation gets its own. A
+// pointer variable (Global or not) is indexed through whatever
+// address its own VALUE holds either way, via operandOf().
 std::string I8086Codegen::computeElementAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
-    std::string lbl = label(slot);
     genExpr(idxExpr);
     code_ << "    shl ax, 1\n";
-    if (slot->arraySize > 0) {
-        code_ << "    mov bx, ax\n";
-        return "[" + lbl + "+bx]";
-    }
-    code_ << "    add ax, [" << lbl << "]\n";
     code_ << "    mov bx, ax\n";
+    if (slot->arraySize > 0) {
+        if (slot->kind == ir::SlotKind::Global) {
+            code_ << "    add bx, " << label(slot) << "\n";
+        } else {
+            // A Local array's words sit at decreasing addresses as
+            // its own element index increases (addr(slot) is the
+            // array's *first* word, closest to `bp`; later words are
+            // further below it - see addr()'s own comment) - the
+            // mirror image of a Global array's increasing-address
+            // layout above, so this is base-minus-scaled-index, not
+            // base-plus.
+            code_ << "    lea ax, " << addr(slot) << "\n    sub ax, bx\n    mov bx, ax\n";
+        }
+    } else {
+        code_ << "    add bx, " << operandOf(slot) << "\n";
+    }
     return "[bx]";
 }
 
 void I8086Codegen::genIndex(const ir::Expr &e) {
-    std::string addr = computeElementAddr(e.slot, *e.lhs);
-    code_ << "    mov ax, " << addr << "\n";
+    std::string memOperand = computeElementAddr(e.slot, *e.lhs);
+    code_ << "    mov ax, " << memOperand << "\n";
 }
 
 // &operand: a plain variable/array (&slot -> its own address), an
@@ -385,19 +420,32 @@ void I8086Codegen::genIndex(const ir::Expr &e) {
 // function name (&fn -> fn's own entry label - the same address a
 // direct `call label(fn)` already targets; see label()'s own
 // comment) - nothing else in this subset has an address worth taking.
+// A Global's own address is a compile-time immediate (its label,
+// used bare); a Local/Param's is only known at runtime relative to
+// `bp` (see addr()), so it needs `lea` instead of a plain `mov`.
 void I8086Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        code_ << "    mov ax, " << label(operand.slot) << "\n";
+        if (operand.slot->kind == ir::SlotKind::Global) {
+            code_ << "    mov ax, " << label(operand.slot) << "\n";
+        } else {
+            code_ << "    lea ax, " << addr(operand.slot) << "\n";
+        }
         return;
     }
     if (operand.kind == ir::ExprKind::Index) {
-        std::string lbl = label(operand.slot);
         genExpr(*operand.lhs);
         code_ << "    shl ax, 1\n";
         if (operand.slot->arraySize > 0) {
-            code_ << "    add ax, " << lbl << "\n";
+            if (operand.slot->kind == ir::SlotKind::Global) {
+                code_ << "    add ax, " << label(operand.slot) << "\n";
+            } else {
+                // See computeElementAddr()'s own identical comment -
+                // a Local array's element address is base-minus-
+                // scaled-index.
+                code_ << "    mov bx, ax\n    lea ax, " << addr(operand.slot) << "\n    sub ax, bx\n";
+            }
         } else {
-            code_ << "    add ax, [" << lbl << "]\n";
+            code_ << "    add ax, " << operandOf(operand.slot) << "\n";
         }
         return;
     }
@@ -406,6 +454,23 @@ void I8086Codegen::genAddrOf(const ir::Expr &operand) {
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");
+}
+
+// Stores arrayInit into `slot`'s own frame slots - every call needs
+// this re-run, since (unlike a Global's one static trailer) a
+// Local's storage is this activation's own fresh frame region, not
+// pre-set to anything; arrayInit is always fully populated up to
+// arraySize (zero-padded even with no source-level initializer - see
+// BuildAst.cpp's padArrayInit), so this always leaves the whole array
+// in a known state, same as a Global array's static trailer always
+// did. An element's own address is slot->frameOffset+i words below
+// `bp`, the same arithmetic addr() uses for the array's own first
+// word, just advanced by i.
+void I8086Codegen::genLocalArrayInit(const ir::Slot *slot) {
+    for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+        code_ << "    mov ax, " << arrayElemText(slot->arrayInit[i]) << "\n";
+        code_ << "    mov [bp-" << (2 * (slot->frameOffset + static_cast<int>(i))) << "], ax\n";
+    }
 }
 
 void I8086Codegen::genBinary(const ir::Expr &e) {

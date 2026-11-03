@@ -21,9 +21,12 @@ namespace pcc {
 // parts, PCLATH paging is never needed here), and its real 8-level
 // hardware call stack. `generate()` returns a complete, self-
 // contained program starting at the real hardware reset vector
-// (0x0000), halting in an infinite loop - the same "no stack, no
-// recursion" model every backend shares (see README's "Scope and
-// limitations").
+// (0x0000), halting in an infinite loop. Every Local/Param gets real
+// per-call storage (see genFunction()'s own emitPrologue()/
+// emitEpilogue() and this file's own header comment further down),
+// so direct and mutual/indirect recursion both compute correctly, up
+// to whatever depth the real 8-level hardware call stack allows
+// before it runs out (see that same comment).
 //
 // Harvard architecture: program memory (14-bit words, holding code)
 // and data memory (byte-addressed file registers, holding every
@@ -65,18 +68,19 @@ namespace pcc {
 // it, stored back immediately after.
 //
 // No real general-purpose stack at all (unlike the 6502/8080, the
-// PIC16 core's one hardware stack is a dedicated, non-addressable
-// 8-level *return-address* stack used automatically by CALL/RETURN -
-// there's no PUSH/POP-equivalent for ordinary data). So "save the
-// other operand across evaluating this subexpression" (genBinary()'s
-// own `+`/`-`/etc., and every comparison) needs a *real* software
-// stack in file-register space after all: a dedicated `SSTACK`
-// region plus an `SP` cursor byte, pushed/popped via FSR/INDF
-// (pushCell2()/popCell2(), pushPtrCell()/popPtrCell() below). A
-// compile-time-indexed scheme (one fixed cell per static nesting
-// depth, no runtime pointer) looks tempting and costs nothing at
-// runtime - but it's unsound the moment a call can happen between a
-// push and its matching pop: the callee's own codegen was compiled
+// PIC16 core's one hardware stack is a dedicated, non-addressable,
+// fixed-depth (8 levels on the real PIC16F84A) *return-address* stack
+// used automatically by CALL/RETURN - there's no PUSH/POP-equivalent
+// for ordinary data, and no way to extend or redirect it). So "save
+// the other operand across evaluating this subexpression"
+// (genBinary()'s own `+`/`-`/etc., and every comparison) needs a
+// *real* software stack in file-register space after all: a
+// dedicated `SSTACK` region plus an `SP` cursor byte, pushed/popped
+// via FSR/INDF (pushCell2()/popCell2(), pushPtrCell()/popPtrCell()
+// below). A compile-time-indexed scheme (one fixed cell per static
+// nesting depth, no runtime pointer) looks tempting and costs nothing
+// at runtime - but it's unsound the moment a call can happen between
+// a push and its matching pop: the callee's own codegen was compiled
 // independently and starts back at depth 0, so it reuses the exact
 // same fixed cell the *caller* is still holding a live value in
 // across that very call (e.g. `total + f()` - the `+`'s own saved
@@ -87,6 +91,40 @@ namespace pcc {
 // stack and this software one are two genuinely independent
 // structures, so a callee push/popping its own values never disturbs
 // anything the caller pushed earlier.
+//
+// That same `SSTACK`/`SP` software stack is also where every Local
+// and Param's own real per-call storage lives (genFunction()'s own
+// emitPrologue()/emitEpilogue(), frameSlotOffset()) - the two uses
+// nest correctly for exactly the reason above: a whole call frame is
+// just a longer-lived "thing pushed on `SSTACK`" than one binary op's
+// saved operand, torn down (in LIFO order, like everything else here)
+// by the callee's own epilogue before it returns. `FP`, one more
+// fixed single-byte pseudo-register alongside `ac`/`bc`/etc., holds
+// the *current* call's own frame base within `SSTACK`; saving/
+// restoring it across a `call` (in `SSTACK` too, right after the
+// pushed argument words - see emitPrologue()'s own comment) is what
+// gives every activation of a function its own frame, direct or
+// mutual/indirect recursion included, up to whatever depth the real
+// hardware call stack allows before *that* (never this software one)
+// runs out - a real, inherent hardware limit (8 levels on the real
+// PIC16F84A), not a bug, and not something any software scheme here
+// can lift: once 9 CALLs are outstanding at once, the 9th silently
+// overwrites the oldest still-pending return address, with no
+// overflow flag raised at all on this chip. A frame's own params
+// live first (`FP+0`, `FP+2`, ... one per Param, in paramIndex
+// order - the caller's own pushed argument words, never copied again),
+// then one byte holding the caller's own saved `FP` (`FP+2*numParams`),
+// then every Local in declaration order starting right after that
+// (`frameOffset` 1's own word at `FP+2*numParams+1`, each later
+// `frameOffset` 2 bytes higher - see frameSlotOffset()'s own comment).
+// Unlike a stack that grows toward *decreasing* addresses (the 8086/
+// i386 backends' own `bp`-relative frames), `SSTACK` only ever grows
+// upward (`SP` only ever increments - see pushCell2() et al.), so a
+// Local array's element `i` sits at *increasing* addresses as `i`
+// grows, the same direction a Global array's own trailer already
+// uses - never the base-minus-`i` arithmetic a decreasing-address
+// frame needs (see I8086Codegen.h's own `addr()` comment for that
+// opposite case, and the real miscompile it's there to avoid).
 //
 // `ptr` - the one thing in this backend that ever needs to be a real
 // indirection target (via FSR/INDF, the PIC16 core's one indirect-
@@ -145,22 +183,27 @@ namespace pcc {
 // the one that defines `main` has no mechanism here to run its own
 // initializer under real separate compilation at all.
 //
-// Every real global/local/param's own file-register address is a
-// real, relocatable assembler symbol (see declareRam()'s own
-// comment, and PIC16Assembler.h's own header comment on the
-// `kPIC16RelocData` relocation kind and the `"..d"` pseudo-symbol):
-// two separately-compiled files' own distinct globals get distinct,
-// non-colliding linked data-space addresses once merged
-// (GenericLinker.h's own second, data-space layout pass - see its
-// own `dataBaseAddress` comment), the data-space counterpart of how
-// `fn_`-prefixed functions' own CODE addresses already work. The
-// seven fixed scratch pseudo-registers/software-stack cells
-// (`ac`/`bc`/`cx`/`dx`/`ptr`/`SP`/`SSTACK`) are different: every
-// function in every file shares them, so they're declared as plain
-// compile-time equates at a fixed address instead (see declareRam()'s
-// own comment) - the same value in every object regardless of where
-// it's linked, never part of this relocatable data-space allocation
-// at all.
+// Every real Global's own file-register address is a real,
+// relocatable assembler symbol (see declareRam()'s own comment, and
+// PIC16Assembler.h's own header comment on the `kPIC16RelocData`
+// relocation kind and the `"..d"` pseudo-symbol): two separately-
+// compiled files' own distinct globals get distinct, non-colliding
+// linked data-space addresses once merged (GenericLinker.h's own
+// second, data-space layout pass - see its own `dataBaseAddress`
+// comment), the data-space counterpart of how `fn_`-prefixed
+// functions' own CODE addresses already work. A Local or Param is
+// different again - it has no data-space symbol at all, relocatable
+// or otherwise, real separate compilation or not, since it never
+// crosses a file boundary and lives in a fresh per-call frame inside
+// `SSTACK` instead (see this file's own header comment above and
+// frameSlotOffset()'s own comment). The eight fixed scratch pseudo-
+// registers/software-stack cells (`ac`/`bc`/`cx`/`dx`/`ptr`/`SP`/
+// `FP`/`SSTACK`) are different from a Global too: every function in
+// every file shares them, so they're declared as plain compile-time
+// equates at a fixed address instead (see declareRam()'s own
+// comment) - the same value in every object regardless of where it's
+// linked, never part of this relocatable data-space allocation at
+// all.
 class PIC16Codegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
@@ -200,9 +243,15 @@ class PIC16Codegen : public Backend {
     void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame words
 
     // Leaves slot[idxExpr]'s own effective (one-byte) file address in
-    // `ptr`.
+    // `ptr`. For a Global, the base is a compile-time address (the
+    // array's own label) or, for a plain pointer variable, that
+    // variable's own stored value; for a Local/Param, the base is
+    // instead FP-relative (see frameSlotOffset()'s own comment) - an
+    // array's own base address, or a pointer variable's own value,
+    // read out of its frame slot via FSR/INDF first.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
     // Assumes `ptr` already holds a target file address; writes
@@ -264,42 +313,80 @@ class PIC16Codegen : public Backend {
     void emitInitElem(std::ostream &out, const std::string &loLbl, const std::string &hiLbl,
                        const ir::ArrayInitElem &e);
 
-    static std::string label(const ir::Slot *slot) {
-        if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
-        if (slot->kind == ir::SlotKind::Param) {
-            return "p_" + slot->ownerFunctionName + "_" + std::to_string(slot->paramIndex);
-        }
-        return slot->sourceName + "_" + std::to_string(slot->id);
+    // A Local/Param's own word offset from `FP` - see this file's own
+    // header comment for the frame layout this lays out. A Param's
+    // position needs no knowledge of the current function at all
+    // (`paramIndex` alone fixes it - params always come first, in
+    // `paramIndex` order); a Local's does, since its own words start
+    // right after every Param plus the one byte holding the caller's
+    // saved `FP` - `curNumParams_` (set once, by genFunction(), for
+    // the whole function currently being generated) supplies that.
+    int frameSlotOffset(const ir::Slot *slot) const {
+        if (slot->kind == ir::SlotKind::Param) return 2 * slot->paramIndex;
+        return 2 * curNumParams_ + 2 * slot->frameOffset - 1;
     }
+    // Leaves FP + frameSlotOffset(slot) in `W`, without touching
+    // `ptr`/FSR - the shared arithmetic behind both loadFrameAddr()
+    // (a scalar's own address) and genIndexAddr()'s own Local/Param
+    // cases (an array's own base, or a pointer variable's own address
+    // before its value is read out of it).
+    void loadFrameBaseW(const ir::Slot *slot);
+    // ptr = FP + frameSlotOffset(slot) - a Local/Param scalar's own
+    // effective file address, the frame-relative counterpart of a
+    // Global's plain `label(slot)` name; followed by storeAcIndirect()/
+    // loadAcIndirect() wherever a Global would instead just name
+    // itself directly as a movf/movwf operand.
+    void loadFrameAddr(const ir::Slot *slot);
+    // Real per-call prologue/epilogue - see this file's own header
+    // comment for the frame layout and why `SSTACK`/`SP` (already
+    // needed for genBinary()'s own operand-saving) is exactly the
+    // right place for this too. emitPrologue() pushes the caller's
+    // own `FP` (right after the `numParams` argument words the caller
+    // already pushed via pushCell2() before `call` - see genExpr()'s
+    // own Call case), sets `FP` to this call's own frame base, then
+    // reserves `frameSize` more words for this function's own Locals.
+    // emitEpilogue() (every Return, and genFunction()'s own
+    // fallthrough) undoes exactly that, in reverse: deallocate the
+    // whole frame (`SP = FP`, freeing the Locals, the saved-`FP` byte,
+    // and the argument words all at once - this is a callee-cleans-up
+    // convention, so no caller-side cleanup after `call` is needed
+    // either) and restore the caller's own `FP`.
+    void emitPrologue(int numParams, int frameSize);
+    void emitEpilogue(int numParams);
+
+    // A Global's own name-based label (never `id` - see IR.h's own
+    // `Slot::ownerFunctionName` comment for why only a name, not an
+    // allocation-order id, means the same thing on both sides of real
+    // separate compilation). Never called with a Local/Param: neither
+    // has a name-based (or any other static) address any more - see
+    // this file's own header comment - so every reference to one
+    // instead goes through frameSlotOffset()/loadFrameAddr() above.
+    static std::string label(const ir::Slot *slot) { return "g_" + slot->sourceName; }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 
-    // Reserves `count` bytes of file-register space for `lbl`. In
-    // whole-program mode (`!objectMode_`) this always emits this
-    // backend's own `res` directive (see PIC16Assembler.h's own
-    // header comment), the same single, unified RAM counter for
-    // every pseudo-register, global, local and param, exactly as
-    // before. In object mode, one of the seven fixed, shared scratch
-    // pseudo-registers/software-stack names (`ac`/`bc`/`cx`/`dx`/
-    // `ptr`/`SP`/`SSTACK`) instead becomes a plain compile-time
-    // equate at its own fixed address (`kPIC16Reg*` - see
-    // PIC16Assembler.h's own header comment on why these can never be
-    // part of any one object's own relocatable per-object data
-    // allocation); every other name (a real global/local/param) still
-    // emits `res`, now interpreted by PIC16Assembler.cpp's own
-    // object-mode assembler as a relocatable data-space symbol (see
-    // its own header comment on `"..d"`). `zeroAtStart` additionally
-    // queues a real global/local/param to be explicitly cleared by
-    // generate()'s own startup code (see this file's own header
-    // comment on why that's needed at all here) - never set for a
-    // pseudo-register, which this function never adds to
-    // `zeroAtStart_` regardless of mode.
-    void declareRam(const std::string &lbl, int count, bool zeroAtStart = true);
+    // Reserves `count` bytes of file-register space for `lbl` - a
+    // Global or one of the fixed pseudo-registers/software-stack
+    // names, never a Local/Param (see this file's own header comment:
+    // those live in a per-call frame inside `SSTACK` instead, never
+    // in a `res`-declared cell of their own). In whole-program mode
+    // (`!objectMode_`) this always emits this backend's own `res`
+    // directive (see PIC16Assembler.h's own header comment), the same
+    // single, unified RAM counter every caller shares. In object
+    // mode, one of the eight fixed, shared scratch pseudo-registers/
+    // software-stack names (`ac`/`bc`/`cx`/`dx`/`ptr`/`SP`/`FP`/
+    // `SSTACK`) instead becomes a plain compile-time equate at its own
+    // fixed address (`kPIC16Reg*` - see PIC16Assembler.h's own header
+    // comment on why these can never be part of any one object's own
+    // relocatable per-object data allocation); every other name (a
+    // real Global) still emits `res`, now interpreted by
+    // PIC16Assembler.cpp's own object-mode assembler as a relocatable
+    // data-space symbol (see its own header comment on `"..d"`).
+    void declareRam(const std::string &lbl, int count);
 
     std::ostringstream code_;
     std::vector<std::string> ramDecls_;
-    std::vector<std::pair<std::string, int>> zeroAtStart_;
     std::map<std::string, std::string> perFileAsm_;
 
     // Set once, at the top of generate() - see declareRam()'s own
@@ -308,6 +395,13 @@ class PIC16Codegen : public Backend {
     // relocatable data-space `res` label) once real separate
     // compilation is in play.
     bool objectMode_ = false;
+
+    // The number of Params the function currently being generated by
+    // genFunction() declares - set once per function, read by
+    // frameSlotOffset() for every Local reference inside that
+    // function's own body (see frameSlotOffset()'s own comment for
+    // why a Local, unlike a Param, needs this to find its own words).
+    int curNumParams_ = 0;
 
     int labelCounter_ = 0;
 };

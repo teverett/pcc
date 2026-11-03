@@ -50,6 +50,23 @@ void M16cCodegen::declareArray(const std::string &lbl, const std::vector<ir::Arr
     trailer_.push_back(line.str());
 }
 
+// Stores arrayInit into `slot`'s own frame slots - every call needs
+// this re-run, since (unlike a Global's one static trailer) a
+// Local's storage is this activation's own fresh frame region, not
+// pre-set to anything; arrayInit is always fully populated up to
+// arraySize (zero-padded even with no source-level initializer), so
+// this always leaves the whole array in a known state, same as a
+// Global array's static trailer always did. An element's own address
+// is `slot->frameOffset+i` words below `fb`, the same arithmetic
+// `frameOperand()` uses for the array's own first word, just advanced
+// by `i`.
+void M16cCodegen::genLocalArrayInit(const ir::Slot *slot) {
+    for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+        code_ << "    mov.w " << arrayElemText(slot->arrayInit[i]) << ",r0\n";
+        code_ << "    mov.w r0,[fb-" << (2 * (slot->frameOffset + static_cast<int>(i))) << "]\n";
+    }
+}
+
 std::string M16cCodegen::generate(const ir::Program &prog, bool objectMode) {
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
@@ -99,8 +116,12 @@ std::map<std::string, std::string> M16cCodegen::perFileAsm() const { return perF
 
 void M16cCodegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
-    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
+    code_ << "    push.w fb\n";
+    code_ << "    mov.w sp,fb\n";
+    if (fn.func->frameSize > 0) code_ << "    sub.w " << (fn.func->frameSize * 2) << ",sp\n";
     genStmt(*fn.body);
+    code_ << "    mov.w fb,sp\n";
+    code_ << "    pop.w fb\n";
     code_ << "    rts\n\n";
 }
 
@@ -138,20 +159,27 @@ void M16cCodegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
+            // Early exit from the function - genFunction()'s own
+            // fall-through epilogue never runs for this path, so it
+            // needs this same frame teardown inline (see its own
+            // comment for what each instruction does).
+            code_ << "    mov.w fb,sp\n";
+            code_ << "    pop.w fb\n";
             code_ << "    rts\n";
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arrayInit);
-            } else {
-                declareTemp(lbl);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    code_ << "    mov.w r0," << lbl << "\n";
-                }
+                genLocalArrayInit(s.declSlot);
+            } else if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                code_ << "    mov.w r0," << frameOperand(s.declSlot) << "\n";
             }
+            // No "else" case for a bare, uninitialized scalar: its
+            // own frame word already exists (genFunction()'s own
+            // `sub.w N,sp` reserved it) - same as a real, ordinary C
+            // automatic variable, its value is simply whatever was
+            // already in that stack slot until something assigns it.
             return;
         }
         case ir::StmtKind::ExprStmt: {
@@ -175,7 +203,7 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
-            code_ << "    mov.w " << label(e.slot) << ",r0\n";
+            code_ << "    mov.w " << operandOf(e.slot) << ",r0\n";
             return;
         }
         case ir::ExprKind::Index: {
@@ -192,7 +220,7 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
                 return;
             }
             genExpr(*e.rhs);
-            code_ << "    mov.w r0," << label(e.slot) << "\n";
+            code_ << "    mov.w r0," << operandOf(e.slot) << "\n";
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -223,19 +251,31 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            for (size_t i = 0; i < e.args.size(); i++) {
+            // Arguments are pushed onto the real stack, last-declared
+            // one first, so the first argument ends up closest to the
+            // return address `jsr.w` is about to push - matching the
+            // address every Param already addresses itself by (see
+            // M16cCodegen.h's `frameOperand()`: paramIndex 0 is
+            // `fb+4`, the lowest positive offset). Each callee lays
+            // them into ITS OWN frame itself; nothing here needs to
+            // know anything about the callee's parameter count or
+            // names beyond `e.args.size()`. The caller cleans the
+            // pushed words back off afterward (`add.w N,sp`).
+            for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                code_ << "    mov.w r0,p_" << e.func->sourceName << "_" << i << "\n";
+                code_ << "    push.w r0\n";
             }
             code_ << "    jsr.w " << label(e.func) << "\n";
+            if (!e.args.empty()) code_ << "    add.w " << (e.args.size() * 2) << ",sp\n";
             return;
         }
         case ir::ExprKind::CallPtr: {
             // e.args is always empty here - IRBuilder.cpp rejects any
             // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr): there's no per-callee
-            // p_<fn>_<i> cell to write one into until the callee is
-            // known, which it never is at compile time for this kind.
+            // (see IR.h's ExprKind::CallPtr): there's no way to push
+            // an argument into the callee's own frame (see
+            // ExprKind::Call's own comment) until the callee is known,
+            // which it never is at compile time for this kind.
             //
             // The real M16C `JSRI.W` indirect-call instruction doesn't
             // treat its own operand's address as the callee directly -
@@ -271,20 +311,39 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
 // Leaves slot[idxExpr]'s own effective address in `A0` - see
 // M16cCodegen.h's own header comment on why that's a dedicated
 // address register, never aliasing `R0`/`R1`. `slot->arraySize > 0`
-// means the base is a compile-time-known label (an address, loaded
-// via `lea`); otherwise `slot` is a plain pointer variable, so the
-// base instead comes from *reading* that variable's own stored value
-// first.
+// means the base is a compile-time-known address (a Global's own
+// label, loaded via `lea`, or a Local's own `fb`-relative address,
+// also loaded via `lea` - see M16cCodegen.h's `frameOperand()`);
+// otherwise `slot` is a plain pointer variable, so the base instead
+// comes from *reading* that variable's own stored value first (via
+// `operandOf()`, the same for every Slot kind, since a runtime
+// pointer VALUE is being offset here, not the slot's own storage
+// address).
+//
+// A Global array's elements sit at increasing addresses as the index
+// increases (an ordinary label-plus-offset layout), but a Local
+// array's elements sit at DECREASING addresses as the index increases
+// - `frameOperand()`'s own address is the array's *first* word,
+// closest to `fb`, and later words are further below it (each Local's
+// own frameOffset only ever grows downward from `fb` - see
+// M16cCodegen.h's own comment) - so this is base-minus-scaled-index
+// for a Local, not base-plus, the mirror image of a Global's layout.
+// Getting this backwards corrupts the saved `fb`/return address the
+// moment anything indexes a Local array past element 0.
 void M16cCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
-    genExpr(idxExpr);               // r0 = index
-    code_ << "    shl.w 1,r0\n";   // r0 *= 2 (words are 2 bytes on this byte-addressed target)
-    std::string lbl = label(slot);
+    genExpr(idxExpr);              // r0 = index
+    code_ << "    shl.w 1,r0\n";  // r0 *= 2 (words are 2 bytes on this byte-addressed target)
     if (slot->arraySize > 0) {
-        code_ << "    lea " << lbl << ",a0\n";
+        code_ << "    lea " << operandOf(slot) << ",a0\n";
+        if (slot->kind == ir::SlotKind::Global) {
+            code_ << "    add.w r0,a0\n";
+        } else {
+            code_ << "    sub.w r0,a0\n";
+        }
     } else {
-        code_ << "    mov.w " << lbl << ",a0\n";
+        code_ << "    mov.w " << operandOf(slot) << ",a0\n";
+        code_ << "    add.w r0,a0\n";
     }
-    code_ << "    add.w r0,a0\n";
 }
 
 void M16cCodegen::genIndex(const ir::Expr &e) {
@@ -294,7 +353,7 @@ void M16cCodegen::genIndex(const ir::Expr &e) {
 
 void M16cCodegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        code_ << "    lea " << label(operand.slot) << ",r0\n";
+        code_ << "    lea " << operandOf(operand.slot) << ",r0\n";
         return;
     }
     if (operand.kind == ir::ExprKind::Index) {

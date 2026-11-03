@@ -364,7 +364,7 @@ class Assembler {
         static const std::unordered_map<std::string, uint8_t> implied = {
             {"nop", 0x00}, {"rlc", 0x07}, {"rrc", 0x0F}, {"ral", 0x17}, {"rar", 0x1F}, {"cma", 0x2F},
             {"stc", 0x37}, {"cmc", 0x3F}, {"xchg", 0xEB}, {"ret", 0xC9}, {"ei", 0xFB},  {"di", 0xF3},
-            {"hlt", 0x76}, {"pchl", 0xE9},
+            {"hlt", 0x76}, {"pchl", 0xE9}, {"sphl", 0xF9},
         };
         if (auto it = implied.find(mnemonic); it != implied.end()) {
             if (!ops.empty()) fail("'" + mnemonic + "' takes no operand");

@@ -45,6 +45,7 @@ struct Operand {
     int reg = -1;
     bool is8 = false;
     bool memHasEbx = false;
+    bool memHasEbp = false;
     bool memHasDisp = false;
     std::vector<Syllable> expr;
 };
@@ -112,6 +113,7 @@ Operand buildOperand(PccAsmParser::OperandContext *ctx) {
         op.kind = Operand::Mem;
         auto syls = exprToSyllables(ctx->expr());
         auto isEbx = [](const Syllable &s) { return s.kind == SylKind::Symbol && toLower(s.text) == "ebx"; };
+        auto isEbp = [](const Syllable &s) { return s.kind == SylKind::Symbol && toLower(s.text) == "ebp"; };
         if (syls.size() == 1 && isEbx(syls[0])) {
             op.memHasEbx = true;
             op.memHasDisp = false;
@@ -123,6 +125,10 @@ Operand buildOperand(PccAsmParser::OperandContext *ctx) {
             op.memHasEbx = true;
             op.memHasDisp = true;
             op.expr = {syls[0]};
+        } else if (syls.size() == 2 && isEbp(syls[0]) && !isEbp(syls[1])) {
+            op.memHasEbp = true;
+            op.memHasDisp = true;
+            op.expr = {syls[1]};
         } else if (syls.size() == 1 && !isEbx(syls[0])) {
             op.memHasEbx = false;
             op.memHasDisp = true;
@@ -373,6 +379,18 @@ class Assembler {
             emitAbs32(mem.expr);
             return;
         }
+        if (mem.memHasEbp) {
+            // [ebp+disp32]: mod=10, rm=101 (ebp) - mod=00/rm=101 is
+            // reserved for the no-base direct-[label] form below, so a
+            // disp32-with-base ebp reference always needs mod=10 even
+            // when the displacement would otherwise fit in a byte (a
+            // Local/Param's own addr() - I386Codegen.h - never emits a
+            // zero displacement, so the mod=01/rm=101 "[ebp]" edge case
+            // never arises here).
+            emit8(static_cast<uint8_t>(0x80 | (reg << 3) | 0x05));
+            emitAbs32(mem.expr);
+            return;
+        }
         // direct [label]: mod=00, rm=101, disp32-only addressing
         emit8(static_cast<uint8_t>(0x00 | (reg << 3) | 0x05));
         emitAbs32(mem.expr);
@@ -487,7 +505,7 @@ class Assembler {
                 // a plain label); every other shape (`[ebx]`,
                 // `[label+ebx]`, or any other destination register)
                 // goes through the general ModRM form instead.
-                if (dst.reg == 0 && !src.memHasEbx) {
+                if (dst.reg == 0 && !src.memHasEbx && !src.memHasEbp) {
                     emit8(0xA1);
                     emitAbs32(src.expr);
                     return;
@@ -497,7 +515,7 @@ class Assembler {
                 return;
             }
             if (dst.kind == Operand::Mem && src.kind == Operand::Reg) {
-                if (src.reg == 0 && !dst.memHasEbx) {
+                if (src.reg == 0 && !dst.memHasEbx && !dst.memHasEbp) {
                     emit8(0xA3);
                     emitAbs32(dst.expr);
                     return;
@@ -507,6 +525,55 @@ class Assembler {
                 return;
             }
             fail("'mov': unsupported operand combination in this dialect");
+        }
+        if (mnemonic == "lea") {
+            // `lea reg,[ebp+disp32]` - I386Codegen.cpp's own way to
+            // compute a Local/Param's own runtime effective address
+            // (its own stack slot has no compile-time-foldable label
+            // the way a Global's does) - real 8D /r, same real
+            // instruction as I8086Codegen.cpp's own `lea`, just 32
+            // bits wide throughout.
+            if (ops.size() != 2 || ops[0].kind != Operand::Reg || ops[1].kind != Operand::Mem) {
+                fail("'lea' needs a register destination and a memory source in this dialect");
+            }
+            emit8(0x8D);
+            emitModRMMem(ops[1], static_cast<uint8_t>(ops[0].reg));
+            return;
+        }
+        if (mnemonic == "add" && requireOperand(ops, 0, mnemonic).kind == Operand::Reg &&
+            requireOperand(ops, 0, mnemonic).reg != 0 && requireOperand(ops, 1, mnemonic).kind == Operand::Imm) {
+            // `add <reg>,<N or label>` for any register but eax (which
+            // already has its own shorter `05`-opcode form above) -
+            // two real call sites: `add esp,<N>` (I386Codegen.cpp's
+            // own caller-side stack cleanup after a `Call`, always a
+            // small literal count) and `add ebx,<label>`
+            // (computeElementAddr()'s own array-base-plus-scaled-index
+            // computation when the array is a Global - a real
+            // relocatable address, not a literal). The real `81 /0
+            // id` full-imm32 form (through the same emitAbs32() choke
+            // point every other absolute address reference uses) - a
+            // literal count just costs three wasted immediate bytes.
+            uint8_t dst = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            emit8(0x81);
+            emit8(static_cast<uint8_t>(0xC0 | (0 << 3) | dst));
+            emitAbs32(requireOperand(ops, 1, mnemonic).expr);
+            return;
+        }
+        if (mnemonic == "sub" && requireOperand(ops, 0, mnemonic).kind == Operand::Reg &&
+            requireOperand(ops, 1, mnemonic).kind == Operand::Imm) {
+            // `sub esp,<N>` - I386Codegen.cpp's own per-call stack-
+            // frame prologue (reserving `frameSize` dwords of local
+            // storage) - the real `83 /5 ib` sign-extended-imm8 form,
+            // same shape as `cmp`'s own immediate case just above
+            // (every frame this backend ever builds is comfortably
+            // under 128 dwords).
+            uint8_t dst = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            uint32_t imm = evalExpr(requireOperand(ops, 1, mnemonic).expr);
+            if (imm > 0x7F && imm < 0xFFFFFF80) fail("'sub': immediate operand must fit in a signed byte");
+            emit8(0x83);
+            emit8(static_cast<uint8_t>(0xC0 | (5 << 3) | dst));
+            emit8(static_cast<uint8_t>(imm & 0xFF));
+            return;
         }
         if (mnemonic == "out") {
             // `out <port>,al` - I386Codegen.cpp's own fixed PIC-

@@ -81,6 +81,38 @@ void STM32Codegen::genGlobalInit(const std::string &ramLabel, long value) {
     code_ << "    str r0,[r2]\n";
 }
 
+void STM32Codegen::loadFrameWordAddr(const std::string &reg, int wordsFromFp) {
+    code_ << "    mov " << reg << ",r7\n";
+    if (wordsFromFp == 0) return;
+    code_ << "    movl " << (wordsFromFp > 0 ? wordsFromFp : -wordsFromFp) * 4 << ",r3\n";
+    code_ << "    " << (wordsFromFp > 0 ? "add" : "sub") << " " << reg << "," << reg << ",r3\n";
+}
+
+void STM32Codegen::loadFrameAddr(const std::string &reg, const ir::Slot *slot) {
+    int wordsFromFp = slot->kind == ir::SlotKind::Param ? (2 + slot->paramIndex) : -slot->frameOffset;
+    loadFrameWordAddr(reg, wordsFromFp);
+}
+
+void STM32Codegen::loadSlotAddr(const std::string &reg, const ir::Slot *slot) {
+    if (slot->kind == ir::SlotKind::Global) {
+        code_ << "    lea " << label(slot) << "," << reg << "\n";
+    } else {
+        loadFrameAddr(reg, slot);
+    }
+}
+
+void STM32Codegen::loadArrayInitElem(const std::string &reg, const ir::ArrayInitElem &e) {
+    if (!e.isSymbol) {
+        code_ << "    movl " << static_cast<int32_t>(static_cast<uint32_t>(e.value)) << "," << reg << "\n";
+        return;
+    }
+    code_ << "    lea " << (e.slot ? label(e.slot) : label(e.func)) << "," << reg << "\n";
+    if (!e.slot) {
+        code_ << "    movl 1,r1\n";
+        code_ << "    add " << reg << "," << reg << ",r1\n";
+    }
+}
+
 std::string STM32Codegen::generate(const ir::Program &prog, bool objectMode) {
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
@@ -171,9 +203,19 @@ std::map<std::string, std::string> STM32Codegen::perFileAsm() const { return per
 void STM32Codegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
     code_ << "    pushlr\n";
-    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
+    code_ << "    push r7\n";
+    code_ << "    mov r7,sp\n";
+    frameSize_ = fn.func->frameSize;
+    for (int i = 0; i < frameSize_; i++) code_ << "    push r0\n";
     genStmt(*fn.body);
-    code_ << "    poplr\n\n";  // reached only if control falls off the end with no explicit `return`
+    emitEpilogue();  // reached only if control falls off the end with no explicit `return`
+    code_ << "\n";
+}
+
+void STM32Codegen::emitEpilogue() {
+    for (int i = 0; i < frameSize_; i++) code_ << "    pop r1\n";
+    code_ << "    pop r7\n";
+    code_ << "    poplr\n";
 }
 
 void STM32Codegen::genStmt(const ir::Stmt &s) {
@@ -210,23 +252,26 @@ void STM32Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            code_ << "    poplr\n";
+            // Early exit - genFunction()'s own fall-off-the-end
+            // epilogue never runs for this path, so it needs this
+            // same frame teardown inline.
+            emitEpilogue();
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arrayInit);
-                for (size_t i = 0; i < s.declSlot->arrayInit.size(); i++) {
-                    genArrayElemInit(lbl, i * 4, s.declSlot->arrayInit[i]);
-                }
-            } else {
-                declareTemp(lbl);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    code_ << "    lea " << lbl << ",r2\n    str r0,[r2]\n";
-                }
+                genLocalArrayInit(s.declSlot);
+            } else if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                loadFrameAddr("r2", s.declSlot);
+                code_ << "    str r0,[r2]\n";
             }
+            // No "else" case for a bare, uninitialized scalar: its own
+            // frame word already exists (genFunction()'s own reserve-
+            // pushes already made room for it) - same as a real,
+            // ordinary C automatic variable, its value is simply
+            // whatever was already in that stack slot until something
+            // assigns it.
             return;
         }
         case ir::StmtKind::ExprStmt: {
@@ -250,7 +295,8 @@ void STM32Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
-            code_ << "    lea " << label(e.slot) << ",r2\n    ldr r0,[r2]\n";
+            loadSlotAddr("r2", e.slot);
+            code_ << "    ldr r0,[r2]\n";
             return;
         }
         case ir::ExprKind::Index: {
@@ -267,7 +313,8 @@ void STM32Codegen::genExpr(const ir::Expr &e) {
                 return;
             }
             genExpr(*e.rhs);
-            code_ << "    lea " << label(e.slot) << ",r2\n    str r0,[r2]\n";
+            loadSlotAddr("r2", e.slot);
+            code_ << "    str r0,[r2]\n";
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -298,11 +345,23 @@ void STM32Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            for (size_t i = 0; i < e.args.size(); i++) {
+            // Arguments are pushed onto the real stack, last-declared
+            // one first, so the first argument ends up closest to the
+            // return address `bl` is about to set `lr` for - see this
+            // file's own header comment. Each callee lays them into
+            // ITS OWN frame itself; nothing here needs to know
+            // anything about the callee's own parameter count or
+            // names beyond `e.args.size()`. The caller cleans the
+            // pushed words back off afterward with one dummy `pop r1`
+            // per argument (no `add sp,#imm` instruction exists in
+            // this dialect - see genFunction()'s own identical
+            // reasoning for the Local-frame reserve/release).
+            for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                code_ << "    lea p_" << e.func->sourceName << "_" << i << ",r2\n    str r0,[r2]\n";
+                code_ << "    push r0\n";
             }
             code_ << "    bl " << label(e.func) << "\n";
+            for (size_t i = 0; i < e.args.size(); i++) code_ << "    pop r1\n";
             return;
         }
         case ir::ExprKind::CallPtr: {
@@ -334,27 +393,38 @@ void STM32Codegen::genExpr(const ir::Expr &e) {
     }
 }
 
-// See STM32Codegen.h's own header comment: `r2` holds the computed
-// address, the same role m68k's `A0` plays (no zero-page-style
-// placement restriction the 6502 backend's own `ptr` has).
-// `slot->arraySize > 0` means the base is a compile-time-known label
-// (an *address*, loaded via `lea`); otherwise `slot` is a plain
-// pointer variable, so the base instead comes from *reading* that
-// variable's own stored value first.
+// `r2` holds the computed address, the same role m68k's `A0` plays
+// (no zero-page-style placement restriction the 6502 backend's own
+// `ptr` has). `arraySize > 0` means the base is the array's own first
+// word - a compile-time-known label for a Global, or (see
+// loadFrameAddr()) a runtime r7-relative address for a Local/Param;
+// otherwise `slot` is a plain pointer variable, so the base instead
+// comes from *reading* that variable's own stored value first (again
+// from a label or an r7-relative address, depending on `slot->kind`).
+// A Local/Param array's own element i sits *below* element 0
+// (addresses decrease as the index increases - see this file's own
+// header comment), the mirror image of a Global array's increasing-
+// address layout, so this is base-minus-scaled-index there, not
+// base-plus.
 void STM32Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // r0 = index
     // r0 *= 4 (words are 4 bytes on this target); done as two
     // doublings rather than a shift, needing no extra register at
     // all - same trick as M68kCodegen.cpp's own genIndexAddr().
     code_ << "    add r0,r0,r0\n    add r0,r0,r0\n";
-    std::string lbl = label(slot);
     if (slot->arraySize > 0) {
-        code_ << "    lea " << lbl << ",r2\n";
-        code_ << "    add r2,r2,r0\n";
-    } else {
-        code_ << "    lea " << lbl << ",r2\n    ldr r2,[r2]\n";
-        code_ << "    add r2,r2,r0\n";
+        if (slot->kind == ir::SlotKind::Global) {
+            code_ << "    lea " << label(slot) << ",r2\n";
+            code_ << "    add r2,r2,r0\n";
+        } else {
+            loadFrameAddr("r2", slot);
+            code_ << "    sub r2,r2,r0\n";
+        }
+        return;
     }
+    loadSlotAddr("r2", slot);
+    code_ << "    ldr r2,[r2]\n";  // r2 = the pointer variable's own stored value
+    code_ << "    add r2,r2,r0\n";
 }
 
 void STM32Codegen::genIndex(const ir::Expr &e) {
@@ -362,9 +432,27 @@ void STM32Codegen::genIndex(const ir::Expr &e) {
     code_ << "    ldr r0,[r2]\n";
 }
 
+// Stores arrayInit into `slot`'s own frame slots - every call needs
+// this re-run, since (unlike a Global's one static trailer) a Local's
+// storage is this activation's own fresh frame region, not pre-set to
+// anything; arrayInit is always fully populated up to arraySize, so
+// this always leaves the whole array in a known state, same as a
+// Global array's static trailer always did. An element's own address
+// is slot->frameOffset+i words below r7, the same arithmetic
+// loadFrameAddr() uses for the array's own first word, just advanced
+// by i.
+void STM32Codegen::genLocalArrayInit(const ir::Slot *slot) {
+    for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+        loadArrayInitElem("r0", slot->arrayInit[i]);
+        loadFrameWordAddr("r2", -(slot->frameOffset + static_cast<int>(i)));
+        code_ << "    str r0,[r2]\n";
+    }
+}
+
 void STM32Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        code_ << "    lea " << label(operand.slot) << ",r0\n";
+        loadSlotAddr("r2", operand.slot);
+        code_ << "    mov r0,r2\n";
         return;
     }
     if (operand.kind == ir::ExprKind::Index) {

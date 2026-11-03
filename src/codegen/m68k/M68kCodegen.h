@@ -19,11 +19,9 @@ namespace pcc {
 // vector-table-driven reset (the simulator sets the CPU's PC to
 // `kBaseAddress` directly - see tests/run_tests.sh's own qemu
 // invocation - rather than this backend ever having to lay out a
-// real reset vector itself), halting in an infinite loop, the same
-// "no stack, no recursion" model every backend shares (see README's
-// "Scope and limitations") - just on a CPU rich enough that almost
-// everything maps onto a real instruction directly instead of
-// needing a workaround.
+// real reset vector itself), halting in an infinite loop - just on a
+// CPU rich enough that almost everything maps onto a real instruction
+// directly instead of needing a workaround.
 //
 // This language's own `int` is 32 bits here (`.L` throughout) - this
 // target's native register/address width, the same reasoning every
@@ -39,10 +37,20 @@ namespace pcc {
 // address registers and a real `(An)` indirect addressing mode with
 // no special placement requirement at all. `A7` is the real hardware
 // stack pointer - saving one operand across evaluating the other in
-// a binary expression, and every function call/return, use real
-// PUSH/POP-equivalent moves and real `JSR`/`RTS`, no synthesis
-// needed (unlike pdp7 - see Pdp7Codegen.cpp's own comment on why it
-// has to improvise this with named memory cells instead).
+// a binary expression, pushing/popping call arguments, and every
+// function call/return, use real PUSH/POP-equivalent moves and real
+// `JSR`/`RTS`, no synthesis needed (unlike pdp7 - see
+// Pdp7Codegen.cpp's own comment on why it has to improvise this with
+// named memory cells instead).
+//
+// `A6` is the frame pointer: every function's own prologue/epilogue
+// uses the real `LINK`/`UNLK` instructions (`linkl`/`unlkl` in this
+// dialect - see M68kAssembler.cpp's own comment) to give each call its
+// own activation record on the real hardware stack, so a Local or
+// Param is addressed `A6`-relative (see `addr()` below) rather than
+// in one shared static cell per declaration - direct and indirect
+// recursion are both safe, since every nested call gets its own frame
+// and its own copy of every local/param.
 //
 // `*`/`/` use the real hardware `MULS.W`/`DIVS.W` - the *original*
 // 68000's only multiply/divide, word-sized even though this
@@ -116,21 +124,49 @@ class M68kCodegen : public Backend {
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
 
     // Leaves slot[idxExpr]'s own effective address in `A0`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
-    static std::string label(const ir::Slot *slot) {
-        if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
-        if (slot->kind == ir::SlotKind::Param) {
-            return "p_" + slot->ownerFunctionName + "_" + std::to_string(slot->paramIndex);
-        }
-        return slot->sourceName + "_" + std::to_string(slot->id);
-    }
+    // Global slots and every Function get a name-based label; a Local
+    // or Param is addressed relative to `a6` instead (see addr()
+    // below) - real separate compilation means only name-derived
+    // labels mean the same thing across a file boundary, so a Local
+    // (never visible outside its own function) needs no such care.
+    static std::string label(const ir::Slot *slot) { return "g_" + slot->sourceName; }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
+    // A Local or Param's own frame-relative operand text, e.g.
+    // "[a6-8]"/"[a6+12]" - every function gets a real per-call stack
+    // frame (see genFunction()): `linkl a6,-N` pushes the caller's
+    // `a6`, sets this call's own `a6` to point at that saved value,
+    // then reserves N bytes of locals below it. The return address
+    // JSR pushed sits one word above the saved `a6` (`[a6+4]`), and
+    // the caller's own pushed arguments sit above that, in declaration
+    // order with param 0 closest to the return address (see
+    // ExprKind::Call's own push order in genExpr()) - so a Param's
+    // address is `[a6+8+4*paramIndex]`. Locals live below `a6`,
+    // reserved by `linkl`'s own displacement; Slot::frameOffset is
+    // already a 1-based sequential word index in declaration order, so
+    // a Local's address is `[a6-4*frameOffset]`. Every activation gets
+    // its own `a6`/frame this way, unlike a Global's one real static
+    // cell - this is what makes recursion (direct or indirect) safe.
+    static std::string addr(const ir::Slot *slot) {
+        if (slot->kind == ir::SlotKind::Param) {
+            return "[a6+" + std::to_string(8 + 4 * slot->paramIndex) + "]";
+        }
+        return "[a6-" + std::to_string(4 * slot->frameOffset) + "]";
+    }
+
+    // The operand text for a plain read/write of `slot`'s own value -
+    // a Global keeps this dialect's existing bare-label absolute-
+    // address convention (see label()); a Local/Param uses addr().
+    static std::string operandOf(const ir::Slot *slot) {
+        return slot->kind == ir::SlotKind::Global ? label(slot) : addr(slot);
+    }
+
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
-    void declareTemp(const std::string &lbl);
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }

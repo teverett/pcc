@@ -12,6 +12,18 @@ namespace {
 [[noreturn]] void err(int line, const std::string &msg) {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
+
+// The software call-frame stack every activation's own locals/params
+// are carved out of at runtime (see MCS51Codegen.h's own header
+// comment on the `fp`/`ssp` convention) - one fixed-size XDATA buffer,
+// declared once by generate()'s own pre-pass exactly like any other
+// backend-internal reservation. 2048 bytes is comfortably past every
+// recursion depth this compiler's own test suite (or any realistic
+// program on a target this constrained) ever reaches - nothing here
+// bounds-checks an overflow past it, same as every other backend's
+// own real hardware stack already goes unchecked.
+constexpr const char *kFrameStackLabel = "__frame_stack";
+constexpr int kFrameStackBytes = 2048;
 }  // namespace
 
 void MCS51Codegen::allocXdata(const std::string &lbl, int count) {
@@ -23,8 +35,6 @@ void MCS51Codegen::allocXdata(const std::string &lbl, int count) {
     code_ << lbl << ": xdata " << count << "\n";
 }
 
-void MCS51Codegen::declareTemp(const std::string &lbl) { allocXdata(lbl, 2); }
-
 void MCS51Codegen::declareGlobalTemp(const std::string &lbl, long initValue) {
     allocXdata(lbl, 2);
     uint16_t v16 = static_cast<uint16_t>(initValue);
@@ -33,16 +43,6 @@ void MCS51Codegen::declareGlobalTemp(const std::string &lbl, long initValue) {
     initCode_ << "    incdptr\n";
     initCode_ << "    movai " << ((v16 >> 8) & 0xFF) << "\n    movxw\n";
 }
-
-// Local arrays are never given an `arrayInit` (see IR.h's own
-// Slot::arrayInit comment: "locals are zero-filled... assigned at
-// runtime by ordinary statements") - this just reserves `arraySize`
-// words of XDATA, which real hardware RAM doesn't actually guarantee
-// starts zeroed, but this backend's own test simulator (see
-// tests/run_tests.sh's own check_8051) does, matching every other
-// backend's own "freshly declared local reads as 0 until assigned"
-// assumption.
-void MCS51Codegen::declareArray(const std::string &lbl, int arraySize) { allocXdata(lbl, arraySize * 2); }
 
 // Writes array element `e`'s own value into the already-allocated
 // XDATA cell at `elemExpr`. A literal element is written byte-by-byte
@@ -140,6 +140,80 @@ void MCS51Codegen::storeAcIndirect() {
     code_ << "    mova ac+1\n    movxw\n";
 }
 
+void MCS51Codegen::loadIndirect(const std::string &dstReg) {
+    code_ << "    movdpl ptr\n    movdph ptr+1\n";
+    code_ << "    movxr\n    movd " << dstReg << "\n";
+    code_ << "    incdptr\n";
+    code_ << "    movxr\n    movd " << dstReg << "+1\n";
+}
+
+void MCS51Codegen::addImm16(const std::string &reg, int value) {
+    uint16_t v16 = static_cast<uint16_t>(value);
+    code_ << "    mova " << reg << "\n    addi " << (v16 & 0xFF) << "\n    movd " << reg << "\n";
+    code_ << "    mova " << reg << "+1\n    addci " << ((v16 >> 8) & 0xFF) << "\n    movd " << reg << "+1\n";
+}
+
+void MCS51Codegen::subImm16(const std::string &reg, int value) {
+    uint16_t v16 = static_cast<uint16_t>(value);
+    code_ << "    mova " << reg << "\n    clrc\n    subbi " << (v16 & 0xFF) << "\n    movd " << reg << "\n";
+    code_ << "    mova " << reg << "+1\n    subbi " << ((v16 >> 8) & 0xFF) << "\n    movd " << reg << "+1\n";
+}
+
+void MCS51Codegen::loadFrameAddress(const std::string &dstReg, const ir::Slot *slot) {
+    copy16(dstReg, "fp");
+    int wordIndex = (slot->kind == ir::SlotKind::Param) ? slot->paramIndex
+                                                          : (curParamCount_ + slot->frameOffset - 1);
+    if (wordIndex != 0) addImm16(dstReg, wordIndex * 2);
+}
+
+void MCS51Codegen::pushFrameWord(const std::string &srcReg) {
+    code_ << "    movdpl ssp\n    movdph ssp+1\n";
+    code_ << "    mova " << srcReg << "\n    movxw\n";
+    code_ << "    incdptr\n";
+    code_ << "    mova " << srcReg << "+1\n    movxw\n";
+    addImm16("ssp", 2);
+}
+
+// See MCS51Codegen.h's own header comment for the full `fp`/`ssp`
+// convention this implements.
+void MCS51Codegen::genPrologue(const ir::Function *fn) {
+    code_ << "    push fp\n    push fp+1\n";
+    copy16("fp", "ssp");
+    int nparams = static_cast<int>(fn->params.size());
+    if (nparams > 0) subImm16("fp", nparams * 2);
+    if (fn->frameSize > 0) addImm16("ssp", fn->frameSize * 2);
+    curParamCount_ = nparams;
+}
+
+void MCS51Codegen::genEpilogue() {
+    copy16("ssp", "fp");
+    code_ << "    pop fp+1\n    pop fp\n";
+}
+
+void MCS51Codegen::loadArrayElemValue(const ir::ArrayInitElem &e) {
+    if (e.isSymbol) {
+        if (e.func) {
+            loadCodeAddress("ac", label(e.func));
+        } else {
+            loadXdataAddress("ac", label(e.slot));
+        }
+        return;
+    }
+    uint16_t v16 = static_cast<uint16_t>(e.value);
+    code_ << "    movai " << (v16 & 0xFF) << "\n    movd ac\n";
+    code_ << "    movai " << ((v16 >> 8) & 0xFF) << "\n    movd ac+1\n";
+}
+
+void MCS51Codegen::genLocalArrayInit(const ir::Slot *slot) {
+    loadFrameAddress("bc", slot);
+    for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+        copy16("ptr", "bc");
+        if (i != 0) addImm16("ptr", static_cast<int>(i) * 2);
+        loadArrayElemValue(slot->arrayInit[i]);
+        storeAcIndirect();
+    }
+}
+
 void MCS51Codegen::safeBranch(const std::string &branchMnemonic, const std::string &targetIfTaken,
                                const std::string &targetIfNot) {
     std::string Lnear = newLabel();
@@ -169,14 +243,18 @@ std::string MCS51Codegen::generate(const ir::Program &prog, bool objectMode) {
     // only ever null in object mode, for a file that doesn't happen
     // to define `main` itself.
 
-    // Pre-pass: every global and every function's own parameters get
-    // their XDATA address assigned up front, before any code is
-    // generated at all - see allocXdata()'s own header comment on
-    // why a Call site or Var read needs that address to already
-    // exist no matter which function is textually processed first
-    // below (unlike 6502's own trailer, which is just ordinary
+    // Pre-pass: every global's own XDATA address is assigned up
+    // front, before any code is generated at all - see allocXdata()'s
+    // own header comment on why a Var read needs that address to
+    // already exist no matter which function is textually processed
+    // first below (unlike 6502's own trailer, which is just ordinary
     // assembler-resolved CODE-space text and so never has this
-    // problem - see MCS51Assembler.h's own header comment).
+    // problem - see MCS51Assembler.h's own header comment). A Local
+    // or Param needs no such pre-pass at all any more - its own
+    // storage comes from the shared `__frame_stack` buffer declared
+    // right after this loop, at a runtime-computed offset (see
+    // MCS51Codegen.h's own header comment on the `fp`/`ssp`
+    // convention), never a per-slot XDATA label.
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
         // An external global (real separate compilation - see IR.h's
@@ -195,9 +273,7 @@ std::string MCS51Codegen::generate(const ir::Program &prog, bool objectMode) {
             declareGlobalTemp(lbl, slot->hasInit ? slot->initValue : 0);
         }
     }
-    for (const auto &fn : prog.functions) {
-        for (ir::Slot *p : fn->params) declareTemp(label(p));
-    }
+    allocXdata(kFrameStackLabel, kFrameStackBytes);
 
     code_ << "org " << kMCS51BaseAddress << "\n";
     // The fixed internal-RAM pseudo-registers - see MCS51Codegen.h's
@@ -210,12 +286,15 @@ std::string MCS51Codegen::generate(const ir::Program &prog, bool objectMode) {
     // linked - see MCS51LinkerFactory.cpp's own entry object, which
     // redeclares them too), so no `objectMode` special-casing is
     // needed here at all - same reasoning as
-    // ../i8008/I8008Codegen.cpp's own equivalent constants. `dpl`/
-    // `dph` are the real DPL/DPH SFRs (0x82/0x83), not invented
+    // ../i8008/I8008Codegen.cpp's own equivalent constants. `fp`/`ssp`
+    // are this same kind of equate too, dedicated to the software
+    // call-frame convention this file's own header comment describes.
+    // `dpl`/`dph` are the real DPL/DPH SFRs (0x82/0x83), not invented
     // scratch cells - see this file's own header comment on why
     // loadXdataAddress() needs plain `direct`-addressable names for
     // them.
-    code_ << "ac = 0x30\nbc = 0x32\ncx = 0x34\ndx = 0x36\nptr = 0x38\ndpl = 0x82\ndph = 0x83\n\n";
+    code_ << "ac = 0x30\nbc = 0x32\ncx = 0x34\ndx = 0x36\nptr = 0x38\nfp = 0x3A\nssp = 0x3C\n";
+    code_ << "dpl = 0x82\ndph = 0x83\n\n";
 
     // `objectMode` means no object file ever emits the entry sequence
     // itself, even the one that happens to define `main` -
@@ -225,6 +304,13 @@ std::string MCS51Codegen::generate(const ir::Program &prog, bool objectMode) {
     // comment above).
     if (!objectMode) {
         code_ << "_start:\n";
+        // `ssp` has to be valid before `main`'s own genPrologue()-
+        // generated code ever reads it - this is the one point every
+        // run of the program reaches exactly once, before any other
+        // code, so it's also the one place this initialization needs
+        // to happen (see MCS51Codegen.h's own header comment on the
+        // `fp`/`ssp` convention).
+        loadXdataAddress("ssp", kFrameStackLabel);
         code_ << initCode_.str();
         code_ << "    lcall " << label(mainFn) << "\n";
         // The program's own final result sits in `ac` (XDATA's own 16-
@@ -252,8 +338,15 @@ std::string MCS51Codegen::generate(const ir::Program &prog, bool objectMode) {
             // MCS51Codegen.h's own `objectMode` comment for why only
             // the file defining `main` gets this treatment.
             code_ << label(fb.func) << ":\n";
+            // Same reasoning as `_start`'s own above - `fn_main`'s
+            // prologue is the one place object mode is guaranteed to
+            // reach exactly once, before any other code, so it's
+            // where `ssp` gets initialized there instead.
+            loadXdataAddress("ssp", kFrameStackLabel);
+            genPrologue(fb.func);
             code_ << initCode_.str();
             genStmt(*fb.body);
+            genEpilogue();
             code_ << "    ret\n\n";
         } else {
             genFunction(fb);
@@ -268,10 +361,10 @@ std::string MCS51Codegen::generate(const ir::Program &prog, bool objectMode) {
 std::map<std::string, std::string> MCS51Codegen::perFileAsm() const { return perFileAsm_; }
 
 void MCS51Codegen::genFunction(const ir::FunctionBody &fn) {
-    // Params' own XDATA storage is already allocated by generate()'s
-    // own pre-pass - nothing left to do here but emit the body.
     code_ << label(fn.func) << ":\n";
+    genPrologue(fn.func);
     genStmt(*fn.body);
+    genEpilogue();
     code_ << "    ret\n\n";
 }
 
@@ -312,20 +405,28 @@ void MCS51Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
+            // Early exit from the function - genFunction()'s own
+            // fall-through epilogue never runs for this path, so it
+            // needs this same frame teardown inline (see
+            // genEpilogue()'s own comment).
+            genEpilogue();
             code_ << "    ret\n";
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arraySize);
-            } else {
-                declareTemp(lbl);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    storeXdata(lbl, "ac");
-                }
+                genLocalArrayInit(s.declSlot);
+            } else if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                loadFrameAddress("ptr", s.declSlot);
+                storeAcIndirect();
             }
+            // No "else" case for a bare, uninitialized scalar: its
+            // own frame word already exists (genPrologue()'s own
+            // `ssp` bump reserved it) - same as a real, ordinary C
+            // automatic variable, its value is simply whatever this
+            // activation's own frame region already held until
+            // something assigns it.
             return;
         }
         case ir::StmtKind::ExprStmt: {
@@ -351,7 +452,16 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
-            loadXdata("ac", label(e.slot));
+            // A Global's own value sits at a compile-time label; a
+            // Local/Param's sits at this activation's own `fp`-
+            // relative frame address instead - see loadFrameAddress()'s
+            // own comment.
+            if (e.slot->kind == ir::SlotKind::Global) {
+                loadXdata("ac", label(e.slot));
+            } else {
+                loadFrameAddress("ptr", e.slot);
+                loadIndirect("ac");
+            }
             return;
         }
         case ir::ExprKind::Index: {
@@ -373,8 +483,19 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
                 storeAcIndirect();
                 return;
             }
+            if (e.slot->kind == ir::SlotKind::Global) {
+                genExpr(*e.rhs);
+                storeXdata(label(e.slot), "ac");
+                return;
+            }
+            // Same "save ptr across evaluating rhs" reasoning as the
+            // indexed case above - rhs might itself be a Local/Param
+            // read or write that clobbers `ptr`.
+            loadFrameAddress("ptr", e.slot);
+            code_ << "    push ptr\n    push ptr+1\n";
             genExpr(*e.rhs);
-            storeXdata(label(e.slot), "ac");
+            code_ << "    pop ptr+1\n    pop ptr\n";
+            storeAcIndirect();
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -396,10 +517,7 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "*") {
                 genExpr(*e.rhs);  // ac = pointer value
                 copy16("ptr", "ac");
-                code_ << "    movdpl ptr\n    movdph ptr+1\n";
-                code_ << "    movxr\n    movd ac\n";
-                code_ << "    incdptr\n";
-                code_ << "    movxr\n    movd ac+1\n";
+                loadIndirect("ac");
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "    mova ac\n    xrli 255\n    movd ac\n";
@@ -410,34 +528,16 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            // An argument is passed by writing it straight into the
-            // callee's own `p_<name>_<i>` XDATA slot (allocated by
-            // generate()'s own pre-pass) - fine as long as this file
-            // is the one that actually defines the callee, since only
-            // then does that pre-pass know the callee's own real
-            // param list at all. An external callee (real separate
-            // compilation - see IR.h's own `isExternal`) is a bare
-            // function *name* with no param list this file ever sees
-            // (IRBuilder never populates one for it), so there's no
-            // slot to even compute an address for - and unlike a
-            // function's own CODE-space address (a real relocatable
-            // symbol, see MCS51Assembler.h's own `kMCS51RelocAbs16`),
-            // an XDATA slot address is always a plain per-compile
-            // numeric constant this backend's Harvard CODE/XDATA split
-            // gives no relocation for at all (see MCS51Codegen.h's own
-            // `objectMode` comment) - passing an argument across that
-            // boundary genuinely can't be made to work here. A
-            // parameterless external call has no such slot to write
-            // at all, so it's unaffected.
-            if (e.func->isExternal && !e.args.empty()) {
-                err(e.line, "call to '" + e.func->sourceName + "' needs " + std::to_string(e.args.size()) +
-                                " argument(s), but '" + e.func->sourceName + "' isn't defined in this file - the "
-                                "8051 backend can only pass arguments to a function defined in the same file (see "
-                                "MCS51Codegen.h's own header comment on this target's Harvard CODE/XDATA split)");
-            }
+            // Each argument is computed, then pushed onto the shared
+            // software frame stack via pushFrameWord() - positionally,
+            // with no per-callee named slot at all, so this needs no
+            // knowledge of the callee's own definition (same file or
+            // not - see MCS51Codegen.h's own header comment). The
+            // callee's own genPrologue() picks these same words right
+            // back up as its own `fp`-relative Params.
             for (size_t i = 0; i < e.args.size(); i++) {
                 genExpr(*e.args[i]);
-                storeXdata("p_" + e.func->sourceName + "_" + std::to_string(i), "ac");
+                pushFrameWord("ac");
             }
             code_ << "    lcall " << label(e.func) << "\n";
             return;
@@ -445,10 +545,9 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
         case ir::ExprKind::CallPtr: {
             // e.args is always empty here - IRBuilder.cpp rejects any
             // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr): there's no per-callee
-            // p_<fn>_<i> XDATA slot to write one into until the callee
-            // is known, which it never is at compile time for this
-            // kind.
+            // (see IR.h's ExprKind::CallPtr): the callee isn't known
+            // until runtime, so there's nowhere to compute a frame
+            // layout for its arguments against at compile time.
             //
             // The real 8051 has no indirect CALL at all - only `JMP
             // @A+DPTR`, a real indirect *jump* (address = DPTR + A).
@@ -491,21 +590,31 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
 }
 
 // Leaves slot[idxExpr]'s own effective XDATA address in `ptr`.
-// `slot->arraySize > 0` means the base is this array's own relocatable
-// label (loadXdataAddress() resolves and loads it); otherwise `slot`
-// is a plain pointer variable, so the base instead comes from
-// *reading* that variable's own stored value via loadXdata(). Either
-// way the base ends up in `bc`, and the same 16-bit add then folds
-// the (already-doubled) index into it.
+// `slot->arraySize > 0` means the base is this array's own address -
+// a Global's own relocatable label (loadXdataAddress() resolves and
+// loads it) or a Local's own current-activation frame address
+// (loadFrameAddress()); otherwise `slot` is a plain pointer variable,
+// so the base instead comes from *reading* that variable's own stored
+// value (loadXdata() for a Global, loadFrameAddress()+loadIndirect()
+// for a Local/Param). Either way the base ends up in `bc`, and the
+// same 16-bit add then folds the (already-doubled) index into it.
 void MCS51Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
     // ac *= 2 (words are 2 bytes on this byte-addressed target).
     code_ << "    clrc\n    mova ac\n    rlca\n    movd ac\n";
     code_ << "    mova ac+1\n    rlca\n    movd ac+1\n";
+    bool isGlobal = slot->kind == ir::SlotKind::Global;
     if (slot->arraySize > 0) {
-        loadXdataAddress("bc", label(slot));
-    } else {
+        if (isGlobal) {
+            loadXdataAddress("bc", label(slot));
+        } else {
+            loadFrameAddress("bc", slot);
+        }
+    } else if (isGlobal) {
         loadXdata("bc", label(slot));
+    } else {
+        loadFrameAddress("ptr", slot);
+        loadIndirect("bc");
     }
     code_ << "    clrc\n    mova bc\n    add ac\n    movd ptr\n";
     code_ << "    mova bc+1\n    addc ac+1\n    movd ptr+1\n";
@@ -513,15 +622,16 @@ void MCS51Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
 
 void MCS51Codegen::genIndex(const ir::Expr &e) {
     genIndexAddr(e.slot, *e.lhs);
-    code_ << "    movdpl ptr\n    movdph ptr+1\n";
-    code_ << "    movxr\n    movd ac\n";
-    code_ << "    incdptr\n";
-    code_ << "    movxr\n    movd ac+1\n";
+    loadIndirect("ac");
 }
 
 void MCS51Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        loadXdataAddress("ac", label(operand.slot));
+        if (operand.slot->kind == ir::SlotKind::Global) {
+            loadXdataAddress("ac", label(operand.slot));
+        } else {
+            loadFrameAddress("ac", operand.slot);
+        }
         return;
     }
     if (operand.kind == ir::ExprKind::Index) {

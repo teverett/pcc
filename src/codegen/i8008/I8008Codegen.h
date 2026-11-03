@@ -18,44 +18,70 @@ namespace pcc {
 //  - No stack pointer, no PUSH/POP, nothing an ordinary program can
 //    use as a stack at all. `CAL`/`RET` work (they use a real but
 //    *internal*, invisible-to-software 7-level return-address
-//    stack), so real function calls still work - but every other
-//    backend's own "save one operand across evaluating the other"
-//    trick (the 8080/Z80 backends' `PUSH`/`POP`, the 6502's PHA/PLA,
-//    pdp7's AC-save cell) needs a different answer here, since there
-//    is no real stack to push onto at all. This backend builds its
-//    own: a small, ordinary RAM region (`kStackBase`/`kStackSize` in
-//    I8008Codegen.cpp) plus a real runtime stack-pointer cell (`sp`),
-//    with `pushAc()`/`popInto()` below doing the pointer arithmetic
-//    by hand. A *compile-time* recursion-depth counter was tried
-//    first and is wrong: it only protects against a nested genExpr()
-//    call still being compiled as part of the same expression tree,
-//    not against a real `CAL` to an already-compiled function body
-//    that happens to reuse the exact same depth for its own,
-//    completely unrelated save - `result + f(x)` breaks the moment
-//    `f`'s own body does any saving of its own at the same compile-
-//    time depth the caller is still relying on across the call. A
-//    genuine runtime stack has no such problem, the same reason a
-//    real hardware one wouldn't either - it's addressed by an actual
-//    value computed while the program runs, not by where the
-//    compiler happens to be in its own traversal. `kStackSize`
-//    bounds how much of this gets pushed at once across the whole
-//    program - generous for ordinary test programs, but a real,
-//    documented limit with no overflow check (see pushAc()).
+//    stack) - a hard, fixed hardware limit on how many functions
+//    deep a call chain can ever be, recursive or not, with no way
+//    around it on this chip - so real function calls still work, but
+//    every other backend's own "save one operand across evaluating
+//    the other" trick (the 8080/Z80 backends' own `PUSH`/`POP`, the
+//    6502's `PHA`/`PLA`, pdp7's AC-save cell) needs a different
+//    answer here, since there is no real stack to push onto at all.
+//    This backend builds two of its own: an ordinary RAM region
+//    (`kStackBase`/`kStackSize` in I8008Codegen.cpp) with its own
+//    real runtime pointer cell (`sp`), for saving one subexpression's
+//    value across evaluating another part of the same expression
+//    (`pushAc()`/`popInto()` below); and a second region
+//    (`kFrameBase`/`fnext`/`fp`, plus `kFpStackBase`/`fpsp` for the
+//    chain of saved `fp`s) giving every function call its own fresh
+//    Local/Param storage (see genFunction()'s own comment). Both are
+//    addressed by an actual value computed while the program runs,
+//    not by where the compiler happens to be in its own traversal -
+//    the same reason a real hardware stack supports recursion and a
+//    compile-time-indexed save slot wouldn't. Neither region has an
+//    overflow check (see `kStackSize`'s own comment), but both stay
+//    bounded in practice by the same 7-level hardware call-nesting
+//    limit above, since every push onto either one happens within
+//    the dynamic extent of some real `CAL`.
+//  - Every function call gets its own fresh storage for its own
+//    Locals and Params, making direct and indirect/mutual recursion
+//    safe: `fp` holds the *current* call's own frame base address,
+//    `fnext` the address one past the last word any call anywhere on
+//    the chain has claimed so far. A function's own prologue
+//    (genFunction()) saves the caller's `fp` (onto the `fpsp`-indexed
+//    chain), takes `fnext` as this call's own frame base, and bumps
+//    `fnext` past it by this function's own word count
+//    (`params.size() + frameSize`); its epilogue gives that space
+//    back (`fnext = fp`) and restores the caller's own `fp`. A Local
+//    or Param's own address is always `fp` plus a compile-time-
+//    constant word offset, computed at runtime (`pointAtSlot()`) -
+//    never a fixed label the way a Global's is, since the whole
+//    point is that the *value* of `fp` differs for every call. A
+//    Param's own incoming value is never written through any shared,
+//    named cell either (that would break the moment a function calls
+//    itself with its own call still in flight, which is exactly what
+//    recursion means) - it travels on the same `sp`-indexed stack as
+//    any other saved subexpression value, pushed by the caller in
+//    argument order and popped by the callee's own prologue in
+//    reverse, straight into that call's own fresh frame.
 //  - No 16-bit instructions of any kind - not even the 8080's `DAD`.
 //    Every `+`/`-` here is two 8-bit accumulator operations chained
 //    through the real carry flag (`ADD`+`ADC`, `SUB`+`SBB`) - the
 //    8080 backend's own fallback for `-` specifically (see
-//    I8080Codegen.h), now needed for `+` too.
+//    I8080Codegen.h), now needed for `+` too; the same carry chain,
+//    via `ADI`/`ACI`, is how a compile-time-constant word offset gets
+//    added to a runtime frame address held in `H,L` or in a memory
+//    cell (`addConstToHL()`/`addConstToCell()` below).
 //  - No direct-addressing load/store at all (no `LDA`/`STA`/`LHLD`/
 //    `SHLD` equivalent of any kind) - the *only* way to touch memory
 //    is "the byte at the address currently in H,L" (register code
-//    `m`, same role as every other backend's own M-addressing).
-//    Reading or writing any named memory cell therefore always means
-//    pointing HL at it first (`pointAt()` below: two `MVI`s, loading
-//    H and L from that label's own high/low bytes - the same
-//    assemble-time address-splitting trick the 6502 backend's own
-//    `ldai`/`ldai_hi` uses, applied here to every single memory
-//    access instead of just a handful of them).
+//    `m`, same role as every other backend's own M-addressing). A
+//    Global is reached by pointing HL at its own fixed label first
+//    (`pointAt()` below: two `MVI`s, loading H and L from that
+//    label's own high/low bytes - the same assemble-time address-
+//    splitting trick the 6502 backend's own `ldai`/`ldai_hi` uses); a
+//    Local or Param is reached the same way in the end (through H,L,
+//    via `m`), but HL gets there by adding a word offset to the
+//    runtime value of `fp` instead (`pointAtSlot()`) - there is no
+//    assemble-time label for one of these at all.
 //  - Real hardware `AND`/`XOR`/`OR` against the accumulator exist
 //    (unlike the shift instructions below, this is one place the
 //    8008 isn't more primitive than its later descendants) - `&`/
@@ -128,6 +154,45 @@ class I8008Codegen : public Backend {
     // comment on why `idxExpr` is always evaluated first, and alone.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
+    // A Local or Param's own 0-based word index within its function's
+    // own per-call frame (see genFunction()'s own comment): a Param
+    // is simply its own `paramIndex`; a Local continues on right
+    // after every one of the current function's own params, in
+    // declaration order (`currentParamCount_ + frameOffset - 1`,
+    // `frameOffset` already being 1-based - see IR.h's own comment on
+    // it). Only ever called while generating code for the function
+    // that actually owns `slot` - `currentParamCount_` is that
+    // function's own param count, set once by genFunction() for the
+    // whole of its own body. A Global has no word index at all (it
+    // never reaches this function - see pointAtSlot()).
+    int wordIndexOf(const ir::Slot *slot) const;
+
+    // Points the real H,L registers at `slot`'s own storage, `wordOffset`
+    // words (plus one more byte, if `highByte`) past its first word -
+    // the Local/Param-or-Global-agnostic equivalent of pointAt(),
+    // used everywhere a *slot*, rather than a plain named cell, needs
+    // addressing. A Global still resolves to pointAt() on its own
+    // fixed label (byte-for-byte the same code this backend always
+    // emitted for one); a Local or Param instead loads `fp`'s own
+    // runtime value into H,L (loadHLFromCell()) and adds the word
+    // offset's byte equivalent on top (addConstToHL()) - there is no
+    // compile-time label for one of these to begin with, since `fp`
+    // itself differs on every call.
+    void pointAtSlot(const ir::Slot *slot, int wordOffset = 0, bool highByte = false);
+
+    // Adds the compile-time constant `byteOffset` to the real H,L
+    // register pair in place, via the same ADI/ACI carry chain as
+    // every other 16-bit add in this file (see this file's own header
+    // comment) - the one piece pointAtSlot() needs that pointAt()
+    // never did, since a Global's own address is already a complete,
+    // single compile-time constant.
+    void addConstToHL(int byteOffset);
+    // The same add, but against a named 16-bit memory cell (`cell`)
+    // instead of the real H,L pair - used to bump `fnext` past a
+    // function's own freshly claimed frame in genFunction()'s own
+    // prologue.
+    void addConstToCell(const std::string &cell, int amount);
+
     // Points H,L at the compile-time-known address `lbl` -
     // "mvihi h, lbl\nmvi l, lbl\n" - the only way this backend can
     // ever address a *named* memory cell at all (see this file's own
@@ -172,19 +237,53 @@ class I8008Codegen : public Backend {
     // not the one or two instructions every other backend's own
     // copy16() manages - see this file's own header comment on why.
     void copy16(const std::string &dst, const std::string &src);
+    // The same copy, but with `slot`'s own storage (Global, Local, or
+    // Param - see pointAtSlot()) on the other end instead of a plain
+    // named cell - every ordinary read (copy16FromSlot) or write
+    // (copy16ToSlot) of a scalar Var/Assign/LocalDecl goes through
+    // one of these two instead of copy16() directly.
+    void copy16FromSlot(const std::string &dst, const ir::Slot *slot);
+    void copy16ToSlot(const ir::Slot *slot, const std::string &src);
+    // Writes a compile-time-resolvable 16-bit expression (see
+    // storeImmediate16()'s own comment) into `slot`'s own storage,
+    // `elemOffset` whole words past its first one - used only for a
+    // Local array's own literal initializer (see genStmt()'s own
+    // LocalDecl case), each element written at runtime every time
+    // that declaration is reached, the same way a scalar Local's own
+    // initializer expression is (unlike a Global array, which still
+    // gets its initial values baked into the binary once, at a fixed
+    // address, since a Global has exactly one storage for its whole
+    // program lifetime).
+    void storeImmediate16ToSlot(const ir::Slot *slot, int elemOffset, const std::string &exprText);
+    // Pops the top of the `sp` stack (see pushCell()'s own comment)
+    // straight into `slot`'s own storage - used only by a function's
+    // own prologue, to move each of its own incoming argument values
+    // (pushed by the caller, onto the very same `sp` stack - see
+    // genExpr()'s own Call case) into that call's own fresh frame.
+    void popIntoSlot(const ir::Slot *slot);
 
-    // This backend's own real, runtime software stack (see this
-    // file's own header comment on why a compile-time depth counter
-    // doesn't work once a real function call is involved) - `sp` is
-    // an ordinary memory cell holding the current top-of-stack
-    // address, in the fixed RAM region `kStackBase`/`kStackSize`
-    // (see I8008Codegen.cpp). `pushAc()` pushes `ac`'s current
-    // value; `popInto(dst)` pops the top of the stack into memory
-    // cell `dst` (which may be `ac` itself, or any other cell - it
-    // never touches `ac` unless told to). Must be paired exactly the
-    // way a real push/pop would be.
-    void pushAc();
-    void popInto(const std::string &dst);
+    // This backend's own real, runtime software stack for saving a
+    // subexpression's value across evaluating another part of the
+    // same expression (see this file's own header comment on why a
+    // compile-time-indexed save slot doesn't work once a real
+    // function call is involved) - `sp` is an ordinary memory cell
+    // holding the current top-of-stack address, in the fixed RAM
+    // region `kStackBase`/`kStackSize` (see I8008Codegen.cpp).
+    // `pushCell(srcCell, spCell)` pushes `srcCell`'s current value
+    // onto the stack pointed to by `spCell`; `popCell(dstCell,
+    // spCell)` pops the top of that same stack into `dstCell` (which
+    // may equal `srcCell`/`dstCell`'s own counterpart, or not - it
+    // never touches any cell but the one named). Must be paired
+    // exactly the way a real push/pop would be. `pushAc()`/
+    // `popInto(dst)` are this file's own most common case (`srcCell`/
+    // `dstCell` is always `ac`, `spCell` is always `sp`); `fp`'s own
+    // save/restore across a call (see genFunction()'s own comment)
+    // uses `pushCell`/`popCell` directly instead, against the
+    // separate `fpsp`-indexed chain.
+    void pushCell(const std::string &srcCell, const std::string &spCell);
+    void popCell(const std::string &dstCell, const std::string &spCell);
+    void pushAc() { pushCell("ac", "sp"); }
+    void popInto(const std::string &dst) { popCell(dst, "sp"); }
     // Loads the real H,L registers from `cell`'s own two stored
     // bytes - see loadHLFromCell()'s own comment; this is its exact
     // inverse, writing the real H,L registers' *current* values out
@@ -202,6 +301,29 @@ class I8008Codegen : public Backend {
     // backend's own `RL r`/`RR r`).
     void shiftOneBit(const std::string &lbl, bool isLeft);
 
+    // A function's own epilogue - gives this call's own frame back to
+    // the bump allocator (`fnext = fp`) and restores the caller's own
+    // `fp` (popped off `fpsp`) - emitted right before every real
+    // `ret`, both the one genFunction() itself appends after the
+    // function's whole body and the one every explicit Return
+    // statement emits (see genStmt()'s own Return case).
+    void emitEpilogue();
+
+    // A label naming a fixed, compile-time-known address: a Global's
+    // own storage (`g_<name>`), or a Function's own entry point
+    // (`fn_<name>`). A Local or Param has no such label any more -
+    // every call gets its own fresh storage at a runtime-computed
+    // address (`fp` plus a word offset - see pointAtSlot()), so this
+    // overload's own returned text is only ever meaningful as a
+    // symbol-table key, never as a real memory address to point H,L
+    // at directly; the one remaining place it's still read for a
+    // Local/Param (an array initializer's own symbol element, see
+    // arrayElemText()) only works today because no test actually
+    // initializes a Local array with another Local's or Param's own
+    // address - see I8008Codegen.cpp's own `generate()` comment on
+    // why a Global array's own literal initializer never needs this
+    // restriction (it's emitted once, as fixed data, not evaluated at
+    // runtime).
     static std::string label(const ir::Slot *slot) {
         if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
         if (slot->kind == ir::SlotKind::Param) {
@@ -212,7 +334,6 @@ class I8008Codegen : public Backend {
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
-    void declareTemp(const std::string &lbl);
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
@@ -223,6 +344,10 @@ class I8008Codegen : public Backend {
 
     int tempCounter_ = 0;
     int labelCounter_ = 0;
+    // The function currently being generated's own param count - see
+    // wordIndexOf()'s own comment; set once per genFunction() call,
+    // for the whole of that function's own body.
+    int currentParamCount_ = 0;
 };
 
 }  // namespace pcc

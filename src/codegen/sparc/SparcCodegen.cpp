@@ -27,7 +27,31 @@ constexpr uint32_t kBaseAddress = 0x00004000u;
 constexpr uint32_t kInitialSP = 0x00100000u;
 }  // namespace
 
-void SparcCodegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": dw 0"); }
+// A Local's or Param's own effective address, relative to `fp` - see
+// SparcCodegen.h's own header comment and genFunction()'s own comment
+// for the exact frame layout this implements. Never called for a
+// Global (which keeps its own fixed, name-derived label instead -
+// see loadAddress()/label()).
+void SparcCodegen::loadSlotAddr(const std::string &reg, const ir::Slot *slot) {
+    int off = slotFrameByteOffset(slot);
+    if (off == 0) {
+        movReg(reg, "fp");
+        return;
+    }
+    code_ << "    add fp," << off << "," << reg << "\n";
+}
+
+void SparcCodegen::loadImmediate(const std::string &reg, int32_t v) {
+    if (v >= -4096 && v <= 4095) {
+        code_ << "    or g0," << v << "," << reg << "\n";
+        return;
+    }
+    uint32_t uv = static_cast<uint32_t>(v);
+    uint32_t hi = (uv >> 10) & 0x3FFFFFu;
+    uint32_t lo = uv & 0x3FFu;
+    code_ << "    sethi " << hi << "," << reg << "\n";
+    code_ << "    or " << reg << "," << lo << "," << reg << "\n";
+}
 
 // A literal element's own decimal text; a symbol element is the
 // referenced Slot's or Function's own label, written out bare - "dw"
@@ -40,6 +64,12 @@ std::string SparcCodegen::arrayElemText(const ir::ArrayInitElem &e) {
     return e.slot ? label(e.slot) : label(e.func);
 }
 
+// Only ever called for a Global array now - its storage is one fixed
+// trailer blob for the whole run, so its own initializer is just data,
+// resolved once by the assembler/linker. A Local array instead gets a
+// fresh frame slot on every call (see genFunction()'s own comment), so
+// its own initializer has to be stored at runtime instead - see
+// genLocalArrayInit() below.
 void SparcCodegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values) {
     if (values.empty()) return;
     std::ostringstream line;
@@ -49,6 +79,31 @@ void SparcCodegen::declareArray(const std::string &lbl, const std::vector<ir::Ar
         line << arrayElemText(values[i]);
     }
     trailer_.push_back(line.str());
+}
+
+// Stores a Local array's own initializer into its freshly reserved
+// frame slots, one element per call - see declareArray()'s own
+// comment on why a Local can't just get a static trailer blob the way
+// a Global does. Element i's own address is `slot`'s own base address
+// (its first word, at `fp-4*frameOffset`) *minus* `4*i`, not plus -
+// see genIndexAddr()'s own comment on exactly this same base-minus-
+// scaled-index shape for a Local array's own indexed read/write.
+void SparcCodegen::genLocalArrayInit(const ir::Slot *slot) {
+    for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+        const ir::ArrayInitElem &elem = slot->arrayInit[i];
+        if (elem.isSymbol) {
+            loadAddress("t0", elem.slot ? label(elem.slot) : label(elem.func));
+        } else {
+            loadImmediate("t0", static_cast<int32_t>(static_cast<uint32_t>(elem.value)));
+        }
+        int off = slotFrameByteOffset(slot) - 4 * static_cast<int>(i);
+        if (off == 0) {
+            movReg("t2", "fp");
+        } else {
+            code_ << "    add fp," << off << ",t2\n";
+        }
+        code_ << "    stind t2,t0\n";
+    }
 }
 
 void SparcCodegen::loadAddress(const std::string &reg, const std::string &lbl) {
@@ -119,24 +174,64 @@ std::string SparcCodegen::generate(const ir::Program &prog, bool objectMode) {
 // comment (no `--format=coff` here either).
 std::map<std::string, std::string> SparcCodegen::perFileAsm() const { return perFileAsm_; }
 
-// Every function here saves/restores the real return-address register
-// `lr` (`%o7`, the register SPARC's own `call` instruction itself
-// writes into - directly readable/writable, unlike PowerPC's own link
-// register - see SparcCodegen.h's own header comment) around its own
-// body, whether or not it happens to call anything else - a non-leaf
-// function's own call to another function overwrites `lr` outright,
-// so without this save/restore a caller's own eventual `retl` would
-// return into whatever its *own* last call last returned to, not back
-// to its own caller. Always saving/restoring (leaf or not) is simpler
-// than tracking which functions are actually non-leaf - same
-// reasoning as PowerPCCodegen.cpp's own version of this same comment.
+// Every function here gives its own call activation a real per-call
+// frame on the hardware stack, addressed through `fp` - see
+// SparcCodegen.h's own header comment on why a real register-window
+// `save`/`restore` isn't used for this instead. The prologue:
+//
+//   sub sp,4,sp ; stind sp,lr  - push the return address `call` (or
+//                                CallPtr's own `jmpl`) just left in
+//                                `lr`, freeing `lr` for this
+//                                function's own calls
+//   sub sp,4,sp ; stind sp,fp  - push the caller's own `fp`
+//   or g0,sp,fp                - fp now addresses this call's own
+//                                saved-fp word
+//   sub sp,4*frameSize,sp      - reserve this call's own Locals
+//                                (only emitted when frameSize > 0)
+//
+// leaves exactly this layout relative to `fp`: `[fp+0]` the caller's
+// own `fp`, `[fp+4]` the return address, `[fp+8+4*i]` the caller's
+// own i'th pushed argument (see the Call case's own comment on why
+// argument 0 ends up closest to `fp+8`) - loadSlotAddr() computes
+// both the Param and the Local case from this same `fp`. Every word
+// below this call's own reserved Locals is free for this call's own
+// further `sub sp,4,sp`/`add sp,4,sp` temp spills (see genBinary()
+// and friends) - always balanced, so `sp` is back at `fp-4*frameSize`
+// by the time emitEpilogue() below runs.
+//
+// Because every call gets its own freshly pushed frame, a Local or
+// Param is no longer one cell shared by every activation of a
+// function - direct recursion (a function calling itself) and mutual
+// recursion (two or more functions calling each other in a cycle)
+// both get their own independent storage per call, limited only by
+// how much of the real hardware stack is left (see kInitialSP), not
+// by any fixed, call-depth-independent cell count.
 void SparcCodegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
     code_ << "    sub sp,4,sp\n    stind sp,lr\n";
-    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
+    code_ << "    sub sp,4,sp\n    stind sp,fp\n";
+    code_ << "    or g0,sp,fp\n";
+    if (fn.func->frameSize > 0) code_ << "    sub sp," << (4 * fn.func->frameSize) << ",sp\n";
     genStmt(*fn.body);
-    code_ << "    ldind sp,lr\n    add sp,4,sp\n";
+    emitEpilogue();
     code_ << "    retl\n\n";
+}
+
+// Undoes genFunction()'s own prologue exactly, right before a `retl` -
+// see that function's own comment for the frame layout this reads
+// back. Order matters only in that `fp` itself must still hold *this*
+// call's own frame address when `[fp+0]`/`[fp+4]` are read and when
+// the new `sp` is computed from it - both happen before `fp` itself is
+// overwritten with the caller's own value. Never touches `t0`, which
+// by now already holds this function's own return value (an
+// IR-level `void` function simply leaves `t0` as whatever it last
+// was, same as every other backend's own untyped "ac").
+void SparcCodegen::emitEpilogue() {
+    code_ << "    add fp,4,t2\n    ldind t2,t1\n";  // t1 = saved lr, at [fp+4]
+    code_ << "    ldind fp,t2\n";                   // t2 = saved fp, at [fp+0]
+    code_ << "    add fp,8,sp\n";                   // sp = fp+8 - the caller's own post-push sp
+    code_ << "    or g0,t1,lr\n";
+    code_ << "    or g0,t2,fp\n";
 }
 
 void SparcCodegen::genStmt(const ir::Stmt &s) {
@@ -174,26 +269,21 @@ void SparcCodegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            // Restore `lr` (see genFunction()'s own comment) before
-            // returning - a `return` statement is its own early exit
-            // from the function, bypassing genFunction()'s own
-            // fall-through epilogue entirely, so it needs this same
-            // restore inline.
-            code_ << "    ldind sp,lr\n    add sp,4,sp\n";
+            // A `return` statement is its own early exit from the
+            // function, bypassing genFunction()'s own fall-through
+            // epilogue entirely, so it needs that same frame teardown
+            // inlined here too - see emitEpilogue()'s own comment.
+            emitEpilogue();
             code_ << "    retl\n";
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arrayInit);
-            } else {
-                declareTemp(lbl);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    loadAddress("t2", lbl);
-                    code_ << "    stind t2,t0\n";
-                }
+                genLocalArrayInit(s.declSlot);
+            } else if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                loadSlotAddr("t2", s.declSlot);
+                code_ << "    stind t2,t0\n";
             }
             return;
         }
@@ -214,20 +304,15 @@ void SparcCodegen::genStmt(const ir::Stmt &s) {
 void SparcCodegen::genExpr(const ir::Expr &e) {
     switch (e.kind) {
         case ir::ExprKind::IntLit: {
-            int32_t v = static_cast<int32_t>(static_cast<uint32_t>(e.intValue));
-            if (v >= -4096 && v <= 4095) {
-                code_ << "    or g0," << v << ",t0\n";
-            } else {
-                uint32_t uv = static_cast<uint32_t>(v);
-                uint32_t hi = (uv >> 10) & 0x3FFFFFu;
-                uint32_t lo = uv & 0x3FFu;
-                code_ << "    sethi " << hi << ",t0\n";
-                code_ << "    or t0," << lo << ",t0\n";
-            }
+            loadImmediate("t0", static_cast<int32_t>(static_cast<uint32_t>(e.intValue)));
             return;
         }
         case ir::ExprKind::Var: {
-            loadAddress("t2", label(e.slot));
+            if (e.slot->kind == ir::SlotKind::Global) {
+                loadAddress("t2", label(e.slot));
+            } else {
+                loadSlotAddr("t2", e.slot);
+            }
             code_ << "    ldind t2,t0\n";
             return;
         }
@@ -245,7 +330,11 @@ void SparcCodegen::genExpr(const ir::Expr &e) {
                 return;
             }
             genExpr(*e.rhs);
-            loadAddress("t2", label(e.slot));
+            if (e.slot->kind == ir::SlotKind::Global) {
+                loadAddress("t2", label(e.slot));
+            } else {
+                loadSlotAddr("t2", e.slot);
+            }
             code_ << "    stind t2,t0\n";
             return;
         }
@@ -276,30 +365,42 @@ void SparcCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            for (size_t i = 0; i < e.args.size(); i++) {
+            // Pushed right-to-left, so argument 0 ends up closest to
+            // the stack top at the moment `call` runs - exactly the
+            // same cdecl-style shape as I386Codegen.cpp's own `Call`
+            // case, just with "push" spelled out as this dialect's
+            // own `sub sp,4,sp`/`stind sp,t0` pair. Once the callee's
+            // own prologue has pushed `lr` and `fp` (see genFunction()'s
+            // own comment), argument 0 sits at `fp+8`, argument i at
+            // `fp+8+4*i` - see loadSlotAddr()'s own Param case. The
+            // caller cleans the arguments back off afterwards (`call`
+            // itself never touches `sp`).
+            for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                loadAddress("t2", "p_" + e.func->sourceName + "_" + std::to_string(i));
-                code_ << "    stind t2,t0\n";
+                code_ << "    sub sp,4,sp\n    stind sp,t0\n";
             }
             code_ << "    call " << label(e.func) << "\n";
+            if (!e.args.empty()) code_ << "    add sp," << (4 * e.args.size()) << ",sp\n";
             return;
         }
         case ir::ExprKind::CallPtr: {
             // e.args is always empty here - IRBuilder.cpp rejects any
             // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr): there's no per-callee
-            // p_<fn>_<i> cell to write one into until the callee is
-            // known, which it never is at compile time for this kind.
+            // (see IR.h's ExprKind::CallPtr): the callee isn't known
+            // until runtime for this kind, so there's no declared
+            // parameter list a caller could even match its own pushed
+            // arguments against.
             // "jmpl t0,lr" is the real SPARC JMPL instruction
             // (SparcAssembler.cpp's own new `jmpl rs1,rd` mnemonic):
             // it transfers control to whatever address t0 holds and
             // leaves the address of this jmpl instruction itself in
             // lr, exactly the same return-address convention a direct
-            // `call` already leaves there (see genFunction()'s own
-            // comment on `retl`'s "lr+8" assumption) - so a function
-            // reached this way returns correctly with the exact same
-            // `retl` epilogue every function already uses regardless
-            // of how it was called. The assembler synthesizes the
+            // `call` already leaves there (see
+            // SparcAssembler.cpp's own `encodeRetl()` comment on
+            // `retl`'s "lr+8" assumption) - so a function reached this
+            // way returns correctly with the exact same `retl`
+            // epilogue every function already uses regardless of how
+            // it was called. The assembler synthesizes the
             // real delay-slot `nop` right after it automatically,
             // same as `call` already relies on.
             genExpr(*e.lhs);  // t0 = the callee's own entry address
@@ -323,19 +424,44 @@ void SparcCodegen::genExpr(const ir::Expr &e) {
 
 // `t2` holds the computed address, no zero-page-style placement
 // restriction the way the 6502 backend's own `ptr` has. `arraySize >
-// 0` means the base is a compile-time-known label (an *address*);
-// otherwise `slot` is a plain pointer variable, so the base instead
-// comes from *reading* that variable's own stored value first.
+// 0` means the base is a compile-time-known address (a Global's own
+// label, or a Local's own `fp`-relative address - either way, the
+// array's first word); otherwise `slot` is a plain pointer variable,
+// so the base instead comes from *reading* that variable's own stored
+// value first (itself at a Global's label or a Local/Param's
+// `fp`-relative address, same distinction as every other slot access -
+// see loadSlotAddr()).
+//
+// A Global array's elements sit at *increasing* addresses as the
+// index grows (`label+i*4`, the ordinary layout); a Local array's
+// elements instead sit at *decreasing* addresses from its own first
+// word (`base-i*4`), because `base` itself is already `fp-4*
+// frameOffset` and later elements (index i>0) occupy the *larger*
+// frameOffset values `frameOffset+i` (see IR.h's own comment on
+// Slot::frameOffset), which this backend's own `fp-4*frameOffset`
+// addressing turns into the *smaller* (more negative) address. Adding
+// `i*4` here instead of subtracting it would silently read/write the
+// wrong word for any index past 0 - the same bug this migration
+// specifically guards against on every other frame-pointer-based
+// backend (see e.g. I386Codegen.cpp's own `computeElementAddr()`).
 void SparcCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);              // t0 = index
     code_ << "    sll t0,2,t0\n";  // t0 *= 4 (words are 4 bytes on this target)
-    std::string lbl = label(slot);
+    bool isGlobal = slot->kind == ir::SlotKind::Global;
     if (slot->arraySize > 0) {
-        loadAddress("t2", lbl);
-        code_ << "    add t2,t0,t2\n";
+        if (isGlobal) {
+            loadAddress("t2", label(slot));
+        } else {
+            loadSlotAddr("t2", slot);
+        }
+        code_ << "    " << (isGlobal ? "add" : "sub") << " t2,t0,t2\n";
     } else {
-        loadAddress("t1", lbl);
-        code_ << "    ldind t1,t1\n";       // t1 = the pointer variable's own stored value
+        if (isGlobal) {
+            loadAddress("t1", label(slot));
+        } else {
+            loadSlotAddr("t1", slot);
+        }
+        code_ << "    ldind t1,t1\n";  // t1 = the pointer variable's own stored value
         code_ << "    add t1,t0,t2\n";
     }
 }
@@ -347,7 +473,11 @@ void SparcCodegen::genIndex(const ir::Expr &e) {
 
 void SparcCodegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        loadAddress("t2", label(operand.slot));
+        if (operand.slot->kind == ir::SlotKind::Global) {
+            loadAddress("t2", label(operand.slot));
+        } else {
+            loadSlotAddr("t2", operand.slot);
+        }
         movReg("t0", "t2");
         return;
     }

@@ -30,10 +30,9 @@ namespace pcc {
 // as every other backend's own word-size choice.
 //
 // Register assignment (this backend's own convention, not a real
-// AAPCS calling-convention choice, since there's no cross-function
-// register-passed-argument convention at all - every parameter is a
-// statically allocated slot, same as every other backend - see
-// genFunction()):
+// AAPCS calling-convention choice - arguments travel on the real
+// hardware stack, not in registers, same reasoning as every other
+// migrated backend - see genFunction()/the Call case in genExpr()):
 //   r0  - "ac", genExpr()'s own result (the register every other
 //         backend also calls this - 68000's D0, MIPS's $t0)
 //   r1  - "the other operand" in a binary op (68000's D1, MIPS's $t1)
@@ -46,7 +45,14 @@ namespace pcc {
 //              LDR/STR through it (via the dedicated `ldind`/`stind`
 //              mnemonics below), used both to save one operand across
 //              evaluating the other in a binary expression and for
-//              every function call/return
+//              every function call/return/argument
+//   fp (r11) - the real per-call frame pointer: every function's own
+//              prologue points this at its own frame (see
+//              genFunction()), so a Local or Param's address is
+//              always computed relative to *this* call's own `fp`,
+//              never a fixed label - the real-recursion equivalent of
+//              every other migrated backend's own `ebp`/`bp` (see
+//              loadFrameAddr()'s own comment)
 //   lr (r14) - the real hardware link register BL sets and BX reads
 //
 // ARM has no absolute-addressing memory operand at all (unlike the
@@ -135,21 +141,73 @@ class ArmCodegen : public Backend {
     // Leaves slot[idxExpr]'s own effective address in `r2`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
+    // Stores a Local array's own compile-time arrayInit values into
+    // its frame slots, one element at a time - the frame-relative
+    // equivalent of declareArray() below, which only ever applies to
+    // a Global (see genStmt()'s own LocalDecl case).
+    void genLocalArrayInit(const ir::Slot *slot);
+
     // Loads `lbl`'s own address into register `reg` (MOVW+MOVT - see
     // this file's own header comment on why ARM needs two
     // instructions here where 68000 needs none).
     void loadAddress(const std::string &reg, const std::string &lbl);
 
+    // Loads a Local or Param's own frame-relative effective address
+    // into `reg` - every function gets a real per-call stack frame
+    // (see genFunction()): its own prologue pushes the caller's `fp`
+    // and `lr`, then points `fp` at that saved pair, so a Param's
+    // address is `fp+8+4*paramIndex` (the caller's own pushed
+    // arguments sit just above the two saved words - see the Call
+    // case in genExpr()), and a Local's is `fp-4*frameOffset`
+    // (reserved by the prologue's own `sub sp,sp,frameSize*4`).
+    // `elemIndex` (a Local array's own element index, always a
+    // compile-time constant here - genIndexAddr() handles a runtime
+    // index itself) adds `elemIndex` further words to a Local's own
+    // offset, since a Local array's addresses decrease as its own
+    // index increases (frameOffset is its first word's own index -
+    // see IR.h's own Slot::frameOffset comment) - the mirror image of
+    // a Global array's increasing-address layout. See
+    // ../i386/I386Codegen.h's own `addr()` comment for why this makes
+    // recursion (direct or indirect) safe: every activation gets its
+    // own `fp`/frame, unlike a Global's one real static cell.
+    void loadFrameAddr(const std::string &reg, const ir::Slot *slot, int elemIndex = 0);
+
+    // Adds (`isAdd`) or subtracts `offsetBytes` from `reg` in place -
+    // used by loadFrameAddr() and genFunction()'s own frame setup.
+    // `ADD`/`SUB`'s own immediate operand2 is an unrotated 8-bit
+    // field (see ArmAssembler.cpp's own emitDPImm()), so an offset
+    // that doesn't fit is instead loaded into a scratch register
+    // first (MOVW+MOVT, same two-instruction load every absolute
+    // address here already needs) and added/subtracted as a register
+    // operand2 - `r1` is this scratch register, or `r3` when `reg`
+    // itself is `r1` (loadFrameAddr()'s own Local-pointer-variable
+    // case in genIndexAddr() computes a base address into `r1`
+    // itself).
+    void emitFrameOffset(const std::string &reg, int offsetBytes, bool isAdd);
+
+    // Loads an addressable Local/Param/Global's own effective address
+    // into `reg`, dispatching to loadAddress() (a Global's own fixed
+    // label) or loadFrameAddr() (a Local/Param's own frame-relative
+    // address) as appropriate.
+    void loadSlotAddr(const std::string &reg, const ir::Slot *slot);
+
+    // Loads one array initializer element's own value (a plain
+    // literal, or a referenced Slot's/Function's own address - see
+    // IR.h's ArrayInitElem) into register `reg`, as real
+    // instructions - genLocalArrayInit()'s own per-element frame
+    // store. declareArray()'s own Global trailer text (arrayElemText())
+    // is a separate, assembler-time-evaluated form of the same value,
+    // since a Global's own storage is static "dw" data, not code.
+    void loadArrayInitElem(const std::string &reg, const ir::ArrayInitElem &e);
+
     static std::string label(const ir::Slot *slot) {
-        if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
-        if (slot->kind == ir::SlotKind::Param) {
-            return "p_" + slot->ownerFunctionName + "_" + std::to_string(slot->paramIndex);
-        }
-        return slot->sourceName + "_" + std::to_string(slot->id);
+        // Local/Param addressing is always frame-relative now (see
+        // loadFrameAddr()) - only a Global ever needs a name-based
+        // label.
+        return "g_" + slot->sourceName;
     }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
-    void declareTemp(const std::string &lbl);
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }

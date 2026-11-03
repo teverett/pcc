@@ -73,6 +73,7 @@ const std::string kEntryAsm = "org 0\n"
                                "dx = " + std::to_string(kPIC16RegDx) + "\n" +
                                "ptr = " + std::to_string(kPIC16RegPtr) + "\n" +
                                "SP = " + std::to_string(kPIC16RegSP) + "\n" +
+                               "FP = " + std::to_string(kPIC16RegFP) + "\n" +
                                "SSTACK = " + std::to_string(kPIC16RegSStack) + "\n" +
                                "_start:\n"
                                "    movlw SSTACK\n"

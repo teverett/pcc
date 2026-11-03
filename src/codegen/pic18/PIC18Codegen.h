@@ -22,10 +22,17 @@ namespace pcc {
 // real 16K-word program memory (0x00000-0x03FFF, so unlike PIC16's
 // own direct-11-bit GOTO/CALL, this core's genuine 20-bit absolute
 // GOTO/CALL range never needs a paging workaround here), and its
-// real 31-level hardware call stack. `generate()` returns a complete,
-// self-contained program starting at the real hardware reset vector
-// (0x000000), halting in an infinite loop - the same "no stack, no
-// recursion" model every backend shares.
+// real 31-level hardware call stack - a fixed-depth, return-address-
+// only stack with no addressable storage and no way to redirect or
+// extend it, a genuine hardware constraint of this core, not a
+// limitation of this backend's own code. `generate()` returns a
+// complete, self-contained program starting at the real hardware
+// reset vector (0x000000), halting in an infinite loop. Unlike most
+// backends here, this one supports real recursion, direct or mutually
+// indirect, up to whatever depth that hardware call stack (or this
+// backend's own `FSTACK` frame region, see below) allows first - see
+// this file's own header comment further down on `FP`/`NFP`/`FSTACK`
+// for how.
 //
 // See PIC16Codegen.h's own header comment for the aspects this
 // backend shares outright with its mid-range sibling: the Harvard
@@ -45,14 +52,22 @@ namespace pcc {
 // computes under 8 bits too); no hardware multiply/divide (shift-
 // and-add / repeated-subtraction loops, only verified against non-
 // negative operands); no variable-count shift (RLCF/RRCF always
-// rotate exactly one bit).
+// rotate exactly one bit). `FP`/`NFP` (one byte each) and `FSTACK` (a
+// fixed-size region) are this backend's own addition over PIC16's
+// shared fixed-register set - see this file's own header comment
+// further down for what they're for.
 //
 // Scope restriction: like the PIC16 backend's own 68-byte-GPR limit,
 // this backend only ever allocates data in the 96-byte Access Bank
 // GPR window (0x00-0x5F) - real banked GPR beyond that (this chip has
 // up to 768 bytes total) is never used, so no BSR bank-select code is
 // ever needed (every instruction's own access bit, `a`, is always 0 -
-// see PIC18Assembler.h's own header comment).
+// see PIC18Assembler.h's own header comment). Every Local/Param of
+// every function, across the whole program, now shares the one
+// `FSTACK` region (see below) instead of each getting its own
+// permanently-reserved byte pair, so this window holds every
+// *simultaneously live* call's own frame, not every function
+// definition's own storage at once.
 //
 // What's genuinely different from PIC16, and why (the actual point of
 // having a separate backend rather than just aliasing PIC16's):
@@ -83,6 +98,89 @@ namespace pcc {
 //   way), but leaves W/STATUS completely undisturbed, which happens
 //   to make it a strictly safer choice for copy2() than the 8080/
 //   6502/PIC16 backends' own W-based copy ever needs to be here.
+//
+// Real per-call recursion (direct and indirect/mutual): every Local
+// and every Param lives in a per-call frame on `FSTACK`, a dedicated
+// software stack region in data memory, addressed indirectly through
+// FSR0/INDF0/POSTINC0 (the same triple storeAcIndirect()/
+// loadAcIndirect() already use for array/pointer access) rather than
+// in one shared, statically-named memory cell - the one thing that
+// makes a recursive call compute correctly: two live calls to the
+// same function now have two genuinely distinct copies of its own
+// Locals/Params, not one shared cell the inner call clobbers out from
+// under the outer one.
+//
+// `FP` (one byte - every address this backend ever computes already
+// fits in 8 bits, see this file's own "Scope restriction" paragraph
+// below) holds the address of the *current* call's own frame - its
+// Params (by `paramIndex`, 2 bytes each, matching every other 16-bit
+// value here) immediately followed by its Locals (by `Slot::
+// frameOffset`, IR.h's own 1-based sequential word index in
+// declaration order - see slotFrameOffsetBytes()). Reading/writing a
+// Local/Param slot (loadSlotToAc()/storeAcToSlot()/slotAddrToPtr())
+// means computing that slot's own real address as `FP + <this
+// function's own compile-time offset for it>` into `ptr` and going
+// through the same indirect FSR0 access path as any other computed
+// address here - a Global's own address is still a plain, fixed,
+// compile-time symbol (globals are genuinely shared across every
+// call, by C's own semantics, not reentrant data at all), so a
+// Global slot access never goes through `FP`/`ptr` this way.
+//
+// One byte directly below `FP` (i.e. at `FP-1`) holds *this* call's
+// own saved caller's `FP` - exactly mirroring the real hardware return-
+// address stack's own nesting discipline, but for frame addresses
+// instead of code addresses, since nothing on this core can redirect
+// or extend that hardware stack to carry anything else (see this
+// file's own header comment above on the 31-level hardware call stack
+// being fixed-depth and non-addressable - the actual reason a second,
+// software-maintained "frame chain" is needed here at all, the same
+// reasoning `SP`/`SSTACK` already apply to saving a binary operator's
+// other operand across a call). A function's own prologue
+// (emitPrologue()) saves the caller's `FP` there and adopts `NFP` -
+// the address the *caller* already computed and left for it,
+// immediately before `call` - as its own new `FP`; its epilogue
+// (emitEpilogue(), run before every `return`) reads that same byte
+// back to restore the caller's `FP` before control actually returns
+// to it. Nothing about this pairing depends on call depth: it's
+// correct at whatever depth it happens to run at, including a direct
+// or mutually-indirect recursive call into the very same function,
+// because each nested call's own prologue/epilogue pair only ever
+// touches the one byte at *its own* `FP-1`, never any other call's.
+//
+// A call site (the `Call` case in genExpr()) computes where the
+// *callee's* new frame will go - `FP + <this function's own
+// frameSizeBytes_> + 1` (one byte for the callee's own saved-FP slot,
+// then its Params/Locals) - entirely from its own already-known
+// constants and its own current `FP`, writes each argument directly
+// into that not-yet-adopted frame (via `ptr`, the same computed-
+// address idiom as any other indirect store here), then hands that
+// same address to the callee in `NFP` right before `call`, recomputed
+// fresh immediately beforehand rather than held across argument
+// evaluation - an argument expression can itself contain a nested
+// call, which runs its own complete prologue/epilogue pair and always
+// restores `FP` before returning, but would otherwise be free to
+// clobber a value sitting in `NFP` early. No separate "stack top"
+// register is ever needed alongside `FP`/`NFP`: a call's own new frame
+// address is always a compile-time-constant offset from the *caller's*
+// own current `FP`, since the caller's own frameSizeBytes_ never
+// changes across any of its own calls, recursive or not.
+//
+// `FSTACK` itself is a fixed-size region (see its own `declareRam`
+// call site in generate()) - real recursion depth is therefore
+// bounded by whichever runs out first: this region's own fixed byte
+// budget, or the real 31-level hardware call stack. Within this
+// backend's own 96-byte Access Bank scope restriction (see below)
+// `FSTACK`'s own size is a real, direct trade-off against how many
+// bytes are left over for globals - sized generously enough here to
+// comfortably clear ordinary recursion depths (a double-digit number
+// of simultaneous calls at a few bytes of frame each), not to
+// guarantee reaching the full 31-level hardware limit for every
+// possible program; a program combining large frames with deep
+// recursion can still exhaust `FSTACK` itself first, reported the
+// same loud way this backend already reports Access Bank exhaustion
+// in general (see PIC18Assembler.cpp's own `Line::Res` comment, and
+// PIC18LinkerFactory.cpp's own `patchDataAbs8` for the linked,
+// multi-object case).
 //
 // `objectMode` (real separate compilation, `--format=coff`/`elf`/
 // `macho`/`aout`/`objraw` - see Codegen.h's own header comment)
@@ -151,7 +249,11 @@ class PIC18Codegen : public Backend {
                                                   const std::string &format) const override;
 
    private:
-    void genFunction(const ir::FunctionBody &fn);
+    // `extraPrologue` (raw asm text, emitted right after the frame
+    // prologue and before `fn`'s own body) is how generate() runs the
+    // whole-program's globalInit code as part of `fn_main`'s own
+    // prologue under `objectMode` - see generate()'s own call site.
+    void genFunction(const ir::FunctionBody &fn, const std::string &extraPrologue = "");
     void genStmt(const ir::Stmt &s);
     void genExpr(const ir::Expr &e);  // leaves the result in the `ac` pseudo-register
 
@@ -169,6 +271,37 @@ class PIC18Codegen : public Backend {
     void genAddrOf(const ir::Expr &operand);
 
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
+
+    // `slot`'s own byte offset from `FP` within the current
+    // function's own frame (Local/Param only - a Global never goes
+    // through `FP` at all, see slotAddrToPtr()) - a Param's own
+    // `paramIndex` placed first (`paramCount_` of them, 2 bytes
+    // each), then a Local's own `frameOffset` (1-based, see IR.h's
+    // own comment) placed right after.
+    int slotFrameOffsetBytes(const ir::Slot *slot) const {
+        if (slot->kind == ir::SlotKind::Param) return slot->paramIndex * 2;
+        return (paramCount_ + slot->frameOffset - 1) * 2;
+    }
+
+    // Adopts `NFP` (already computed and left by the caller - see
+    // genExpr()'s own `Call` case) as this call's own `FP`, saving the
+    // caller's own `FP` at the one byte directly below it first - see
+    // this file's own header comment on `FP`/`NFP`/`FSTACK`.
+    void emitPrologue();
+    // The reverse, run immediately before every `return`: restores
+    // the caller's own `FP` from that same saved byte.
+    void emitEpilogue();
+
+    // Sets `ptr` to `slot`'s own effective Access Bank address: its
+    // fixed, compile-time label for a Global, or `FP` plus
+    // slotFrameOffsetBytes() for a Local/Param - see this file's own
+    // header comment.
+    void slotAddrToPtr(const ir::Slot *slot);
+    // `ac` = `slot`'s own current value - a plain copy2() for a
+    // Global, or slotAddrToPtr()+loadAcIndirect() for a Local/Param.
+    void loadSlotToAc(const ir::Slot *slot);
+    // The reverse: writes `ac` into `slot`.
+    void storeAcToSlot(const ir::Slot *slot);
 
     // Via FSR0L/INDF0/POSTINC0 - see this file's own header comment
     // on why this core's real auto-increment indirect mode needs one
@@ -223,6 +356,17 @@ class PIC18Codegen : public Backend {
     std::vector<std::string> ramDecls_;
     std::vector<std::pair<std::string, int>> zeroAtStart_;
     std::map<std::string, std::string> perFileAsm_;
+
+    // The function currently being generated's own frame shape - see
+    // this file's own header comment on `FP` and
+    // slotFrameOffsetBytes()'s own comment. Set once, at the top of
+    // every genFunction() call, from `fn.func->params.size()` and
+    // `fn.func->frameSize` directly; never read across one function's
+    // own codegen into another's, since generation itself is single-
+    // pass and sequential, one function fully finished before the
+    // next starts.
+    int paramCount_ = 0;
+    int frameSizeBytes_ = 0;
 
     int labelCounter_ = 0;
 };

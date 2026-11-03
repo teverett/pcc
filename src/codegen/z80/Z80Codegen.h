@@ -100,11 +100,37 @@ class Z80Codegen : public Backend {
     void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
 
     // Leaves slot[idxExpr]'s own effective address in the `ptr`
     // memory cell - see I8080Codegen.h's own genIndexAddr() comment
     // on why `idxExpr` is always evaluated first, and alone.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
+
+    // Every function gets a real per-call stack frame, built around
+    // `ix` as the frame pointer (see Z80Codegen.cpp's own
+    // genFunction() comment for the exact layout): a Local's or
+    // Param's own storage is never a fixed label the way a Global's
+    // is, since every call needs its own independent copy. HL has no
+    // instruction that loads it from IX directly, so this goes
+    // through the real hardware stack instead ("push ix" / "pop hl")
+    // - the one real, standard way to copy one 16-bit register into
+    // another on this chip when no direct `ld` form between them
+    // exists. Leaves `slot`'s own effective address in HL; a Local
+    // lives at `ix-2*(frameOffset+extraWords)` (frame storage grows
+    // down from `ix` - see genFunction()'s own comment), a Param at
+    // `ix+4+2*paramIndex` (past the saved `ix` and the return
+    // address, both pushed before this call's own frame is
+    // established). `extraWords` lets a Local array's own element i
+    // reuse this same formula (frameOffset+i) without a caller
+    // needing to synthesize its own displacement arithmetic.
+    void loadFrameAddr(const ir::Slot *slot, long extraWords = 0);
+
+    // Reads the 16-bit value at [HL] into the (loReg, hiReg) pair,
+    // low byte first - the same `(HL)`-via-"m" idiom genIndex()/
+    // storeAcIndirect() already use elsewhere in this file. HL ends
+    // up one past the word read (pointing at the high byte).
+    void readWordAt(const std::string &loReg, const std::string &hiReg);
 
     // Assumes HL already holds a target address and writes `ac`'s
     // two bytes there via plain accumulator loads/`(HL)` stores -
@@ -153,6 +179,11 @@ class Z80Codegen : public Backend {
 
     int tempCounter_ = 0;
     int labelCounter_ = 0;
+    // The function currently being generated's own frame-reservation
+    // size in bytes (`frameSize*2` - see genFunction()) - every
+    // `Return` needs this too, to unwind the same amount the
+    // prologue reserved before it restores `ix`/`ret`s.
+    int frameReserveBytes_ = 0;
 };
 
 }  // namespace pcc

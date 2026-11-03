@@ -33,12 +33,13 @@ std::optional<uint32_t> fixedRegAddr(const std::string &lbl) {
     if (lbl == "dx") return kPIC16RegDx;
     if (lbl == "ptr") return kPIC16RegPtr;
     if (lbl == "SP") return kPIC16RegSP;
+    if (lbl == "FP") return kPIC16RegFP;
     if (lbl == "SSTACK") return kPIC16RegSStack;
     return std::nullopt;
 }
 }  // namespace
 
-void PIC16Codegen::declareRam(const std::string &lbl, int count, bool zeroAtStart) {
+void PIC16Codegen::declareRam(const std::string &lbl, int count) {
     if (objectMode_) {
         if (auto addr = fixedRegAddr(lbl)) {
             ramDecls_.push_back(lbl + " = " + std::to_string(*addr));
@@ -46,7 +47,6 @@ void PIC16Codegen::declareRam(const std::string &lbl, int count, bool zeroAtStar
         }
     }
     ramDecls_.push_back(lbl + ": res " + std::to_string(count));
-    if (zeroAtStart) zeroAtStart_.push_back({lbl, count});
 }
 
 void PIC16Codegen::copy2(const std::string &dst, const std::string &src) {
@@ -219,18 +219,26 @@ std::string PIC16Codegen::generate(const ir::Program &prog, bool objectMode) {
     // only ever null in object mode, for a file that doesn't happen
     // to define `main` itself.
 
-    declareRam("ac", 2, false);
-    declareRam("bc", 2, false);
-    declareRam("cx", 2, false);
-    declareRam("dx", 2, false);
-    declareRam("ptr", 1, false);
-    declareRam("SP", 1, false);
-    // 24 bytes - 12 two-byte pushes' worth of depth, comfortably more
-    // than any expression nesting (plus call-site saves) this
-    // project's own test programs ever reach; a deeper program trips
-    // PIC16Assembler.cpp's own "file-register space exhausted" check
-    // rather than silently corrupting memory.
-    declareRam("SSTACK", 24, false);
+    declareRam("ac", 2);
+    declareRam("bc", 2);
+    declareRam("cx", 2);
+    declareRam("dx", 2);
+    declareRam("ptr", 1);
+    declareRam("SP", 1);
+    // Holds the current call's own frame base within `SSTACK` - see
+    // PIC16Codegen.h's own header comment on the frame layout
+    // emitPrologue()/emitEpilogue() build there.
+    declareRam("FP", 1);
+    // `kPIC16SStackSize` bytes - comfortably more than any expression
+    // nesting (plus call-site saves) this project's own test programs
+    // ever reach, *and* enough call frames deep for every test this
+    // backend's own correctness was hand-verified against (see
+    // PIC16Codegen.h's own header comment: every Local/Param's own
+    // real per-call storage lives here too now, not just binary-op
+    // operand saves). A deeper program trips PIC16Assembler.cpp's own
+    // "file-register space exhausted" check rather than silently
+    // corrupting memory.
+    declareRam("SSTACK", kPIC16SStackSize);
 
     // Globals need real startup code, not a loaded data image - see
     // PIC16Codegen.h's own header comment on why (Harvard
@@ -249,14 +257,14 @@ std::string PIC16Codegen::generate(const ir::Program &prog, bool objectMode) {
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
-            declareRam(lbl, slot->arraySize * 2, false);
+            declareRam(lbl, slot->arraySize * 2);
             for (size_t i = 0; i < slot->arrayInit.size(); i++) {
                 std::string base = lbl + "+" + std::to_string(i * 2);
                 std::string hi = lbl + "+" + std::to_string(i * 2 + 1);
                 emitInitElem(globalInit, base, hi, slot->arrayInit[i]);
             }
         } else {
-            declareRam(lbl, 2, false);
+            declareRam(lbl, 2);
             long v = slot->hasInit ? slot->initValue : 0;
             uint16_t v16 = static_cast<uint16_t>(v);
             emitInitByte(globalInit, lbl, static_cast<uint8_t>(v16 & 0xFF));
@@ -266,26 +274,27 @@ std::string PIC16Codegen::generate(const ir::Program &prog, bool objectMode) {
 
     for (const auto &fb : prog.functionBodies) {
         if (objectMode && fb.func == mainFn) {
-            // This file's own globals' zero/init code (`zeroAtStart_`/
-            // `globalInit` above) has nowhere else to run in object
-            // mode - PIC16LinkerFactory.cpp's own synthesized `START`
-            // entry sequence is built once, before it has ever seen
-            // this (or any) user object, so it can't know this file's
-            // own globals exist at all. `fn_main`'s own prologue is
-            // the one place every linked program is guaranteed to
-            // reach exactly once, before any other code, that this
-            // file does control - see PIC16Codegen.h's own
-            // `objectMode` comment.
+            // This file's own globals' init code (`globalInit` above)
+            // has nowhere else to run in object mode -
+            // PIC16LinkerFactory.cpp's own synthesized `START` entry
+            // sequence is built once, before it has ever seen this
+            // (or any) user object, so it can't know this file's own
+            // globals exist at all. `fn_main`'s own prologue is the
+            // one place every linked program is guaranteed to reach
+            // exactly once, before any other code, that this file
+            // does control - see PIC16Codegen.h's own `objectMode`
+            // comment. `main` still needs its own real per-call frame
+            // too (it has no params - IRBuilder guarantees that - but
+            // may still have Locals), so this inlines the same
+            // emitPrologue()/emitEpilogue() genFunction() would
+            // otherwise provide, around the global init code and the
+            // body alike.
+            curNumParams_ = 0;
             code_ << label(fb.func) << ":\n";
-            for (const auto &entry : zeroAtStart_) {
-                for (int i = 0; i < entry.second; i++) {
-                    code_ << "    clrf " << entry.first;
-                    if (i > 0) code_ << "+" << i;
-                    code_ << "\n";
-                }
-            }
+            emitPrologue(/*numParams=*/0, fb.func->frameSize);
             code_ << globalInit.str();
             genStmt(*fb.body);
+            emitEpilogue(/*numParams=*/0);
             code_ << "    return\n\n";
         } else {
             genFunction(fb);
@@ -308,18 +317,13 @@ std::string PIC16Codegen::generate(const ir::Program &prog, bool objectMode) {
         header << "    goto START\n\n";
         header << "START:\n";
         header << "    movlw SSTACK\n    movwf SP\n";
-        // Every real C variable (globals, locals, params, arrays -
-        // never this backend's own pseudo-registers, always written
-        // before read) gets explicitly zeroed here first, since this
-        // target's own data memory powers up to an unknown state -
-        // see PIC16Codegen.h's own header comment.
-        for (const auto &entry : zeroAtStart_) {
-            for (int i = 0; i < entry.second; i++) {
-                header << "    clrf " << entry.first;
-                if (i > 0) header << "+" << i;
-                header << "\n";
-            }
-        }
+        // Every real Global (never a Local/Param - see this file's
+        // own header comment on why those have no startup state of
+        // their own left to initialize at all now - nor this
+        // backend's own pseudo-registers) gets explicitly written
+        // here first, since this target's own data memory powers up
+        // to an unknown state - see PIC16Codegen.h's own header
+        // comment.
         header << globalInit.str();
         header << "    call " << label(mainFn) << "\n";
         header << "HALT:\n    goto HALT\n\n";
@@ -328,12 +332,14 @@ std::string PIC16Codegen::generate(const ir::Program &prog, bool objectMode) {
     std::ostringstream out;
     out << header.str();
     out << code_.str();
-    // In whole-program mode, every pseudo-register/global/local/param
-    // shares one unified `res` counter starting at the real GPR-bank
-    // base (`kPIC16RamBase`). In object mode, declareRam() already
-    // turned the seven fixed pseudo-registers into equates above (no
-    // `res` at all for them - see that function's own comment), so
-    // `ramDecls_` here holds only real globals/locals/params' own
+    // In whole-program mode, every pseudo-register/global shares one
+    // unified `res` counter starting at the real GPR-bank base
+    // (`kPIC16RamBase`) - a Local/Param is never part of it, having
+    // no `res`-declared cell of its own at all any more (see this
+    // file's own header comment). In object mode, declareRam()
+    // already turned the eight fixed pseudo-registers into equates
+    // above (no `res` at all for them - see that function's own
+    // comment), so `ramDecls_` here holds only real globals' own
     // `res` lines, meant to be this *object's own* local, pre-link
     // data-space offsets - leaving the `orgram` cursor at its default
     // (0, reset at the start of every pass - see
@@ -350,10 +356,65 @@ std::string PIC16Codegen::generate(const ir::Program &prog, bool objectMode) {
 // backend's own perFileAsm().
 std::map<std::string, std::string> PIC16Codegen::perFileAsm() const { return perFileAsm_; }
 
+// Leaves FP + frameSlotOffset(slot) in `W` - see PIC16Codegen.h's own
+// comment on this and the two callers built from it.
+void PIC16Codegen::loadFrameBaseW(const ir::Slot *slot) {
+    code_ << "    movlw " << frameSlotOffset(slot) << "\n";
+    code_ << "    addwf FP,w\n";
+}
+
+void PIC16Codegen::loadFrameAddr(const ir::Slot *slot) {
+    loadFrameBaseW(slot);
+    code_ << "    movwf ptr\n";
+}
+
+// Pushes the caller's own `FP` onto `SSTACK` right after the
+// `numParams` argument words the caller already pushed via
+// pushCell2() (see genExpr()'s own Call case) - at this point `SP` is
+// exactly `(this call's own argument base) + 2*numParams`, so
+// subtracting that back out gives this call's own frame base, stored
+// into `FP` once the caller's old value is safely saved. `frameSize`
+// more words (this function's own Locals, 0 if it declares none) are
+// then reserved by simply advancing `SP` past them - see
+// PIC16Codegen.h's own header comment for the full frame layout.
+void PIC16Codegen::emitPrologue(int numParams, int frameSize) {
+    code_ << "    movlw " << (2 * numParams) << "\n";
+    code_ << "    subwf SP,w\n";
+    code_ << "    movwf ptr\n";  // ptr = this call's own frame base (FP-to-be)
+    code_ << "    movf SP,w\n    movwf FSR\n";
+    code_ << "    movf FP,w\n    movwf INDF\n";  // save the caller's own FP
+    code_ << "    incf SP,f\n";
+    code_ << "    movf ptr,w\n    movwf FP\n";
+    if (frameSize > 0) {
+        code_ << "    movlw " << (2 * frameSize) << "\n";
+        code_ << "    addwf SP,f\n";
+    }
+}
+
+// The exact reverse of emitPrologue(), read right to left: deallocate
+// this whole frame at once (`SP = FP`, freeing its Locals, its own
+// saved-FP byte, and the caller's pushed argument words together -
+// cheaper than, and equivalent to, popping each in turn, and a
+// callee-cleans-up convention, so genExpr()'s own Call case never
+// needs to clean anything up after `call` returns either), then
+// restore the caller's own FP from where emitPrologue() saved it
+// (`FP+2*numParams`, read *before* `FP` itself is overwritten, or
+// there'd be nothing left pointing at it).
+void PIC16Codegen::emitEpilogue(int numParams) {
+    code_ << "    movlw " << (2 * numParams) << "\n";
+    code_ << "    addwf FP,w\n";
+    code_ << "    movwf FSR\n";
+    code_ << "    movf INDF,w\n    movwf ptr\n";  // ptr = the caller's own FP
+    code_ << "    movf FP,w\n    movwf SP\n";
+    code_ << "    movf ptr,w\n    movwf FP\n";
+}
+
 void PIC16Codegen::genFunction(const ir::FunctionBody &fn) {
+    curNumParams_ = static_cast<int>(fn.func->params.size());
     code_ << label(fn.func) << ":\n";
-    for (ir::Slot *p : fn.func->params) declareRam(label(p), 2);
+    emitPrologue(curNumParams_, fn.func->frameSize);
     genStmt(*fn.body);
+    emitEpilogue(curNumParams_);
     code_ << "    return\n\n";
 }
 
@@ -390,21 +451,37 @@ void PIC16Codegen::genStmt(const ir::Stmt &s) {
             return;
         }
         case ir::StmtKind::Return: {
+            // Evaluated into `ac` before the epilogue runs - the
+            // epilogue's own scratch use of `ptr` never touches `ac`
+            // (see emitEpilogue()'s own comment), so the return value
+            // survives it intact, the same way the caller already
+            // expects to find a call's result in `ac` right after
+            // `call` returns (see genExpr()'s own header comment).
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
+            emitEpilogue(curNumParams_);
             code_ << "    return\n";
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
+            // No `declareRam()` here any more - a Local's own two (or
+            // `arraySize*2`) bytes already exist, reserved by
+            // genFunction()'s own emitPrologue() advancing `SP` past
+            // every Local in this function up front (see IR.h's own
+            // `Function::frameSize`); this just has to fill them in.
             if (s.declSlot->arraySize > 0) {
-                declareRam(lbl, s.declSlot->arraySize * 2);
-            } else {
-                declareRam(lbl, 2);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    copy2(lbl, "ac");
-                }
+                genLocalArrayInit(s.declSlot);
+            } else if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                loadFrameAddr(s.declSlot);
+                storeAcIndirect();
             }
+            // No "else" case for a bare, uninitialized scalar: its
+            // own frame word already exists - same as a real,
+            // ordinary C automatic variable, its value is simply
+            // whatever this call's own frame slot already held until
+            // something assigns it (see PIC16Codegen.h's own header
+            // comment: a Local is never zeroed at program start, only
+            // ever written by codegen before any read of it).
             return;
         }
         case ir::StmtKind::ExprStmt: {
@@ -430,7 +507,15 @@ void PIC16Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
-            copy2("ac", label(e.slot));
+            // IRBuilder already rejects a bare array Var outside of
+            // `&` (which bypasses this path), so e.slot is always a
+            // scalar here.
+            if (e.slot->kind == ir::SlotKind::Global) {
+                copy2("ac", label(e.slot));
+            } else {
+                loadFrameAddr(e.slot);
+                loadAcIndirect();
+            }
             return;
         }
         case ir::ExprKind::Index: {
@@ -447,7 +532,16 @@ void PIC16Codegen::genExpr(const ir::Expr &e) {
                 return;
             }
             genExpr(*e.rhs);
-            copy2(label(e.slot), "ac");
+            // Computing the target address never touches `ac` (see
+            // loadFrameAddr()'s own comment), so it's always safe to
+            // do after the rhs is already evaluated into it, Global
+            // or Local/Param alike.
+            if (e.slot->kind == ir::SlotKind::Global) {
+                copy2(label(e.slot), "ac");
+            } else {
+                loadFrameAddr(e.slot);
+                storeAcIndirect();
+            }
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -479,9 +573,20 @@ void PIC16Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
+            // Each argument is pushed onto the real `SSTACK` software
+            // stack, in paramIndex order (see pushCell2()'s own
+            // comment: `SP` only ever increments, so the first-
+            // pushed argument ends up at the lowest address) - the
+            // exact shape emitPrologue() expects to find waiting for
+            // it on entry (see PIC16Codegen.h's own header comment on
+            // the frame layout). Evaluating argument i+1 can never
+            // clobber argument i's own already-pushed value, the same
+            // "a real stack has no aliasing problem" guarantee this
+            // file's own header comment already relies on for
+            // genBinary()'s operand saves.
             for (size_t i = 0; i < e.args.size(); i++) {
                 genExpr(*e.args[i]);
-                copy2("p_" + e.func->sourceName + "_" + std::to_string(i), "ac");
+                pushCell2("ac");
             }
             code_ << "    call " << label(e.func) << "\n";
             return;
@@ -514,11 +619,28 @@ void PIC16Codegen::genExpr(const ir::Expr &e) {
 void PIC16Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
     shiftOneBit("ac", /*isLeft=*/true);  // ac *= 2 (words are 2 bytes on this byte-addressed target)
-    std::string lbl = label(slot);
-    if (slot->arraySize > 0) {
-        code_ << "    movlw " << lbl << "\n";
+    if (slot->kind == ir::SlotKind::Global) {
+        std::string lbl = label(slot);
+        if (slot->arraySize > 0) {
+            code_ << "    movlw " << lbl << "\n";
+        } else {
+            code_ << "    movf " << lbl << ",w\n";
+        }
+    } else if (slot->arraySize > 0) {
+        // A Local/Param array's own base is FP-relative, not a
+        // compile-time address - loadFrameBaseW() leaves it in `w`
+        // directly, ready for the same "add in ac's scaled index"
+        // step below.
+        loadFrameBaseW(slot);
     } else {
-        code_ << "    movf " << lbl << ",w\n";
+        // A Local/Param pointer variable's own VALUE is the base to
+        // index from - read out of its own frame slot first (only
+        // the low byte matters, same as a Global pointer variable's
+        // own `movf lbl,w` above - see PIC16Codegen.h's own header
+        // comment on why every address here already fits one byte).
+        loadFrameAddr(slot);
+        code_ << "    movf ptr,w\n    movwf FSR\n";
+        code_ << "    movf INDF,w\n";
     }
     code_ << "    addwf ac,w\n";
     code_ << "    movwf ptr\n";
@@ -531,7 +653,12 @@ void PIC16Codegen::genIndex(const ir::Expr &e) {
 
 void PIC16Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        code_ << "    movlw " << label(operand.slot) << "\n    movwf ac\n";
+        if (operand.slot->kind == ir::SlotKind::Global) {
+            code_ << "    movlw " << label(operand.slot) << "\n    movwf ac\n";
+        } else {
+            loadFrameAddr(operand.slot);
+            code_ << "    movf ptr,w\n    movwf ac\n";
+        }
         code_ << "    clrf ac+1\n";
         return;
     }
@@ -559,6 +686,51 @@ void PIC16Codegen::genAddrOf(const ir::Expr &operand) {
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");
+}
+
+// Stores arrayInit into `slot`'s own frame words - every call needs
+// this re-run, since (unlike a Global's one static trailer, written
+// once by globalInit) a Local's storage is this activation's own
+// fresh frame region, not pre-set to anything; arrayInit is always
+// fully populated up to arraySize (zero-padded even with no source-
+// level initializer - see BuildAst.cpp's padArrayInit), so this
+// always leaves the whole array in a known state, same as a Global
+// array's static trailer always did. A literal element's value is
+// split into `ac`'s two bytes the same way an IntLit is; a symbol
+// element is either a Function's own program-memory address
+// (`movlwcl`/`movlwch`, same as genAddrOf()'s own Func case) or
+// another Slot's own address - a compile-time constant for a Global
+// (`label(elem.slot)`), but FP-relative, so only known at runtime,
+// for a Local/Param (e.g. `int x; int *p[] = {&x};` - a valid,
+// already-resolved reference to a sibling Local/Param - see
+// IRBuilder.cpp's own `resolveArrayInit`). Element `i`'s own address
+// is `slot`'s own first word plus `i` words - *increasing*, never the
+// base-minus-`i` arithmetic a decreasing-address frame would need
+// here (see PIC16Codegen.h's own header comment).
+void PIC16Codegen::genLocalArrayInit(const ir::Slot *slot) {
+    for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+        const ir::ArrayInitElem &elem = slot->arrayInit[i];
+        if (elem.isSymbol) {
+            if (elem.func) {
+                code_ << "    movlwcl " << label(elem.func) << "\n    movwf ac\n";
+                code_ << "    movlwch " << label(elem.func) << "\n    movwf ac+1\n";
+            } else if (elem.slot->kind == ir::SlotKind::Global) {
+                code_ << "    movlw " << label(elem.slot) << "\n    movwf ac\n";
+                code_ << "    clrf ac+1\n";
+            } else {
+                loadFrameAddr(elem.slot);
+                code_ << "    movf ptr,w\n    movwf ac\n";
+                code_ << "    clrf ac+1\n";
+            }
+        } else {
+            uint16_t v16 = static_cast<uint16_t>(elem.value);
+            code_ << "    movlw " << (v16 & 0xFF) << "\n    movwf ac\n";
+            code_ << "    movlw " << ((v16 >> 8) & 0xFF) << "\n    movwf ac+1\n";
+        }
+        code_ << "    movlw " << (frameSlotOffset(slot) + 2 * static_cast<int>(i)) << "\n";
+        code_ << "    addwf FP,w\n    movwf ptr\n";
+        storeAcIndirect();
+    }
 }
 
 // Every binary op here saves its left operand across evaluating the

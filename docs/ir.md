@@ -2,9 +2,13 @@
 
 Between the C frontend and every backend sits one target-independent
 intermediate representation (`src/ir/IR.h`). It's deliberately simple:
-every variable, temporary and literal is a single statically allocated
-slot — no stack, no recursion — so the same IR works for every target
-pcc supports.
+a Global is one statically allocated slot, while a Local or Param
+lives in a per-call frame (`Slot::frameOffset`/`Function::frameSize`,
+assigned once by `IRBuilder`, in declaration order) that every
+backend gives its own fresh storage on every call - so direct and
+indirect/mutual recursion compute correctly, bounded only by whatever
+stack (hardware or software) that backend builds its frames on. The
+same IR works for every target pcc supports.
 
 `src/ir/IRPrinter.{h,cpp}` renders a `Program` as human-readable
 pseudo-code. That text is what `--dump-ir` writes to `build/<name>.ir`,

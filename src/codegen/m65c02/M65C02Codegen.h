@@ -30,13 +30,65 @@ namespace pcc {
 // own "bare flat binary" platform choice: `generate()` returns a
 // complete, self-contained program loaded and entered at a fixed
 // address (`kBaseAddress`, see M65C02Codegen.cpp), halting in an
-// infinite loop - no OS, no I/O conventions, the same "no stack, no
-// recursion" model every backend shares (see README's "Scope and
-// limitations"), just for a target whose own real hardware stack
-// (the 6502 genuinely has one, unlike pdp7) is used anyway for
-// JSR/RTS and for saving one operand across evaluating the other in
-// a binary expression (PHA/PLA) - exactly the role pdp7 instead has
-// to improvise with named memory cells for (see Pdp7Codegen.cpp).
+// infinite loop - no OS, no I/O conventions. The 6502 has a real
+// hardware stack (page 1, via the 8-bit S register), used by
+// JSR/RTS for return addresses and by PHA/PLA for saving one operand
+// across evaluating the other in a binary expression - exactly the
+// role pdp7 instead has to improvise with named memory cells for
+// (see Pdp7Codegen.cpp). That hardware stack is untouched by, and
+// independent of, every Local/Param's own storage: see the frame
+// pointer discussion below.
+//
+// RECURSION / PER-CALL STORAGE: the 6502 has no instruction that
+// addresses memory as "stack-pointer plus displacement" (unlike the
+// 8086's `[bp+N]`), and its one real hardware stack is only 256
+// bytes - far too small to hold every function's locals for the
+// program's whole run, and not displacement-addressable anyway. So
+// every Local/Param instead lives in a *software* stack frame,
+// reached through two more fixed zero-page pseudo-registers - `sp`
+// (the software stack's own current top, growing toward decreasing
+// addresses as calls nest deeper) and `fp` (the *currently
+// executing* call's own frame base) - via the same `(zp),Y`
+// indirect-indexed addressing genIndexAddr() already needs for array
+// indexing and pointer dereference (see slotAddrToPtr()). This is
+// the standard technique real 6502-family C compilers (cc65 included)
+// use for the same reason.
+//
+// Frame layout, chosen to need only ADDITION for the (never-arrayed)
+// Param side and keep the two sides on opposite sides of `fp` so they
+// can never overlap: `fp` itself points at this call's own saved-old-
+// `fp` word. Param i (i=0,1,2,...) sits ABOVE `fp`, where the caller
+// already placed it before `jsr` - see genExpr()'s own `Call` case -
+// at `fp + 2*(i+1)`. Local frameOffset k (k=1,2,...) sits BELOW `fp`,
+// reserved by this function's own prologue (genFunction()), at
+// `fp - 2*k` - so a local array's element i sits at `base - 2*i`
+// (base = element 0's own address), the mirror image of a Global
+// array's `base + 2*i` (see genIndexAddr()'s own comment on getting
+// that sign right).
+//
+// Calling convention (genExpr()'s `Call` case / genFunction()):
+// the caller evaluates each argument and pushes it onto the software
+// stack (`sp -= 2`, store at `[sp]`) in *reverse* declaration order,
+// so argument 0 ends up closest to the callee's own frame (at the
+// lowest address, right above where `fp` will land) - then `jsr`s,
+// then restores `sp` by the pushed byte count (cdecl-style caller
+// cleanup). The callee's own prologue pushes the *caller's* `fp`
+// onto the software stack right where the caller's pushed arguments
+// end (this call's own saved-old-`fp` word), sets `fp` to that
+// address, then reserves `frameSize*2` more bytes below it for
+// locals (`sp -= frameSize*2`); the epilogue (also run inline by an
+// early `return` - see genStmt()'s `Return` case) does the reverse:
+// restore `sp` to just above the saved word, then restore `fp` from
+// it. An indirect call (`CallPtr`) never passes arguments (IRBuilder
+// already rejects any - see that case's own comment) so it needs
+// none of this caller-side bookkeeping; the callee's own prologue/
+// epilogue behaves identically either way, so recursion through a
+// function pointer is exactly as reentrant as a direct call.
+//
+// Globals are unaffected by any of this - they keep the one static,
+// program-lifetime trailer cell/array they always had (see
+// declareArray()/generate()'s own Global loop), addressed directly
+// by label, never through `fp`/`sp`.
 //
 // The 6502 has only three 8-bit registers (A, X, Y) and this
 // language's own "every variable is one word" word is 16 bits (same
@@ -45,25 +97,27 @@ namespace pcc {
 // 6502 C compilers - cc65 included - also default `int` to 16 bits
 // despite the CPU being 8-bit). Rather than juggle A/X/Y directly the
 // way the 8086 backend juggles ax/bx, every 16-bit value in flight
-// lives in one of five fixed, two-byte pseudo-registers in zero page
+// lives in one of seven fixed, two-byte pseudo-registers in zero page
 // - `ptr` (an indirection target - see below), `ac` (genExpr()'s own
 // result, the 8086 backend's "ax"), `bc` ("the other operand" in a
 // binary op, the 8086 backend's "bx"), `cx` (a loop counter, for
 // shifts/multiply/divide), `dx` (divide's remainder/general extra
-// scratch) - bound once at the top of generate() via this dialect's
+// scratch), and `sp`/`fp` (the software call-frame stack discussed
+// above) - bound once at the top of generate() via this dialect's
 // own `name = value` equate (M65C02Assembler.cpp's `Line::Equate`),
 // not through the usual sequential data-trailer layout the way an
 // ordinary variable is, since `ptr` specifically has to live at a
 // real zero-page address (0-255) for the 6502's one indirect-
 // addressing mode to use it at all - a genuine hardware restriction,
 // not a stylistic choice (see genIndexAddr()'s own comment). Putting
-// `ac`/`bc`/`cx`/`dx` in zero page too costs nothing (zero page has
-// 256 bytes, this uses 10) and keeps every one of them equally cheap
-// to reference with a 2-byte absolute instruction either way - there
-// turned out to be no need for the zero-page-vs-absolute opcode
-// variants (`$A5` vs `$AD`) at all, since every 2-byte-pair access
-// here always goes through a FIXED, compile-time-known symbol, never
-// a runtime-computed effective address the way `ptr` itself is.
+// `ac`/`bc`/`cx`/`dx`/`sp`/`fp` in zero page too costs nothing (zero
+// page has 256 bytes, this uses 14) and keeps every one of them
+// equally cheap to reference with a 2-byte absolute instruction
+// either way - there turned out to be no need for the zero-page-vs-
+// absolute opcode variants (`$A5` vs `$AD`) at all, since every
+// 2-byte-pair access to one of these pseudo-registers itself always
+// goes through a FIXED, compile-time-known symbol, never a runtime-
+// computed effective address the way `ptr`'s own *target* is.
 //
 // No hardware multiply or divide (the EAE pdp7 at least has `mul` -
 // see Pdp7Codegen.cpp - and the 8086 has `imul`/`idiv` outright; the
@@ -144,7 +198,81 @@ class M65C02Codegen : public Backend {
     // value sitting in an ordinary (non-zero-page) pseudo-register
     // until the moment it's actually dereferenced, at which point it
     // gets copied into `ptr` first.
+    //
+    // `slot->arraySize > 0` means the array's own storage is being
+    // indexed directly: a Global's is a compile-time-known label
+    // (base + idx*2 - see arrayElemText()'s own callers), a Local's
+    // is `fp`-relative (base - idx*2, base = `fp - 2*frameOffset` -
+    // see M65C02Codegen.h's own frame-layout comment; a Param can
+    // never reach this branch, since a C array parameter always
+    // decays to a pointer). Otherwise `slot` is a plain pointer
+    // variable: the base is that variable's own *value*, read via
+    // loadSlotToAc()'s/slotAddrToPtr()'s own machinery if it's a
+    // Local/Param, or directly from its label if Global, then idx*2
+    // is always ADDED to that value regardless of where the pointer
+    // variable itself lives - only a Local *array*'s own storage ever
+    // needs the base-minus-index form.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
+
+    // Leaves a Local/Param `slot`'s own storage address in `ptr` -
+    // `fp + 2*(paramIndex+1)` for a Param, `fp - 2*frameOffset` for a
+    // Local (see M65C02Codegen.h's own frame-layout comment). Never
+    // called with a Global slot - a Global's address is always a
+    // compile-time label, with no need for this at all.
+    void slotAddrToPtr(const ir::Slot *slot);
+    // Reads/writes a scalar slot's own value into/from `ac` - a
+    // direct label copy for a Global, or an indirect access through
+    // slotAddrToPtr()'s own `ptr` for a Local/Param.
+    void loadSlotToAc(const ir::Slot *slot);
+    void storeAcToSlot(const ir::Slot *slot);
+
+    // Stores arrayInit into a Local array slot's own frame words -
+    // every call needs this re-run, since (unlike a Global's one
+    // static trailer) a Local's storage is this activation's own
+    // fresh frame region, not pre-set to anything; arrayInit is
+    // always fully populated up to arraySize (zero-padded even with
+    // no source-level initializer - see BuildAst.cpp's
+    // padArrayInit), so this always leaves the whole array in a
+    // known state, same as a Global array's static trailer always
+    // did.
+    void genLocalArrayInit(const ir::Slot *slot);
+    // Loads one ArrayInitElem's own value into `ac` - a plain 16-bit
+    // immediate for a literal, or a label's own address (low/high
+    // byte, same as genAddrOf()'s Global case) for a symbol element.
+    void loadArrayElemToAc(const ir::ArrayInitElem &e);
+
+    // Tears down the current call's own frame: restores `sp` to just
+    // above this frame's saved-old-`fp` word, then restores `fp`
+    // itself from that word (see M65C02Codegen.h's own calling-
+    // convention comment). Run once at the natural end of
+    // genFunction(), and inline before every early `return` (see
+    // genStmt()'s own `Return` case) - in both cases immediately
+    // before `rts`. Uses `ptr` as scratch; never touches `ac`, since
+    // a `Return`'s own value already sits there and must survive
+    // into `rts`.
+    void emitEpilogue();
+
+    // 16-bit `dstReg = srcReg + disp` (disp may be negative - stored
+    // as its own two's-complement 16-bit encoding and added via
+    // `adci`/`adci_hi`, so this is really a 16-bit add either way,
+    // never a real subtract instruction). `dstReg`/`srcReg` name one
+    // of this file's own fixed zero-page pseudo-registers (e.g.
+    // "ptr", "fp", "sp") - safe even when they're the same register,
+    // since the low byte is written before the high byte is read.
+    void addConst16(const std::string &dstReg, const std::string &srcReg, int disp);
+    // 16-bit `dst = a + b` / `dst = a - b`, each a direct register-
+    // to-register operation (no immediate) - same in-place safety as
+    // addConst16().
+    void add16(const std::string &dst, const std::string &a, const std::string &b);
+    void sub16(const std::string &dst, const std::string &a, const std::string &b);
+    // "ldyi 0; ldaind zpPtr; sta dstReg; ldyi 1; ldaind zpPtr; sta
+    // dstReg+1" / the `staind` mirror - reads/writes one 16-bit value
+    // through `zpPtr`'s own `(zp),Y` indirect addressing (see
+    // genIndexAddr()'s own comment on why that's the one real
+    // zero-page-bound addressing mode here) into/from `dstReg`/
+    // `srcReg`, another of this file's own pseudo-registers.
+    void loadIndirect(const std::string &zpPtr, const std::string &dstReg);
+    void storeIndirect(const std::string &zpPtr, const std::string &srcReg);
 
     // Encodes "if the branch condition holds, jump to `targetIfTaken`,
     // otherwise jump to `targetIfNot`" using a short branch to a
@@ -181,6 +309,13 @@ class M65C02Codegen : public Backend {
     // its own target is always right here, not user code.
     void inc16(const std::string &lbl);
 
+    // Only ever called with a Global slot - a Local/Param is never
+    // addressed by name at all (see slotAddrToPtr()), since it never
+    // crosses a file boundary and every reference to it is already
+    // inside the one function that owns it; the fallback case below
+    // only exists so this still returns *something* harmless (never
+    // actually emitted into generated code) if that invariant were
+    // ever violated.
     static std::string label(const ir::Slot *slot) {
         if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
         if (slot->kind == ir::SlotKind::Param) {
@@ -190,8 +325,6 @@ class M65C02Codegen : public Backend {
     }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
-    std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
-    void declareTemp(const std::string &lbl);
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
@@ -200,7 +333,6 @@ class M65C02Codegen : public Backend {
     std::vector<std::string> trailer_;  // "label: dblo e" / "dbhi e" data lines, emitted once at the end
     std::map<std::string, std::string> perFileAsm_;
 
-    int tempCounter_ = 0;
     int labelCounter_ = 0;
 };
 

@@ -75,6 +75,55 @@ namespace pcc {
 // instruction always clears carry as a side effect, and ANA A is the
 // standard idiom for doing that without otherwise disturbing A).
 //
+// Every function gets a real per-call stack frame, so direct and
+// indirect/mutual recursion both work: two overlapping activations of
+// the same function never share storage. The 8080 has no base+
+// displacement addressing mode at all (unlike the Z80's `(IX+d)`/
+// `(IY+d)`, or the 8086's `[bp+d]` - see I8086Codegen.h's own `addr()`
+// for that backend's much simpler version of this same idea), so this
+// backend keeps its own *software* frame pointer in a dedicated
+// memory cell, `fp` (declared alongside `ac`/`bc`/`cx`/`dx`/`ptr`
+// below), and computes every frame-relative address by hand: `lhld fp`
+// loads the current frame's base into HL, `lxi d, <offset>` loads a
+// slot's own compile-time-constant word offset (positive for a Param,
+// negative for a Local - see genFrameAddr()), and `dad d` adds them,
+// leaving the slot's real address in HL for whatever M-addressing
+// (`mov a,m`/`mov m,a`) needs it next.
+//
+// genFunction()'s prologue pushes the caller's `fp` onto the *real*
+// hardware stack (so nested/recursive activations stack up correctly,
+// restored on return the same way a real `push bp`/`pop bp` would),
+// then points the new `fp` at that just-pushed word (via `lxi h,0` /
+// `dad sp`, the standard 8080 idiom for reading SP into HL - there's
+// no direct "HL=SP" instruction), then reserves this function's own
+// locals by moving SP down below them (`dad d` with the locals'
+// *negative* total size, then `sphl`). Since `frameSize` is a
+// compile-time constant, this reservation is a handful of fixed
+// instructions, not a runtime loop. A Call's own arguments are pushed
+// onto the real stack by the caller (last-declared argument first, so
+// argument 0 ends up closest to the return address `call` is about to
+// push) and popped back off by the caller after the call returns
+// (`lxi h,N`/`dad sp`/`sphl`, the same "move SP by a compile-time
+// constant via HL" idiom) - this gives the frame the exact same
+// layout I8086Codegen.h's own `addr()` comment describes: the callee's
+// own `fp` points at its saved old `fp`, the return address sits one
+// word above that, the caller's pushed arguments sit above *that* in
+// declaration order (so Param i is at `fp+4+2*i`), and this function's
+// own Locals sit *below* `fp` (`Slot::frameOffset` is already a
+// 1-based sequential word index, so Local i is at `fp-2*frameOffset`).
+// A Local array's element i is therefore at a *decreasing* address as
+// i increases (`fp-2*(frameOffset+i)`) - the mirror image of a Global
+// array's own increasing-address layout (see genIndexAddr()'s own
+// comment on why indexing a Local array needs a subtract where
+// indexing a Global array needs an add).
+//
+// Globals are unaffected by any of this - still one real, permanent
+// static cell each, addressed by name exactly as before - and the
+// real hardware CALL/RET pair (and the real SP it already uses) never
+// needed any change at all: it was always genuinely reentrant, the
+// one piece of this backend's own calling convention that didn't need
+// a software workaround.
+//
 // Comparisons (`<`,`<=`,`>`,`>=`) can't use the 6502/8086/68000 trick
 // of a hardware overflow flag plus the result's sign bit (the 8080's
 // status word - S, Z, AC, P, CY - has no overflow flag at all, unlike
@@ -133,12 +182,28 @@ class I8080Codegen : public Backend {
     void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
 
     // Leaves slot[idxExpr]'s own effective address in the `ptr`
     // memory cell - the only thing in this backend that ever needs a
     // real address in a register (HL, via M-addressing) rather than
     // just a value passing through it.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
+
+    // Leaves a Local or Param slot's own effective address in HL -
+    // `lhld fp` / `lxi d, <frameByteOffset(slot)>` / `dad d` (see this
+    // file's own header comment on the frame layout). Never called for
+    // a Global, which addresses itself by name instead (see label()).
+    void genFrameAddr(const ir::Slot *slot);
+
+    // Tears down the current function's own frame and returns -
+    // `lhld fp`/`sphl` (SP = fp, discarding the locals' reserved
+    // region), `pop h`/`shld fp` (restores the caller's own fp), `ret`.
+    // Used both by genFunction()'s own fall-off-the-end epilogue and
+    // inline by every Return statement (an early return bypasses that
+    // fall-through epilogue entirely, so it needs this same teardown
+    // of its own - see genStmt()'s own Return case).
+    void emitEpilogue();
 
     // Assumes HL already holds a target address (genIndexAddr's
     // `ptr`, or DerefAssign's own pointer value) and writes `ac`'s
@@ -162,14 +227,22 @@ class I8080Codegen : public Backend {
     // loop and genMul()/genDivMod()'s inline doubling/halving.
     void shiftOneBit(const std::string &lbl, bool isLeft);
 
-    static std::string label(const ir::Slot *slot) {
-        if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
-        if (slot->kind == ir::SlotKind::Param) {
-            return "p_" + slot->ownerFunctionName + "_" + std::to_string(slot->paramIndex);
-        }
-        return slot->sourceName + "_" + std::to_string(slot->id);
-    }
+    // Only ever called for a Global slot now - a Local or Param is
+    // addressed relative to `fp` instead (see genFrameAddr()), since
+    // neither one ever crosses a file boundary (a Local/Param's
+    // address isn't even a compile-time constant here, unlike a
+    // Global's, so it couldn't be a label at all).
+    static std::string label(const ir::Slot *slot) { return "g_" + slot->sourceName; }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
+
+    // A Local or Param's own word offset from `fp`, in bytes (this
+    // target's own word size is 2 - see this file's own header
+    // comment on the frame layout `fp+4+2*paramIndex`/
+    // `fp-2*frameOffset`). Never called for a Global.
+    static long frameByteOffset(const ir::Slot *slot) {
+        if (slot->kind == ir::SlotKind::Param) return 4 + 2L * slot->paramIndex;
+        return -2L * slot->frameOffset;
+    }
 
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
     void declareTemp(const std::string &lbl);

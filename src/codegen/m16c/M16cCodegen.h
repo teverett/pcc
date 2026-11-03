@@ -16,15 +16,35 @@ namespace pcc {
 // "bare flat binary" platform choice: `generate()` returns a
 // complete, self-contained program loaded at a fixed address
 // (`kBaseAddress`, see M16cCodegen.cpp), halting in an infinite loop -
-// no boot ROM, no on-chip peripheral setup - the same "no stack, no
-// recursion" model every backend shares (see README's "Scope and
-// limitations"), on a CPU with four real 16-bit general registers
-// (`R0`-`R3`) plus two dedicated address registers (`A0`/`A1`) and a
-// genuine hardware stack (`SP`, real `PUSH.W`/`POP.W`/`JSR.W`/`RTS`),
-// so (like the pdp11/68000 backends) almost everything maps onto one
-// real instruction, not a named memory cell the way the 8080/6502
-// backends have to improvise (see I8080Codegen.h's own comment for
-// why those targets need that instead).
+// no boot ROM, no on-chip peripheral setup - on a CPU with four real
+// 16-bit general registers (`R0`-`R3`) plus two dedicated address
+// registers (`A0`/`A1`), a dedicated frame-base register (`FB`, used
+// exactly the way real M16C C compilers use it - see `frameOperand()`
+// below) and a genuine hardware stack (`SP`, real
+// `PUSH.W`/`POP.W`/`JSR.W`/`RTS`), so (like the pdp11/68000 backends)
+// almost everything maps onto one real instruction, not a named
+// memory cell the way the 8080/6502 backends have to improvise (see
+// I8080Codegen.h's own comment for why those targets need that
+// instead).
+//
+// Every activation gets its own real stack frame: `PUSH.W FB` saves
+// the caller's frame base, `MOV.W SP,FB` makes `FB` the fixed point
+// every Local/Param in this call addresses itself relative to (see
+// `frameOperand()`), and `SUB.W N,SP` reserves this function's own
+// locals below it. The epilogue's `MOV.W FB,SP` tears the whole frame
+// down in one instruction regardless of how many locals it had, then
+// `POP.W FB` restores the caller's own frame - this is what lets two
+// overlapping activations of the same function (direct or indirect
+// recursion) never share storage: each `JSR.W` gets a fresh `FB`/
+// frame of its own. A Call's own arguments are pushed onto this same
+// real stack right before the `JSR.W` (last-declared argument first,
+// so argument 0 ends up closest to the return address `JSR.W` is
+// about to push - matching `frameOperand()`'s own `FB+4+2*paramIndex`
+// addressing), landing inside the callee's own fresh frame rather
+// than any shared cell; the caller cleans them back off afterward
+// (`ADD.W N,SP`). A Global still gets the one real static cell real
+// C statics/globals are supposed to have - only Local/Param storage
+// moved onto the per-call frame.
 //
 // This language's own `int` is 16 bits here (the M16C's native word
 // size) - every value in flight lives in one of two general registers:
@@ -120,6 +140,7 @@ class M16cCodegen : public Backend {
     void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
 
     // Leaves slot[idxExpr]'s own effective address in `A0` - see this
     // file's own header comment on why that never needs saving across
@@ -127,14 +148,44 @@ class M16cCodegen : public Backend {
     // compute another address into `A0`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
-    static std::string label(const ir::Slot *slot) {
-        if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
-        if (slot->kind == ir::SlotKind::Param) {
-            return "p_" + slot->ownerFunctionName + "_" + std::to_string(slot->paramIndex);
-        }
-        return slot->sourceName + "_" + std::to_string(slot->id);
-    }
+    // A Global or a Function gets a *name*-based label (never `id`) -
+    // real separate compilation means the file calling a function and
+    // the file defining it compile with completely independent `id`
+    // sequences, so only a label computable from stable information
+    // means the same thing on both sides. A Local or Param never
+    // crosses a file boundary and is addressed relative to `FB`
+    // instead (see frameOperand() below) - it never gets a label at
+    // all.
+    static std::string label(const ir::Slot *slot) { return "g_" + slot->sourceName; }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
+
+    // A Local or Param's own frame-relative operand text, e.g.
+    // "[fb-4]"/"[fb+6]" (M16cAssembler.cpp's own `Disp` addressing
+    // mode - see its header comment). `FB` points at this call's own
+    // saved old `FB`, with the return address one word above that and
+    // the caller's pushed arguments above that in declaration order
+    // (argument 0 closest to it) - so a Param's address is
+    // `FB+4+2*paramIndex`. Locals live below `FB`, reserved by the
+    // prologue's `SUB.W N,SP`; `Slot::frameOffset` is already a
+    // 1-based sequential word index in declaration order (see IR.h),
+    // so a Local's address is `FB-2*frameOffset`.
+    static std::string frameOperand(const ir::Slot *slot) {
+        if (slot->kind == ir::SlotKind::Param) {
+            return "[fb+" + std::to_string(4 + 2 * slot->paramIndex) + "]";
+        }
+        return "[fb-" + std::to_string(2 * slot->frameOffset) + "]";
+    }
+
+    // The operand text for a plain read/write of `slot`'s own value -
+    // `label(slot)` for a Global, or `frameOperand(slot)` for a
+    // Local/Param - used anywhere the two only differ in which of
+    // those this is (an ordinary Var read/Assign write; see
+    // genAddrOf()/genIndexAddr() for the places that still have to
+    // tell them apart, since only a Global's own address folds into a
+    // compile-time immediate the way `mov.w g_x,r0` does).
+    static std::string operandOf(const ir::Slot *slot) {
+        return slot->kind == ir::SlotKind::Global ? label(slot) : frameOperand(slot);
+    }
 
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
     void declareTemp(const std::string &lbl);

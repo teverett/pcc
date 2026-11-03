@@ -35,10 +35,17 @@ struct Syllable {
 // `a0`-`a7` identifier; `Imm` from a bare (optionally signed) number;
 // anything else (a label, or `label+N`) is `Mem` - an absolute
 // address.
+// `AnDisp` is the real 68000 address-register-indirect-with-
+// displacement mode (d16(An)) - this dialect spells it "[a6+N]"/
+// "[a6-N]" (bracketed, like the other backends' own memory operands -
+// see I386Assembler.cpp's own `buildOperand`), used by M68kCodegen.cpp
+// to address a Local/Param's own frame-relative storage. `reg` is the
+// address register (always a6 in practice - the frame pointer);
+// `expr` is the signed 16-bit displacement.
 struct Operand {
-    enum Kind { Dreg, Areg, Imm, Mem } kind = Imm;
+    enum Kind { Dreg, Areg, Imm, Mem, AnDisp } kind = Imm;
     int reg = -1;
-    std::vector<Syllable> expr;  // Imm/Mem
+    std::vector<Syllable> expr;  // Imm/Mem/AnDisp
 };
 
 struct Line {
@@ -86,7 +93,27 @@ int regNumber(const std::string &name, char prefix) {
 }
 
 Operand buildOperand(PccAsmParser::OperandContext *ctx) {
-    if (ctx->LBRACKET()) fail("bracketed memory operands aren't part of this target's dialect");
+    if (ctx->LBRACKET()) {
+        // The only bracketed shape this dialect supports: "[aN]" or
+        // "[aN+disp]"/"[aN-disp]" - frame-relative addressing (see
+        // Operand::AnDisp above). Anything else bracketed is rejected,
+        // same as before.
+        std::vector<Syllable> syls = exprToSyllables(ctx->expr());
+        if (!syls.empty() && syls[0].sign == 0 && syls[0].kind == SylKind::Symbol) {
+            if (int r = regNumber(toLower(syls[0].text), 'a'); r >= 0) {
+                Operand op;
+                op.kind = Operand::AnDisp;
+                op.reg = r;
+                if (syls.size() == 2) {
+                    op.expr = {syls[1]};
+                } else if (syls.size() > 2) {
+                    fail("unrecognized memory operand shape");
+                }
+                return op;
+            }
+        }
+        fail("unrecognized memory operand shape");
+    }
     std::vector<Syllable> syls = exprToSyllables(ctx->expr());
     Operand op;
     if (syls.size() == 1 && syls[0].sign == 0 && syls[0].kind == SylKind::Symbol) {
@@ -312,9 +339,11 @@ class Assembler {
     }
 
     // Mode/register pair for `op`'s own effective-address field (see
-    // M68kCodegen.h's own header comment for why there's no indirect/
-    // indexed mode here - only what `op`'s own classification already
-    // covers): Dn direct (000), An direct (001), absolute long (111,
+    // M68kCodegen.h's own header comment for why there's no general
+    // indirect/indexed mode here - only what `op`'s own classification
+    // already covers): Dn direct (000), An direct (001), address
+    // register indirect with displacement (101 - frame-relative Local/
+    // Param access, M68kCodegen.cpp's `addr()`), absolute long (111,
     // 001 - extension word(s) hold the address), or immediate (111,
     // 100 - extension word(s) hold the value).
     struct EA {
@@ -327,6 +356,8 @@ class Assembler {
                 return {0b000, static_cast<uint8_t>(op.reg)};
             case Operand::Areg:
                 return {0b001, static_cast<uint8_t>(op.reg)};
+            case Operand::AnDisp:
+                return {0b101, static_cast<uint8_t>(op.reg)};
             case Operand::Mem:
                 return {0b111, 0b001};
             case Operand::Imm:
@@ -344,7 +375,11 @@ class Assembler {
     // form) - see M68kAssembler.h's own header comment on why that
     // makes `kM68kRelocAbs32` this dialect's only relocation kind.
     // Only `Mem` ever needs a relocation - `Imm`'s own 32-bit field
-    // is a plain literal constant, never a label.
+    // is a plain literal constant, never a label; `AnDisp`'s own
+    // extension word is a plain compile-time-constant signed 16-bit
+    // displacement (never a label either), one word wide (not the
+    // 32-bit long of the other two kinds here - this is the real
+    // hardware's own `d16(An)` extension-word size).
     void emitEAExtension(const Operand &op) {
         if (op.kind == Operand::Mem) {
             std::string externalName;
@@ -358,6 +393,11 @@ class Assembler {
             return;
         }
         if (op.kind == Operand::Imm) emit32(evalExpr(op.expr));
+        if (op.kind == Operand::AnDisp) {
+            int32_t disp = op.expr.empty() ? 0 : static_cast<int32_t>(evalExpr(op.expr));
+            if (stage_ == 2 && (disp < -32768 || disp > 32767)) fail("frame displacement out of 16-bit range");
+            emit16(static_cast<uint16_t>(static_cast<int16_t>(disp)));
+        }
     }
 
     // The `<ea>,Dn` / `Dn,<ea>` family (ADD/SUB/AND/OR/CMP/EOR/MULS/
@@ -387,12 +427,15 @@ class Assembler {
         emitEAExtension(dst);
     }
 
-    // LEA <label>,An - loads the label's own *address* (never a
-    // Dreg/Imm - see M68kCodegen.cpp's own call sites, always a real
-    // label) into An.
+    // LEA <label>,An / LEA [aN+disp],An - loads the source's own
+    // *effective address* (never a Dreg/Imm - see M68kCodegen.cpp's
+    // own call sites, always a label or a frame-relative Local/Param
+    // slot) into An.
     void encodeLea(const Operand &src, const Operand &dst) {
         if (dst.kind != Operand::Areg) fail("'leal': destination must be an address register");
-        if (src.kind != Operand::Mem) fail("'leal': source must be a label");
+        if (src.kind != Operand::Mem && src.kind != Operand::AnDisp) {
+            fail("'leal': source must be a label or a frame-relative operand");
+        }
         EA s = classifyEA(src);
         emit16(static_cast<uint16_t>(0x41C0 | (dst.reg << 9) | (s.mode << 3) | s.reg));
         emitEAExtension(src);
@@ -524,6 +567,11 @@ class Assembler {
             encodeRegOpEA(0xD000, an, 0b111, requireOperand(ops, 0, mnemonic));
             return;
         }
+        if (mnemonic == "suba") {
+            uint8_t an = requireAreg(requireOperand(ops, 1, mnemonic), mnemonic);
+            encodeRegOpEA(0x9000, an, 0b111, requireOperand(ops, 0, mnemonic));
+            return;
+        }
         if (mnemonic == "eorl") {
             // EOR Dn,<ea> - Dn is always the *source* here (the
             // register field), <ea> the destination - see
@@ -559,6 +607,32 @@ class Assembler {
             uint8_t countReg = requireDreg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t dataReg = requireDreg(requireOperand(ops, 1, mnemonic), mnemonic);
             encodeShift(countReg, dataReg, mnemonic == "lsll");
+            return;
+        }
+        // LINK An,#disp / UNLK An - this target's own dedicated
+        // frame-setup/teardown instructions (M68kCodegen.cpp's
+        // genFunction()/Return case use them with An=a6): LINK pushes
+        // An onto the real hardware stack (A7), sets An=A7, then adds
+        // the signed 16-bit displacement `disp` to A7 (negative to
+        // reserve that many bytes of locals below the new frame
+        // pointer); UNLK sets A7=An then pops the old An back off the
+        // stack. Neither goes through classifyEA/emitEAExtension - An
+        // and the (for LINK) displacement are both fixed-position
+        // fields of the opcode word/extension word themselves, not a
+        // general effective address.
+        if (mnemonic == "linkl") {
+            uint8_t an = requireAreg(requireOperand(ops, 0, mnemonic), mnemonic);
+            const Operand &dispOp = requireOperand(ops, 1, mnemonic);
+            if (dispOp.kind != Operand::Imm) fail("'linkl': displacement must be a plain immediate");
+            int32_t disp = static_cast<int32_t>(evalExpr(dispOp.expr));
+            if (stage_ == 2 && (disp < -32768 || disp > 32767)) fail("'linkl': displacement out of 16-bit range");
+            emit16(static_cast<uint16_t>(0x4E50 | an));
+            emit16(static_cast<uint16_t>(static_cast<int16_t>(disp)));
+            return;
+        }
+        if (mnemonic == "unlkl") {
+            uint8_t an = requireAreg(requireOperand(ops, 0, mnemonic), mnemonic);
+            emit16(static_cast<uint16_t>(0x4E58 | an));
             return;
         }
         if (mnemonic == "jsr") {

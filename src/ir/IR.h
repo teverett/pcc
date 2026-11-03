@@ -105,6 +105,26 @@ struct Slot {
     // any other file.
     std::string ownerFunctionName;
     int paramIndex = -1;
+
+    // Local only: a 1-based sequential word-offset index within its
+    // own function's frame (assigned once, by IRBuilder, in
+    // declaration order - see Function::frameSize). A local array's
+    // frameOffset is its first word's index; the array occupies
+    // frameOffset..frameOffset+arraySize-1. A backend that has
+    // migrated its locals onto a real per-call stack frame (rather
+    // than this backend's own old one-static-cell-per-declaration
+    // model) turns this into a frame-pointer-relative address itself
+    // - this field only carries the index, never a sign or a byte
+    // size, since both are backend-specific (a local's storage grows
+    // *down* from the frame pointer on every target that's migrated
+    // so far, but nothing here assumes that stays universal, and
+    // "words" are always backend-interpreted - see e.g.
+    // computeElementAddr's own word-size doubling elsewhere in this
+    // codebase). A Param's own equivalent position is just its
+    // existing paramIndex above - no separate field needed, since a
+    // parameter's storage already has to be positionally named for
+    // real separate compilation anyway (see paramIndex's own comment).
+    int frameOffset = 0;
 };
 
 struct Function {
@@ -126,6 +146,19 @@ struct Function {
     // signature left to check against once compilation is really
     // separate), not validated against anything.
     bool isExternal = false;
+
+    // Total words of local-variable storage this function's own
+    // frame needs - the highest Local Slot::frameOffset declared in
+    // this function's body, plus that local's own size (arraySize,
+    // or 1 for a scalar), minus 1; 0 if it declares no locals at all.
+    // Params aren't counted here - see Slot::frameOffset's own
+    // comment on why a param's position needs no separate field, and
+    // every backend that's moved params onto a real stack frame puts
+    // them in the CALLER's pushed argument space, never inside this
+    // function's own locals region. A backend that hasn't migrated
+    // yet (still giving every Local/Param its own permanent static
+    // cell) simply never reads this field.
+    int frameSize = 0;
 };
 
 // --- Expressions --------------------------------------------------------

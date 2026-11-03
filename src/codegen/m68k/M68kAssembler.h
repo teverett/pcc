@@ -51,15 +51,21 @@ constexpr uint16_t kM68kRelocAbs32 = 1;
 // ../../../grammar/PccAsm.g4 the other backends' own in-process
 // assemblers use (see Pdp7Assembler.h/I8086Assembler.h/
 // M6502Assembler.h's own header comments). Every operand is a plain
-// expression (a number, a register name, or a label) classified by
+// expression (a number, a register name, a label, or a bracketed
+// "[aN+disp]"/"[aN-disp]"/"[aN]" frame-relative operand) classified by
 // M68kCodegen.cpp's own convention, not real `#imm`/`(An)`-style
 // 68000 syntax - the grammar has no `#` token and no way to
 // distinguish "(expr)" (a parenthesized group, already used
 // elsewhere) from "(An)" (register-indirect), so every addressing
-// mode this dialect can't express as a bare register-or-label
-// operand gets its own dedicated mnemonic instead (`ldind`/`stind`
-// for `(An)`, `pushl`/`popl` for `-(A7)`/`(A7)+`) - see
-// M68kAssembler.cpp's own comment for the full mnemonic list.
+// mode this dialect can't express as a bare register-or-label operand
+// or the one bracketed shape above gets its own dedicated mnemonic
+// instead (`ldind`/`stind` for `(An)`, `pushl`/`popl` for
+// `-(A7)`/`(A7)+`, `linkl`/`unlkl` for real `LINK`/`UNLK`) - see
+// M68kAssembler.cpp's own comment for the full mnemonic list. The
+// bracketed form is this dialect's one real `d16(An)` addressing
+// mode, used only for a Local/Param's own frame-relative storage
+// (M68kCodegen.cpp's `addr()`) - the register is always `a6`, the
+// frame pointer every function's prologue/epilogue sets up.
 //
 // Only this project's 32-bit (.L) forms are implemented (the
 // language's own `int`, chosen to match this target's native

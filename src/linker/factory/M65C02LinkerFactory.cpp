@@ -9,6 +9,17 @@
 namespace pcc {
 
 namespace {
+// `sp`/`fp` (the software call-frame stack's own state - see
+// ../../codegen/m65c02/M65C02Codegen.h's own calling-convention
+// comment) need the same one-time seeding here that
+// M65C02Codegen.cpp's own `generate()` gives them for a single-file
+// `--format=raw` program: `sp` starts at the same
+// M65C02Codegen.cpp-internal top-of-frame-stack address (duplicated
+// as a plain literal here, since that constant isn't exported - kept
+// in sync by hand, same as every other value this entry stub already
+// shares with that file's own non-object-mode entry sequence), and
+// `fp` only needs zeroing for tidiness (see that file's own comment
+// on why nothing ever reads it back meaningfully).
 constexpr const char *kEntryAsm =
     "org 0\n"
     "ptr = 0\n"
@@ -16,7 +27,15 @@ constexpr const char *kEntryAsm =
     "bc = 4\n"
     "cx = 6\n"
     "dx = 8\n"
+    "sp = 10\n"
+    "fp = 12\n"
     "_start:\n"
+    "    ldai 61440\n"
+    "    sta sp\n"
+    "    ldai_hi 61440\n"
+    "    sta sp+1\n"
+    "    stzp fp\n"
+    "    stzp fp+1\n"
     "    jsr fn_main\n"
     "    lda ac\n"
     "halt:\n"

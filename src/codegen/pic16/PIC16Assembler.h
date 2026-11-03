@@ -48,29 +48,38 @@ constexpr uint32_t kPIC16BaseAddress = 0;
 // this fixed block, so the two never overlap).
 constexpr uint32_t kPIC16RamBase = 0x0C;
 
-// `ac`/`bc`/`cx`/`dx`/`ptr`/`SP`/`SSTACK`'s own fixed addresses -
+// `ac`/`bc`/`cx`/`dx`/`ptr`/`SP`/`FP`/`SSTACK`'s own fixed addresses -
 // see `kPIC16RamBase`'s own comment above for why these are plain
 // equates, not relocatable data-space symbols, in object mode. Packed
 // in the same order, and at the same addresses, as
 // PIC16Codegen.cpp's own non-object-mode `declareRam()` calls already
-// place them (ac/bc/cx/dx 2 bytes each, ptr/SP 1 byte each, SSTACK
-// `kPIC16SStackSize` bytes).
+// place them (ac/bc/cx/dx 2 bytes each, ptr/SP/FP 1 byte each, SSTACK
+// `kPIC16SStackSize` bytes). `FP` is the current call's own frame
+// base within `SSTACK` (see PIC16Codegen.h's own header comment on
+// the frame layout genFunction()'s prologue/epilogue build there) -
+// every call gets a fresh one, saved/restored across a `call` the
+// same way `ac`/`bc`/etc never need to be (see PIC16Codegen.cpp's own
+// `emitPrologue`/`emitEpilogue`).
 constexpr uint32_t kPIC16RegAc = kPIC16RamBase;        // 0x0C
 constexpr uint32_t kPIC16RegBc = kPIC16RegAc + 2;      // 0x0E
 constexpr uint32_t kPIC16RegCx = kPIC16RegBc + 2;      // 0x10
 constexpr uint32_t kPIC16RegDx = kPIC16RegCx + 2;      // 0x12
 constexpr uint32_t kPIC16RegPtr = kPIC16RegDx + 2;     // 0x14
 constexpr uint32_t kPIC16RegSP = kPIC16RegPtr + 1;     // 0x15
-constexpr uint32_t kPIC16RegSStack = kPIC16RegSP + 1;  // 0x16
-constexpr uint32_t kPIC16SStackSize = 24;
+constexpr uint32_t kPIC16RegFP = kPIC16RegSP + 1;      // 0x16
+constexpr uint32_t kPIC16RegSStack = kPIC16RegFP + 1;  // 0x17
+constexpr uint32_t kPIC16SStackSize = 32;
 
 // Where this target's own second, Harvard data address space
-// (ObjectFile::dataSize/ObjSymbol::isData - every real global, local
-// and param, as opposed to the fixed pseudo-registers above) starts
-// in real GPR-bank addressing - immediately after the fixed pseudo-
-// register block, so GenericLinker's own sequential per-object data-
-// space layout (see GenericLinker.h's own `dataBaseAddress`) never
-// collides with it. Exported so PIC16LinkerFactory.cpp's own
+// (ObjectFile::dataSize/ObjSymbol::isData - every real Global, the
+// only kind of Slot still a named data-space `res` symbol; a Local or
+// Param instead lives in a stack frame inside `SSTACK` above, addressed
+// through `FP`, never through a data-space symbol of its own at all -
+// see PIC16Codegen.h's own header comment) starts in real GPR-bank
+// addressing - immediately after the fixed pseudo-register block, so
+// GenericLinker's own sequential per-object data-space layout (see
+// GenericLinker.h's own `dataBaseAddress`) never collides with it.
+// Exported so PIC16LinkerFactory.cpp's own
 // `GenericLinkerConfig::dataBaseAddress` uses the same value.
 constexpr uint32_t kPIC16DataBaseAddress = kPIC16RegSStack + kPIC16SStackSize;  // 0x2E
 

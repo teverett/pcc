@@ -25,12 +25,15 @@ retro hardware through pluggable backends. Today it supports:
 - **6502** — 6502 assembly (this project's own dialect - see
   `src/codegen/m6502/M6502Assembler.h`), producing a bare flat binary
   loaded and entered at a fixed address ($0600), with no OS or I/O
-  conventions - the same "no stack, no recursion" model as every
-  other target, just on a CPU with only three 8-bit registers, no
+  conventions, on a CPU with only three 8-bit registers, no
   hardware multiply/divide, and branches that can only reach ±127
   bytes (see `src/codegen/m6502/M6502Codegen.h`'s own header comment
-  for how each of those gets worked around). `tests/run_tests.sh
-  --target=6502` runs its own test suite against a real 6502 core via
+  for how each of those, plus recursion, gets worked around - the
+  real hardware stack is only used for `JSR`/`RTS`; every Local/Param
+  lives in a software frame reached through a zero-page frame
+  pointer, since this CPU has no base+displacement addressing mode of
+  its own). `tests/run_tests.sh --target=6502` runs its own test
+  suite against a real 6502 core via
   the `py65` package (`pip install py65`) - during development this
   was additionally cross-checked against a from-scratch pure-Python
   6502 emulator written just for that (not part of this repo).
@@ -152,14 +155,20 @@ retro hardware through pluggable backends. Today it supports:
   target here by a wide margin (see `src/codegen/i8008/I8008Codegen.h`'s
   own header comment): no stack pointer or PUSH/POP at all (`CALL`/
   `RET` use a real but internal, software-invisible 7-level return
-  stack), no 16-bit instructions of any kind, no direct-addressing
-  load/store (every memory access goes through `H`,`L`), a different
-  register-code numbering than every later chip in this family, and
-  rotate instructions that only ever work on the accumulator. Saving
-  one operand across evaluating another therefore needs a real
-  *software* stack this backend builds for itself (a fixed RAM region
-  plus its own runtime stack-pointer cell), since there's no hardware
-  one to use. No PyPI package exists for an 8008 core (it isn't
+  stack - a real hardware ceiling on call-nesting depth, recursive or
+  not, that this backend can't extend), no 16-bit instructions of any
+  kind, no direct-addressing load/store (every memory access goes
+  through `H`,`L`), a different register-code numbering than every
+  later chip in this family, and rotate instructions that only ever
+  work on the accumulator. Saving one operand across evaluating
+  another, and giving every Local/Param its own per-call frame for
+  recursion, therefore both need a real *software* stack this backend
+  builds for itself (a fixed RAM region plus its own runtime frame-
+  pointer/stack-pointer cells, with locals laid out at ascending
+  addresses so indexing a local array never needs the base-minus-
+  index arithmetic a descending frame would), since there's no
+  hardware one to use beyond the 7-level call stack. No PyPI package
+  exists for an 8008 core (it isn't
   object-code compatible with anything later), so
   `tests/run_tests.sh --target=8008` runs a small from-scratch 8008
   emulator written just for this, standard library only.
@@ -192,7 +201,12 @@ retro hardware through pluggable backends. Today it supports:
   SFR map, its real 68-byte GPR file-register bank (0x0C-0x4F), its
   real 11-bit direct `GOTO`/`CALL` range (program memory 0x000-0x3FF,
   well inside that range so PCLATH paging is never needed), and its
-  real 8-level hardware call stack. Genuinely Harvard: program memory
+  real 8-level hardware call stack - a dedicated return-address-only
+  stack, not ordinary addressable memory, so it's a real ceiling on
+  call-nesting depth (recursive or not) that software can't extend.
+  Every Local/Param still gets its own per-call frame (via this
+  chip's `FSR`/`INDF` indirect addressing), so recursion computes
+  correctly up to that depth. Genuinely Harvard: program memory
   (14-bit words) and data memory (byte-addressed file registers) are
   two separate address spaces tracked by two independent cursors in
   this backend's own in-process assembler (`org` for code, a private
@@ -208,7 +222,12 @@ retro hardware through pluggable backends. Today it supports:
   header comment): real Access Bank SFR aliasing, a real 16K-word
   program memory with a genuine 20-bit absolute `GOTO`/`CALL` range
   (so, unlike `pic16`, no paging workaround is ever needed), and a
-  real 31-level hardware call stack. Shares `pic16`'s own Harvard
+  real 31-level hardware call stack - the same kind of real,
+  software-unextendable ceiling on call-nesting depth as `pic16`'s
+  own 8 levels, just deeper; every Local/Param gets its own per-call
+  frame (via this chip's more capable `FSR`/`INDF` auto-increment/
+  decrement indirect addressing), so recursion computes correctly up
+  to that depth. Shares `pic16`'s own Harvard
   code/data split and fixed-pseudo-register conventions, plus a real
   software `SSTACK`/`SP` push/pop stack for saving one operand across
   evaluating another (a compile-time-indexed fixed cell would be
@@ -337,12 +356,19 @@ retro hardware through pluggable backends. Today it supports:
   22-bit/10-bit split, the direct analogue of PowerPC's `lis`/`ori`).
   Real SPARC has 32-entry *windowed* `%i`/`%l`/`%o` register banks
   tied to a real `save`/`restore` pair that rotates the whole window
-  on every non-leaf call - genuine procedure-call machinery this
-  language's own "no recursion, no real stack frames" scope has no
-  need for, so this backend never executes `save`/`restore` at all;
-  the window never rotates, so `%i`/`%l`/`%o`/`%g` are just 24 plain,
-  always-the-same-physical-register names for the entire run, the
-  real leaf-routine optimization real SPARC compilers already use.
+  on every non-leaf call - genuine hardware recursion support, but
+  this backend deliberately doesn't use it: a real window only has a
+  handful of entries (commonly 8), and once they're all in use a
+  further `save` traps for the OS to spill the oldest one to memory -
+  machinery this backend, running bare-metal with no trap table at
+  all, doesn't have. So `%i`/`%l`/`%o`/`%g` stay plain, always-the-
+  same-physical-register names for the entire run (the real leaf-
+  routine optimization real SPARC compilers already use for any
+  routine that doesn't need a fresh window), and recursion instead
+  gets a conventional software stack frame (a dedicated `fp` register
+  plus the real `sp`), the same shape every other backend here uses -
+  bounded only by how much of the real stack is available, not by the
+  hardware window count.
   Every `call`/`retl`/branch mnemonic always synthesizes its own
   required delay-slot `nop`. `generate()` returns a complete, self-
   contained program loaded at a fixed address (`$4000`), halting in a
@@ -351,9 +377,14 @@ retro hardware through pluggable backends. Today it supports:
   for the whole-program path and a real cross-object `--link`;
   no automated `tests/run_tests.sh` target yet.
 
-Every variable, temporary and literal is a single statically allocated
-word: there is no stack and no recursion. The same C subset compiles
-to every target — `#ifdef __PDP7__` / `#ifdef __8086__` (also defined
+Every global variable is a single statically allocated word; every
+Local and Param instead lives in a per-call frame that each backend
+builds on whatever stack (hardware or software) its own target
+provides, so direct and indirect/mutual recursion compute correctly
+everywhere - bounded by that backend's own real limit, whether that's
+available memory for a software stack or (on `8008`/`pic16`/`pic18`)
+a fixed-depth hardware call stack that can't be extended. The same C
+subset compiles to every target — `#ifdef __PDP7__` / `#ifdef __8086__` (also defined
 for `--target=8088`) / `#ifdef __6502__` (also defined for
 `--target=65c02`, plus its own `#ifdef __65C02__` - see
 `src/main.cpp`'s own `makeBackend()` comment) / `#ifdef __68000__`

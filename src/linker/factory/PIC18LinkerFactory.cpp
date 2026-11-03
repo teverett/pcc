@@ -15,21 +15,32 @@ namespace {
 // supplies by laying this object out first - see GenericLinker.h's
 // own header comment): clear FSR0H (this target's own pointer only
 // ever needs its low byte set - see PIC18Codegen.h's own header
-// comment), point SP at SSTACK, call fn_main, then halt in a self-
-// branch. `SP`/`SSTACK` are the same fixed compile-time equates
-// (0x09/0x0A) PIC18Codegen.cpp's own object-mode `generate()`
-// declares identically in every user object - see
+// comment), point SP at SSTACK, point NFP at FSTACK+1 (`fn_main`'s
+// own prologue - see PIC18Codegen.h's own header comment on `FP`/
+// `NFP`/`FSTACK` - expects NFP to already hold its new frame's own
+// address; the one leftover byte at FSTACK+0 is where that same
+// prologue saves the "caller's FP" it will never meaningfully read
+// back, since `main` has no real caller to return to here), call
+// fn_main, then halt in a self-branch. `SP`/`SSTACK`/`FP`/`NFP`/
+// `FSTACK` are the same fixed compile-time equates
+// (0x09/0x0A/0x22/0x23/0x24) PIC18Codegen.cpp's own object-mode
+// `generate()` declares identically in every user object - see
 // PIC18Assembler.h's own `kPIC18DataBaseAddress` comment for why that
 // needs no relocation at all.
 constexpr const char *kEntryAsm =
     "FSR0H = 0xEA\n"
     "SP = 9\n"
     "SSTACK = 10\n"
+    "FP = 34\n"
+    "NFP = 35\n"
+    "FSTACK = 36\n"
     "org 0\n"
     "START:\n"
     "    clrf FSR0H\n"
     "    movlw SSTACK\n"
     "    movwf SP\n"
+    "    movlw FSTACK+1\n"
+    "    movwf NFP\n"
     "    call fn_main\n"
     "HALT:\n"
     "    goto HALT\n";

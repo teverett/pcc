@@ -26,11 +26,16 @@ namespace pcc {
 // subexpression's own HL-only M-addressing), an arbitrarily deep
 // expression tree still needs arbitrarily many "the other operand"
 // slots that `x`/`y` alone can't provide, so every value in flight
-// lives in one of five fixed, two-byte memory cells - `ac`
+// lives in one of several fixed, two-byte memory cells - `ac`
 // (genExpr()'s own result), `bc`/`cx`/`dx` (binary-op/multiply/divide
 // scratch), `ptr` (an indirection target) - exactly the 8080 backend's
 // own convention, just with `x`/`y` as the transit registers instead
-// of HL. Each cell is declared high-byte-first (see declareTemp()) -
+// of HL. Two more, `fp`/`fsp`, play the role a real frame-pointer/
+// stack-pointer register pair would on a target that has one to
+// spare (see genPrologue()/genSlotAddress() below) - `x`/`y` are
+// already fully committed to the role above, so there's no hardware
+// register left over to hold either one live across a function body.
+// Each cell is declared high-byte-first (see declareTemp()) -
 // the STM8 is a big-endian machine (`LDW` stores a word's high byte
 // at the lower address), unlike every little-endian target here.
 //
@@ -100,6 +105,39 @@ class STM8Codegen : public Backend {
     void genStmt(const ir::Stmt &s);
     void genExpr(const ir::Expr &e);  // leaves the result in the `ac` memory cell
 
+    // Establishes this call's own frame (saves the caller's `fp`,
+    // points `fp` at that saved word, reserves `frameSize` words of
+    // local storage below it) and the matching restore - see
+    // STM8Codegen.cpp's own header comment on `fp`/`fsp` for the
+    // layout. Every `return` (explicit or falling off the end of the
+    // function body) runs genEpilogue() immediately before its own
+    // `ret` - there's no shared epilogue label to jump to, the same
+    // "duplicated at each return site" shape as I386Codegen.cpp's own
+    // genFunction()/Return case.
+    void genPrologue(const ir::Function &fn);
+    void genEpilogue(const ir::Function &fn);
+
+    // Pushes `cell`'s own two bytes onto the frame stack (`fsp` moves
+    // down by one word first, then the value is stored at the new
+    // `fsp`) - the frame-stack equivalent of a real hardware `push`,
+    // used both by genPrologue() (to save the caller's `fp`) and by
+    // the Call case (to place each argument in the new callee's own
+    // frame before the real `call`).
+    void pushFrameWord(const std::string &cell);
+
+    // Leaves a Slot's own effective storage address in `x`: a
+    // Global's fixed label address, a Param's `fp + (paramIndex+1)*2`
+    // (the callee's own incoming-argument area, just above the saved
+    // `fp` - see pushFrameWord()'s own call sites), or a Local's
+    // `fp - frameOffset*2` (below the saved `fp`, growing downward as
+    // frameOffset increases - see STM8Codegen.cpp's own header
+    // comment on why a Local array's element i is therefore at
+    // *decreasing* addresses as i increases, the opposite of a
+    // Global array). Every Local/Param access - read, write, &-of, or
+    // as an Index/array base - goes through this one function; only
+    // a Global still uses its own fixed compile-time label directly.
+    void genSlotAddress(const ir::Slot *slot);
+
     void genBinary(const ir::Expr &e);
     void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
     void emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert);
@@ -125,9 +163,17 @@ class STM8Codegen : public Backend {
     // own stand-ins for real `LD A,(X)`/`LD (X),A` - see
     // STM8Assembler.h) with an `incw x` between them - doesn't restore
     // `x` afterward, same convention as I8080Codegen::storeAcIndirect.
-    void storeAcIndirect();
+    void storeAcIndirect() { storeIndirect("ac"); }
     // The reverse: reads the two bytes at `x` into `ac`.
-    void loadAcIndirect();
+    void loadAcIndirect() { loadIndirect("ac"); }
+
+    // The same two conventions, generalized to any named 16-bit cell
+    // (not just `ac`) - used by genSlotAddress()'s own callers to
+    // read/write a Local/Param through its just-computed frame
+    // address, and by genEpilogue() to recover the saved caller's
+    // `fp` without disturbing `ac`'s own live return value.
+    void storeIndirect(const std::string &src);
+    void loadIndirect(const std::string &dst);
 
     // "ldw x, src\nldw dst, x\n" - copies one 16-bit memory cell to
     // another via the real `x` register.
@@ -158,6 +204,12 @@ class STM8Codegen : public Backend {
 
     int tempCounter_ = 0;
     int labelCounter_ = 0;
+    // The function genStmt()/genExpr() are currently generating code
+    // for - only ever needed by a Return statement, to find its own
+    // enclosing function's `params.size()` for genEpilogue(). Set by
+    // genFunction() around its own genStmt(*fn.body) call; never
+    // null while generating a function body.
+    const ir::Function *currentFunction_ = nullptr;
 };
 
 }  // namespace pcc

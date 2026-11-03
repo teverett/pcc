@@ -82,14 +82,15 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
 // This dialect's own fixed register numbering (not a real ARM
 // register-name table in full - just the handful ArmCodegen.cpp ever
 // emits - see ArmCodegen.h's own header comment on each register's
-// role): `r0`-`r3`=0-3, `sp`=13, `lr`=14 - the real ARM register
-// numbers those names carry in every actual ARM assembler too, so
-// the encoded bit patterns below match genuine A32 object code
-// exactly, even though this dialect only ever names this one subset
-// of the 16 GPRs. Returns -1 if `name` isn't one of them.
+// role): `r0`-`r3`=0-3, `fp`=11, `sp`=13, `lr`=14 - the real ARM
+// register numbers those names carry in every actual ARM assembler
+// too (`fp` is the conventional alias for `r11`), so the encoded bit
+// patterns below match genuine A32 object code exactly, even though
+// this dialect only ever names this one subset of the 16 GPRs.
+// Returns -1 if `name` isn't one of them.
 int regNumber(const std::string &lower) {
     static const std::unordered_map<std::string, int> names = {
-        {"r0", 0}, {"r1", 1}, {"r2", 2}, {"r3", 3}, {"sp", 13}, {"lr", 14},
+        {"r0", 0}, {"r1", 1}, {"r2", 2}, {"r3", 3}, {"fp", 11}, {"sp", 13}, {"lr", 14},
     };
     auto it = names.find(lower);
     return it == names.end() ? -1 : it->second;

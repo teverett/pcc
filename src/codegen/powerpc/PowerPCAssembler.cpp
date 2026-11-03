@@ -82,15 +82,16 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
 // This dialect's own fixed register numbering (not a real PowerPC ABI
 // register-name table in full - just the handful PowerPCCodegen.cpp
 // ever emits - see PowerPCCodegen.h's own header comment on each
-// register's role): `r0`=0, `sp`=1, `t0`=3, `t1`=4, `t2`=5 - the real
-// PowerPC register numbers those names carry in every actual PowerPC
-// assembler too, so the encoded bit patterns below match genuine
-// PowerPC object code exactly, even though this dialect only ever
-// names this one subset of the 32 GPRs. Returns -1 if `name` isn't
-// one of them.
+// register's role): `r0`=0, `sp`=1, `t0`=3, `t1`=4, `t2`=5, `fp`=31 -
+// the real PowerPC register numbers those names carry in every actual
+// PowerPC assembler too (`r31` is also real-world PowerPC's own usual
+// frame-pointer choice when a function needs one), so the encoded bit
+// patterns below match genuine PowerPC object code exactly, even
+// though this dialect only ever names this one subset of the 32 GPRs.
+// Returns -1 if `name` isn't one of them.
 int regNumber(const std::string &lower) {
     static const std::unordered_map<std::string, int> names = {
-        {"r0", 0}, {"sp", 1}, {"t0", 3}, {"t1", 4}, {"t2", 5},
+        {"r0", 0}, {"sp", 1}, {"t0", 3}, {"t1", 4}, {"t2", 5}, {"fp", 31},
     };
     auto it = names.find(lower);
     return it == names.end() ? -1 : it->second;
@@ -618,6 +619,30 @@ class Assembler {
             uint8_t rA = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rS = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
             emitDArith(36, rS, rA, 0);
+            return;
+        }
+        // --- dedicated displacement load/store - see
+        // PowerPCCodegen.h's own header comment on slotDisp(): real
+        // `lwz`/`stw` underneath, exactly like `ldind`/`stind` above
+        // except the displacement is this dialect's own third operand
+        // (a plain signed immediate, never a register or label) rather
+        // than always 0 - PowerPCCodegen.cpp's only use of real
+        // PowerPC's own `d(rA)` displacement addressing, for a frame-
+        // relative Local/Param access whose offset is a compile-time
+        // constant. `ldindd addrReg,destReg,disp` / `stindd
+        // addrReg,srcReg,disp`. ---
+        if (mnemonic == "ldindd") {
+            uint8_t rA = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            uint8_t rT = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+            uint16_t imm = evalImm(requireOperand(ops, 2, mnemonic));
+            emitDArith(32, rT, rA, imm);
+            return;
+        }
+        if (mnemonic == "stindd") {
+            uint8_t rA = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            uint8_t rS = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+            uint16_t imm = evalImm(requireOperand(ops, 2, mnemonic));
+            emitDArith(36, rS, rA, imm);
             return;
         }
         // --- branches ---

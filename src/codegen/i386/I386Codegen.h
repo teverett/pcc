@@ -83,6 +83,7 @@ class I386Codegen : public Backend {
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
 
     // Emits the i386 effective-address operand text (e.g.
     // "[g_arr3+ebx]") for slot[idxExpr], with ebx already loaded -
@@ -91,17 +92,41 @@ class I386Codegen : public Backend {
     // 32-bit ("dd"-sized elements, `ebx`) throughout.
     std::string computeElementAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
-    static std::string label(const ir::Slot *slot) {
-        if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
-        if (slot->kind == ir::SlotKind::Param) {
-            return "p_" + slot->ownerFunctionName + "_" + std::to_string(slot->paramIndex);
-        }
-        return slot->sourceName + "_" + std::to_string(slot->id);
-    }
+    // Global slots and every Function get a name-based label; a Local
+    // or Param is addressed relative to `ebp` instead (see addr()
+    // below) - see I8086Codegen.h's own identical comment, same
+    // reasoning (real separate compilation means only name-derived
+    // labels mean the same thing across a file boundary).
+    static std::string label(const ir::Slot *slot) { return "g_" + slot->sourceName; }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
+    // A Local or Param's own effective-address operand text, e.g.
+    // "[ebp-8]"/"[ebp+12]" - every function gets a real per-call stack
+    // frame (see genFunction()): `push ebp`/`mov ebp,esp` makes `ebp`
+    // point just above this call's own saved old `ebp`, with the
+    // return address one dword above that, and the caller's pushed
+    // arguments above the return address in declaration order (param
+    // 0 closest to it) - so a Param's address is `ebp+8+4*paramIndex`.
+    // Locals live below `ebp`, reserved by the prologue's `sub esp,N`;
+    // Slot::frameOffset is already a 1-based sequential dword index in
+    // declaration order, so a Local's address is `ebp-4*frameOffset`.
+    // See I8086Codegen.h's own identical `addr()` comment for why this
+    // makes recursion (direct or indirect) safe: every activation gets
+    // its own ebp/frame, unlike a Global's one real static cell.
+    static std::string addr(const ir::Slot *slot) {
+        if (slot->kind == ir::SlotKind::Param) {
+            return "[ebp+" + std::to_string(8 + 4 * slot->paramIndex) + "]";
+        }
+        return "[ebp-" + std::to_string(4 * slot->frameOffset) + "]";
+    }
+
+    // The memory-operand text for a plain read/write of `slot`'s own
+    // value - see I8086Codegen.h's own identical `operandOf()`.
+    static std::string operandOf(const ir::Slot *slot) {
+        return slot->kind == ir::SlotKind::Global ? ("[" + label(slot) + "]") : addr(slot);
+    }
+
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
-    void declareTemp(const std::string &lbl);
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }

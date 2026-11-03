@@ -50,6 +50,19 @@ namespace pcc {
 //               has no direct memory-access form for a special
 //               register the way MIPS's `$ra` is itself a plain GPR -
 //               see genFunction()'s own comment)
+//   r31 ("fp") - this backend's own frame pointer: set once per call,
+//               in genFunction()'s own prologue, to the address of
+//               that call's saved-old-`fp` word, and held fixed for
+//               the rest of that activation's own body even while
+//               `sp` itself moves transiently (every binary-operator
+//               temp push/pop above uses `sp`, not `fp`) - every
+//               Local/Param access addresses relative to `fp` (see
+//               slotDisp()) instead of a single shared memory cell,
+//               which is what makes direct and mutual recursion safe:
+//               each nested call gets its own `fp`/frame, chained
+//               through the stack exactly like `sp` is left running
+//               for genFunction()'s own `old fp`/saved-LR pair to
+//               restore at return.
 //
 // PowerPC has no absolute-addressing memory operand at all (same
 // restriction as MIPS - see MipsCodegen.h's own header comment) -
@@ -114,6 +127,14 @@ class PowerPCCodegen : public Backend {
 
    private:
     void genFunction(const ir::FunctionBody &fn);
+    // Tears down the current call's own frame: restores `fp`/the
+    // link register from the words genFunction()'s own prologue
+    // saved them to, and leaves `sp` back where it was on entry (the
+    // bottom of the caller's own pushed arguments) - shared by both
+    // genFunction()'s own fall-through return and every `return`
+    // statement's early exit (see genStmt()'s own Return case). Never
+    // emits `blr` itself - the caller emits that right after.
+    void emitEpilogue();
     void genStmt(const ir::Stmt &s);
     void genExpr(const ir::Expr &e);  // leaves the result in t0
 
@@ -126,6 +147,7 @@ class PowerPCCodegen : public Backend {
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
 
     // Leaves slot[idxExpr]'s own effective address in `t2`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
@@ -135,16 +157,47 @@ class PowerPCCodegen : public Backend {
     // instructions here where 68000 needs none).
     void loadAddress(const std::string &reg, const std::string &lbl);
 
-    static std::string label(const ir::Slot *slot) {
-        if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
-        if (slot->kind == ir::SlotKind::Param) {
-            return "p_" + slot->ownerFunctionName + "_" + std::to_string(slot->paramIndex);
-        }
-        return slot->sourceName + "_" + std::to_string(slot->id);
-    }
+    // Loads a compile-time-known 32-bit literal into register `reg` -
+    // `li` when it fits 16 bits signed, `lis`+`ori` otherwise (the
+    // same split IntLit's own genExpr() case already uses).
+    void loadImmediate(const std::string &reg, int32_t v);
+
+    // Loads/stores `slot`'s own scalar value from/into `reg` - a
+    // Global goes through `loadAddress`+`ldind`/`stind` (its address
+    // is a compile-time label, not a frame offset); a Local or Param
+    // goes straight through `ldindd`/`stindd fp,reg,slotDisp(slot)`,
+    // no address computation needed at all since `slotDisp()` is a
+    // compile-time constant. Never called with `reg` equal to "t2" -
+    // the Global path's own scratch register for the address load.
+    void loadSlotValue(const std::string &reg, const ir::Slot *slot);
+    void storeSlotValue(const ir::Slot *slot, const std::string &reg);
+
+    // Only ever called for a Global (the only kind with a name-based
+    // label - see slotDisp() for a Local/Param's own frame-relative
+    // address instead): a real separate-compilation label, shared
+    // identically by every file that references this same global by
+    // name.
+    static std::string label(const ir::Slot *slot) { return "g_" + slot->sourceName; }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
-    void declareTemp(const std::string &lbl);
+    // A Local or Param's own signed word displacement from `fp`. Every
+    // call's prologue (see genFunction()) leaves `fp` pointing at that
+    // call's own saved-old-`fp` word, with the saved return address
+    // one word above it and the caller's own pushed arguments (in
+    // declaration order, param 0 closest) above that - so a Param's
+    // displacement is `+8+4*paramIndex`. Locals live below `fp`,
+    // reserved by the prologue's own `addi sp,sp,-4*frameSize`;
+    // Slot::frameOffset is already a 1-based sequential word index in
+    // declaration order, so a Local's displacement is
+    // `-4*frameOffset`. A Local array's element i therefore sits at
+    // `-4*(frameOffset+i)` - storage address *decreases* as the
+    // element index increases, the mirror image of a Global array's
+    // increasing-address layout (see genIndexAddr()'s own comment).
+    static int slotDisp(const ir::Slot *slot) {
+        if (slot->kind == ir::SlotKind::Param) return 8 + 4 * slot->paramIndex;
+        return -4 * slot->frameOffset;
+    }
+
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }

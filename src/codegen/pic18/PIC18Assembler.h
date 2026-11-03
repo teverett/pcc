@@ -33,26 +33,31 @@ constexpr uint32_t kPIC18BaseAddress = 0;
 // hardware addressing, for PIC18LinkerFactory.cpp's own
 // `GenericLinkerConfig::dataBaseAddress`. Real Access Bank GPR space
 // starts at 0x00 (see PIC18Codegen.h's own header comment on the
-// 0x00-0x5F window), but the first 34 bytes of it (0x00-0x21) are
+// 0x00-0x5F window), but the first 84 bytes of it (0x00-0x53) are
 // permanently reserved, identically in every object and in
 // PIC18LinkerFactory.cpp's own synthesized entry object, for this
 // backend's fixed memory-cell pseudo-registers (`ac`/`bc`/`cx`/`dx`/
-// `ptr`/`SP`/`SSTACK` - PIC18Codegen.cpp's own object-mode `generate()`
-// declares these as plain compile-time equates at these exact
-// addresses, never through `res`/the data-space relocation mechanism
-// at all - the same "a fixed memory cell needs no relocation" choice
-// ../i8008/I8008Assembler.h's own `ac`/`bc`/.../`sp` equates and
-// ../mcs51/MCS51Codegen.cpp's own identical pseudo-registers already
-// make, and for the identical reason: nothing ever needs one file's
-// own `ac` to alias another's, so there's no reason to spend a real,
-// scarce data-space byte on relocating something that's the same
-// everywhere). `0x22` is exactly where PIC18Assembler.cpp's own
-// `ramOffset_` naturally lands once `ac`(2)/`bc`(2)/`cx`(2)/`dx`(2)/
-// `ptr`(1)/`SP`(1)/`SSTACK`(24) are allocated in that order - see
+// `ptr`/`SP`/`SSTACK`/`FP`/`NFP`/`FSTACK` - PIC18Codegen.cpp's own
+// object-mode `generate()` declares these as plain compile-time
+// equates at these exact addresses, never through `res`/the data-
+// space relocation mechanism at all - the same "a fixed memory cell
+// needs no relocation" choice ../i8008/I8008Assembler.h's own `ac`/
+// `bc`/.../`sp` equates and ../mcs51/MCS51Codegen.cpp's own identical
+// pseudo-registers already make, and for the identical reason:
+// nothing ever needs one file's own `ac` to alias another's, so
+// there's no reason to spend a real, scarce data-space byte on
+// relocating something that's the same everywhere; `FSTACK` itself -
+// see PIC18Codegen.h's own header comment on `FP`/`NFP`/`FSTACK` -
+// is the one real per-call frame region every linked function's own
+// Locals/Params actually live in, so it's shared the same fixed way,
+// not relocated per object either). `0x54` is exactly where
+// PIC18Assembler.cpp's own `ramOffset_` naturally lands once
+// `ac`(2)/`bc`(2)/`cx`(2)/`dx`(2)/`ptr`(1)/`SP`(1)/`SSTACK`(24)/
+// `FP`(1)/`NFP`(1)/`FSTACK`(48) are allocated in that order - see
 // PIC18Codegen.cpp's own raw-mode (non-`objectMode`) `declareRam`
 // call sequence, which still uses `res` (unchanged) and so still
 // genuinely counts this out at runtime rather than hardcoding it.
-constexpr uint32_t kPIC18DataBaseAddress = 0x22;
+constexpr uint32_t kPIC18DataBaseAddress = 0x54;
 
 // GOTO/CALL's own 20-bit absolute *word* address `k` (see
 // PIC18Assembler.cpp's own `controlAddr20` comment: real PIC18

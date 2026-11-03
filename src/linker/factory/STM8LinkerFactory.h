@@ -19,9 +19,10 @@ namespace pcc {
 // documents for 8086.
 //
 // This same entry object is also the *only* place
-// `ac`/`bc`/`cx`/`dx`/`ptr`/`lc` (the STM8 backend's own shared
-// pseudo-registers - see STM8Codegen.cpp's own `generate()` comment
-// on why they can't be redeclared per object) are actually defined -
+// `ac`/`bc`/`cx`/`dx`/`ptr`/`fp`/`fsp`/`lc` (the STM8 backend's own
+// shared pseudo-registers - see STM8Codegen.cpp's own `generate()`
+// comment on why they can't be redeclared per object) are actually
+// defined -
 // every user object only ever *references* them, deferred as an
 // ordinary external relocation the same way a call to a function
 // defined in another file is.

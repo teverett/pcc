@@ -33,10 +33,13 @@ namespace pcc {
 // `generate()` returns a complete, self-contained program loaded at
 // a fixed address (`kBaseAddress`, see MipsCodegen.cpp) - no OS, no
 // bootloader, the simulator sets the CPU's PC there directly -
-// halting in a self-branch infinite loop, the same "no stack, no
-// recursion" model every backend shares even though real function
-// calls (`JAL`/`JR`) and a real hardware stack (`$sp`) are both
-// used, exactly as 68000 already does.
+// halting in a self-branch infinite loop once `main` returns. Every
+// function call goes through the real hardware link register
+// (`JAL`/`JR ra`) and a real per-call stack frame on the real
+// hardware stack pointer (`$sp`), giving every call - direct or
+// mutually recursive - its own independent Local/Param storage (see
+// this file's own header comment below on the frame layout `$fp`
+// establishes).
 //
 // This language's own `int` is 32 bits here (R10000's own GPRs are
 // 64 bits, but every instruction this backend emits is a 32-bit
@@ -45,22 +48,43 @@ namespace pcc {
 // meaningful, matching every other backend's own word-size choice:
 // pdp7's 18 bits, 8086/6502's 16 bits, 68000/pdp11's 32 bits).
 //
-// Register assignment (this backend's own convention, not a real
-// calling-convention choice, since there's no cross-function
-// register-passed-argument convention at all - every parameter is a
-// statically allocated slot, same as every other backend - see
-// genFunction()):
+// Register assignment (this backend's own convention):
 //   $t0 (8)  - "ac", genExpr()'s own result (the register every other
 //              backend also calls this - 68000's D0, 8086's ax)
 //   $t1 (9)  - "the other operand" in a binary op (68000's D1)
 //   $t2 (10) - holds a computed address when dereferencing one
-//              (array/pointer indexing, `*`/`&`) - 68000's A0
-//   $at (1)  - scratch for a comparison's own intermediate SLT
+//              (array/pointer indexing, `*`/`&`, and every Local/Param
+//              frame-relative access - see loadSlotAddr())
+//   $at (1)  - scratch for a comparison's own intermediate SLT, and
+//              for the caller's own saved frame pointer while a
+//              function's epilogue restores it (see genEpilogue())
 //   $sp (29) - the real hardware stack pointer: ADDIU-adjusted,
 //              LW/SW through it, used both to save one operand
 //              across evaluating the other in a binary expression
-//              and for every function call/return
+//              and for every function call/return/argument
 //   $ra (31) - the real hardware link register JAL sets and JR reads
+//   $fp (30) - this call's own frame pointer (the real MIPS o32 ABI's
+//              own $s8/$fp register, same role): every function's
+//              prologue points it at its own freshly pushed saved-fp
+//              word (see genFunction()), giving every call its own
+//              private Local/Param storage, real recursion included -
+//              same role I386Codegen.h's own `ebp` plays, just with
+//              MIPS's own base+ADDIU-computed-offset addressing (no
+//              bracketed memory operand exists in this dialect - see
+//              MipsAssembler.h's own header comment) standing in for
+//              a real `[ebp+N]` operand.
+//
+// A function's own frame, relative to `$fp` (growing in the same
+// direction every migrated backend's own stack frame does - downward
+// as the frame gets bigger): `fp+0` is the caller's own saved `$fp`,
+// `fp+4` the saved `$ra`; the caller's own pushed arguments sit above
+// that, param `i` at `fp+8+4*i` (closest first, same cdecl-style
+// right-to-left push/caller-cleanup convention as I386Codegen.h's own
+// `addr()` - see ir::ExprKind::Call's own genExpr() case). Locals sit
+// below `fp`, reserved by the prologue's own `ADDIU sp,sp,-N`; a Local
+// at Slot::frameOffset K lives at `fp-4*K` - see loadSlotAddr() and
+// genIndexAddr()'s own comment on why a Local array's element
+// addresses count down, not up, as the element index increases.
 //
 // MIPS has no absolute-addressing memory operand at all (unlike the
 // 68000's own "MOVE.L label,D0" - see M68kCodegen.h's own header
@@ -138,6 +162,7 @@ class MipsCodegen : public Backend {
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
 
     // Leaves slot[idxExpr]'s own effective address in `$t2`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
@@ -147,16 +172,36 @@ class MipsCodegen : public Backend {
     // instructions here where 68000 needs none).
     void loadAddress(const std::string &reg, const std::string &lbl);
 
-    static std::string label(const ir::Slot *slot) {
-        if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
-        if (slot->kind == ir::SlotKind::Param) {
-            return "p_" + slot->ownerFunctionName + "_" + std::to_string(slot->paramIndex);
-        }
-        return slot->sourceName + "_" + std::to_string(slot->id);
-    }
+    // Loads the address of a plain (non-array) Global/Local/Param
+    // slot's own storage into `reg` - a Global's fixed label address
+    // (see loadAddress()), or a Local/Param's own `$fp`-relative
+    // address, computed in one ADDIU (see this file's own header
+    // comment on the frame layout `$fp` establishes).
+    void loadSlotAddr(const std::string &reg, const ir::Slot *slot);
+
+    // Emits a 32-bit literal load into `reg` - ADDIU when it fits in
+    // 16 bits (sign-extended), LUI+ORI otherwise. Shared by IntLit and
+    // genLocalArrayInit()'s own literal array elements.
+    void loadImm32(const std::string &reg, int32_t v);
+
+    // The shared function-exit sequence (deallocate this call's own
+    // locals, restore the caller's `$fp`/`$ra`, `JR ra`) - used by
+    // both genFunction()'s own fall-through epilogue and every
+    // explicit `return` (StmtKind::Return is its own early exit,
+    // bypassing the fall-through epilogue entirely, so it needs this
+    // same sequence inline).
+    void genEpilogue();
+
+    // A Global's own name-based label (needed identically across any
+    // file that references it, under real separate compilation - see
+    // IR.h's own `ownerFunctionName`/`frameOffset` comments) or a
+    // Function's entry label. A Local/Param never gets one - every
+    // reference to either goes through loadSlotAddr()'s own
+    // `$fp`-relative addressing instead (see this file's own header
+    // comment).
+    static std::string label(const ir::Slot *slot) { return "g_" + slot->sourceName; }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
-    void declareTemp(const std::string &lbl);
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }

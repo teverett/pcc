@@ -75,32 +75,58 @@ class I8086Codegen : public Backend {
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
     void genIndex(const ir::Expr &e);          // slot[idx] read
     void genAddrOf(const ir::Expr &operand);   // &slot or &slot[idx]
+    void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
 
     // Emits code that leaves the 8086 effective-address operand text
     // (e.g. "[g_arr3+bx]") for slot[idxExpr], with bx already loaded -
     // used by both an Index read and an indexed Assign.
     std::string computeElementAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
-    // Global/Param slots and every Function get a *name*-based label
-    // (never `id`) - same rationale as ../pdp7/Pdp7Codegen.h's own
-    // version of this comment: real separate compilation means the
-    // file calling a function and the file defining it compile with
-    // completely independent `id` sequences, so only a label
-    // computable from stable information means the same thing on
-    // both sides. A Local never crosses a file boundary, so it keeps
-    // the old `sourceName_id` label (still useful for readability,
-    // and `id` uniqueness is all that mattered there anyway).
-    static std::string label(const ir::Slot *slot) {
-        if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
-        if (slot->kind == ir::SlotKind::Param) {
-            return "p_" + slot->ownerFunctionName + "_" + std::to_string(slot->paramIndex);
-        }
-        return slot->sourceName + "_" + std::to_string(slot->id);
-    }
+    // Global slots and every Function get a *name*-based label (never
+    // `id`) - real separate compilation means the file calling a
+    // function and the file defining it compile with completely
+    // independent `id` sequences, so only a label computable from
+    // stable information means the same thing on both sides. A Local
+    // or Param is addressed relative to `bp` instead (see
+    // addr(const ir::Slot*) below) - it never needs a label at all,
+    // since it never crosses a file boundary and every reference to
+    // it is already inside the one function that owns it.
+    static std::string label(const ir::Slot *slot) { return "g_" + slot->sourceName; }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
+    // A Local or Param's own effective-address operand text, e.g.
+    // "[bp-4]"/"[bp+6]" - every function gets a real per-call stack
+    // frame (see genFunction()): `push bp` / `mov bp,sp` makes `bp`
+    // point just above this call's own saved old `bp`, with the
+    // return address one word above that, and the caller's pushed
+    // arguments above the return address in declaration order (param
+    // 0 closest to it) - so a Param's address is `bp+4+2*paramIndex`.
+    // Locals live below `bp`, reserved by the prologue's `sub sp,N`;
+    // Slot::frameOffset is already a 1-based sequential word index in
+    // declaration order, so a Local's address is `bp-2*frameOffset`.
+    // Every activation gets its own bp/frame, so two overlapping
+    // calls to the same function (recursion, direct or indirect)
+    // never share storage - unlike a Global, which still gets the one
+    // real static cell real C statics/globals are supposed to have.
+    static std::string addr(const ir::Slot *slot) {
+        if (slot->kind == ir::SlotKind::Param) {
+            return "[bp+" + std::to_string(4 + 2 * slot->paramIndex) + "]";
+        }
+        return "[bp-" + std::to_string(2 * slot->frameOffset) + "]";
+    }
+
+    // The memory-operand text for a plain read/write of `slot`'s own
+    // value - "[g_x]" for a Global, or addr(slot) ("[bp±N]") for a
+    // Local/Param - used anywhere the two only differ in which of
+    // those this is (an ordinary Var read/Assign write; see
+    // genAddrOf/computeElementAddr for the two places that still have
+    // to tell them apart, since only a Global's own address folds
+    // into a compile-time immediate the way `mov ax, g_x` does).
+    static std::string operandOf(const ir::Slot *slot) {
+        return slot->kind == ir::SlotKind::Global ? ("[" + label(slot) + "]") : addr(slot);
+    }
+
     std::string allocTemp();
-    void declareTemp(const std::string &label);
     void declareArray(const std::string &label, const std::vector<ir::ArrayInitElem> &values);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel();

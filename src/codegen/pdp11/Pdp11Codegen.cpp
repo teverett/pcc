@@ -29,8 +29,6 @@ constexpr uint32_t kBaseAddress = 0x1000;
 constexpr uint32_t kInitialSp = 0xE000;
 }  // namespace
 
-void Pdp11Codegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": dw 0"); }
-
 // A literal element's own decimal text, truncated to this target's
 // own 16-bit word width; a symbol element is the referenced Slot's or
 // Function's own label, written out bare - "dw" (Pdp11Assembler.cpp's
@@ -124,10 +122,24 @@ std::string Pdp11Codegen::generate(const ir::Program &prog, bool objectMode) {
 // comment (no `--format=coff` here either).
 std::map<std::string, std::string> Pdp11Codegen::perFileAsm() const { return perFileAsm_; }
 
+// Prologue: `push r5` saves the caller's own frame pointer, then
+// `mov sp,r5` makes `r5` this call's own frame pointer - pointing at
+// that just-pushed word, with the return address `jsr` already
+// pushed sitting right above it, and the caller's own pushed
+// arguments above that (see Pdp11Codegen.h's own `addr()` comment).
+// `sub N,sp` then reserves this function's own Locals, below `r5`.
+// Epilogue (here and every `Return` - see genStmt()) undoes exactly
+// that: `mov r5,sp` drops the Locals, `pop r5` restores the caller's
+// own frame pointer (and leaves `sp` pointing at the return address),
+// `rts` pops that address into `pc`.
 void Pdp11Codegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
-    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
+    code_ << "    push r5\n";
+    code_ << "    mov sp,r5\n";
+    if (fn.func->frameSize > 0) code_ << "    sub " << (2 * fn.func->frameSize) << ",sp\n";
     genStmt(*fn.body);
+    code_ << "    mov r5,sp\n";
+    code_ << "    pop r5\n";
     code_ << "    rts\n\n";
 }
 
@@ -168,19 +180,17 @@ void Pdp11Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
+            code_ << "    mov r5,sp\n";
+            code_ << "    pop r5\n";
             code_ << "    rts\n";
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arrayInit);
-            } else {
-                declareTemp(lbl);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    code_ << "    mov r0," << lbl << "\n";
-                }
+                genLocalArrayInit(s.declSlot);
+            } else if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                code_ << "    mov r0," << addr(s.declSlot) << "\n";
             }
             return;
         }
@@ -205,7 +215,7 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
-            code_ << "    mov " << label(e.slot) << ",r0\n";
+            code_ << "    mov " << operandOf(e.slot) << ",r0\n";
             return;
         }
         case ir::ExprKind::Index: {
@@ -222,7 +232,7 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
                 return;
             }
             genExpr(*e.rhs);
-            code_ << "    mov r0," << label(e.slot) << "\n";
+            code_ << "    mov r0," << operandOf(e.slot) << "\n";
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -253,11 +263,20 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            for (size_t i = 0; i < e.args.size(); i++) {
+            // Real stack-based argument passing - push right-to-left
+            // so param 0 ends up closest to the return address (see
+            // Pdp11Codegen.h's own `addr()` comment), caller cleans
+            // up with `add N,sp` after the call returns. Every
+            // argument lands in *this call's own* freshly pushed
+            // slot, never a shared per-callee cell, so nested or
+            // recursive calls to the same function never clobber each
+            // other's arguments.
+            for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                code_ << "    mov r0,p_" << e.func->sourceName << "_" << i << "\n";
+                code_ << "    push r0\n";
             }
             code_ << "    jsr " << label(e.func) << "\n";
+            if (!e.args.empty()) code_ << "    add " << (2 * e.args.size()) << ",sp\n";
             return;
         }
         case ir::ExprKind::CallPtr: {
@@ -298,19 +317,38 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
 // See Pdp11Codegen.h's own header comment: `R2` holds the computed
 // address, via the real register-deferred `(Rn)` mode - no zero-
 // page-style placement restriction the way the 6502 backend's own
-// `ptr` has. `slot->arraySize > 0` means the base is a compile-time-
-// known label (an *address*, loaded via `lea`); otherwise `slot` is a
-// plain pointer variable, so the base instead comes from *reading*
-// that variable's own stored value first.
+// `ptr` has. `slot->arraySize > 0` means `slot` is an array, so its
+// base is a compile-time-known address: a Global's own label
+// (loaded via `lea`), or a Local's own frame-relative address
+// (computed from `r5` - see below); otherwise `slot` is a plain
+// pointer variable (Global, Local, or Param), so the base instead
+// comes from *reading* that variable's own stored value first
+// (operandOf()).
+//
+// A Local array's element `i` lives at frameOffset+i (see IR.h's own
+// Slot::frameOffset comment), so its address is `r5 -
+// 2*(frameOffset+i)` - addresses *decrease* as the element index
+// increases, the mirror image of a Global array's own increasing-
+// address layout, since a Local's storage grows down from `r5` (see
+// Pdp11Codegen.h's own `addr()` comment). `r0` already holds
+// `idx*2`, so that's `r5 - 2*frameOffset - idx*2` - computed here as
+// `sub` twice, not folded into one constant, since `idx` is only
+// known at runtime.
 void Pdp11Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // r0 = index
     code_ << "    asl r0\n";  // r0 *= 2 (words are 2 bytes on this byte-addressed target)
-    std::string lbl = label(slot);
     if (slot->arraySize > 0) {
-        code_ << "    lea " << lbl << ",r2\n";
-    } else {
-        code_ << "    mov " << lbl << ",r2\n";
+        if (slot->kind == ir::SlotKind::Global) {
+            code_ << "    lea " << label(slot) << ",r2\n";
+            code_ << "    add r0,r2\n";
+        } else {
+            code_ << "    mov r5,r2\n";
+            code_ << "    sub " << (2 * slot->frameOffset) << ",r2\n";
+            code_ << "    sub r0,r2\n";
+        }
+        return;
     }
+    code_ << "    mov " << operandOf(slot) << ",r2\n";
     code_ << "    add r0,r2\n";
 }
 
@@ -319,9 +357,49 @@ void Pdp11Codegen::genIndex(const ir::Expr &e) {
     code_ << "    ldind r2,r0\n";
 }
 
+// A Local array is no longer a static `dw`-declared data block (see
+// generate()'s own trailer_, still used for Global arrays) - it's
+// reserved frame storage (see genFunction()'s own `sub N,sp`), freshly
+// allocated on every call, so its own initializer has to be stored
+// into it with real instructions each time this declaration runs,
+// not baked into the program image once. A literal element loads
+// with a plain `mov`; a symbol element (a Slot's or Function's own
+// address - see IR.h's own ArrayInitElem comment) needs `lea` instead
+// - this dialect's bare-label operand means "read the value stored
+// there", not "take its address" (see Pdp11Assembler.h's own header
+// comment), so only `lea` gives the address itself.
+void Pdp11Codegen::genLocalArrayInit(const ir::Slot *slot) {
+    for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+        const ir::ArrayInitElem &elem = slot->arrayInit[i];
+        if (elem.isSymbol) {
+            code_ << "    lea " << (elem.slot ? label(elem.slot) : label(elem.func)) << ",r0\n";
+        } else {
+            code_ << "    mov " << static_cast<int>(static_cast<uint16_t>(elem.value)) << ",r0\n";
+        }
+        code_ << "    mov r0,[r5-" << (2 * (slot->frameOffset + static_cast<int>(i))) << "]\n";
+    }
+}
+
+// A Local/Param's own address is only ever a *runtime* value (`r5`
+// plus/minus a displacement) - there's no real PDP-11 instruction
+// that loads a register-relative effective address directly (`lea`
+// here is a synthesized pseudo-op that only ever works from a
+// compile-time-absolute label, via PC-immediate addressing - see
+// Pdp11Assembler.cpp's own `encodeLea`), so this computes it with
+// real arithmetic instead, the same `mov r5,rX` + `add`/`sub` shape
+// genIndexAddr() above uses for a Local array's own base.
 void Pdp11Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        code_ << "    lea " << label(operand.slot) << ",r0\n";
+        if (operand.slot->kind == ir::SlotKind::Global) {
+            code_ << "    lea " << label(operand.slot) << ",r0\n";
+            return;
+        }
+        code_ << "    mov r5,r0\n";
+        if (operand.slot->kind == ir::SlotKind::Param) {
+            code_ << "    add " << (4 + 2 * operand.slot->paramIndex) << ",r0\n";
+        } else {
+            code_ << "    sub " << (2 * operand.slot->frameOffset) << ",r0\n";
+        }
         return;
     }
     if (operand.kind == ir::ExprKind::Index) {

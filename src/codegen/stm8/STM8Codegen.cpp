@@ -20,6 +20,15 @@ namespace {
 // here (see I8080Codegen.cpp's own comment on both constants).
 constexpr uint32_t kBaseAddress = 0x0100;
 constexpr uint32_t kStackTop = 0xFF00;
+
+// Where this backend's own software frame stack starts (see
+// STM8Codegen.h's own `genPrologue`/`genSlotAddress` comments) -
+// comfortably clear of both the code/data region above
+// `kBaseAddress` and the real hardware stack at `kStackTop`, with
+// plenty of room between the two for either to grow without
+// colliding, in the same "bare flat 64KB address space" spirit as
+// `kBaseAddress`/`kStackTop` themselves.
+constexpr uint32_t kFrameStackTop = 0xE000;
 }  // namespace
 
 void STM8Codegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": db 0, 0"); }
@@ -49,21 +58,21 @@ void STM8Codegen::copy16(const std::string &dst, const std::string &src) {
     code_ << "    ldw x, " << src << "\n    ldw " << dst << ", x\n";
 }
 
-void STM8Codegen::storeAcIndirect() {
+void STM8Codegen::storeIndirect(const std::string &src) {
     // Assumes `x` already holds the target address - `ld`/`stxind`
-    // address `ac` directly, by name, never touching `x` itself until
-    // the `incw` between the two bytes, so the caller's address in
-    // `x` only ever advances forward, same convention as
+    // address `src` directly, by name, never touching `x` itself
+    // until the `incw` between the two bytes, so the caller's address
+    // in `x` only ever advances forward, same convention as
     // I8080Codegen::storeAcIndirect.
-    code_ << "    ld a, ac\n    stxind\n";
+    code_ << "    ld a, " << src << "\n    stxind\n";
     code_ << "    incw x\n";
-    code_ << "    ld a, ac+1\n    stxind\n";
+    code_ << "    ld a, " << src << "+1\n    stxind\n";
 }
 
-void STM8Codegen::loadAcIndirect() {
-    code_ << "    ldxind\n    ld ac, a\n";
+void STM8Codegen::loadIndirect(const std::string &dst) {
+    code_ << "    ldxind\n    ld " << dst << ", a\n";
     code_ << "    incw x\n";
-    code_ << "    ldxind\n    ld ac+1, a\n";
+    code_ << "    ldxind\n    ld " << dst << "+1, a\n";
 }
 
 // One in-place 1-bit shift of the 16-bit memory cell `lbl`, used by
@@ -96,6 +105,12 @@ std::string STM8Codegen::generate(const ir::Program &prog, bool objectMode) {
     if (!objectMode) {
         code_ << "_start:\n";
         code_ << "    ldwi sp, " << kStackTop << "\n";
+        // The software frame stack's own initial top, and `main`'s
+        // own caller-side `fp` link - nothing ever reads this `fp`
+        // value again once the whole program halts, so its initial
+        // content doesn't matter beyond being a well-defined word.
+        code_ << "    ldwi x, " << kFrameStackTop << "\n    ldw fsp, x\n";
+        code_ << "    ldwi x, 0\n    ldw fp, x\n";
         code_ << "    call " << label(mainFn) << "\n";
         // The program's own final result sits in `ac` the moment
         // execution reaches `halt` below - the authoritative place to
@@ -126,6 +141,18 @@ std::string STM8Codegen::generate(const ir::Program &prog, bool objectMode) {
         declareTemp("cx");
         declareTemp("dx");
         declareTemp("ptr");
+        // `fp`/`fsp` are this backend's own software frame pointer
+        // and frame-stack pointer (see STM8Codegen.h's own
+        // `genPrologue`/`genSlotAddress` comments) - persistent
+        // state across a whole call tree, so they're named memory
+        // cells like every other pseudo-register here, never the
+        // real `x`/`y` (both already fully committed as ephemeral
+        // expression-evaluation transit registers everywhere else in
+        // this file). They're entirely independent of the real
+        // hardware `sp` (still used only for `call`/`ret` and
+        // genBinary()'s own balanced `push`/`pop` scratch).
+        declareTemp("fp");
+        declareTemp("fsp");
         trailer_.push_back("lc: db 0");
     }
 
@@ -167,9 +194,88 @@ std::map<std::string, std::string> STM8Codegen::perFileAsm() const { return perF
 
 void STM8Codegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
-    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
+    currentFunction_ = fn.func;
+    genPrologue(*fn.func);
     genStmt(*fn.body);
-    code_ << "    ret\n\n";
+    genEpilogue(*fn.func);
+    currentFunction_ = nullptr;
+    code_ << "\n";
+}
+
+// --- Per-call frame management ------------------------------------------
+//
+// Layout, growing down from `fp` (the address of this call's own
+// saved caller's `fp`, i.e. the first word pushed onto the frame
+// stack for this call):
+//
+//   fp+2*numParams .. fp+2   incoming arguments (param 0 closest to
+//                            `fp` - the caller pushes them in reverse
+//                            order, last argument first, so param 0
+//                            ends up pushed last - see pushFrameWord()'s
+//                            own call sites in the Call case below)
+//   fp                       this call's own saved caller's `fp`
+//   fp-2 .. fp-2*frameSize   this function's own Local storage, in
+//                            declaration order (frameOffset 1 first)
+//
+// A Local's growing-downward layout (and its array elements'
+// matching base-minus-index addressing - see genSlotAddress()) is
+// the same shape I386Codegen.cpp's own `addr()`/`computeElementAddr`
+// use for `ebp`-relative locals; the one real difference is that
+// there's no spare STM8 register to hold a live frame-pointer
+// snapshot the way `ebp` does on i386 (`x`/`y` are both already
+// fully committed as this file's own ephemeral expression-evaluation
+// transit registers - see STM8Codegen.h's own header comment), so
+// `fp`/`fsp` are ordinary named memory cells instead, entirely
+// separate from the real hardware `sp` (which keeps doing exactly
+// what it already did - `call`/`ret` and genBinary()'s own balanced
+// `push`/`pop` scratch - untouched by any of this).
+void STM8Codegen::pushFrameWord(const std::string &cell) {
+    code_ << "    ldw x, fsp\n    ldwi y, 2\n    subw x, y\n    ldw fsp, x\n";
+    storeIndirect(cell);  // x still holds the just-decremented fsp
+}
+
+void STM8Codegen::genPrologue(const ir::Function &fn) {
+    pushFrameWord("fp");           // save the caller's own fp
+    code_ << "    ldw x, fsp\n    ldw fp, x\n";  // fp = address of that saved word
+    if (fn.frameSize > 0) {
+        code_ << "    ldw x, fp\n    ldwi y, " << (fn.frameSize * 2) << "\n    subw x, y\n    ldw fsp, x\n";
+    }
+}
+
+// Mirrors genPrologue(): recovers the caller's own `fp` (read from
+// the word at the current `fp` address, *before* `fp` itself is
+// overwritten) and resets `fsp` back to its value just before this
+// call's own frame was pushed, i.e. past this call's own incoming
+// arguments too (`numParams` words) - the callee cleans up its own
+// argument area, so the caller's own post-`call` code needs no
+// matching adjustment. Uses `bc` as scratch (dead at every statement
+// boundary - see genBinary()'s own header comment), never `ac`,
+// since `ac` already holds this call's own live return value by the
+// time this runs (see the Return case below) - `ret` itself is
+// always the last instruction, strictly after `fp`/`fsp` are both
+// restored, same "duplicated at every return site" shape
+// I386Codegen.cpp's own genFunction()/Return case uses.
+void STM8Codegen::genEpilogue(const ir::Function &fn) {
+    code_ << "    ldw x, fp\n";
+    loadIndirect("bc");  // bc = the caller's own saved fp
+    int numParams = static_cast<int>(fn.params.size());
+    code_ << "    ldw x, fp\n    ldwi y, " << ((numParams + 1) * 2) << "\n    addw x, y\n    ldw fsp, x\n";
+    code_ << "    ldw x, bc\n    ldw fp, x\n";
+    code_ << "    ret\n";
+}
+
+// Leaves a Slot's own effective storage address in `x` - see
+// STM8Codegen.h's own header comment.
+void STM8Codegen::genSlotAddress(const ir::Slot *slot) {
+    if (slot->kind == ir::SlotKind::Global) {
+        code_ << "    ldwi x, " << label(slot) << "\n";
+        return;
+    }
+    if (slot->kind == ir::SlotKind::Param) {
+        code_ << "    ldw x, fp\n    ldwi y, " << ((slot->paramIndex + 1) * 2) << "\n    addw x, y\n";
+        return;
+    }
+    code_ << "    ldw x, fp\n    ldwi y, " << (slot->frameOffset * 2) << "\n    subw x, y\n";
 }
 
 void STM8Codegen::genStmt(const ir::Stmt &s) {
@@ -206,19 +312,51 @@ void STM8Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            code_ << "    ret\n";
+            genEpilogue(*currentFunction_);
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
+            // A Local's words are already reserved by genPrologue()
+            // (`frameSize` accounts for every one of them) - nothing
+            // is separately declared here the way a Global is. An
+            // array initializer still has to run its own per-element
+            // stores every time this declaration executes (not once,
+            // statically): a fresh call gets a fresh copy of the
+            // frame, so a shared one-time initializer the way
+            // declareArray() gives a Global would leak the *previous*
+            // call's own last values into every new call instead.
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arrayInit);
-            } else {
-                declareTemp(lbl);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    copy16(lbl, "ac");
+                for (size_t i = 0; i < s.declSlot->arrayInit.size(); i++) {
+                    const ir::ArrayInitElem &elem = s.declSlot->arrayInit[i];
+                    if (elem.isSymbol && elem.slot && elem.slot->kind != ir::SlotKind::Global) {
+                        // "&otherLocal"/"&someParam" - unlike a
+                        // Global's or a Function's own address (both
+                        // real compile-time constants arrayElemText()
+                        // can hand straight to `ldwi`), a Local's or
+                        // a Param's own address only exists at
+                        // runtime, relative to this call's own `fp` -
+                        // same genSlotAddress() every other Local/
+                        // Param access goes through.
+                        genSlotAddress(elem.slot);
+                        code_ << "    ldw ac, x\n";
+                    } else {
+                        code_ << "    ldwi x, " << arrayElemText(elem) << "\n    ldw ac, x\n";
+                    }
+                    genSlotAddress(s.declSlot);  // x = address of element 0
+                    if (i > 0) {
+                        // Element i sits *below* element 0 - see
+                        // genSlotAddress()'s own header comment on why
+                        // a Local array's addresses decrease as its
+                        // own index increases, the opposite of a
+                        // Global array.
+                        code_ << "    ldwi y, " << (i * 2) << "\n    subw x, y\n";
+                    }
+                    storeIndirect("ac");
                 }
+            } else if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                genSlotAddress(s.declSlot);
+                storeIndirect("ac");
             }
             return;
         }
@@ -244,7 +382,12 @@ void STM8Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
-            copy16("ac", label(e.slot));
+            if (e.slot->kind == ir::SlotKind::Global) {
+                copy16("ac", label(e.slot));
+            } else {
+                genSlotAddress(e.slot);
+                loadAcIndirect();
+            }
             return;
         }
         case ir::ExprKind::Index: {
@@ -261,7 +404,12 @@ void STM8Codegen::genExpr(const ir::Expr &e) {
                 return;
             }
             genExpr(*e.rhs);
-            copy16(label(e.slot), "ac");
+            if (e.slot->kind == ir::SlotKind::Global) {
+                copy16(label(e.slot), "ac");
+            } else {
+                genSlotAddress(e.slot);
+                storeAcIndirect();
+            }
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -291,9 +439,18 @@ void STM8Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            for (size_t i = 0; i < e.args.size(); i++) {
+            // Pushed onto the frame stack in reverse (last argument
+            // first), so param 0 ends up pushed *last* - right next
+            // to the callee's own saved `fp` - matching
+            // genSlotAddress()'s own `fp + (paramIndex+1)*2` formula
+            // (param 0 at `fp+2`, param 1 at `fp+4`, ...). Each
+            // argument lands directly in the callee's own fresh
+            // frame - there's no shared per-function cell for this to
+            // ever alias between a call and a nested recursive call
+            // of the same function.
+            for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                copy16("p_" + e.func->sourceName + "_" + std::to_string(i), "ac");
+                pushFrameWord("ac");
             }
             code_ << "    call " << label(e.func) << "\n";
             return;
@@ -301,9 +458,9 @@ void STM8Codegen::genExpr(const ir::Expr &e) {
         case ir::ExprKind::CallPtr: {
             // e.args is always empty here - IRBuilder.cpp rejects any
             // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr): there's no per-callee
-            // p_<fn>_<i> cell to write one into until the callee is
-            // known, which it never is at compile time for this kind.
+            // (see IR.h's ExprKind::CallPtr): there's no callee to
+            // push a frame for yet, since the callee's own identity
+            // isn't known until this is evaluated at runtime.
             //
             // The real STM8 `CALL [mem]` Indirect addressing mode
             // doesn't treat its own operand's address as the callee
@@ -344,13 +501,32 @@ void STM8Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
     code_ << "    ldw x, ac\n    slaw x\n";  // x = index*2 (words are 2 bytes here too)
     code_ << "    ldw ptr, x\n";
-    std::string lbl = label(slot);
+    genSlotAddress(slot);  // x = slot's own storage address (Global/Local/Param alike)
     if (slot->arraySize > 0) {
-        code_ << "    ldwi y, " << lbl << "\n";  // y = base (a compile-time-known address)
-    } else {
-        code_ << "    ldw y, " << lbl << "\n";  // y = base (a pointer variable's own stored value)
+        if (slot->kind == ir::SlotKind::Global) {
+            code_ << "    ldw y, x\n";  // y = base (the array's own address)
+            code_ << "    ldw x, ptr\n    addw x, y\n    ldw ptr, x\n";  // ptr = base + index*2
+        } else {
+            // A Local/Param array's own words sit at *decreasing*
+            // addresses as its own element index increases
+            // (genSlotAddress()'s own storage address is the array's
+            // first word, closest to `fp`; later words are further
+            // below it - see genSlotAddress()'s own header comment) -
+            // the mirror image of a Global array's increasing-address
+            // layout above, so this is base-minus-scaled-index, not
+            // base-plus.
+            code_ << "    ldw y, ptr\n    subw x, y\n    ldw ptr, x\n";  // ptr = base - index*2
+        }
+        return;
     }
-    code_ << "    ldw x, ptr\n    addw x, y\n    ldw ptr, x\n";  // ptr = index*2 + base
+    // y = base (a pointer variable's own stored value, read from its
+    // just-computed storage address - a Global's, a Local's, or a
+    // Param's, all alike) - ordinary pointer arithmetic, always
+    // base-plus-scaled-index regardless of where the pointer
+    // variable itself happens to live.
+    loadIndirect("bc");
+    code_ << "    ldw y, bc\n";
+    code_ << "    ldw x, ptr\n    addw x, y\n    ldw ptr, x\n";
 }
 
 void STM8Codegen::genIndex(const ir::Expr &e) {
@@ -361,7 +537,8 @@ void STM8Codegen::genIndex(const ir::Expr &e) {
 
 void STM8Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        code_ << "    ldwi x, " << label(operand.slot) << "\n    ldw ac, x\n";
+        genSlotAddress(operand.slot);
+        code_ << "    ldw ac, x\n";
         return;
     }
     if (operand.kind == ir::ExprKind::Index) {
@@ -480,12 +657,19 @@ void STM8Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft
 // multiplicand (doubled each iteration), `dx` the multiplier (halved
 // each iteration, consumed one bit at a time), `ac` the accumulating
 // product, `lc` the loop counter (see genShift()'s own comment on why
-// not `a`). Only verified against non-negative operands.
+// not `a`). Only verified against non-negative operands. `lhs` first
+// survives evaluating `rhs` on the real hardware stack, not by an
+// early, direct `copy16("bc", ...)` - `rhs` may itself be, or
+// contain, a call (e.g. `n * fact(n - 1)`), and that callee's own
+// body is just as free to reuse `bc` for its own unrelated purposes
+// as any other function - same reasoning as genBitwise()'s own
+// header comment.
 void STM8Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
-    copy16("bc", "ac");  // bc = multiplicand
+    code_ << "    ldw x, ac\n    push x\n";
     genExpr(rhs);
     copy16("dx", "ac");  // dx = multiplier
+    code_ << "    pop x\n    ldw bc, x\n";  // bc = multiplicand (popped only now, after rhs is fully evaluated)
     code_ << "    ldwi x, 0\n    ldw ac, x\n";  // ac = product = 0
     code_ << "    ldi a, 16\n    ld lc, a\n";    // loop counter
     std::string Lloop = newLabel(), Ldone = newLabel(), Lskipadd = newLabel();
@@ -509,12 +693,15 @@ void STM8Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
 // the quotient, counting how many times `bc` was subtracted out of
 // `dx` before it would've gone negative - via the real `CPW x,y` +
 // `jrult`, no separate loop counter needed at all here. Only verified
-// against non-negative operands.
+// against non-negative operands. `lhs` survives evaluating `rhs` on
+// the real hardware stack - see genMul()'s own identical comment on
+// why an early `copy16("dx", ...)` isn't safe here either.
 void STM8Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder) {
     genExpr(lhs);
-    copy16("dx", "ac");  // dx = dividend (running remainder)
+    code_ << "    ldw x, ac\n    push x\n";
     genExpr(rhs);
     copy16("bc", "ac");  // bc = divisor
+    code_ << "    pop x\n    ldw dx, x\n";  // dx = dividend (popped only now, after rhs is fully evaluated)
     code_ << "    ldwi x, 0\n    ldw ac, x\n";  // ac = quotient = 0
     std::string Lloop = newLabel(), Ldone = newLabel();
     code_ << Lloop << ":\n";
@@ -539,11 +726,16 @@ void STM8Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const i
 
 // `==`/`!=` need no sign handling at all: `CPW x,y` after loading
 // both operands sets Z iff they're equal, full 16 bits at once.
+// `lhs` survives evaluating `rhs` on the real hardware stack, not an
+// early `copy16("bc", ...)` - see genMul()'s own identical comment
+// on why (`rhs` may itself be, or contain, a call that reuses `bc`
+// for its own unrelated purposes).
 void STM8Codegen::emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, bool wantEqual) {
     genExpr(lhs);
-    copy16("bc", "ac");  // bc = lhs
-    genExpr(rhs);         // ac = rhs
-    code_ << "    ldw x, bc\n    ldw y, ac\n    cpw x, y\n";
+    code_ << "    ldw x, ac\n    push x\n";
+    genExpr(rhs);  // ac = rhs
+    code_ << "    ldw y, ac\n    pop x\n";
+    code_ << "    cpw x, y\n";
     std::string Ltrue = newLabel(), Ldone = newLabel();
     code_ << "    " << (wantEqual ? "jreq" : "jrne") << " " << Ltrue << "\n";
     code_ << "    ldwi x, 0\n    ldw ac, x\n    jp " << Ldone << "\n";
@@ -557,10 +749,15 @@ void STM8Codegen::emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, 
 // flipping just the top bit of each operand's high byte maps the
 // signed range onto the unsigned one while preserving order, so a
 // plain unsigned `CPW`+`jrult`/`jruge` is all that's left to do.
+// `a` survives evaluating `b` on the real hardware stack, not an
+// early `copy16("bc", ...)` - see genMul()'s own identical comment
+// on why (`b` may itself be, or contain, a call that reuses `bc` for
+// its own unrelated purposes).
 void STM8Codegen::emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert) {
     genExpr(a);
-    copy16("bc", "ac");  // bc = a
-    genExpr(b);           // ac = b
+    code_ << "    ldw x, ac\n    push x\n";
+    genExpr(b);  // ac = b
+    code_ << "    pop x\n    ldw bc, x\n";  // bc = a (popped only now, after b is fully evaluated)
     code_ << "    ld a, bc\n    xori a, 0x80\n    ld bc, a\n";  // bc's high byte, sign flipped
     code_ << "    ld a, ac\n    xori a, 0x80\n    ld ac, a\n";  // ac's high byte, sign flipped
     code_ << "    ldw x, bc\n    ldw y, ac\n    cpw x, y\n";

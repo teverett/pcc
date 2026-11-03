@@ -30,60 +30,88 @@ namespace pcc {
 //
 // Real SPARC has 32-entry *windowed* `%i0-%i7`/`%l0-%l7`/`%o0-%o7`
 // register banks tied to a real `save`/`restore` instruction pair
-// that rotates the whole window on every non-leaf call - genuinely
-// real procedure-call machinery this language's own "no recursion, no
-// real stack frames" scope (see ../../../README.md) has no need for
-// at all. This backend never executes `save`/`restore` even once, so
-// the window never actually rotates - `%i`/`%l`/`%o`/`%g` are then
+// that rotates the whole window on every non-leaf call, giving each
+// activation of a function its own private `%i`/`%l` bank for free.
+// That mechanism is deliberately *not* used here even though this
+// backend does support real recursion (direct and mutual - see
+// genFunction()'s own comment): real SPARC hardware has only a small,
+// implementation-defined number of windows (commonly 8), and once
+// every window is in use a further `save` traps (window overflow) -
+// on real hardware that trap is serviced by the OS, spilling the
+// oldest window to memory so the count effectively becomes unbounded.
+// This target has no OS and sets up no trap table at all (see
+// SparcCodegen.cpp's own entry-sequence comment), so relying on
+// `save`/`restore` here would silently cap recursion depth at
+// whatever this simulator's own window count happens to be instead of
+// the "as deep as the stack allows" every other migrated backend
+// already provides - not an acceptable trade merely to get the
+// hardware's own free argument-passing. So `%i`/`%l`/`%o`/`%g` stay
 // just 24 plain, always-the-same-physical-register names for the
-// entire run (real `%g0-%g7` are never windowed regardless), the same
-// "real leaf-routine optimization" real SPARC compilers already use
-// for a function that happens not to need its own window - so every
-// function here, whether or not it calls another, behaves like a real
-// leaf routine. This is a flat calling convention, same reasoning (and
-// the same choice) as M68kCodegen.h's own plain `jsr`/`rts` with no
-// frame pointer:
+// entire run (real `%g0-%g7` are never windowed regardless), and
+// recursion safety instead comes from a conventional software stack
+// frame - every call gets its own frame on the real hardware stack
+// (`sp`), addressed through an explicit frame-pointer register (`fp`)
+// this backend pushes/pops itself, the same general shape as
+// I386Codegen.h's own `ebp`-based frame (see genFunction()'s own
+// comment for the exact layout), just built from SPARC's own
+// mnemonics instead of `push`/`pop`:
 //   t0 (%o0) - "ac", genExpr()'s own result (the register every other
 //              backend also calls this - 68000's D0, PowerPC's r3) -
 //              also the real SPARC ABI's own return-value register,
 //              though that convention is otherwise unused here.
 //   t1 (%o1) - "the other operand" in a binary op (68000's D1)
 //   t2 (%o2) - holds a computed address when dereferencing one
-//              (array/pointer indexing, `*`/`&`) - 68000's A0
-//   sp (%o6) - the real SPARC stack-pointer register number (even
-//              though no real window shift ever happens here): used
-//              both to save one operand across evaluating the other
-//              in a binary expression and to spill/restore `lr` (see
-//              just below) around every function call
+//              (array/pointer indexing, `*`/`&`, or a Local/Param's
+//              own frame-relative address - see loadSlotAddr()) -
+//              68000's A0
+//   sp (%o6) - the real SPARC stack-pointer register number: used to
+//              save one operand across evaluating the other in a
+//              binary expression, to push this call's own argument
+//              words right before a `call`, and (in every function's
+//              own prologue/epilogue) to push/pop `lr` and `fp` and to
+//              reserve/release this call's own Local storage.
 //   lr (%o7) - the real register SPARC's own `call` instruction
 //              itself writes the return address into - directly
 //              readable/writable like any other GPR (unlike PowerPC's
 //              own link register, which needs `mflr`/`mtlr` to reach
 //              at all - see PowerPCCodegen.h's own header comment),
-//              so no shuttle register is needed here
+//              so no shuttle register is needed here. Spilled to this
+//              call's own frame in the prologue and reloaded in the
+//              epilogue (see genFunction()'s own comment) - without
+//              that, a non-leaf function's own call to another
+//              function would overwrite `lr` outright, so its own
+//              eventual `retl` would return into whatever its *own*
+//              last call last returned to, not back to its own
+//              caller.
+//   fp       - this backend's own dedicated frame-pointer register
+//              (an otherwise-unused encoding - see SparcAssembler.cpp's
+//              own `regNumber()` - not real SPARC's windowed `%fp`/
+//              `%i6`, since no window ever rotates here): points at
+//              this call's own saved-`fp` word for as long as this
+//              call's own body runs, giving every Local/Param a
+//              stable per-call address (see loadSlotAddr()) regardless
+//              of how deep the recursion is.
 //   g0       - the real hardwired-zero register, used only as the
 //              `or g0,src,dst` "move register" idiom (real SPARC's
 //              own synthetic `mov`) and as `sdiv`/`call`'s own
 //              discarded-result register
-// Every function here spills/restores `lr` around its own body (see
-// genFunction()'s own comment) - without it a non-leaf function's own
-// call to another function would overwrite `lr` outright, so its own
-// eventual `retl` would return into whatever its *own* last call last
-// returned to, not back to its own caller. Always doing this (leaf or
-// not) is simpler than tracking which functions are actually non-leaf -
-// same reasoning as PowerPCCodegen.h's own `mflr`/`mtlr` save/restore.
 //
 // SPARC has no absolute-addressing memory operand at all (same
 // restriction as PowerPC/MIPS - see PowerPCCodegen.h's own header
 // comment) - every load/store goes through a base register plus a
-// (here always zero) displacement, so reading or writing any global/
-// local/array slot first loads that slot's own fixed address into
-// `t2` via `sethi`+`or` (SparcAssembler.cpp resolves a label operand
-// to its own upper-22/lower-10-bit halves respectively for exactly
-// these two mnemonics - see its own header comment), then
-// `ldind`/`stind t2,t0` (this backend's own dedicated mnemonics for
-// `ld`/`st` with a fixed zero displacement - same "no bracketed
-// memory operand" convention as PowerPC/MIPS).
+// (here always zero) displacement, so reading or writing any slot
+// first computes that slot's own address into `t2` (or `t1` - see
+// genIndexAddr()), then `ldind`/`stind t2,t0` (this backend's own
+// dedicated mnemonics for `ld`/`st` with a fixed zero displacement -
+// same "no bracketed memory operand" convention as PowerPC/MIPS). A
+// Global's address is fixed for the whole run, loaded via `sethi`+`or`
+// (SparcAssembler.cpp resolves a label operand to its own upper-22/
+// lower-10-bit halves respectively for exactly these two mnemonics -
+// see its own header comment); a Local or Param's address instead
+// varies with every call, computed from `fp` with a plain `add`/`sub`
+// immediate (see loadSlotAddr()) - Globals alone keep the fixed,
+// name-derived label (see label()) a Local/Param used to also get
+// back when every Slot was one shared static cell.
 //
 // `*` uses the real hardware `smul` (a full 32x32->32 product, no
 // operand-size limitation the way the 68000's own `MULS.W` has). `/`
@@ -155,28 +183,63 @@ class SparcCodegen : public Backend {
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots, at runtime
 
     // Leaves slot[idxExpr]'s own effective address in `t2`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
     // Loads `lbl`'s own address into register `reg` (sethi+or - see
     // this file's own header comment on why SPARC needs two
-    // instructions here where 68000 needs none).
+    // instructions here where 68000 needs none). Only ever called with
+    // a Global's or a Function's own name-derived label - a Local/
+    // Param's address is never fixed, so it goes through
+    // loadSlotAddr() below instead.
     void loadAddress(const std::string &reg, const std::string &lbl);
     // `or g0,src,dst` - real SPARC's own synthetic "move register"
     // idiom (SPARC has no dedicated move opcode at all).
     void movReg(const std::string &dst, const std::string &src);
 
-    static std::string label(const ir::Slot *slot) {
-        if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
-        if (slot->kind == ir::SlotKind::Param) {
-            return "p_" + slot->ownerFunctionName + "_" + std::to_string(slot->paramIndex);
-        }
-        return slot->sourceName + "_" + std::to_string(slot->id);
+    // Leaves `slot`'s own effective address in register `reg` - a
+    // Global goes through loadAddress()/label() as always; a Local or
+    // Param instead goes through `fp` (see this file's own header
+    // comment and genFunction()'s own comment for the exact layout):
+    // `fp+8+4*paramIndex` for a Param (the caller's own pushed
+    // argument, already sitting above the return address and the
+    // saved `fp` this call's own prologue just pushed), `fp-4*
+    // frameOffset` for a Local (frameOffset is 1-based - see IR.h's
+    // own comment - so the first Local sits at `fp-4`, growing further
+    // down from there). Emits nothing but a plain `or g0,fp,reg` when
+    // the computed offset is exactly 0.
+    void loadSlotAddr(const std::string &reg, const ir::Slot *slot);
+    // The byte offset from `fp` loadSlotAddr() above computes for a
+    // Local or Param (never called for a Global).
+    static int slotFrameByteOffset(const ir::Slot *slot) {
+        if (slot->kind == ir::SlotKind::Param) return 8 + 4 * slot->paramIndex;
+        return -4 * slot->frameOffset;
     }
+
+    // Loads a plain 32-bit literal into register `reg` - shared by
+    // genExpr()'s own IntLit case and genLocalArrayInit()'s own
+    // per-element store, both of which need the exact same small-
+    // immediate-vs-sethi+or choice (see genExpr()'s own IntLit case
+    // for why: no single SPARC instruction ever carries a full 32-bit
+    // immediate).
+    void loadImmediate(const std::string &reg, int32_t v);
+    // Restores `lr`/`fp`/`sp` to the calling function's own values,
+    // right before a `retl` - see genFunction()'s own comment for the
+    // exact sequence this undoes. Shared by genFunction()'s own
+    // fall-through epilogue and genStmt()'s own early-exit Return
+    // case; never touches `t0`, which by the time either caller emits
+    // this already holds the function's own return value (or is
+    // simply unread, for a `void`-shaped return).
+    void emitEpilogue();
+
+    // Only ever called for a Global slot - a Local/Param's address is
+    // never fixed for the whole run, so it's computed fresh every call
+    // through loadSlotAddr() above instead of named by a label at all.
+    static std::string label(const ir::Slot *slot) { return "g_" + slot->sourceName; }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
-    void declareTemp(const std::string &lbl);
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }

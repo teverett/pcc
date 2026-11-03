@@ -62,18 +62,24 @@ constexpr uint16_t kPdp11RelocRel16 = 2;
 // purpose PDP-11 (MACRO-11) assembler. Parses via the same shared
 // grammar ../../../grammar/PccAsm.g4 the other backends' own in-
 // process assemblers use (see M68kAssembler.h/M6502Assembler.h/
-// Pdp7Assembler.h's own header comments). Every operand is a plain
-// expression (a number, a register name, or a label) classified by
-// Pdp11Codegen.cpp's own convention, not real MACRO-11 `(Rn)`/`#n`/
-// `@#n` syntax - the grammar has no `#`/`@` token and no way to
-// distinguish "(expr)" (a parenthesized group, already used
+// Pdp7Assembler.h's own header comments). Every bare operand is a
+// plain expression (a number, a register name, or a label)
+// classified by Pdp11Codegen.cpp's own convention, not real MACRO-11
+// `(Rn)`/`#n`/`@#n` syntax - the grammar has no `#`/`@` token and no
+// way to distinguish "(expr)" (a parenthesized group, already used
 // elsewhere) from "(Rn)" (register-deferred), so every addressing
 // mode this dialect can't express as a bare register-or-label
 // operand gets its own dedicated mnemonic instead (`ldind`/`stind`
 // for `(Rn)`, `push`/`pop` for `-(SP)`/`(SP)+`, `lea` for "the
 // address of a label" rather than MACRO-11's own `MOV #label,Rn`
 // idiom) - see Pdp11Assembler.cpp's own comment for the full
-// mnemonic list.
+// mnemonic list. The one exception is the grammar's own generic
+// `[expr]` bracket syntax (otherwise unused in this dialect), which
+// this assembler reads as a real PDP-11 index-mode operand, `X(Rn)`:
+// `[Rn+N]`/`[Rn-N]`, a compile-time-constant displacement `N` added
+// to base register `Rn`'s own runtime value - used by
+// Pdp11Codegen.cpp's own frame-pointer-relative Local/Param
+// addressing (see that file's own `addr()`).
 //
 // A bare label operand (anywhere other than `lea`'s own source) is
 // always PDP-11 "relative" addressing (mode 067: index mode with

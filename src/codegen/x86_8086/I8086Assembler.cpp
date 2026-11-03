@@ -46,18 +46,21 @@ struct Syllable {
 };
 
 // A parsed operand. `Reg`/`SegReg` carry a register index (see
-// regIndex()/segRegIndex() below); `Mem` is one of the exactly three
-// addressing-mode shapes I8086Codegen.cpp ever emits - `[label]`
-// (direct, `memHasBx=false`), `[bx]` (`memHasBx=true`,
-// `memHasDisp=false`), or `[label+bx]` (`memHasBx=true`,
-// `memHasDisp=true`) - with `expr` holding the displacement for the
-// two forms that have one; `Imm` covers everything else (a literal
-// number, or a bare symbol used as a jump/call target or as a
-// pointer value, e.g. `mov ax, arr_0` for `&arr`).
+// regIndex()/segRegIndex() below); `Mem` is one of the addressing-
+// mode shapes I8086Codegen.cpp ever emits - `[label]` (direct,
+// `memHasBx=false`), `[bx]` (`memHasBx=true`, `memHasDisp=false`),
+// `[label+bx]` (`memHasBx=true`, `memHasDisp=true`), or `[bp+disp]`/
+// `[bp-disp]` (`memHasBp=true`, `memHasDisp=true` - a Local/Param's
+// own frame-relative address, see I8086Codegen.h's `addr()`) - with
+// `expr` holding the displacement for every form that has one; `Imm`
+// covers everything else (a literal number, or a bare symbol used as
+// a jump/call target or as a pointer value, e.g. `mov ax, arr_0` for
+// `&arr`).
 struct Operand {
     enum Kind { Reg, SegReg, Mem, Imm } kind = Imm;
     int reg = -1;
     bool memHasBx = false;
+    bool memHasBp = false;
     bool memHasDisp = false;
     std::vector<Syllable> expr;
 };
@@ -127,6 +130,7 @@ Operand buildOperand(PccAsmParser::OperandContext *ctx) {
         // I8086Codegen.cpp's `computeElementAddr`), so check by name
         // alone, not by position or sign.
         auto isBx = [](const Syllable &s) { return s.kind == SylKind::Symbol && s.text == "bx"; };
+        auto isBp = [](const Syllable &s) { return s.kind == SylKind::Symbol && s.text == "bp"; };
         if (syls.size() == 1 && isBx(syls[0])) {
             op.memHasBx = true;
             op.memHasDisp = false;
@@ -138,6 +142,14 @@ Operand buildOperand(PccAsmParser::OperandContext *ctx) {
             op.memHasBx = true;
             op.memHasDisp = true;
             op.expr = {syls[0]};
+        } else if (syls.size() == 2 && isBp(syls[0]) && !isBp(syls[1])) {
+            // "[bp+N]"/"[bp-N]" - a Local/Param's own frame-relative
+            // address (see I8086Codegen.h's `addr()`); bp always
+            // comes first here, unlike bx above, since codegen only
+            // ever emits it that one way.
+            op.memHasBp = true;
+            op.memHasDisp = true;
+            op.expr = {syls[1]};
         } else if (syls.size() == 1 && !isBx(syls[0])) {
             op.memHasBx = false;
             op.memHasDisp = true;
@@ -441,6 +453,7 @@ class Assembler {
     static MemForm memForm(const Operand &op) {
         if (op.memHasBx && !op.memHasDisp) return {0b00, 0b111, false};  // [bx]
         if (op.memHasBx && op.memHasDisp) return {0b10, 0b111, true};    // [bx+disp16]
+        if (op.memHasBp) return {0b10, 0b110, true};                     // [bp+disp16]
         if (!op.memHasBx && op.memHasDisp) return {0b00, 0b110, true};   // [disp16] (direct)
         fail("unrecognized memory operand");
     }
@@ -586,6 +599,22 @@ class Assembler {
             fail("unsupported 'mov' operand combination");
         }
 
+        // "lea reg,[bp-4]" - loads the EFFECTIVE ADDRESS itself (here,
+        // always a Local/Param's own frame-relative address - see
+        // I8086Codegen.h's `effAddr()`) rather than the word stored
+        // there, the real way to compute a runtime address this
+        // backend can't fold into a compile-time immediate the way a
+        // Global's bare label already is (see genAddrOf). Real opcode
+        // 0x8D, same reg<-mem ModRM shape "mov"'s own Reg<-Mem case
+        // above already uses.
+        if (mnemonic == "lea") {
+            if (ops.size() != 2 || ops[0].kind != Operand::Reg || ops[1].kind != Operand::Mem) {
+                fail("'lea' needs a register destination and a memory source in this dialect");
+            }
+            emitMemInstr(0x8D, ops[0].reg, ops[1]);
+            return;
+        }
+
         if (mnemonic == "xor" && ops.size() == 2 && ops[0].kind == Operand::Reg && ops[1].kind == Operand::Reg) {
             emitModRegRM(0x31, 0b11, static_cast<uint8_t>(ops[1].reg), static_cast<uint8_t>(ops[0].reg));
             return;
@@ -613,6 +642,15 @@ class Assembler {
                 emitExprAsWord(ops[1].expr);
                 return;
             }
+        }
+        // "sub sp,N" - reserving/releasing a stack frame's own local
+        // storage (I8086Codegen.cpp's genFunction()) - same reg,imm
+        // group-0x81 form "add"'s own Reg,Imm case above uses, just
+        // reg field 0b101 instead of 0b000.
+        if (mnemonic == "sub" && ops.size() == 2 && ops[0].kind == Operand::Reg && ops[1].kind == Operand::Imm) {
+            emitModRegRM(0x81, 0b11, 0b101, static_cast<uint8_t>(ops[0].reg));
+            emitExprAsWord(ops[1].expr);
+            return;
         }
         static const std::unordered_map<std::string, uint8_t> aluOpcode = {
             {"add", 0x03}, {"sub", 0x2B}, {"and", 0x23}, {"or", 0x0B}, {"cmp", 0x3B},

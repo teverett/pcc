@@ -94,21 +94,38 @@ class MC68328Codegen : public Backend {
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
 
     // Leaves slot[idxExpr]'s own effective address in `A0`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
-    static std::string label(const ir::Slot *slot) {
-        if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
-        if (slot->kind == ir::SlotKind::Param) {
-            return "p_" + slot->ownerFunctionName + "_" + std::to_string(slot->paramIndex);
-        }
-        return slot->sourceName + "_" + std::to_string(slot->id);
-    }
+    // Global slots and every Function get a name-based label; a Local
+    // or Param is addressed relative to `a6` instead (see addr()
+    // below) - see ../m68k/M68kCodegen.h's own identical comment, same
+    // reasoning (this backend's own object/real-separate-compilation
+    // story is identical to that one's).
+    static std::string label(const ir::Slot *slot) { return "g_" + slot->sourceName; }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
+    // A Local or Param's own frame-relative operand text - see
+    // ../m68k/M68kCodegen.h's own identical `addr()` comment, unchanged
+    // here (this core executes a bit-for-bit identical instruction set
+    // - see this file's own header comment).
+    static std::string addr(const ir::Slot *slot) {
+        if (slot->kind == ir::SlotKind::Param) {
+            return "[a6+" + std::to_string(8 + 4 * slot->paramIndex) + "]";
+        }
+        return "[a6-" + std::to_string(4 * slot->frameOffset) + "]";
+    }
+
+    // The operand text for a plain read/write of `slot`'s own value -
+    // a Global keeps this dialect's existing bare-label absolute-
+    // address convention (see label()); a Local/Param uses addr().
+    static std::string operandOf(const ir::Slot *slot) {
+        return slot->kind == ir::SlotKind::Global ? label(slot) : addr(slot);
+    }
+
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
-    void declareTemp(const std::string &lbl);
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }

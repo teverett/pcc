@@ -25,8 +25,6 @@ constexpr uint32_t kBaseAddress = 0x80010000u;
 constexpr uint32_t kInitialSP = 0x80100000u;
 }  // namespace
 
-void MipsCodegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": dw 0"); }
-
 // A literal element's own decimal text; a symbol element is the
 // referenced Slot's or Function's own label, written out bare - "dw"
 // (MipsAssembler.cpp's Line::Dw) already evaluates any expr operand,
@@ -52,6 +50,32 @@ void MipsCodegen::declareArray(const std::string &lbl, const std::vector<ir::Arr
 void MipsCodegen::loadAddress(const std::string &reg, const std::string &lbl) {
     code_ << "    lui " << reg << "," << lbl << "\n";
     code_ << "    ori " << reg << "," << reg << "," << lbl << "\n";
+}
+
+void MipsCodegen::loadImm32(const std::string &reg, int32_t v) {
+    if (v >= -32768 && v <= 32767) {
+        code_ << "    addiu " << reg << ",zero," << v << "\n";
+    } else {
+        uint32_t uv = static_cast<uint32_t>(v);
+        code_ << "    lui " << reg << "," << static_cast<int32_t>((uv >> 16) & 0xFFFFu) << "\n";
+        code_ << "    ori " << reg << "," << reg << "," << static_cast<int32_t>(uv & 0xFFFFu) << "\n";
+    }
+}
+
+// A Param lives in the CALLER's own pushed argument space, at
+// `fp+8+4*paramIndex` (see this file's own header comment on the
+// frame layout); a Local lives below `fp`, at `fp-4*frameOffset`.
+// Both are a single ADDIU away from `fp` - no bracketed memory
+// operand exists in this dialect (see MipsAssembler.h's own header
+// comment), so every Local/Param access computes its own address this
+// way instead of using a real `lw rt,N(fp)`/`sw rt,N(fp)` operand.
+void MipsCodegen::loadSlotAddr(const std::string &reg, const ir::Slot *slot) {
+    if (slot->kind == ir::SlotKind::Global) {
+        loadAddress(reg, label(slot));
+        return;
+    }
+    int offset = (slot->kind == ir::SlotKind::Param) ? (8 + 4 * slot->paramIndex) : (-4 * slot->frameOffset);
+    code_ << "    addiu " << reg << ",fp," << offset << "\n";
 }
 
 std::string MipsCodegen::generate(const ir::Program &prog, bool objectMode) {
@@ -120,13 +144,39 @@ std::map<std::string, std::string> MipsCodegen::perFileAsm() const { return perF
 // back to its own caller. Always saving/restoring (leaf or not) is
 // simpler than tracking which functions are actually non-leaf, and
 // costs only two real instructions on either side.
+//
+// Alongside `$ra`, the prologue also pushes the caller's own `$fp`
+// and points `$fp` at that saved-fp word, giving this call its own
+// private frame - every activation (direct or mutual recursion alike)
+// gets its own Local storage and sees only its own pushed arguments,
+// unlike a Global's one real static cell (see this file's own header
+// comment on the frame layout this establishes). Locals are reserved
+// right after, by lowering `$sp` another `frameSize` words.
 void MipsCodegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
     code_ << "    addiu sp,sp,-4\n    stind sp,ra\n";
-    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
+    code_ << "    addiu sp,sp,-4\n    stind sp,fp\n";
+    code_ << "    addu fp,sp,zero\n";
+    if (fn.func->frameSize > 0) code_ << "    addiu sp,sp,-" << (fn.func->frameSize * 4) << "\n";
+
     genStmt(*fn.body);
+
+    genEpilogue();
+    code_ << "\n";
+}
+
+// Deallocates this call's own locals (`$sp` back up to `$fp`),
+// restores the caller's own `$fp`/`$ra` from the two words `$fp`
+// itself points at, then returns - see this file's own header comment
+// on the frame layout. `$at` briefly holds the caller's own saved
+// `$fp` across restoring `$ra`, since nothing else needs it live at a
+// function's own exit.
+void MipsCodegen::genEpilogue() {
+    code_ << "    addu sp,fp,zero\n";
+    code_ << "    ldind sp,at\n    addiu sp,sp,4\n";
     code_ << "    ldind sp,ra\n    addiu sp,sp,4\n";
-    code_ << "    jr ra\n    nop\n\n";
+    code_ << "    addu fp,at,zero\n";
+    code_ << "    jr ra\n    nop\n";
 }
 
 void MipsCodegen::genStmt(const ir::Stmt &s) {
@@ -162,26 +212,21 @@ void MipsCodegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            // Restore `$ra` (see genFunction()'s own comment) before
-            // returning - a `return` statement is its own early exit
-            // from the function, bypassing genFunction()'s own
-            // fall-through epilogue entirely, so it needs this same
-            // restore inline.
-            code_ << "    ldind sp,ra\n    addiu sp,sp,4\n";
-            code_ << "    jr ra\n    nop\n";
+            // A `return` statement is its own early exit from the
+            // function, bypassing genFunction()'s own fall-through
+            // epilogue entirely, so it needs the same exit sequence
+            // inline - see genEpilogue()'s own comment. The return
+            // value already sits in `$t0`, untouched by it.
+            genEpilogue();
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arrayInit);
-            } else {
-                declareTemp(lbl);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    loadAddress("t2", lbl);
-                    code_ << "    stind t2,t0\n";
-                }
+                genLocalArrayInit(s.declSlot);
+            } else if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                loadSlotAddr("t2", s.declSlot);
+                code_ << "    stind t2,t0\n";
             }
             return;
         }
@@ -202,18 +247,11 @@ void MipsCodegen::genStmt(const ir::Stmt &s) {
 void MipsCodegen::genExpr(const ir::Expr &e) {
     switch (e.kind) {
         case ir::ExprKind::IntLit: {
-            int32_t v = static_cast<int32_t>(static_cast<uint32_t>(e.intValue));
-            if (v >= -32768 && v <= 32767) {
-                code_ << "    addiu t0,zero," << v << "\n";
-            } else {
-                uint32_t uv = static_cast<uint32_t>(v);
-                code_ << "    lui t0," << static_cast<int32_t>((uv >> 16) & 0xFFFFu) << "\n";
-                code_ << "    ori t0,t0," << static_cast<int32_t>(uv & 0xFFFFu) << "\n";
-            }
+            loadImm32("t0", static_cast<int32_t>(static_cast<uint32_t>(e.intValue)));
             return;
         }
         case ir::ExprKind::Var: {
-            loadAddress("t2", label(e.slot));
+            loadSlotAddr("t2", e.slot);
             code_ << "    ldind t2,t0\n";
             return;
         }
@@ -231,7 +269,7 @@ void MipsCodegen::genExpr(const ir::Expr &e) {
                 return;
             }
             genExpr(*e.rhs);
-            loadAddress("t2", label(e.slot));
+            loadSlotAddr("t2", e.slot);
             code_ << "    stind t2,t0\n";
             return;
         }
@@ -262,12 +300,21 @@ void MipsCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            for (size_t i = 0; i < e.args.size(); i++) {
+            // Real cdecl-style argument passing: push right-to-left
+            // (onto the real hardware `$sp`) so arg 0 ends up closest
+            // to where the callee's own prologue will save `$ra`/
+            // `$fp` - landing at the callee's own `fp+8+4*i` the
+            // moment its prologue runs (see this file's own header
+            // comment on the frame layout) - then the caller cleans
+            // its own pushed words back up once the call returns,
+            // same convention as I386Codegen.cpp's own identical
+            // `Call` case.
+            for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                loadAddress("t2", "p_" + e.func->sourceName + "_" + std::to_string(i));
-                code_ << "    stind t2,t0\n";
+                code_ << "    addiu sp,sp,-4\n    stind sp,t0\n";
             }
             code_ << "    jal " << label(e.func) << "\n    nop\n";
+            if (!e.args.empty()) code_ << "    addiu sp,sp," << (e.args.size() * 4) << "\n";
             return;
         }
         case ir::ExprKind::CallPtr: {
@@ -307,18 +354,35 @@ void MipsCodegen::genExpr(const ir::Expr &e) {
 
 // `$t2` holds the computed address, no zero-page-style placement
 // restriction the way the 6502 backend's own `ptr` has. `arraySize >
-// 0` means the base is a compile-time-known label (an *address*);
-// otherwise `slot` is a plain pointer variable, so the base instead
-// comes from *reading* that variable's own stored value first.
+// 0` means the base is a compile-time-known array (a Global's own
+// label, or a Local's own `fp`-relative base - see loadSlotAddr()'s
+// own comment); otherwise `slot` is a plain pointer variable, so the
+// base instead comes from *reading* that variable's own stored value
+// first (via loadSlotAddr()+ldind, so this also works correctly for a
+// Local/Param pointer variable, not just a Global one).
+//
+// A Global array's element addresses increase with the element index
+// (`base+4*i`, same as any ordinary memory layout); a Local array's
+// instead *decrease* (`base-4*i`) - frameOffset only ever grows
+// downward from `fp` as more locals get declared (see
+// loadSlotAddr()'s own comment), so element `i` of a Local array at
+// frameOffset `K` lives at `fp-4*(K+i)`, the mirror image of the
+// Global case. Getting this backwards (`+` instead of `-`) is exactly
+// the bug this project's own x86 migrations hit first - see
+// I386Codegen.cpp's own `computeElementAddr` comment.
 void MipsCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // t0 = index
     code_ << "    sll t0,t0,2\n";  // t0 *= 4 (words are 4 bytes on this target)
-    std::string lbl = label(slot);
     if (slot->arraySize > 0) {
-        loadAddress("t2", lbl);
-        code_ << "    addu t2,t2,t0\n";
+        if (slot->kind == ir::SlotKind::Global) {
+            loadAddress("t2", label(slot));
+            code_ << "    addu t2,t2,t0\n";
+        } else {
+            code_ << "    addiu t2,fp," << (-4 * slot->frameOffset) << "\n";
+            code_ << "    subu t2,t2,t0\n";
+        }
     } else {
-        loadAddress("t1", lbl);
+        loadSlotAddr("t1", slot);
         code_ << "    ldind t1,t1\n";  // t1 = the pointer variable's own stored value
         code_ << "    addu t2,t1,t0\n";
     }
@@ -329,9 +393,29 @@ void MipsCodegen::genIndex(const ir::Expr &e) {
     code_ << "    ldind t2,t0\n";
 }
 
+// Stores a Local array's own compile-time initializer values into its
+// frame slots - a Global array instead gets this once, statically, as
+// a `dw` trailer line (see declareArray()); a Local array needs it
+// re-run on every call, in the body where its declaration occurs,
+// since its frame storage is this call's own, freshly reserved by
+// genFunction()'s own prologue. Element `i` of the array (frameOffset
+// `K`) lives at `fp-4*(K+i)` - same addressing genIndexAddr() uses.
+void MipsCodegen::genLocalArrayInit(const ir::Slot *slot) {
+    for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+        const ir::ArrayInitElem &elem = slot->arrayInit[i];
+        if (elem.isSymbol) {
+            loadAddress("t0", elem.slot ? label(elem.slot) : label(elem.func));
+        } else {
+            loadImm32("t0", static_cast<int32_t>(static_cast<uint32_t>(elem.value)));
+        }
+        int offset = -4 * (slot->frameOffset + static_cast<int>(i));
+        code_ << "    addiu t2,fp," << offset << "\n    stind t2,t0\n";
+    }
+}
+
 void MipsCodegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        loadAddress("t2", label(operand.slot));
+        loadSlotAddr("t2", operand.slot);
         code_ << "    addu t0,t2,zero\n";
         return;
     }

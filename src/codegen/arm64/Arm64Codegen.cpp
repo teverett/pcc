@@ -30,7 +30,34 @@ constexpr uint64_t kBaseAddress = 0x40080000ull;
 constexpr uint64_t kInitialSP = 0x44000000ull;
 }  // namespace
 
-void Arm64Codegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": dw 0"); }
+void Arm64Codegen::loadImm32(const std::string &reg, uint32_t uv) {
+    std::string w = "w" + reg.substr(1);  // the same physical register's own 32-bit ("w") view
+    if (uv <= 0xFFFFu) {
+        code_ << "    movz " << w << "," << static_cast<int32_t>(uv) << "\n";
+    } else {
+        code_ << "    movz " << w << "," << static_cast<int32_t>(uv & 0xFFFFu) << "\n";
+        code_ << "    movk " << w << "," << static_cast<int32_t>((uv >> 16) & 0xFFFFu) << "\n";
+    }
+}
+
+// The caller's own pushed argument space starts 32 bytes above `x29`
+// (two 16-byte-aligned saves below it - see genFunction()'s own
+// comment), each Param occupying one 4-byte slot within it in
+// declaration order.
+constexpr int kParamBase = 32;
+
+void Arm64Codegen::loadSlotAddr(const std::string &reg, const ir::Slot *slot) {
+    if (slot->kind == ir::SlotKind::Global) {
+        loadAddress(reg, label(slot));
+        return;
+    }
+    code_ << "    mov " << reg << ",x29\n";
+    if (slot->kind == ir::SlotKind::Param) {
+        code_ << "    add " << reg << "," << reg << "," << (kParamBase + 4 * slot->paramIndex) << "\n";
+    } else {
+        code_ << "    sub " << reg << "," << reg << "," << (4 * slot->frameOffset) << "\n";
+    }
+}
 
 // A literal element is its own decimal text; a symbol element (a
 // dispatch-table address-of-function/global, see IR.h's
@@ -118,26 +145,52 @@ std::string Arm64Codegen::generate(const ir::Program &prog, bool objectMode) {
 // comment (no `--format=coff` here either).
 std::map<std::string, std::string> Arm64Codegen::perFileAsm() const { return perFileAsm_; }
 
-// Every function here saves/restores `x30` (the link register) around
-// its own body, whether or not it happens to call anything else -
-// `bl` sets `x30` to its own return address unconditionally, so a
-// non-leaf function's own call to another function overwrites it; see
-// MipsCodegen.cpp's own identical comment on `$ra` for the full
-// reasoning (A64's `x30` plays exactly the same role MIPS's `$ra`
-// does). The save/restore here only ever moves `x30`'s own low 32
-// bits through `stind`/`ldind` (this backend's 32-bit-transfer-only
-// load/store - see Arm64Codegen.h's own header comment) - safe only
-// because every address in this backend's own universe (the program's
-// own base/stack addresses, both fixed well under 4GB - see this
-// file's own kBaseAddress/kInitialSP) fits in 32 bits, so the
-// reload's automatic zero-extension (see Arm64Codegen.h's own header
-// comment on why every 32-bit op here already guarantees this)
-// reconstructs the exact original 64-bit return address.
+// Every function here saves/restores `x30` (the link register) and
+// `x29` (the frame pointer) around its own body, whether or not it
+// happens to call anything else - `bl` sets `x30` to its own return
+// address unconditionally, so a non-leaf function's own call to
+// another function overwrites it; see MipsCodegen.cpp's own identical
+// comment on `$ra` for the full reasoning (A64's `x30` plays exactly
+// the same role MIPS's `$ra` does). Each save/restore here only ever
+// moves its own register's low 32 bits through `stind`/`ldind` (this
+// backend's 32-bit-transfer-only load/store - see Arm64Codegen.h's
+// own header comment) - safe only because every address in this
+// backend's own universe (the program's own base/stack addresses,
+// both fixed well under 4GB - see this file's own kBaseAddress/
+// kInitialSP) fits in 32 bits, so the reload's automatic zero-
+// extension (see Arm64Codegen.h's own header comment on why every
+// 32-bit op here already guarantees this) reconstructs the exact
+// original 64-bit value.
+//
+// The prologue pushes the caller's own `x30` then its own `x29`, each
+// in its own 16-byte-aligned block (matching every other temp-save in
+// this file), then points the new `x29` at the saved-old-`x29` word -
+// so the caller's own pushed arguments (see the `Call` case below)
+// sit 32 bytes above the new `x29`, and this call's own Locals are
+// reserved immediately below it by `sub sp,sp,frameSize*4` (see
+// loadSlotAddr()'s own comment for the full address arithmetic this
+// sets up). The epilogue (here, and inline in the `Return` case
+// below, since a `return` statement is its own early exit from the
+// function, bypassing this fall-through epilogue entirely) reverses
+// all of this in the opposite order.
 void Arm64Codegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
     code_ << "    sub sp,sp,16\n    stind sp,w30\n";
-    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
+    code_ << "    sub sp,sp,16\n    stind sp,w29\n";
+    // `add x29,sp,0`, not `mov x29,sp`: this dialect's own `mov` alias
+    // is `orr rd,<zr>,rn` (see Arm64Assembler.cpp's own encodeInstr())
+    // - a real ORR's register fields always mean the zero register
+    // for operand number 31, never `sp`, exactly like real AArch64
+    // (`sp` is only ever addressable through an instruction whose own
+    // encoding gives register 31 that meaning, e.g. `add`/`sub`
+    // immediate - same reason this file's own entry sequence already
+    // uses `add sp,x9,0` instead of `mov sp,x9` below).
+    code_ << "    add x29,sp,0\n";
+    if (fn.func->frameSize > 0) code_ << "    sub sp,sp," << (4 * fn.func->frameSize) << "\n";
+    currentFrameSize_ = fn.func->frameSize;
     genStmt(*fn.body);
+    if (fn.func->frameSize > 0) code_ << "    add sp,sp," << (4 * fn.func->frameSize) << "\n";
+    code_ << "    ldind sp,w29\n    add sp,sp,16\n";
     code_ << "    ldind sp,w30\n    add sp,sp,16\n";
     code_ << "    ret\n\n";
 }
@@ -175,26 +228,24 @@ void Arm64Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            // Restore `x30` (see genFunction()'s own comment) before
-            // returning - a `return` statement is its own early exit
-            // from the function, bypassing genFunction()'s own
-            // fall-through epilogue entirely, so it needs this same
-            // restore inline.
+            // Reverses genFunction()'s own prologue, in the opposite
+            // order - a `return` statement is its own early exit from
+            // the function, bypassing genFunction()'s own fall-
+            // through epilogue entirely, so it needs this same
+            // teardown inline (see genFunction()'s own comment).
+            if (currentFrameSize_ > 0) code_ << "    add sp,sp," << (4 * currentFrameSize_) << "\n";
+            code_ << "    ldind sp,w29\n    add sp,sp,16\n";
             code_ << "    ldind sp,w30\n    add sp,sp,16\n";
             code_ << "    ret\n";
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arrayInit);
-            } else {
-                declareTemp(lbl);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    loadAddress("x2", lbl);
-                    code_ << "    stind x2,w0\n";
-                }
+                genLocalArrayInit(s.declSlot);
+            } else if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                loadSlotAddr("x2", s.declSlot);
+                code_ << "    stind x2,w0\n";
             }
             return;
         }
@@ -215,17 +266,11 @@ void Arm64Codegen::genStmt(const ir::Stmt &s) {
 void Arm64Codegen::genExpr(const ir::Expr &e) {
     switch (e.kind) {
         case ir::ExprKind::IntLit: {
-            uint32_t uv = static_cast<uint32_t>(e.intValue);
-            if (uv <= 0xFFFFu) {
-                code_ << "    movz w0," << static_cast<int32_t>(uv) << "\n";
-            } else {
-                code_ << "    movz w0," << static_cast<int32_t>(uv & 0xFFFFu) << "\n";
-                code_ << "    movk w0," << static_cast<int32_t>((uv >> 16) & 0xFFFFu) << "\n";
-            }
+            loadImm32("x0", static_cast<uint32_t>(e.intValue));
             return;
         }
         case ir::ExprKind::Var: {
-            loadAddress("x2", label(e.slot));
+            loadSlotAddr("x2", e.slot);
             code_ << "    ldind x2,w0\n";
             return;
         }
@@ -243,7 +288,7 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
                 return;
             }
             genExpr(*e.rhs);
-            loadAddress("x2", label(e.slot));
+            loadSlotAddr("x2", e.slot);
             code_ << "    stind x2,w0\n";
             return;
         }
@@ -274,20 +319,25 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            for (size_t i = 0; i < e.args.size(); i++) {
+            // Pushes each argument right-to-left so arg 0 ends up
+            // closest to the top of this call's own pushed-argument
+            // space - see loadSlotAddr()'s own comment on how the
+            // callee then finds them at `x29+32+4*paramIndex`. Caller
+            // cleans the pushed words back up once `bl` returns.
+            for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                loadAddress("x2", "p_" + e.func->sourceName + "_" + std::to_string(i));
-                code_ << "    stind x2,w0\n";
+                code_ << "    sub sp,sp,4\n    stind sp,w0\n";
             }
             code_ << "    bl " << label(e.func) << "\n";
+            if (!e.args.empty()) code_ << "    add sp,sp," << (4 * e.args.size()) << "\n";
             return;
         }
         case ir::ExprKind::CallPtr: {
             // e.args is always empty here - IRBuilder.cpp rejects any
             // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr): there's no per-callee
-            // p_<fn>_<i> cell to write one into until the callee is
-            // known, which it never is at compile time for this kind.
+            // (see IR.h's ExprKind::CallPtr): the callee isn't known
+            // at compile time for this kind, so there's no fixed
+            // parameter count to push arguments against.
             // `blr x2` is this dialect's own real AArch64 "BLR Xn"
             // encoding (see Arm64Assembler.cpp's own emitBranchReg())
             // - a real near call through whatever address x2 holds,
@@ -315,10 +365,19 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
 }
 
 // `x2` holds the computed address, no zero-page-style placement
-// restriction. `arraySize > 0` means the base is a compile-time-known
-// label (an *address*); otherwise `slot` is a plain pointer variable,
-// so the base instead comes from *reading* that variable's own stored
-// value first.
+// restriction. `arraySize > 0` means the base is the array's own
+// first-word address (a Global's compile-time-known label, or a
+// Local's own `x29`-relative address - see loadSlotAddr()); otherwise
+// `slot` is a plain pointer variable, so the base instead comes from
+// *reading* that variable's own stored value first.
+//
+// A Global array's element addresses increase with the index (its
+// storage is ordinary ascending-address trailer data); a Local
+// array's instead *decrease* with the index (element i sits at
+// frameOffset+i - see IR.h's own Slot::frameOffset comment - and
+// loadSlotAddr() already points `x2` at frameOffset's own, lowest-
+// indexed, highest address), so indexing a Local array subtracts the
+// scaled index instead of adding it.
 //
 // Multiplying the index by 4 (this target's own word size) uses a
 // real `mul` against a loaded constant rather than a shift, since
@@ -330,17 +389,20 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
 void Arm64Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // w0 = index
     code_ << "    movz w1,4\n    mul w0,w0,w1\n";  // w0 *= 4
-    std::string lbl = label(slot);
     if (slot->arraySize > 0) {
-        loadAddress("x2", lbl);
+        loadSlotAddr("x2", slot);
         // `x0`'s own upper 32 bits are already zero (the `mul` above
         // is a 32-bit "W-form" op - see Arm64Codegen.h's own header
         // comment on why that's an architectural guarantee, not an
         // assumption), so `x0` is already a valid 64-bit operand here
         // with no explicit zero-extension needed.
-        code_ << "    add x2,x2,x0\n";
+        if (slot->kind == ir::SlotKind::Global) {
+            code_ << "    add x2,x2,x0\n";
+        } else {
+            code_ << "    sub x2,x2,x0\n";
+        }
     } else {
-        loadAddress("x1", lbl);
+        loadSlotAddr("x1", slot);
         code_ << "    ldind x1,w1\n";  // w1 = the pointer variable's own stored value (x1 zero-extends too)
         code_ << "    add x2,x1,x0\n";
     }
@@ -351,9 +413,30 @@ void Arm64Codegen::genIndex(const ir::Expr &e) {
     code_ << "    ldind x2,w0\n";
 }
 
+// Stores `slot`'s own arrayInit values into its own per-call frame
+// slots, at runtime, every time this LocalDecl executes - unlike a
+// Global array (whose initial values are fixed trailer data, written
+// once at load time), a Local array's storage is a fresh `x29`-
+// relative frame slot on every call, so its own initial values have
+// to be written freshly on every call too. See genIndexAddr()'s own
+// comment on why a Local array's element i sits at frameOffset+i,
+// not frameOffset-i.
+void Arm64Codegen::genLocalArrayInit(const ir::Slot *slot) {
+    for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+        const ir::ArrayInitElem &elem = slot->arrayInit[i];
+        if (elem.isSymbol) {
+            loadAddress("x0", elem.slot ? label(elem.slot) : label(elem.func));
+        } else {
+            loadImm32("x0", static_cast<uint32_t>(elem.value));
+        }
+        code_ << "    mov x2,x29\n    sub x2,x2," << (4 * (slot->frameOffset + static_cast<int>(i))) << "\n";
+        code_ << "    stind x2,w0\n";
+    }
+}
+
 void Arm64Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        loadAddress("x2", label(operand.slot));
+        loadSlotAddr("x2", operand.slot);
         code_ << "    mov x0,x2\n";
         return;
     }

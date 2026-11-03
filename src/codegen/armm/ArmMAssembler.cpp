@@ -82,14 +82,18 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
 // This dialect's own fixed register numbering (not a full ARM
 // register-name table - just the handful ArmMCodegen.cpp ever emits,
 // see ArmMCodegen.h's own header comment on each register's role):
-// `r0`-`r3`=0-3, `sp`=13, `lr`=14 - the real ARM register numbers
-// those names carry, so the encoded bit patterns below match genuine
-// Thumb object code exactly, even though this dialect only ever
-// names this one subset of the 16 GPRs. Returns -1 if `name` isn't
-// one of them.
+// `r0`-`r3`=0-3, `r7`=7 (the frame pointer), `sp`=13, `lr`=14 - the
+// real ARM register numbers those names carry, so the encoded bit
+// patterns below match genuine Thumb object code exactly, even
+// though this dialect only ever names this one subset of the 16
+// GPRs. `r7`, like `r0`-`r3`, is always encodable in every Thumb-1
+// "low register" instruction form this file emits (every one of
+// their operand fields is 3 bits wide, and 7 fits in 3 bits same as
+// 0-3 do) - no encoding function below needs its own extra case for
+// it. Returns -1 if `name` isn't one of them.
 int regNumber(const std::string &lower) {
     static const std::unordered_map<std::string, int> names = {
-        {"r0", 0}, {"r1", 1}, {"r2", 2}, {"r3", 3}, {"sp", 13}, {"lr", 14},
+        {"r0", 0}, {"r1", 1}, {"r2", 2}, {"r3", 3}, {"r7", 7}, {"sp", 13}, {"lr", 14},
     };
     auto it = names.find(lower);
     return it == names.end() ? -1 : it->second;

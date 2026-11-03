@@ -20,18 +20,55 @@ namespace pcc {
 //
 // This language's own `int` is 32 bits here, this target's native
 // register width (same reasoning as M68kCodegen.h's own `.L` choice).
-// Every value in flight lives in one of three real registers: `r0`
+// Every value in flight lives in one of four real registers: `r0`
 // (genExpr()'s own result - every other backend's own "ac") , `r1`
-// ("the other operand" in a binary op - m68k's `d1`), and `r2` (a
-// computed address, when dereferencing one - m68k's `a0`); Thumb has
-// no separate address-register class, `r2` is just an ordinary
-// general register pressed into that role by convention. The real
+// ("the other operand" in a binary op - m68k's `d1`), `r2` (a computed
+// address, when dereferencing one - m68k's `a0`), and `r3` (a scratch
+// register for building a frame-relative offset - see
+// loadFrameWordAddr()); Thumb has no separate address-register class,
+// `r2` is just an ordinary general register pressed into that role by
+// convention. `r7` is this backend's own dedicated frame pointer (see
+// genFunction() below) - never used for anything else. The real
 // hardware stack (`sp`/`r13`) saves one operand across evaluating the
 // other in a binary expression (`push`/`pop`, one register at a time -
 // see STM32Assembler.h's own comment on why there's no multi-register
-// `{reglist}` form here) and every function call/return uses a real
+// `{reglist}` form here), passes each call's own arguments and
+// reserves each call's own Local frame storage (see genFunction()/
+// `ExprKind::Call`), and every function call/return uses a real
 // `bl`/`push {lr}` + `pop {pc}` - genuinely real subroutine linkage,
 // not synthesized the way pdp7/6502 have to.
+//
+// Every function's own stack frame (see genFunction()): `pushlr`
+// saves the return address, `push r7` saves the caller's own frame
+// pointer, `mov r7,sp` makes r7 point at that saved-r7 word, and then
+// one dummy `push r0` per word of `Function::frameSize` reserves this
+// call's own Local storage (the pushed value itself is never read -
+// only the resulting `sp` displacement matters, since this dialect has
+// no `sub sp,#imm` of its own - see STM32Assembler.h's own header
+// comment). emitEpilogue() (run at every `return` and once more as the
+// fall-off-the-end default) undoes exactly that in reverse: one dummy
+// `pop r1` per reserved word, `pop r7`, `poplr`. A Param's own address
+// is `r7 + 8 + 4*paramIndex` (past the saved r7 and the return
+// address, into the caller's own pushed-argument words - see
+// `ExprKind::Call`); a Local's is `r7 - 4*frameOffset` (down into this
+// call's own just-reserved words, growing the opposite direction - a
+// Local array's element i therefore sits at frameOffset+i, i.e.
+// address *base-minus* `4*i`, not base-plus - see loadFrameAddr()'s
+// own callers for where this matters, e.g. genIndexAddr()). See
+// ../i386/I386Codegen.h's own `addr()` comment for the same layout on
+// a different register machine, and ../armm/ArmMCodegen.h's own
+// identical header comment for this exact same frame-pointer approach
+// on a sibling bare Cortex-M dialect.
+//
+// Each call's own arguments are pushed onto the real stack by the
+// caller, last-declared one first, so the first argument ends up
+// closest to the return address `bl` is about to set `lr` for -
+// matching the address every Param already addresses itself by
+// (paramIndex 0 is `r7+8`, the lowest positive offset). Each callee
+// lays them into ITS OWN frame itself; the caller cleans the pushed
+// words back off afterward with one dummy `pop r1` per argument (same
+// "no `add sp,#imm` in this dialect" reasoning as the Local-frame
+// reserve/release above).
 //
 // `*` uses the real hardware `muls` (a genuine 32x32->32 multiply,
 // unlike m68k's word-sized `MULS.W`). `/`/`%` use the real hardware
@@ -107,6 +144,7 @@ class STM32Codegen : public Backend {
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
 
     // Leaves slot[idxExpr]'s own effective address in `r2`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
@@ -118,6 +156,37 @@ class STM32Codegen : public Backend {
     // does.
     void genGlobalInit(const std::string &ramLabel, long value);
 
+    // Emits the epilogue every `return` (and the fall-off-the-end
+    // default at the bottom of genFunction()) needs: pops this call's
+    // own reserved Local words (into the scratch `r1`, discarded -
+    // the point is only the `sp` displacement), restores the
+    // caller's own `r7`, then `poplr`. See genFunction()'s own
+    // comment for the matching prologue.
+    void emitEpilogue();
+
+    // Loads `r7 + 4*wordsFromFp` into `reg` (`wordsFromFp` may be
+    // negative, using `sub` in that case - see genFunction()'s own
+    // comment on which direction each of a Local's/Param's own
+    // storage grows from `r7`). Uses `r3` as its own scratch register,
+    // never as `reg` itself.
+    void loadFrameWordAddr(const std::string &reg, int wordsFromFp);
+    // Loads a Local or Param Slot's own effective address into `reg` -
+    // a Param's is `r7 + 8 + 4*paramIndex` (past the saved `r7` and
+    // the return address, into the caller's own pushed-argument
+    // words); a Local's is `r7 - 4*frameOffset`. Never called for a
+    // Global Slot - see genAddrOf()/the `lea` call sites instead.
+    void loadFrameAddr(const std::string &reg, const ir::Slot *slot);
+    // Loads a Slot's own effective address into `reg`, dispatching on
+    // `slot->kind` between a plain `lea` (Global) and loadFrameAddr()
+    // (Local/Param).
+    void loadSlotAddr(const std::string &reg, const ir::Slot *slot);
+    // Loads one ir::ArrayInitElem's own value (a literal via `movl`,
+    // or a symbol's own address via `lea`, including the Function
+    // case's own thumb-bit adjustment) into `reg` at runtime - used by
+    // genLocalArrayInit() in place of genArrayElemInit()'s own direct
+    // store, which only ever targets a Global's static RAM word.
+    void loadArrayInitElem(const std::string &reg, const ir::ArrayInitElem &e);
+
     static std::string label(const ir::Slot *slot) {
         if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
         if (slot->kind == ir::SlotKind::Param) {
@@ -128,18 +197,23 @@ class STM32Codegen : public Backend {
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
-    // Reserves one RAM word for a scalar slot (see STM32Assembler.h's
-    // own `ds`).
+    // Reserves one RAM word for a Global scalar slot (see
+    // STM32Assembler.h's own `ds`). A Local/Param never calls this -
+    // its own storage lives in this call's own stack frame instead
+    // (see genFunction()'s own comment).
     void declareTemp(const std::string &lbl);
-    // Reserves `values.size()` RAM words for an array slot, and emits
-    // a startup copy (see genGlobalInit()) for every nonzero element.
+    // Reserves `values.size()` RAM words for a Global array slot, and
+    // emits a startup copy (see genGlobalInit()) for every nonzero
+    // element. A Local array never calls this - see genLocalArrayInit().
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
     // Flash-resident code that writes one array element into the RAM
     // word at `lbl+offset` - a literal's own value loaded via `movl`
     // (skipped when it's 0, since RAM already starts zeroed), or a
     // symbol element's address loaded the same way genAddrOf() loads
     // &slot/&fn, including that function case's own thumb-bit
-    // adjustment.
+    // adjustment. Only ever used for a Global array's own static
+    // RAM-resident initializer - see genLocalArrayInit() for a Local
+    // array's own per-call equivalent.
     void genArrayElemInit(const std::string &lbl, size_t offset, const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 
@@ -150,6 +224,10 @@ class STM32Codegen : public Backend {
 
     int tempCounter_ = 0;
     int labelCounter_ = 0;
+    // The function genFunction() is currently emitting's own
+    // Function::frameSize - set once per function, read by
+    // emitEpilogue() at every `return` inside it.
+    int frameSize_ = 0;
 };
 
 }  // namespace pcc

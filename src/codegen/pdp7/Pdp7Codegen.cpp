@@ -209,6 +209,25 @@ std::string Pdp7Codegen::generate(const ir::Program &prog, bool objectMode) {
     size_t sharedStart = trailer_.size();
     trailer_.push_back("__one: 1");
     trailer_.push_back("__zero: 0");
+    // The software stack/frame mechanism every function now uses
+    // (see Pdp7Codegen.h's own header comment and pushAC()/
+    // emitPrologue()'s comments) - `__sp` starts at a fixed high-
+    // memory address, well above where this backend's own code/data
+    // naturally grows from (`kPdp7BaseAddress`, see Pdp7Assembler.h),
+    // and grows downward from there; `__fp`'s own starting value is
+    // never read before the very first call (to `main`) gives it a
+    // real one, so 0 is just a placeholder. `__stmp`/`__addr`/
+    // `__retval`/`__retaddr` are this mechanism's own shared scratch
+    // cells - see their use sites' comments for why one shared cell
+    // each is safe under recursion (every use is a single short,
+    // call-free sequence).
+    trailer_.push_back("__sp: 8100");
+    trailer_.push_back("__fp: 0");
+    trailer_.push_back("__stmp: 0");
+    trailer_.push_back("__stmp2: 0");
+    trailer_.push_back("__addr: 0");
+    trailer_.push_back("__retval: 0");
+    trailer_.push_back("__retaddr: 0");
     ensureDivModRoutine();
     trailerRanges.push_back({homeFile, sharedStart, trailer_.size()});
 
@@ -231,10 +250,133 @@ void Pdp7Codegen::genFunction(const ir::FunctionBody &fn) {
     curFunctionLabel_ = label(fn.func);
     code_ << curFunctionLabel_ << ": 0  ; fn " << fn.func->sourceName << "\n";
 
-    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
+    emitPrologue(fn.func);
     genStmt(*fn.body);
+    // Falls through here if the body doesn't end with an explicit
+    // `return` on every path - same "default return" behavior as
+    // this backend's old bare trailing `jmp i curFunctionLabel_` had
+    // (dead code whenever every path already returned explicitly).
+    emitEpilogueAndReturn(/*hasValue=*/false);
+}
 
-    code_ << "   jmp i " << curFunctionLabel_ << "\n";
+void Pdp7Codegen::pushAC() {
+    code_ << "   dac __stmp\n";
+    code_ << "   lac __sp\n";
+    code_ << "   tad " << literalLabel(-1) << "\n";
+    code_ << "   dac __sp\n";
+    code_ << "   lac __stmp\n";
+    code_ << "   dac __sp i\n";
+}
+
+void Pdp7Codegen::popAC() {
+    code_ << "   lac __sp i\n";
+    code_ << "   dac __stmp\n";
+    code_ << "   lac __sp\n";
+    code_ << "   tad __one\n";
+    code_ << "   dac __sp\n";
+    code_ << "   lac __stmp\n";
+}
+
+void Pdp7Codegen::emitPrologue(const ir::Function *fn) {
+    code_ << "   lac " << curFunctionLabel_ << "\n";  // AC = return address jms just wrote here
+    pushAC();
+    code_ << "   lac __fp\n";
+    pushAC();
+    code_ << "   lac __sp\n";
+    code_ << "   dac __fp\n";  // new frame's own __fp - points at the just-pushed oldFP word
+    if (fn->frameSize > 0) {
+        code_ << "   tad " << literalLabel(-static_cast<long>(fn->frameSize)) << "\n";
+        code_ << "   dac __sp\n";  // reserve this function's own Locals, in one bulk step
+    }
+}
+
+void Pdp7Codegen::emitEpilogueAndReturn(bool hasValue) {
+    if (hasValue) code_ << "   dac __retval\n";
+    code_ << "   lac __fp\n";
+    code_ << "   dac __sp\n";  // discard this call's own Locals (and anything else below __fp)
+    popAC();                    // AC = oldFP
+    code_ << "   dac __fp\n";
+    popAC();                    // AC = this call's own return address
+    code_ << "   dac __retaddr\n";
+    if (hasValue) code_ << "   lac __retval\n";
+    code_ << "   jmp __retaddr i\n";
+}
+
+void Pdp7Codegen::emitLoadSlotAddress(const ir::Slot *slot) {
+    if (slot->kind == ir::SlotKind::Global) {
+        code_ << "   law " << label(slot) << "\n";
+        return;
+    }
+    long offset = (slot->kind == ir::SlotKind::Param) ? (slot->paramIndex + 2) : -slot->frameOffset;
+    code_ << "   lac __fp\n";
+    code_ << "   tad " << literalLabel(offset) << "\n";
+}
+
+void Pdp7Codegen::emitLoadSlot(const ir::Slot *slot) {
+    if (slot->kind == ir::SlotKind::Global) {
+        code_ << "   lac " << label(slot) << "\n";
+        return;
+    }
+    emitLoadSlotAddress(slot);
+    code_ << "   dac __addr\n";
+    code_ << "   lac __addr i\n";
+}
+
+void Pdp7Codegen::emitStoreSlot(const ir::Slot *slot) {
+    if (slot->kind == ir::SlotKind::Global) {
+        code_ << "   dac " << label(slot) << "\n";
+        return;
+    }
+    code_ << "   dac __stmp\n";
+    emitLoadSlotAddress(slot);
+    code_ << "   dac __addr\n";
+    code_ << "   lac __stmp\n";
+    code_ << "   dac __addr i\n";
+}
+
+void Pdp7Codegen::emitSlotBaseAddress(const ir::Slot *slot) {
+    if (slot->arraySize > 0) {
+        emitLoadSlotAddress(slot);
+    } else {
+        emitLoadSlot(slot);
+    }
+}
+
+void Pdp7Codegen::emitLocalArrayInit(const ir::Slot *slot) {
+    for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+        const ir::ArrayInitElem &elem = slot->arrayInit[i];
+        if (!elem.isSymbol) {
+            code_ << "   lac " << literalLabel(elem.value) << "\n";
+        } else if (elem.slot) {
+            emitLoadSlotAddress(elem.slot);
+        } else {
+            code_ << "   law " << label(elem.func) << "\n";
+        }
+        code_ << "   dac __stmp\n";
+        code_ << "   lac __fp\n";
+        long offset = -(static_cast<long>(slot->frameOffset) + static_cast<long>(i));
+        code_ << "   tad " << literalLabel(offset) << "\n";
+        code_ << "   dac __addr\n";
+        code_ << "   lac __stmp\n";
+        code_ << "   dac __addr i\n";
+    }
+}
+
+void Pdp7Codegen::storeThroughStackedAddress() {
+    // __stmp2, not __stmp: popAC() below already uses __stmp
+    // internally, which would otherwise silently clobber the value
+    // stashed here before it's read back.
+    code_ << "   dac __stmp2\n";
+    popAC();
+    code_ << "   dac __addr\n";
+    code_ << "   lac __stmp2\n";
+    code_ << "   dac __addr i\n";
+}
+
+std::string Pdp7Codegen::popAddressIntoScratch() {
+    popAC();
+    code_ << "   dac __addr\n";
+    return "__addr";
 }
 
 void Pdp7Codegen::genStmt(const ir::Stmt &s) {
@@ -273,20 +415,21 @@ void Pdp7Codegen::genStmt(const ir::Stmt &s) {
             return;
         }
         case ir::StmtKind::Return: {
-            if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            code_ << "   jmp i " << curFunctionLabel_ << "\n";
+            bool hasValue = s.initOrReturnOrExpr != nullptr;
+            if (hasValue) genExpr(*s.initOrReturnOrExpr);
+            emitEpilogueAndReturn(hasValue);
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arrayInit);
+                emitLocalArrayInit(s.declSlot);
             } else {
-                declareTemp(lbl);
                 if (s.initOrReturnOrExpr) {
                     genExpr(*s.initOrReturnOrExpr);
-                    code_ << "   dac " << lbl << "\n";
+                } else {
+                    code_ << "   lac __zero\n";
                 }
+                emitStoreSlot(s.declSlot);
             }
             return;
         }
@@ -318,7 +461,7 @@ void Pdp7Codegen::genExpr(const ir::Expr &e) {
             // IRBuilder already rejects a bare array Var outside of
             // `&` (which bypasses this path via buildAddressableOperand),
             // so e.slot is always a scalar here.
-            code_ << "   lac " << label(e.slot) << "\n";
+            emitLoadSlot(e.slot);
             return;
         }
         case ir::ExprKind::Index: {
@@ -327,13 +470,13 @@ void Pdp7Codegen::genExpr(const ir::Expr &e) {
         }
         case ir::ExprKind::Assign: {
             if (e.lhs) {  // slot[idx] = rhs
-                std::string addr = computeElementAddress(e.slot, *e.lhs);
-                genExpr(*e.rhs);
-                code_ << "   dac " << addr << " i\n";  // dac leaves AC unchanged
+                computeElementAddress(e.slot, *e.lhs);  // pushes the element's own address
+                genExpr(*e.rhs);                          // may itself call - the address is safe on the stack
+                storeThroughStackedAddress();              // dac leaves AC unchanged
                 return;
             }
             genExpr(*e.rhs);
-            code_ << "   dac " << label(e.slot) << "\n";  // dac leaves AC unchanged
+            emitStoreSlot(e.slot);  // leaves AC unchanged
             return;
         }
         case ir::ExprKind::Unary: {
@@ -344,10 +487,8 @@ void Pdp7Codegen::genExpr(const ir::Expr &e) {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
                 genExpr(*e.rhs);  // AC = pointer value
-                std::string T = allocTemp();
-                declareTemp(T);
-                code_ << "   dac " << T << "\n";
-                code_ << "   lac " << T << " i\n";
+                code_ << "   dac __addr\n";
+                code_ << "   lac __addr i\n";
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "   cma\n";
@@ -358,53 +499,56 @@ void Pdp7Codegen::genExpr(const ir::Expr &e) {
         }
         case ir::ExprKind::DerefAssign: {
             genExpr(*e.lhs);  // AC = pointer value
-            std::string T = allocTemp();
-            declareTemp(T);
-            code_ << "   dac " << T << "\n";
+            pushAC();          // protect it - evaluating rhs may itself call
             genExpr(*e.rhs);  // AC = value to store
-            code_ << "   dac " << T << " i\n";
+            storeThroughStackedAddress();
             return;
         }
         case ir::ExprKind::Call: {
-            // Builds each argument cell's label directly from
-            // (e.func->sourceName, argument index) - exactly label()'s
-            // own "P_<ownerFunctionName>_<paramIndex>" convention for
-            // a Param Slot - rather than indexing e.func->params[i]:
-            // an external function (real separate compilation, see
-            // IR.h's `isExternal`) has no real parameter list at all
-            // (there's no other file's own signature left to see),
-            // so params[i] would read past an empty vector. The
-            // call site's own argument count is what's trusted here
-            // either way (see IRBuilder.cpp's resolveFunc), and for
-            // a LOCAL function this is exactly the same label
-            // IRBuilder's own param-registration loop already
-            // assigned, so it's correct for both cases uniformly.
-            for (size_t i = 0; i < e.args.size(); i++) {
+            // Arguments are pushed in REVERSE order (last argument
+            // first) so that param 0 ends up CLOSEST to the callee's
+            // own `__fp` (address `__fp+2` - see emitLoadSlotAddress()'s
+            // own comment); the callee then reads every Param straight
+            // out of this same stack, never a fixed per-function cell,
+            // so a recursive (direct or mutual) call's own arguments
+            // can never collide with an outer, still-live call's own.
+            // Each argument expression may itself contain a call (even
+            // back into this same function) - safe regardless, since
+            // every earlier argument already pushed for THIS call is
+            // already on the real stack by the time a later one
+            // evaluates.
+            for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                code_ << "   dac P_" << e.func->sourceName << "_" << i << "\n";
+                pushAC();
             }
             code_ << "   jms " << label(e.func) << "\n";
+            // The callee's own epilogue leaves AC holding its return
+            // value and `__sp` exactly where it was right after this
+            // call's own arguments were pushed (see
+            // emitEpilogueAndReturn()'s comment) - the caller still
+            // owns popping them back off (classic caller-cleans-up
+            // convention), protecting the return value in `__retval`
+            // across that adjustment since it needs AC too.
+            if (!e.args.empty()) {
+                code_ << "   dac __retval\n";
+                code_ << "   lac __sp\n";
+                code_ << "   tad " << literalLabel(static_cast<long>(e.args.size())) << "\n";
+                code_ << "   dac __sp\n";
+                code_ << "   lac __retval\n";
+            }
             return;
         }
         case ir::ExprKind::CallPtr: {
             // e.args is always empty here - IRBuilder.cpp rejects any
             // argument on this kind before it ever reaches a backend
             // (see IR.h's ExprKind::CallPtr): there's no per-callee
-            // P_<fn>_<i> cell to write one into until the callee is
-            // known, which it never is at compile time for this kind.
-            // The callee's own address goes through a temp cell (jms
-            // has no "indirect through AC" form - only through a
-            // memory location) and the trailing " i" is this
-            // assembler's real indirect-addressing bit (see
-            // genIndex/DerefAssign's own " i" uses above): "jms T i"
-            // jumps-and-saves through whatever address T holds, the
-            // real pdp7 mechanism for a call whose target isn't a
-            // compile-time label.
+            // ABI slot to put one in until the callee is known, which
+            // it never is at compile time for this kind - so there's
+            // no argument-stack bookkeeping to do here at all, unlike
+            // the ir::ExprKind::Call case above.
             genExpr(*e.lhs);  // AC = the callee's own entry address
-            std::string T = allocTemp();
-            declareTemp(T);
-            code_ << "   dac " << T << "\n";
-            code_ << "   jms " << T << " i\n";
+            code_ << "   dac __addr\n";
+            code_ << "   jms __addr i\n";
             return;
         }
         case ir::ExprKind::Binary: {
@@ -444,23 +588,29 @@ void Pdp7Codegen::genExpr(const ir::Expr &e) {
 // its VALUE (lac), not its own storage address (law) - indexing a
 // pointer parameter (e.g. p[1] inside a function taking `int p`)
 // needs this distinction.
-std::string Pdp7Codegen::computeElementAddress(const ir::Slot *slot, const ir::Expr &idxExpr) {
-    genExpr(idxExpr);
-    std::string P = allocTemp();
-    declareTemp(P);
-    code_ << "   dac " << P << "\n";
-    if (slot->arraySize > 0) {
-        code_ << "   law " << label(slot) << "\n";  // base = the array's own address
-    } else {
-        code_ << "   lac " << label(slot) << "\n";  // base = the pointer variable's value
-    }
-    code_ << "   tad " << P << "\n";
-    code_ << "   dac " << P << "\n";
-    return P;
+void Pdp7Codegen::computeElementAddress(const ir::Slot *slot, const ir::Expr &idxExpr) {
+    // A Local array's own elements sit at DECREASING addresses as the
+    // index increases (element i is at `__fp-(frameOffset+i)` - see
+    // emitLoadSlotAddress()'s own frame-layout comment), the opposite
+    // of a Global array's normal increasing-address layout - so the
+    // index gets negated up front here, making the final `tad` below
+    // compute `base - index` for a Local array but `base + index`
+    // for everything else (a Global array, or any plain pointer
+    // variable's own value - ordinary memory, always increasing).
+    bool descending = slot->arraySize > 0 && slot->kind == ir::SlotKind::Local;
+    genExpr(idxExpr);     // AC = index (may itself call)
+    if (descending) code_ << "   cma\n   tad __one\n";  // AC = -index
+    pushAC();               // protect the (possibly negated) index across the base-address computation below
+    emitSlotBaseAddress(slot);
+    code_ << "   dac __addr\n";
+    popAC();                 // AC = index or -index
+    code_ << "   tad __addr\n";  // AC = base +/- index = the element's own address
+    pushAC();                     // leave it on the stack for the caller
 }
 
 void Pdp7Codegen::genIndex(const ir::Expr &e) {
-    std::string addr = computeElementAddress(e.slot, *e.lhs);
+    computeElementAddress(e.slot, *e.lhs);
+    std::string addr = popAddressIntoScratch();
     code_ << "   lac " << addr << " i\n";
 }
 
@@ -473,12 +623,12 @@ void Pdp7Codegen::genIndex(const ir::Expr &e) {
 // nothing else in this subset with an address worth taking.
 void Pdp7Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        code_ << "   law " << label(operand.slot) << "\n";
+        emitLoadSlotAddress(operand.slot);
         return;
     }
     if (operand.kind == ir::ExprKind::Index) {
-        std::string addr = computeElementAddress(operand.slot, *operand.lhs);
-        code_ << "   lac " << addr << "\n";  // addr already holds the address itself
+        computeElementAddress(operand.slot, *operand.lhs);
+        popAC();  // AC = the address itself - exactly what &slot[idx] wants
         return;
     }
     if (operand.kind == ir::ExprKind::Func) {
@@ -492,12 +642,12 @@ void Pdp7Codegen::genBinary(const ir::Expr &e) {
     const std::string &op = e.op;
     if (op == "+" || op == "-") {
         genExpr(*e.lhs);
-        std::string T = allocTemp();
-        declareTemp(T);
-        code_ << "   dac " << T << "\n";
+        pushAC();  // protect lhs - rhs's own evaluation may call (even back into this function)
         genExpr(*e.rhs);
         if (op == "-") code_ << "   cma\n   tad __one\n";
-        code_ << "   tad " << T << "\n";
+        code_ << "   dac __stmp2\n";  // __stmp2, not __stmp - popAC() below uses __stmp internally
+        popAC();  // AC = lhs
+        code_ << "   tad __stmp2\n";
         return;
     }
     if (op == "*") {
@@ -549,12 +699,12 @@ void Pdp7Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const i
 
 void Pdp7Codegen::emitEq(const ir::Expr &lhs, const ir::Expr &rhs, bool negate) {
     genExpr(lhs);
-    std::string T = allocTemp();
-    declareTemp(T);
-    code_ << "   dac " << T << "\n";
+    pushAC();  // protect lhs - rhs's own evaluation may call
     genExpr(rhs);
+    code_ << "   dac __stmp2\n";  // __stmp2, not __stmp - popAC() below uses __stmp internally
+    popAC();  // AC = lhs
     std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
-    code_ << "   sad " << T << "\n   jmp " << Ltrue << "\n   jmp " << Lfalse << "\n";
+    code_ << "   sad __stmp2\n   jmp " << Ltrue << "\n   jmp " << Lfalse << "\n";
     code_ << Ltrue << ":\n   lac __one\n   jmp " << Ldone << "\n";
     code_ << Lfalse << ":\n   lac __zero\n";
     code_ << Ldone << ":\n";
@@ -563,11 +713,12 @@ void Pdp7Codegen::emitEq(const ir::Expr &lhs, const ir::Expr &rhs, bool negate) 
 
 void Pdp7Codegen::emitLt(const ir::Expr &lhs, const ir::Expr &rhs, bool negate) {
     genExpr(lhs);
-    std::string T = allocTemp();
-    declareTemp(T);
-    code_ << "   dac " << T << "\n";
+    pushAC();  // protect lhs - rhs's own evaluation may call
     genExpr(rhs);
-    code_ << "   cma\n   tad __one\n   tad " << T << "\n";  // AC = lhs - rhs
+    code_ << "   cma\n   tad __one\n";  // AC = -rhs
+    code_ << "   dac __stmp2\n";  // __stmp2, not __stmp - popAC() below uses __stmp internally
+    popAC();  // AC = lhs
+    code_ << "   tad __stmp2\n";  // AC = lhs + (-rhs) = lhs - rhs
     std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
     code_ << "   sma\n   jmp " << Lfalse << "\n   jmp " << Ltrue << "\n";
     code_ << Ltrue << ":\n   lac __one\n   jmp " << Ldone << "\n";
@@ -617,13 +768,12 @@ void Pdp7Codegen::genLogicalNot(const ir::Expr &rhs) {
 // against non-negative operands - see README.
 void Pdp7Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
-    std::string Tl = allocTemp();
-    declareTemp(Tl);
-    code_ << "   dac " << Tl << "\n";
+    pushAC();  // protect lhs - rhs's own evaluation may call
     genExpr(rhs);
     std::string Tr = allocTemp();  // declared inline below, NOT via declareTemp: it doubles as mul's operand slot
     code_ << "   dac " << Tr << "\n";
-    code_ << "   lac " << Tl << "\n   cll\n   mul\n" << Tr << ": 0\n   lacq\n";
+    popAC();  // AC = lhs
+    code_ << "   cll\n   mul\n" << Tr << ": 0\n   lacq\n";
 }
 
 // Division/modulo via a small shared software routine (repeated
@@ -657,9 +807,11 @@ void Pdp7Codegen::ensureDivModRoutine() {
 void Pdp7Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder) {
     needDivMod_ = true;
     genExpr(lhs);
-    code_ << "   dac __dm_a\n";
+    pushAC();  // protect lhs - rhs's own evaluation may call, possibly into another division
     genExpr(rhs);
     code_ << "   dac __dm_b\n";
+    popAC();  // AC = lhs
+    code_ << "   dac __dm_a\n";
     code_ << "   jms __divmod\n";
     if (wantRemainder) code_ << "   lac __dm_a\n";
 }
@@ -676,21 +828,21 @@ void Pdp7Codegen::genBitwise(const std::string &op, const ir::Expr &lhs, const i
     if (op == "|") {
         genExpr(lhs);
         code_ << "   cma\n";
-        std::string T = allocTemp();
-        declareTemp(T);
-        code_ << "   dac " << T << "\n";
+        pushAC();  // protect ~lhs - rhs's own evaluation may call
         genExpr(rhs);
         code_ << "   cma\n";
-        code_ << "   and " << T << "\n";
+        code_ << "   dac __stmp2\n";  // __stmp2, not __stmp - popAC() below uses __stmp internally
+        popAC();  // AC = ~lhs
+        code_ << "   and __stmp2\n";
         code_ << "   cma\n";
         return;
     }
     genExpr(lhs);
-    std::string T = allocTemp();
-    declareTemp(T);
-    code_ << "   dac " << T << "\n";
+    pushAC();  // protect lhs - rhs's own evaluation may call
     genExpr(rhs);
-    code_ << "   " << (op == "&" ? "and" : "xor") << " " << T << "\n";
+    code_ << "   dac __stmp2\n";  // __stmp2, not __stmp - popAC() below uses __stmp internally
+    popAC();  // AC = lhs
+    code_ << "   " << (op == "&" ? "and" : "xor") << " __stmp2\n";
 }
 
 // `<<`/`>>` have no *variable-count* backing hardware instruction
@@ -704,32 +856,20 @@ void Pdp7Codegen::genBitwise(const std::string &op, const ir::Expr &lhs, const i
 // one) - the old bit 0 falls into the link and is discarded (the
 // next `cll` clears it again), and the cleared link's 0 comes in as
 // the new bit 17, giving a *logical* right shift with no sign
-// extension - verified directly (1000 -> 500). Both are O(1) per
-// bit regardless of the value being shifted.
-//
-// An earlier version of `>>` used the existing `__divmod` routine
-// (repeated subtraction) instead of `rar` - reasonable-looking
-// (reuse an already-verified primitive, same as `<<` reusing `+`),
-// but wrong in practice: `__divmod`'s cost scales with the *value*
-// being divided, not the bit count, so shifting a large value right
-// by a large count that way could take tens of thousands of
-// simulated instructions per shift. Found this by running straight
-// into it: `sys/s7.c`'s `wakeup`, shifting an ~17-bit vector right
-// by up to 16, ran long enough that it looked indistinguishable
-// from a hang under this project's normal `go`/`e ac` test
-// harness - not actually incorrect (a breakpoint at the real `hlt`
-// confirmed it did eventually get there), just far too slow to be
-// usable. `rar` doesn't have this problem since it always costs
-// exactly one instruction per bit, independent of the value.
+// extension. Both are O(1) per bit regardless of the value being
+// shifted (unlike repeated subtraction, whose own cost scales with
+// the value, not the bit count).
 void Pdp7Codegen::genShift(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
-    std::string V = allocTemp();
-    declareTemp(V);
-    code_ << "   dac " << V << "\n";
+    pushAC();  // protect the value being shifted - rhs's own evaluation (the shift count) may call
     genExpr(rhs);
     std::string N = allocTemp();
     declareTemp(N);
     code_ << "   dac " << N << "\n";
+    popAC();  // AC = the value being shifted
+    std::string V = allocTemp();
+    declareTemp(V);
+    code_ << "   dac " << V << "\n";
     std::string Lstart = newLabel(), Lbody = newLabel(), Lend = newLabel();
     code_ << Lstart << ":\n";
     code_ << "   lac " << N << "\n";
@@ -738,24 +878,6 @@ void Pdp7Codegen::genShift(const std::string &op, const ir::Expr &lhs, const ir:
     if (op == "<<") {
         code_ << "   lac " << V << "\n   tad " << V << "\n   dac " << V << "\n";
     } else {
-        // cll (clear link) then rar (rotate AC right through the
-        // link by exactly one) is a plain hardware single-bit
-        // logical right shift: the old bit 0 goes into the link
-        // (discarded, link cleared again next iteration) and a
-        // cleared link's 0 comes in as the new bit 17 - verified
-        // directly (1000 -> 500). O(1) per bit, unlike an earlier
-        // version of this code that called __divmod (repeated
-        // subtraction) once per bit: __divmod's cost scales with
-        // the *value*, not the bit count, so shifting a large value
-        // right by a large count that way could take tens of
-        // thousands of simulated instructions per shift - found
-        // this the hard way when `wakeup` (sys/s7.c), shifting an
-        // ~17-bit vector right by up to 16, took long enough on the
-        // real simulator to make the "go"/"e ac" combination this
-        // project's whole test harness relies on misbehave (a
-        // separate, still-unexplained SimH console-I/O quirk - see
-        // git history/PR discussion for the debugging session this
-        // came out of).
         code_ << "   lac " << V << "\n   cll\n   rar\n   dac " << V << "\n";
     }
     code_ << "   lac __zero\n   cma\n   tad " << N << "\n   dac " << N << "\n";

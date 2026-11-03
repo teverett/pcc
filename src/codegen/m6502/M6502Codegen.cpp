@@ -19,12 +19,17 @@ namespace {
 // minimal/bare 6502 setup (below any BASIC/OS reservation, above
 // zero page and the hardware stack page $0100-$01FF).
 constexpr uint32_t kBaseAddress = 0x0600;
-}  // namespace
 
-void M6502Codegen::declareTemp(const std::string &lbl) {
-    trailer_.push_back(lbl + ": db 0");
-    trailer_.push_back("db 0");
-}
+// Where every call's own Local/Param frame storage is bump-allocated
+// from (see M6502Codegen.h's own header comment on `fp`/`sp`) - below
+// the real hardware stack page ($0100-$01FF, left to JSR/RTS and this
+// backend's own transient PHA/PLA use) and comfortably below where
+// any program's own code/data ever starts (`kBaseAddress` above, and
+// the same address real separate compilation always links at too -
+// see M6502Assembler.h's own `kM6502BaseAddress`), so this region
+// never collides with either.
+constexpr uint32_t kFrameStackBase = 0x0200;
+}  // namespace
 
 // A literal element's own decimal text, or a symbol element's (a
 // dispatch-table address-of-function/global, see IR.h's
@@ -105,9 +110,21 @@ std::string M6502Codegen::generate(const ir::Program &prog, bool objectMode) {
     // where it ends up linked, so every object - including this one,
     // even in object mode - declares them identically with no
     // conflict and no relocation ever needed for the equate itself.
-    code_ << "ptr = 0\nac = 2\nbc = 4\ncx = 6\ndx = 8\n\n";
+    // `fp`/`sp` - see M6502Codegen.h's own header comment: the
+    // software frame pointer every Local/Param access goes through,
+    // and the bump allocator tracking the next free byte of
+    // `kFrameStackBase`'s own region that every call's frame is cut
+    // from. Equated identically to `ptr`/`ac`/`bc`/`cx`/`dx` above,
+    // for the same reason (see that code's own comment).
+    code_ << "ptr = 0\nac = 2\nbc = 4\ncx = 6\ndx = 8\nfp = 10\nsp = 12\naBase = 14\n\n";
     if (!objectMode) {
         code_ << "_start:\n";
+        // One-time initialization of the frame-stack bump allocator,
+        // before the very first call - every function's own prologue
+        // (genFunction()) only ever reads/advances `sp` from here on,
+        // never re-initializes it.
+        code_ << "    ldai " << (kFrameStackBase & 0xFF) << "\n    sta sp\n";
+        code_ << "    ldai " << ((kFrameStackBase >> 8) & 0xFF) << "\n    sta sp+1\n";
         code_ << "    jsr " << label(mainFn) << "\n";
         // The program's own final result sits in `ac`/`ac+1` (memory,
         // $0002/$0003) the moment execution reaches `halt` below - the
@@ -158,11 +175,97 @@ std::string M6502Codegen::generate(const ir::Program &prog, bool objectMode) {
 // perFileAsm() needs for their real multi-file case.
 std::map<std::string, std::string> M6502Codegen::perFileAsm() const { return perFileAsm_; }
 
+// See M6502Codegen.h's own header comment for the whole frame
+// convention this implements. `paramBytes` is exactly the size of
+// the argument area the CALLER already reserved and wrote (see the
+// `Call` case in genExpr()) right before this `jsr` - subtracting it
+// back off the current `sp` is what makes `fp` land on argument 0's
+// own cell (frameByteOffset()'s Param case: 2*paramIndex). There's no
+// immediate-operand SBC on this target (M6502Assembler.cpp's own
+// `immLow` table), so the subtraction is done as addition of its
+// two's-complement instead - ordinary mod-65536 wraparound makes that
+// exact, the same trick a real 6502 assembler's own negated-constant
+// idiom relies on.
 void M6502Codegen::genFunction(const ir::FunctionBody &fn) {
+    curFunction_ = fn.func;
     code_ << label(fn.func) << ":\n";
-    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
+    int paramBytes = 2 * static_cast<int>(fn.func->params.size());
+    int localBytes = 2 * fn.func->frameSize;
+    // Save the caller's own `fp` on the real hardware stack (JSR/RTS'
+    // own reentrant mechanism, already untouched by any of this - see
+    // M6502Codegen.h's header comment) - restored by genEpilogue().
+    code_ << "    lda fp\n    pha\n    lda fp+1\n    pha\n";
+    if (paramBytes > 0) {
+        int negParamBytes = (0x10000 - paramBytes) & 0xFFFF;
+        code_ << "    clc\n    lda sp\n    adci " << (negParamBytes & 0xFF) << "\n    sta fp\n";
+        code_ << "    lda sp+1\n    adci " << ((negParamBytes >> 8) & 0xFF) << "\n    sta fp+1\n";
+    } else {
+        code_ << "    lda sp\n    sta fp\n    lda sp+1\n    sta fp+1\n";
+    }
+    if (localBytes > 0) {
+        code_ << "    clc\n    lda sp\n    adci " << (localBytes & 0xFF) << "\n    sta sp\n";
+        code_ << "    lda sp+1\n    adci " << ((localBytes >> 8) & 0xFF) << "\n    sta sp+1\n";
+    }
     genStmt(*fn.body);
-    code_ << "    rts\n\n";
+    genEpilogue();
+    code_ << "\n";
+}
+
+void M6502Codegen::genEpilogue() {
+    // sp = fp: Params and Locals collapse back to this call's own
+    // frame base in one step (the software-fp analogue of x86's "mov
+    // sp, bp" - I8086Codegen.cpp's own genFunction()).
+    code_ << "    lda fp\n    sta sp\n    lda fp+1\n    sta sp+1\n";
+    // Restore the caller's own fp, saved by the prologue above.
+    code_ << "    pla\n    sta fp+1\n    pla\n    sta fp\n";
+    code_ << "    rts\n";
+}
+
+int M6502Codegen::frameByteOffset(const ir::Slot *slot) const {
+    if (slot->kind == ir::SlotKind::Param) return 2 * slot->paramIndex;
+    return 2 * (static_cast<int>(curFunction_->params.size()) + (slot->frameOffset - 1));
+}
+
+void M6502Codegen::setPtrToFrameSlot(const ir::Slot *slot, int extraByteOffset) {
+    int off = frameByteOffset(slot) + extraByteOffset;
+    code_ << "    clc\n    lda fp\n    adci " << (off & 0xFF) << "\n    sta ptr\n";
+    code_ << "    lda fp+1\n    adci " << ((off >> 8) & 0xFF) << "\n    sta ptr+1\n";
+}
+
+void M6502Codegen::loadSlotToAc(const ir::Slot *slot) {
+    if (slot->kind == ir::SlotKind::Global) {
+        copy16("ac", label(slot));
+        return;
+    }
+    setPtrToFrameSlot(slot, 0);
+    code_ << "    ldyi 0\n    ldaind ptr\n    sta ac\n";
+    code_ << "    ldyi 1\n    ldaind ptr\n    sta ac+1\n";
+}
+
+void M6502Codegen::storeAcToSlot(const ir::Slot *slot) {
+    if (slot->kind == ir::SlotKind::Global) {
+        copy16(label(slot), "ac");
+        return;
+    }
+    setPtrToFrameSlot(slot, 0);
+    code_ << "    ldyi 0\n    lda ac\n    staind ptr\n";
+    code_ << "    ldyi 1\n    lda ac+1\n    staind ptr\n";
+}
+
+// See I8086Codegen.cpp's own genLocalArrayInit() for the general
+// idea (every call needs its own array re-initialized, there being
+// no one-time static trailer for a Local's storage any more) -
+// element i's own cell is this array's own frame cell plus i*2 bytes
+// (see setPtrToFrameSlot()'s own `extraByteOffset`).
+void M6502Codegen::genLocalArrayInit(const ir::Slot *slot) {
+    for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+        std::string text = arrayElemText(slot->arrayInit[i]);
+        code_ << "    ldai " << text << "\n    sta ac\n";
+        code_ << "    ldai_hi " << text << "\n    sta ac+1\n";
+        setPtrToFrameSlot(slot, 2 * static_cast<int>(i));
+        code_ << "    ldyi 0\n    lda ac\n    staind ptr\n";
+        code_ << "    ldyi 1\n    lda ac+1\n    staind ptr\n";
+    }
 }
 
 void M6502Codegen::genStmt(const ir::Stmt &s) {
@@ -202,20 +305,25 @@ void M6502Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            code_ << "    rts\n";
+            // Early exit - genFunction()'s own fall-through epilogue
+            // never runs for this path, so it needs its own frame
+            // teardown inline here too (see genEpilogue()'s own
+            // comment for what each instruction does).
+            genEpilogue();
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arrayInit);
-            } else {
-                declareTemp(lbl);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    copy16(lbl, "ac");
-                }
+                genLocalArrayInit(s.declSlot);
+            } else if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                storeAcToSlot(s.declSlot);
             }
+            // No "else" case for a bare, uninitialized scalar: its
+            // own frame cell already exists (genFunction()'s own `sp`
+            // bump reserved it) - same as a real, ordinary C
+            // automatic variable, its value is simply whatever was
+            // already in that frame cell until something assigns it.
             return;
         }
         case ir::StmtKind::ExprStmt: {
@@ -241,7 +349,7 @@ void M6502Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
-            copy16("ac", label(e.slot));
+            loadSlotToAc(e.slot);
             return;
         }
         case ir::ExprKind::Index: {
@@ -264,7 +372,7 @@ void M6502Codegen::genExpr(const ir::Expr &e) {
                 return;
             }
             genExpr(*e.rhs);
-            copy16(label(e.slot), "ac");
+            storeAcToSlot(e.slot);
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -299,9 +407,38 @@ void M6502Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
+            // Every argument is evaluated first and parked on the
+            // real hardware stack (low byte then high, same
+            // convention copy16()'s own callers use elsewhere) - this
+            // has to finish, with no further `sp`/`aBase` use, before
+            // a nested call inside a LATER argument's own expression
+            // gets a chance to invalidate an EARLIER argument's own
+            // computed address (see M6502Codegen.h's header comment
+            // on this whole call sequence).
             for (size_t i = 0; i < e.args.size(); i++) {
                 genExpr(*e.args[i]);
-                copy16("p_" + e.func->sourceName + "_" + std::to_string(i), "ac");
+                code_ << "    lda ac\n    pha\n    lda ac+1\n    pha\n";
+            }
+            if (!e.args.empty()) {
+                // aBase = sp (this call's own argument area, which
+                // becomes the callee's own `fp` once its prologue
+                // subtracts this same size back off - see
+                // genFunction()), then reserve it.
+                code_ << "    lda sp\n    sta aBase\n    lda sp+1\n    sta aBase+1\n";
+                int paramBytes = 2 * static_cast<int>(e.args.size());
+                code_ << "    clc\n    lda sp\n    adci " << (paramBytes & 0xFF) << "\n    sta sp\n";
+                code_ << "    lda sp+1\n    adci " << ((paramBytes >> 8) & 0xFF) << "\n    sta sp+1\n";
+                // Unpark each value (LIFO - the last-pushed, highest-
+                // indexed argument comes off first) into its own cell,
+                // aBase+2*i.
+                for (size_t i = e.args.size(); i-- > 0;) {
+                    code_ << "    pla\n    sta ac+1\n    pla\n    sta ac\n";
+                    int off = 2 * static_cast<int>(i);
+                    code_ << "    clc\n    lda aBase\n    adci " << (off & 0xFF) << "\n    sta ptr\n";
+                    code_ << "    lda aBase+1\n    adci " << ((off >> 8) & 0xFF) << "\n    sta ptr+1\n";
+                    code_ << "    ldyi 0\n    lda ac\n    staind ptr\n";
+                    code_ << "    ldyi 1\n    lda ac+1\n    staind ptr\n";
+                }
             }
             code_ << "    jsr " << label(e.func) << "\n";
             return;
@@ -366,14 +503,41 @@ void M6502Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     // ac *= 2 (words are 2 bytes on this byte-addressed target, same
     // reason as ../x86_8086/I8086Codegen.cpp's own `shl ax,1`).
     code_ << "    asl ac\n    rol ac+1\n";
-    std::string lbl = label(slot);
-    code_ << "    clc\n";
+    if (slot->kind == ir::SlotKind::Global) {
+        std::string lbl = label(slot);
+        code_ << "    clc\n";
+        if (slot->arraySize > 0) {
+            code_ << "    lda ac\n    adci " << lbl << "\n    sta ptr\n";
+            code_ << "    lda ac+1\n    adci_hi " << lbl << "\n    sta ptr+1\n";
+        } else {
+            code_ << "    lda ac\n    adc " << lbl << "\n    sta ptr\n";
+            code_ << "    lda ac+1\n    adc " << lbl << "+1\n    sta ptr+1\n";
+        }
+        return;
+    }
+    // Local/Param: this slot's own cell lives at fp+frameByteOffset()
+    // in THIS call's own frame (every activation gets its own `fp`) -
+    // set into `ptr` first (see setPtrToFrameSlot()), since `ac`
+    // already holds the scaled index.
+    setPtrToFrameSlot(slot, 0);
     if (slot->arraySize > 0) {
-        code_ << "    lda ac\n    adci " << lbl << "\n    sta ptr\n";
-        code_ << "    lda ac+1\n    adci_hi " << lbl << "\n    sta ptr+1\n";
+        // `ptr` IS the array's own first word - base-plus-scaled-
+        // index (ascending layout - see M6502Codegen.h's own header
+        // comment on why this never needs a base-MINUS-index form).
+        // `ptr`'s own low byte is read before being overwritten by
+        // the very same `sta`, same as any other accumulator-based
+        // read-modify-write sequence.
+        code_ << "    clc\n    lda ac\n    adc ptr\n    sta ptr\n";
+        code_ << "    lda ac+1\n    adc ptr+1\n    sta ptr+1\n";
     } else {
-        code_ << "    lda ac\n    adc " << lbl << "\n    sta ptr\n";
-        code_ << "    lda ac+1\n    adc " << lbl << "+1\n    sta ptr+1\n";
+        // slot is a plain pointer VARIABLE stored at that cell - read
+        // its own value first (through `ptr`, which still holds the
+        // cell's own address at this point), then add the index to
+        // that value instead of to the cell's address.
+        code_ << "    ldyi 0\n    ldaind ptr\n    sta bc\n";
+        code_ << "    ldyi 1\n    ldaind ptr\n    sta bc+1\n";
+        code_ << "    clc\n    lda ac\n    adc bc\n    sta ptr\n";
+        code_ << "    lda ac+1\n    adc bc+1\n    sta ptr+1\n";
     }
 }
 
@@ -385,9 +549,14 @@ void M6502Codegen::genIndex(const ir::Expr &e) {
 
 void M6502Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        std::string lbl = label(operand.slot);
-        code_ << "    ldai " << lbl << "\n    sta ac\n";
-        code_ << "    ldai_hi " << lbl << "\n    sta ac+1\n";
+        if (operand.slot->kind == ir::SlotKind::Global) {
+            std::string lbl = label(operand.slot);
+            code_ << "    ldai " << lbl << "\n    sta ac\n";
+            code_ << "    ldai_hi " << lbl << "\n    sta ac+1\n";
+        } else {
+            setPtrToFrameSlot(operand.slot, 0);
+            copy16("ac", "ptr");
+        }
         return;
     }
     if (operand.kind == ir::ExprKind::Index) {

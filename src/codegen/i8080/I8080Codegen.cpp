@@ -155,6 +155,12 @@ std::string I8080Codegen::generate(const ir::Program &prog, bool objectMode) {
         declareTemp("cx");
         declareTemp("dx");
         declareTemp("ptr");
+        // The current function's own software frame pointer (see
+        // I8080Codegen.h's own header comment) - shared the same way
+        // as the five cells above, since a callee's own prologue and
+        // its caller both need to agree on the one real place it
+        // lives, exactly like `ac` does for a return value.
+        declareTemp("fp");
     }
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
@@ -191,11 +197,56 @@ std::string I8080Codegen::generate(const ir::Program &prog, bool objectMode) {
 // backend's own perFileAsm().
 std::map<std::string, std::string> I8080Codegen::perFileAsm() const { return perFileAsm_; }
 
+// Every activation gets its own real stack frame (see I8080Codegen.h's
+// own header comment for the full layout): `lhld fp`/`push h` saves
+// the caller's own frame pointer on the real hardware stack, `lxi
+// h,0`/`dad sp` reads the current SP into HL (the standard 8080 idiom
+// for that - there's no direct "HL=SP" instruction) right after that
+// push, so it's exactly the address of the just-pushed word, and
+// `shld fp` makes that this call's own new frame base. `dad d` (with
+// the locals' own *negative* total byte size already in DE) then
+// `sphl` moves SP down below them in one step, reserving that memory
+// so nothing later in this function (a nested `push`, or a nested
+// `call`'s own argument pushes) can ever land on top of it - the same
+// role I8086Codegen.cpp's own `sub sp, N` plays, just computed by hand
+// since the 8080 has no instruction that subtracts an immediate from
+// SP directly.
 void I8080Codegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
-    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
+    code_ << "    lhld fp\n    push h\n";
+    code_ << "    lxi h, 0\n    dad sp\n    shld fp\n";
+    if (fn.func->frameSize > 0) {
+        code_ << "    lxi d, " << (-2L * fn.func->frameSize) << "\n    dad d\n    sphl\n";
+    }
     genStmt(*fn.body);
-    code_ << "    ret\n\n";
+    emitEpilogue();
+    code_ << "\n";
+}
+
+// See this file's own header comment above genFunction() for the
+// prologue this undoes: `lhld fp`/`sphl` snaps SP back up to this
+// call's own frame base (dropping the locals' reserved region in one
+// instruction, regardless of how many words that was), `pop h` lifts
+// the caller's own frame pointer back off the real hardware stack,
+// `shld fp` restores it as the current `fp`, and `ret` returns to the
+// caller exactly as it always did - the real hardware CALL/RET pair
+// (and the real SP they already use) never needed any change of their
+// own to be reentrant.
+void I8080Codegen::emitEpilogue() {
+    code_ << "    lhld fp\n    sphl\n";
+    code_ << "    pop h\n    shld fp\n";
+    code_ << "    ret\n";
+}
+
+// A Local or Param slot's own effective address, computed fresh every
+// time rather than ever cached - see I8080Codegen.h's own header
+// comment for why this target has no addressing mode that could do
+// this as part of a single `mov`/`mvi`/etc. the way Z80's `(IX+d)` or
+// 8086's `[bp+d]` can.
+void I8080Codegen::genFrameAddr(const ir::Slot *slot) {
+    code_ << "    lhld fp\n";
+    code_ << "    lxi d, " << frameByteOffset(slot) << "\n";
+    code_ << "    dad d\n";
 }
 
 void I8080Codegen::genStmt(const ir::Stmt &s) {
@@ -232,20 +283,25 @@ void I8080Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            code_ << "    ret\n";
+            // An early return bypasses genFunction()'s own fall-
+            // through epilogue entirely, so it needs this same frame
+            // teardown inline - see emitEpilogue()'s own comment.
+            emitEpilogue();
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arrayInit);
-            } else {
-                declareTemp(lbl);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    copy16(lbl, "ac");
-                }
+                genLocalArrayInit(s.declSlot);
+            } else if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                genFrameAddr(s.declSlot);
+                storeAcIndirect();
             }
+            // No "else" case for a bare, uninitialized scalar: its own
+            // frame word already exists (genFunction()'s own prologue
+            // already reserved it) - same as a real, ordinary C
+            // automatic variable, its value is simply whatever was
+            // already in that stack slot until something assigns it.
             return;
         }
         case ir::StmtKind::ExprStmt: {
@@ -270,7 +326,13 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
-            copy16("ac", label(e.slot));
+            if (e.slot->kind == ir::SlotKind::Global) {
+                copy16("ac", label(e.slot));
+            } else {
+                genFrameAddr(e.slot);
+                code_ << "    mov e,m\n    inx h\n    mov d,m\n";
+                storePair("ac", "d");
+            }
             return;
         }
         case ir::ExprKind::Index: {
@@ -287,7 +349,12 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
                 return;
             }
             genExpr(*e.rhs);
-            copy16(label(e.slot), "ac");
+            if (e.slot->kind == ir::SlotKind::Global) {
+                copy16(label(e.slot), "ac");
+            } else {
+                genFrameAddr(e.slot);
+                storeAcIndirect();
+            }
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -326,11 +393,34 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            for (size_t i = 0; i < e.args.size(); i++) {
+            // Each argument is pushed onto the real hardware stack,
+            // last-declared one first, so argument 0 ends up closest
+            // to the return address `call` is about to push - the
+            // address every Param already addresses itself by (see
+            // I8080Codegen.h's own `frameByteOffset()`: paramIndex 0 is
+            // `fp+4`, the lowest positive offset). The callee's own
+            // prologue lays them into ITS OWN frame itself; nothing
+            // here needs to know anything about the callee's
+            // parameter count beyond `e.args.size()`. Each value is
+            // computed into `ac` and then transited through HL (the
+            // only way to get a memory value onto the real stack -
+            // `PUSH` only ever takes a register pair, never a memory
+            // operand).
+            for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                copy16("p_" + e.func->sourceName + "_" + std::to_string(i), "ac");
+                code_ << "    lhld ac\n    push h\n";
             }
             code_ << "    call " << label(e.func) << "\n";
+            // The caller cleans its own pushed arguments back off
+            // afterward - cdecl's own convention, chosen here (same
+            // as I8086Codegen.cpp's own `add sp, N`) only because it
+            // needs no cooperation from the callee at all. `lxi
+            // h,N`/`dad sp`/`sphl` moves SP by a compile-time-constant
+            // amount in one step, the same idiom genFunction()'s own
+            // prologue uses to reserve locals.
+            if (!e.args.empty()) {
+                code_ << "    lxi h, " << (e.args.size() * 2) << "\n    dad sp\n    sphl\n";
+            }
             return;
         }
         case ir::ExprKind::CallPtr: {
@@ -375,12 +465,29 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
 // subexpressions, so nothing of this function's own can safely be
 // sitting in any of those across that call; only after it returns
 // (and its result is safely resting in `ac`) does this function
-// start using its own scratch. `slot->arraySize > 0` means the base
-// is a compile-time-known label (an address - `lxi d, <label>` loads
-// a symbol's own address, exactly like genAddrOf()'s own use of the
-// same trick), otherwise `slot` is a plain pointer variable and the
-// base instead comes from *reading* that variable's own stored value
-// into DE.
+// start using its own scratch.
+//
+// `slot->arraySize > 0` means `slot` is itself the array, and its own
+// base address is the thing to index from; otherwise `slot` is a
+// plain pointer variable and the base instead comes from *reading*
+// that variable's own stored value. A Global's own base is a compile-
+// time-known label (a bare `lxi d, <label>` loads a symbol's own
+// address, exactly like genAddrOf()'s own use of the same trick) or,
+// for a pointer variable, a direct read of its known address
+// (loadPair()); a Local/Param's base is only known at runtime,
+// relative to `fp` (genFrameAddr()), and for a pointer variable means
+// dereferencing that frame address rather than just computing it.
+//
+// A Global array's element i sits at base+2*i, same as any ordinary
+// increasing-address memory - but a *Local* array's element i sits at
+// base-2*i (`frameByteOffset()` is already negative, and
+// genFrameAddr()'s own `addr()` is the array's first/lowest-index
+// word - see I8080Codegen.h's own header comment on why): getting
+// this backwards silently corrupts whatever's above the array in the
+// frame (another Local, the saved `fp`, or the return address
+// itself), so the combine step below subtracts `ptr` (idx*2) from the
+// base instead of adding it whenever the base came from a Local/Param
+// array.
 void I8080Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
     // HL = index*2 (words are 2 bytes on this byte-addressed target,
@@ -388,16 +495,40 @@ void I8080Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     // index first - `dad h` doubles HL in a single instruction, since
     // adding a value to itself is exactly doubling it). Stashed in
     // `ptr` immediately - loading the base below (particularly
-    // loadPair(), which goes through HL) would otherwise clobber it.
+    // loadPair()/genFrameAddr(), which go through HL) would otherwise
+    // clobber it.
     code_ << "    lhld ac\n    dad h\n";
     code_ << "    shld ptr\n";
-    std::string lbl = label(slot);
-    if (slot->arraySize > 0) {
-        code_ << "    lxi d, " << lbl << "\n";
+    const bool isGlobal = slot->kind == ir::SlotKind::Global;
+    if (isGlobal) {
+        if (slot->arraySize > 0) {
+            code_ << "    lxi d, " << label(slot) << "\n";
+        } else {
+            loadPair("d", label(slot));
+        }
     } else {
-        loadPair("d", lbl);
+        genFrameAddr(slot);  // HL = slot's own frame address
+        if (slot->arraySize > 0) {
+            code_ << "    push h\n    pop d\n";  // DE = that address (the array's own base)
+        } else {
+            // slot is a pointer VARIABLE living in this frame - DE
+            // needs its stored runtime VALUE, not its own address.
+            code_ << "    mov e,m\n    inx h\n    mov d,m\n";
+        }
     }
-    code_ << "    lhld ptr\n    dad d\n    shld ptr\n";  // ptr = index*2 + base
+    const bool subtractIdx = !isGlobal && slot->arraySize > 0;
+    if (subtractIdx) {
+        // ptr = base(DE) - index*2(currently in `ptr`) - see this
+        // function's own header comment on why a Local array needs
+        // this instead of the add below. Same DE-minus-HL byte-by-
+        // byte borrow chain as genBinary()'s own "-" operator.
+        code_ << "    lhld ptr\n";
+        code_ << "    mov a,e\n    sub l\n    mov e,a\n";
+        code_ << "    mov a,d\n    sbb h\n    mov d,a\n";
+        storePair("ptr", "d");
+    } else {
+        code_ << "    lhld ptr\n    dad d\n    shld ptr\n";  // ptr = index*2 + base
+    }
 }
 
 void I8080Codegen::genIndex(const ir::Expr &e) {
@@ -409,7 +540,12 @@ void I8080Codegen::genIndex(const ir::Expr &e) {
 
 void I8080Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        code_ << "    lxi h, " << label(operand.slot) << "\n    shld ac\n";
+        if (operand.slot->kind == ir::SlotKind::Global) {
+            code_ << "    lxi h, " << label(operand.slot) << "\n    shld ac\n";
+        } else {
+            genFrameAddr(operand.slot);
+            code_ << "    shld ac\n";
+        }
         return;
     }
     if (operand.kind == ir::ExprKind::Index) {
@@ -422,6 +558,26 @@ void I8080Codegen::genAddrOf(const ir::Expr &operand) {
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");
+}
+
+// Stores arrayInit into `slot`'s own frame slots - every call needs
+// this re-run, since (unlike a Global's one static trailer) a Local's
+// storage is this activation's own fresh frame region, not pre-set to
+// anything; arrayInit is always fully populated up to arraySize
+// (zero-padded even with no source-level initializer), so this always
+// leaves the whole array in a known state, same as a Global array's
+// static trailer always did. Element i's own address is
+// `frameByteOffset(slot) - 2*i` (see I8080Codegen.h's own header
+// comment on why a Local array's elements sit at decreasing addresses
+// as i increases) - computed directly here rather than through
+// genFrameAddr(), which only ever knows `slot`'s own single offset.
+void I8080Codegen::genLocalArrayInit(const ir::Slot *slot) {
+    for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+        code_ << "    lxi h, " << arrayElemText(slot->arrayInit[i]) << "\n    shld ac\n";
+        long elemOffset = frameByteOffset(slot) - 2L * static_cast<long>(i);
+        code_ << "    lhld fp\n    lxi d, " << elemOffset << "\n    dad d\n";
+        storeAcIndirect();
+    }
 }
 
 // Every binary op here saves its left operand across evaluating the

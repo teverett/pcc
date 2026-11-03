@@ -11,6 +11,35 @@ namespace {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
+// Assigns every Local Slot reached from `s` a sequential 1-based
+// frameOffset, in declaration order, and returns the next unused
+// offset - a LocalDecl can only ever appear as a Stmt (never nested
+// inside an Expr, by this subset's own grammar), so walking Block/
+// If/While/LocalDecl's own sub-statements is exhaustive; nothing else
+// here can contain one.
+int assignFrameOffsets(ir::Stmt *s, int nextOffset) {
+    if (!s) return nextOffset;
+    switch (s->kind) {
+        case ir::StmtKind::Block:
+            for (auto &child : s->body) nextOffset = assignFrameOffsets(child.get(), nextOffset);
+            return nextOffset;
+        case ir::StmtKind::If:
+            nextOffset = assignFrameOffsets(s->thenStmt.get(), nextOffset);
+            return assignFrameOffsets(s->elseStmt.get(), nextOffset);
+        case ir::StmtKind::While:
+            return assignFrameOffsets(s->loopBody.get(), nextOffset);
+        case ir::StmtKind::LocalDecl:
+            s->declSlot->frameOffset = nextOffset;
+            return nextOffset + (s->declSlot->arraySize > 0 ? s->declSlot->arraySize : 1);
+        case ir::StmtKind::Return:
+        case ir::StmtKind::ExprStmt:
+        case ir::StmtKind::Empty:
+        case ir::StmtKind::Asm:
+            return nextOffset;
+    }
+    return nextOffset;
+}
+
 class Builder {
    public:
     explicit Builder(bool allowExternal) : allowExternal_(allowExternal) {}
@@ -25,6 +54,7 @@ class Builder {
             for (ir::Slot *p : irFn->params) declareLocal(p->sourceName, p, fn.line);
             ir::StmtPtr body = buildStmt(*fn.body);
             popScope();
+            irFn->frameSize = assignFrameOffsets(body.get(), 1) - 1;
 
             ir::FunctionBody fb;
             fb.func = irFn;

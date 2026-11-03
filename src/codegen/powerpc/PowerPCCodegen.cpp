@@ -24,8 +24,6 @@ constexpr uint32_t kBaseAddress = 0x00100000u;
 constexpr uint32_t kInitialSP = 0x00200000u;
 }  // namespace
 
-void PowerPCCodegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": dw 0"); }
-
 // A literal element's own decimal text; a symbol element is the
 // referenced Slot's or Function's own label, written out bare - "dw"
 // (PowerPCAssembler.cpp's Line::Dw) already evaluates any expr
@@ -51,6 +49,34 @@ void PowerPCCodegen::declareArray(const std::string &lbl, const std::vector<ir::
 void PowerPCCodegen::loadAddress(const std::string &reg, const std::string &lbl) {
     code_ << "    lis " << reg << "," << lbl << "\n";
     code_ << "    ori " << reg << "," << reg << "," << lbl << "\n";
+}
+
+void PowerPCCodegen::loadImmediate(const std::string &reg, int32_t v) {
+    if (v >= -32768 && v <= 32767) {
+        code_ << "    li " << reg << "," << v << "\n";
+        return;
+    }
+    uint32_t uv = static_cast<uint32_t>(v);
+    code_ << "    lis " << reg << "," << static_cast<int32_t>((uv >> 16) & 0xFFFFu) << "\n";
+    code_ << "    ori " << reg << "," << reg << "," << static_cast<int32_t>(uv & 0xFFFFu) << "\n";
+}
+
+void PowerPCCodegen::loadSlotValue(const std::string &reg, const ir::Slot *slot) {
+    if (slot->kind == ir::SlotKind::Global) {
+        loadAddress("t2", label(slot));
+        code_ << "    ldind t2," << reg << "\n";
+        return;
+    }
+    code_ << "    ldindd fp," << reg << "," << slotDisp(slot) << "\n";
+}
+
+void PowerPCCodegen::storeSlotValue(const ir::Slot *slot, const std::string &reg) {
+    if (slot->kind == ir::SlotKind::Global) {
+        loadAddress("t2", label(slot));
+        code_ << "    stind t2," << reg << "\n";
+        return;
+    }
+    code_ << "    stindd fp," << reg << "," << slotDisp(slot) << "\n";
 }
 
 std::string PowerPCCodegen::generate(const ir::Program &prog, bool objectMode) {
@@ -123,13 +149,52 @@ std::map<std::string, std::string> PowerPCCodegen::perFileAsm() const { return p
 // tracking which functions are actually non-leaf, and costs only two
 // real instructions (plus the stack push/pop) on either side - same
 // reasoning as MipsCodegen.cpp's own version of this same comment.
+//
+// This same prologue also gives every call its own real frame: after
+// the caller has already pushed its arguments onto `sp` (see
+// ExprKind::Call below) and `bl` has set the link register, `sp`
+// still points at argument 0, untouched by `bl` itself (a real
+// PowerPC call is only ever a branch-and-link, never a hardware stack
+// push). The prologue pushes the saved return address and the
+// caller's own `fp` below that, in that order, then points `fp` at
+// the second of those two pushed words - so `fp+0` is the caller's
+// `fp`, `fp+4` is the saved return address, and `fp+8+4*i` is
+// argument i, exactly matching slotDisp()'s own Param displacement.
+// `addi sp,sp,-4*frameSize` then reserves this call's own Locals
+// below `fp`, matching slotDisp()'s own Local displacement. Every
+// activation gets its own `fp` this way, chained back through the
+// stack to its caller's, which is what makes direct and mutual
+// recursion safe - unlike this backend's own previous model, where
+// every Local/Param was one shared memory cell every call (recursive
+// or not) stepped on identically.
 void PowerPCCodegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
-    code_ << "    mflr r0\n    addi sp,sp,-4\n    stind sp,r0\n";
-    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
+    code_ << "    mflr r0\n";
+    code_ << "    addi sp,sp,-4\n    stind sp,r0\n";
+    code_ << "    addi sp,sp,-4\n    stind sp,fp\n";
+    code_ << "    or fp,sp,sp\n";
+    if (fn.func->frameSize > 0) code_ << "    addi sp,sp,-" << (fn.func->frameSize * 4) << "\n";
+
     genStmt(*fn.body);
-    code_ << "    ldind sp,r0\n    addi sp,sp,4\n    mtlr r0\n";
+
+    emitEpilogue();
     code_ << "    blr\n\n";
+}
+
+// Restores `fp` and the link register from the words genFunction()'s
+// own prologue saved them to, and leaves `sp` pointing at argument 0
+// again (the same place it pointed right on entry, before the
+// prologue's own two pushes and `addi sp,sp,-4*frameSize`) - the
+// caller, not this function, is responsible for popping the arguments
+// it itself pushed (see ExprKind::Call below), the same caller-cleans-
+// up convention I386Codegen.cpp's own `add esp,N` after `call` uses.
+void PowerPCCodegen::emitEpilogue() {
+    code_ << "    ldind fp,t2\n";
+    code_ << "    addi sp,fp,4\n";
+    code_ << "    ldind sp,r0\n";
+    code_ << "    addi sp,sp,4\n";
+    code_ << "    mtlr r0\n";
+    code_ << "    or fp,t2,t2\n";
 }
 
 void PowerPCCodegen::genStmt(const ir::Stmt &s) {
@@ -167,26 +232,21 @@ void PowerPCCodegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            // Restore the link register (see genFunction()'s own
-            // comment) before returning - a `return` statement is its
-            // own early exit from the function, bypassing
-            // genFunction()'s own fall-through epilogue entirely, so
-            // it needs this same restore inline.
-            code_ << "    ldind sp,r0\n    addi sp,sp,4\n    mtlr r0\n";
+            // A `return` statement is its own early exit from the
+            // function, bypassing genFunction()'s own fall-through
+            // epilogue entirely, so it needs that same frame teardown
+            // inline, before `blr` - see emitEpilogue()'s own comment.
+            // `t0` (this return value) is never touched by it.
+            emitEpilogue();
             code_ << "    blr\n";
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arrayInit);
-            } else {
-                declareTemp(lbl);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    loadAddress("t2", lbl);
-                    code_ << "    stind t2,t0\n";
-                }
+                genLocalArrayInit(s.declSlot);
+            } else if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                storeSlotValue(s.declSlot, "t0");
             }
             return;
         }
@@ -218,8 +278,7 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
-            loadAddress("t2", label(e.slot));
-            code_ << "    ldind t2,t0\n";
+            loadSlotValue("t0", e.slot);
             return;
         }
         case ir::ExprKind::Index: {
@@ -236,8 +295,7 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
                 return;
             }
             genExpr(*e.rhs);
-            loadAddress("t2", label(e.slot));
-            code_ << "    stind t2,t0\n";
+            storeSlotValue(e.slot, "t0");
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -268,12 +326,22 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            for (size_t i = 0; i < e.args.size(); i++) {
+            // Pushes arguments right-to-left so argument 0 ends up
+            // closest to the saved return address once genFunction()'s
+            // own prologue runs in the callee (see its own comment,
+            // and slotDisp()'s Param displacement) - `bl` itself never
+            // touches `sp`, so it's still pointing at argument 0 the
+            // instant control reaches the callee. This function (the
+            // caller) cleans the arguments back off afterward, since
+            // the callee's own epilogue only ever restores `sp` to
+            // where it was on entry - argument 0's own address, not
+            // any address above it.
+            for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                loadAddress("t2", "p_" + e.func->sourceName + "_" + std::to_string(i));
-                code_ << "    stind t2,t0\n";
+                code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
             }
             code_ << "    bl " << label(e.func) << "\n";
+            if (!e.args.empty()) code_ << "    addi sp,sp," << (e.args.size() * 4) << "\n";
             return;
         }
         case ir::ExprKind::CallPtr: {
@@ -313,19 +381,27 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
 
 // `t2` holds the computed address, no zero-page-style placement
 // restriction the way the 6502 backend's own `ptr` has. `arraySize >
-// 0` means the base is a compile-time-known label (an *address*);
-// otherwise `slot` is a plain pointer variable, so the base instead
-// comes from *reading* that variable's own stored value first.
+// 0` means `slot` itself is the array, so the base address is either
+// a compile-time-known label (a Global) or `fp+slotDisp(slot)` (a
+// Local - see slotDisp()'s own comment on why a Local array's element
+// i sits at a *decreasing* address as i increases, the opposite of a
+// Global array's own increasing-address layout, hence `subf` below
+// rather than `add`). `arraySize == 0` means `slot` is a plain
+// pointer variable instead, so the base comes from *reading* that
+// variable's own stored value first (loadSlotValue, not an address).
 void PowerPCCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // t0 = index
     code_ << "    slwi t0,t0,2\n";  // t0 *= 4 (words are 4 bytes on this target)
-    std::string lbl = label(slot);
     if (slot->arraySize > 0) {
-        loadAddress("t2", lbl);
-        code_ << "    add t2,t2,t0\n";
+        if (slot->kind == ir::SlotKind::Global) {
+            loadAddress("t2", label(slot));
+            code_ << "    add t2,t2,t0\n";
+        } else {
+            code_ << "    addi t2,fp," << slotDisp(slot) << "\n";
+            code_ << "    subf t2,t0,t2\n";  // t2 = t2 - t0 ("subf rD,rA,rB" = rB - rA)
+        }
     } else {
-        loadAddress("t1", lbl);
-        code_ << "    ldind t1,t1\n";  // t1 = the pointer variable's own stored value
+        loadSlotValue("t1", slot);  // t1 = the pointer variable's own stored value
         code_ << "    add t2,t1,t0\n";
     }
 }
@@ -335,15 +411,36 @@ void PowerPCCodegen::genIndex(const ir::Expr &e) {
     code_ << "    ldind t2,t0\n";
 }
 
+// Stores `slot->arrayInit` into this Local array's own frame slots -
+// a Local array's own address isn't a compile-time-resolvable label
+// the way a Global array's is, so (unlike declareArray()'s own `dw`
+// trailer line) this has to run as real code, one element at a time,
+// every time this declaration is reached.
+void PowerPCCodegen::genLocalArrayInit(const ir::Slot *slot) {
+    for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+        const ir::ArrayInitElem &elem = slot->arrayInit[i];
+        if (elem.isSymbol) {
+            loadAddress("t0", elem.slot ? label(elem.slot) : label(elem.func));
+        } else {
+            loadImmediate("t0", static_cast<int32_t>(static_cast<uint32_t>(elem.value)));
+        }
+        int disp = slotDisp(slot) - 4 * static_cast<int>(i);
+        code_ << "    stindd fp,t0," << disp << "\n";
+    }
+}
+
 void PowerPCCodegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        loadAddress("t2", label(operand.slot));
-        code_ << "    or t0,t2,t2\n";  // t0 = t2 (real PowerPC "mr" idiom)
+        if (operand.slot->kind == ir::SlotKind::Global) {
+            loadAddress("t0", label(operand.slot));
+        } else {
+            code_ << "    addi t0,fp," << slotDisp(operand.slot) << "\n";
+        }
         return;
     }
     if (operand.kind == ir::ExprKind::Index) {
         genIndexAddr(operand.slot, *operand.lhs);
-        code_ << "    or t0,t2,t2\n";  // t0 = t2
+        code_ << "    or t0,t2,t2\n";  // t0 = t2 (real PowerPC "mr" idiom)
         return;
     }
     if (operand.kind == ir::ExprKind::Func) {

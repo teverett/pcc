@@ -28,8 +28,6 @@ constexpr uint32_t kBaseAddress = 0x1000;
 constexpr uint32_t kInitialSP = 0x100000;
 }  // namespace
 
-void M68kCodegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": dl 0"); }
-
 // A literal element is its own decimal text; a symbol element (a
 // dispatch-table address-of-function/global, see IR.h's
 // ArrayInitElem) is the referenced Slot's or Function's own label,
@@ -113,8 +111,16 @@ std::map<std::string, std::string> M68kCodegen::perFileAsm() const { return perF
 
 void M68kCodegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
-    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
+    // Real per-call frame (see M68kCodegen.h's own header comment):
+    // `linkl a6,-N` pushes the caller's `a6`, points this call's own
+    // `a6` at that saved value, and reserves N bytes below it for
+    // this function's own Locals (frameSize is already word count -
+    // see IR.h's own Function::frameSize - so bytes is *4).
+    code_ << "    linkl a6," << (-4 * fn.func->frameSize) << "\n";
+
     genStmt(*fn.body);
+
+    code_ << "    unlkl a6\n";
     code_ << "    rts\n\n";
 }
 
@@ -152,19 +158,16 @@ void M68kCodegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
+            code_ << "    unlkl a6\n";
             code_ << "    rts\n";
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arrayInit);
-            } else {
-                declareTemp(lbl);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    code_ << "    movel d0," << lbl << "\n";
-                }
+                genLocalArrayInit(s.declSlot);
+            } else if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                code_ << "    movel d0," << addr(s.declSlot) << "\n";
             }
             return;
         }
@@ -189,7 +192,7 @@ void M68kCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
-            code_ << "    movel " << label(e.slot) << ",d0\n";
+            code_ << "    movel " << operandOf(e.slot) << ",d0\n";
             return;
         }
         case ir::ExprKind::Index: {
@@ -206,7 +209,7 @@ void M68kCodegen::genExpr(const ir::Expr &e) {
                 return;
             }
             genExpr(*e.rhs);
-            code_ << "    movel d0," << label(e.slot) << "\n";
+            code_ << "    movel d0," << operandOf(e.slot) << "\n";
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -237,11 +240,20 @@ void M68kCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            for (size_t i = 0; i < e.args.size(); i++) {
+            // Real stack-passed arguments, pushed right-to-left so
+            // param 0 ends up closest to the return address JSR is
+            // about to push (see M68kCodegen.h's own `addr()` comment)
+            // - each call's own arguments land in that call's own
+            // frame this way, never in a shared per-function cell.
+            // Caller cleans up its own pushed arguments afterwards
+            // (`adda <N>,a7`) - same cdecl-style convention as
+            // I386Codegen.cpp's own identical `Call` case.
+            for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                code_ << "    movel d0,p_" << e.func->sourceName << "_" << i << "\n";
+                code_ << "    pushl d0\n";
             }
             code_ << "    jsr " << label(e.func) << "\n";
+            if (!e.args.empty()) code_ << "    adda " << (4 * e.args.size()) << ",a7\n";
             return;
         }
         case ir::ExprKind::CallPtr: {
@@ -282,22 +294,47 @@ void M68kCodegen::genExpr(const ir::Expr &e) {
 // address, no zero-page-style placement restriction the way the
 // 6502 backend's own `ptr` has (see that file's own
 // genIndexAddr()). `slot->arraySize > 0` means the base is a
-// compile-time-known label (an *address*, loaded via `leal`);
-// otherwise `slot` is a plain pointer variable, so the base instead
-// comes from *reading* that variable's own stored value first.
+// compile-time-known address (a Global's own label, loaded via
+// `leal`, or a Local's own frame-relative storage - see addr()); a
+// Global array's elements sit at increasing addresses as the index
+// increases, but a Local array's own elements sit at *decreasing*
+// addresses (addr(slot) is the array's first word, closest to `a6`;
+// later words are further below it - see M68kCodegen.h's own
+// `addr()` comment), so a Local array indexes base-minus-scaled-
+// index, not base-plus (`suba` instead of `adda`). Otherwise `slot`
+// is a plain pointer variable, so the base instead comes from
+// *reading* that variable's own stored value first.
 void M68kCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // d0 = index
     // d0 *= 4 (words are 4 bytes on this target - see M68kCodegen.h's
     // own header comment on word size); done as two doublings rather
     // than a shift, needing no extra register at all.
     code_ << "    addl d0,d0\n    addl d0,d0\n";
-    std::string lbl = label(slot);
     if (slot->arraySize > 0) {
-        code_ << "    leal " << lbl << ",a0\n";
-        code_ << "    adda d0,a0\n";
+        if (slot->kind == ir::SlotKind::Global) {
+            code_ << "    leal " << label(slot) << ",a0\n";
+            code_ << "    adda d0,a0\n";
+        } else {
+            code_ << "    leal " << addr(slot) << ",a0\n";
+            code_ << "    suba d0,a0\n";
+        }
     } else {
-        code_ << "    movel " << lbl << ",a0\n";
+        code_ << "    movel " << operandOf(slot) << ",a0\n";
         code_ << "    adda d0,a0\n";
+    }
+}
+
+// Stores each of a Local array's own initializer values directly into
+// its own frame slots (no static trailer storage - unlike a Global
+// array's `declareArray()`, a Local's storage is this call's own
+// frame, freshly reserved by `linkl` every time this function runs).
+// `MOVE.L` accepts an immediate or absolute-label source going
+// straight into a frame-relative destination, so each element needs
+// only one instruction.
+void M68kCodegen::genLocalArrayInit(const ir::Slot *slot) {
+    for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+        code_ << "    movel " << arrayElemText(slot->arrayInit[i]) << ",[a6-"
+              << (4 * (slot->frameOffset + static_cast<int>(i))) << "]\n";
     }
 }
 
@@ -308,7 +345,7 @@ void M68kCodegen::genIndex(const ir::Expr &e) {
 
 void M68kCodegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        code_ << "    leal " << label(operand.slot) << ",a0\n";
+        code_ << "    leal " << operandOf(operand.slot) << ",a0\n";
         code_ << "    movel a0,d0\n";
         return;
     }

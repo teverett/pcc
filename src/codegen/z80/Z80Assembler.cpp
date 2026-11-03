@@ -493,6 +493,22 @@ class Assembler {
                     return;
                 }
             }
+            // LD ix,nn - the one real `ix`-immediate form this
+            // backend's own frame setup ever emits (see
+            // Z80Codegen.cpp's own genFunction() comment: `ix` is
+            // zeroed, then real SP is added in, since there's no
+            // direct `ld ix,sp`). Checked explicitly, and before the
+            // generic bc/de/hl/sp table right below, since "ix" isn't
+            // in that table at all and would otherwise fall all the
+            // way through to the 8-bit `ld r,r'`/`ld r,n` case below
+            // and fail there with a confusing "not a register" error
+            // instead of actually being handled.
+            if (dstName && *dstName == "ix" && !dst.isMemory && !src.isMemory) {
+                emit8(0xDD);
+                emit8(0x21);
+                emit16(src);
+                return;
+            }
             // LD rr,nn (16-bit immediate) - only once every bracketed
             // form above has already been ruled out.
             if (dstName && !dst.isMemory && !src.isMemory) {
@@ -537,6 +553,20 @@ class Assembler {
             const Operand &op0 = operandAt(ops, 0, mnemonic, 2);
             const Operand &op1 = operandAt(ops, 1, mnemonic, 2);
             auto op0Name = asBareIdent(op0);
+            if (op0Name && *op0Name == "ix") {
+                // ADD IX,SP - the one real `ix`-pair form this
+                // backend's own frame setup ever emits (see
+                // Z80Codegen.cpp's own genFunction() comment); the
+                // real DD-prefixed encoding is otherwise identical in
+                // shape to ADD HL,rr below, just with `ix` standing
+                // in for `hl`.
+                if (mnemonic != "add") fail("'" + mnemonic + " ix,...' isn't supported - only 'add ix,sp' is");
+                auto op1Name = asBareIdent(op1);
+                if (!op1Name || *op1Name != "sp") fail("'add ix,...' is only supported as 'add ix,sp'");
+                emit8(0xDD);
+                emit8(0x39);
+                return;
+            }
             if (op0Name && *op0Name == "hl") {  // ADD HL,rr / ADC HL,rr / SBC HL,rr
                 uint8_t rp = pairCodeBDHSP(op1, mnemonic);
                 uint8_t base = mnemonic == "add" ? 0x09 : (mnemonic == "adc" ? 0x4A : 0x42);
@@ -584,7 +614,20 @@ class Assembler {
             return;
         }
         if (mnemonic == "push" || mnemonic == "pop") {
-            uint8_t rp = pairCodeBDHAF(operandAt(ops, 0, mnemonic, 1), mnemonic);
+            const Operand &op0 = operandAt(ops, 0, mnemonic, 1);
+            // PUSH IX / POP IX - this backend's own frame setup
+            // saves/restores the caller's `ix` around every call
+            // (see Z80Codegen.cpp's own genFunction() comment); `ix`
+            // isn't in pairCodeBDHAF's own bc/de/hl/af table at all
+            // (it needs the real DD prefix instead), so it's checked
+            // explicitly first.
+            auto name = asBareIdent(op0);
+            if (name && *name == "ix") {
+                emit8(0xDD);
+                emit8(mnemonic == "push" ? 0xE5 : 0xE1);
+                return;
+            }
+            uint8_t rp = pairCodeBDHAF(op0, mnemonic);
             uint8_t base = mnemonic == "push" ? 0xC5 : 0xC1;
             emit8(static_cast<uint8_t>(base | (rp << 4)));
             return;

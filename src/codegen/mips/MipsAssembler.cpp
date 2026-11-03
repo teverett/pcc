@@ -83,14 +83,15 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
 // register-name table in full - just the handful MipsCodegen.cpp
 // ever emits - see MipsCodegen.h's own header comment on each
 // register's role): `zero`=0, `at`=1, `t0`=8, `t1`=9, `t2`=10,
-// `sp`=29, `ra`=31 - the real MIPS register numbers those names
-// carry in every actual MIPS assembler too, so the encoded bit
-// patterns below match genuine MIPS object code exactly, even
-// though this dialect only ever names this one subset of the 32
-// GPRs. Returns -1 if `name` isn't one of them.
+// `sp`=29, `fp`=30, `ra`=31 - the real MIPS register numbers those
+// names carry in every actual MIPS assembler too (`fp` is the real
+// o32 ABI's own `$s8`/`$fp`), so the encoded bit patterns below match
+// genuine MIPS object code exactly, even though this dialect only
+// ever names this one subset of the 32 GPRs. Returns -1 if `name`
+// isn't one of them.
 int regNumber(const std::string &lower) {
     static const std::unordered_map<std::string, int> names = {
-        {"zero", 0}, {"at", 1}, {"t0", 8}, {"t1", 9}, {"t2", 10}, {"sp", 29}, {"ra", 31},
+        {"zero", 0}, {"at", 1}, {"t0", 8}, {"t1", 9}, {"t2", 10}, {"sp", 29}, {"fp", 30}, {"ra", 31},
     };
     auto it = names.find(lower);
     return it == names.end() ? -1 : it->second;

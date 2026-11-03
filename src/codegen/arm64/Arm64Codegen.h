@@ -24,10 +24,13 @@ namespace pcc {
 // image at a fixed, well-documented offset - see MipsCodegen.h's own
 // header comment on why a from-scratch simulator wasn't used instead:
 // unlike MIPS, qemu ships several real Cortex-A cores, so there's no
-// reason not to use one) - halting in a self-branch infinite loop,
-// the same "no stack, no recursion" model every backend shares even
-// though real function calls (`bl`/`ret`) and a real hardware stack
-// (`sp`) are both used.
+// reason not to use one) - halting in a self-branch infinite loop.
+// Every function has a real per-call stack frame (see genFunction()
+// and loadSlotAddr()'s own comment), so direct and indirect recursion
+// both work: every activation gets its own `x29`-rooted frame, its
+// own copy of every Local/Param, and its own saved `x30`/`x29` pair,
+// exactly mirroring I386Codegen.h's `ebp`-based frame (just with a
+// different fixed offset - see loadSlotAddr()'s own comment on why).
 //
 // This language's own `int` is 32 bits here (every real A64 GPR is 64
 // bits wide, but every data-processing instruction this backend emits
@@ -50,31 +53,38 @@ namespace pcc {
 // inserting one.
 //
 // Register assignment (this backend's own convention, not a real
-// AAPCS64 calling-convention choice, since there's no cross-function
-// register-passed-argument convention at all - every parameter is a
-// statically allocated slot, same as every other backend - see
-// genFunction()):
+// AAPCS64 calling-convention choice - arguments go through the
+// caller's own pushed stack words, not registers, same as every
+// other backend that has migrated to real per-call frames - see
+// loadSlotAddr()):
 //   w0/x0  ("ac")   - genExpr()'s own result (same role as MIPS's $t0)
 //   w1/x1           - "the other operand" in a binary op ($t1)
 //   w2/x2           - holds a computed address when dereferencing one
-//                      (array/pointer indexing, `*`/`&`) ($t2)
+//                      (array/pointer indexing, `*`/`&`, or a Local/
+//                      Param's own frame-relative address) ($t2)
 //   sp              - the real hardware stack pointer: adjusted with
 //                      `add`/`sub sp,sp,#imm`, `ldind`/`stind` through
-//                      it, used both to save one operand across
-//                      evaluating the other in a binary expression
-//                      and for every function call/return
+//                      it, used to save one operand across evaluating
+//                      the other in a binary expression, to pass
+//                      every call's own arguments, and to reserve/
+//                      release each call's own frame
+//   x29 (fp)        - this call's own frame pointer, set up by
+//                      genFunction()'s prologue and torn down by its
+//                      epilogue - see loadSlotAddr()'s own comment
 //   x30 (lr)        - the real hardware link register `bl` sets and
 //                      `ret` reads
 //
 // Like MIPS, A64 has no absolute-addressing memory operand - every
 // load/store goes through a base register with (here, always) a zero
-// displacement, so reading or writing any global/local/array slot
-// first loads that slot's own fixed address into `x2` via `movz`+
-// `movk` (Arm64Assembler.cpp resolves a label operand to its own
-// low/high 16 bits respectively for exactly these two mnemonics - see
-// its own header comment), then `ldind`/`stind x2,w0` (this backend's
-// own dedicated mnemonics for `ldr`/`str` with a fixed zero
-// displacement, same convention as MIPS's own `ldind`/`stind`).
+// displacement. Reading or writing a Global first loads its own fixed
+// address into `x2` via `movz`+`movk` (Arm64Assembler.cpp resolves a
+// label operand to its own low/high 16 bits respectively for exactly
+// these two mnemonics - see its own header comment); a Local/Param
+// instead computes its own `x29`-relative address into `x2` with
+// `mov`+`add`/`sub` (see loadSlotAddr()). Either way the actual
+// access is then `ldind`/`stind x2,w0` (this backend's own dedicated
+// mnemonics for `ldr`/`str` with a fixed zero displacement, same
+// convention as MIPS's own `ldind`/`stind`).
 //
 // `*`/`/` use the real hardware `sdiv` (a full 32-bit signed divide)
 // and `msub` (remainder = dividend - quotient*divisor, in one
@@ -142,6 +152,7 @@ class Arm64Codegen : public Backend {
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
 
     // Leaves slot[idxExpr]'s own effective address in `x2`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
@@ -151,16 +162,33 @@ class Arm64Codegen : public Backend {
     // two instructions here where 68000 needs none).
     void loadAddress(const std::string &reg, const std::string &lbl);
 
+    // Loads 32-bit immediate `uv` into `reg` (a `w`-named register) -
+    // `movz` alone when it fits in 16 bits, `movz`+`movk` otherwise.
+    void loadImm32(const std::string &reg, uint32_t uv);
+
+    // Every function gets a real per-call stack frame (see
+    // genFunction()): `x29` is this call's own frame pointer, set up
+    // by the prologue to point at the saved-old-`x29` word once the
+    // old `x29`/`x30` are both saved below the caller's own pushed
+    // arguments. A Param's own storage is the CALLER's pushed
+    // argument, sitting above those two saved words (`x29+32+4*
+    // paramIndex` - 32 because each of the two saves below uses its
+    // own 16-byte-aligned push, matching every other temp-save in
+    // this file); a Local's is reserved by the prologue's own
+    // `sub sp,sp,frameSize*4` below `x29` (`x29-4*frameOffset` -
+    // Slot::frameOffset is already a 1-based sequential word index in
+    // declaration order - see IR.h's own comment). This makes
+    // recursion (direct or indirect) safe: every activation gets its
+    // own `x29` and its own frame, unlike a Global's one real static
+    // cell. Loads the computed address into 64-bit register `reg`.
+    void loadSlotAddr(const std::string &reg, const ir::Slot *slot);
+
     static std::string label(const ir::Slot *slot) {
         if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
-        if (slot->kind == ir::SlotKind::Param) {
-            return "p_" + slot->ownerFunctionName + "_" + std::to_string(slot->paramIndex);
-        }
         return slot->sourceName + "_" + std::to_string(slot->id);
     }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
-    void declareTemp(const std::string &lbl);
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
@@ -170,6 +198,10 @@ class Arm64Codegen : public Backend {
     std::map<std::string, std::string> perFileAsm_;
 
     int labelCounter_ = 0;
+    // The function genStmt() is currently generating code for - its
+    // own frameSize, needed by a `return` statement's own inline
+    // epilogue (see genFunction()'s own comment).
+    int currentFrameSize_ = 0;
 };
 
 }  // namespace pcc

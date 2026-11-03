@@ -66,6 +66,38 @@ void Z80Codegen::storePair(const std::string &dst, const std::string &pairReg) {
     code_ << "    ld [" << dst << "], " << pairReg << "\n";
 }
 
+// See Z80Codegen.h's own header comment on why this goes through the
+// real hardware stack: there's no `ld hl,ix` (or any other direct
+// register-to-register move between HL and IX) on this chip, only
+// `ld sp,ix`/`ld ix,sp`-shaped forms, neither of which is HL. `ix`
+// itself is left untouched - only the real SP moves, transiently,
+// across the push/pop pair - so this is safe to call in the middle
+// of evaluating anything else.
+void Z80Codegen::loadFrameAddr(const ir::Slot *slot, long extraWords) {
+    code_ << "    push ix\n    pop hl\n";
+    long off = slot->kind == ir::SlotKind::Param ? (4 + 2 * static_cast<long>(slot->paramIndex))
+                                                   : (-2L * (slot->frameOffset + extraWords));
+    uint16_t off16 = static_cast<uint16_t>(off);
+    code_ << "    ld de, " << off16 << "\n    add hl, de\n";
+}
+
+void Z80Codegen::readWordAt(const std::string &loReg, const std::string &hiReg) {
+    code_ << "    ld " << loReg << ", m\n    inc hl\n    ld " << hiReg << ", m\n";
+}
+
+// A Local array's own initializer values (if any - see
+// IRBuilder.h's `ArrayInitElem`) are stored into this call's own
+// frame once, right here at the point of declaration, rather than
+// ever living in static trailer data the way a Global array's own
+// `declareArray()` does - every call needs its own independent copy.
+void Z80Codegen::genLocalArrayInit(const ir::Slot *slot) {
+    for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+        loadFrameAddr(slot, static_cast<long>(i));
+        code_ << "    ld de, " << arrayElemText(slot->arrayInit[i]) << "\n";
+        code_ << "    ld m, e\n    inc hl\n    ld m, d\n";
+    }
+}
+
 void Z80Codegen::storeAcIndirect() {
     // Assumes HL already holds the target address - plain
     // accumulator loads from `ac`'s own two bytes (by name, never
@@ -182,10 +214,37 @@ std::string Z80Codegen::generate(const ir::Program &prog, bool objectMode) {
 // backend's own perFileAsm().
 std::map<std::string, std::string> Z80Codegen::perFileAsm() const { return perFileAsm_; }
 
+// Every call gets its own real frame, built around `ix`: the real
+// hardware stack is what makes this reentrant (direct or indirect
+// recursion both just mean more real CALLs, each pushing its own
+// return address and getting its own `ix` - see loadFrameAddr()'s
+// own header comment). On entry, SP points at the real return
+// address CALL just pushed; `push ix` saves the caller's own frame
+// pointer right below it, then `ix` is set to that same SP (no
+// direct `ld ix,sp` exists on this chip, so this goes through `ix`
+// itself: zero it, then add the real SP value in) - so from `ix`:
+// `ix+0` is the saved caller `ix`, `ix+2` the return address,
+// `ix+4+2*i` the i'th argument (pushed by the caller in reverse
+// order - see the `Call` case below - so argument 0 ends up closest
+// to the return address). `frameReserveBytes_` single-byte `dec sp`s
+// then carve out this function's own Locals below `ix`, one byte at
+// a time (no instruction moves an arbitrary computed value into SP
+// directly - see loadFrameAddr()'s own comment on the same
+// restriction for HL/ix). Every `Return` (and this implicit
+// fallthrough one) undoes exactly that with the matching `inc sp`s
+// before restoring the caller's own `ix` and returning.
 void Z80Codegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
-    for (ir::Slot *p : fn.func->params) declareTemp(label(p));
+    code_ << "    push ix\n";
+    code_ << "    ld ix, 0\n";
+    code_ << "    add ix, sp\n";
+    frameReserveBytes_ = fn.func->frameSize * 2;
+    for (int i = 0; i < frameReserveBytes_; i++) code_ << "    dec sp\n";
+
     genStmt(*fn.body);
+
+    for (int i = 0; i < frameReserveBytes_; i++) code_ << "    inc sp\n";
+    code_ << "    pop ix\n";
     code_ << "    ret\n\n";
 }
 
@@ -223,19 +282,26 @@ void Z80Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
+            for (int i = 0; i < frameReserveBytes_; i++) code_ << "    inc sp\n";
+            code_ << "    pop ix\n";
             code_ << "    ret\n";
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
             if (s.declSlot->arraySize > 0) {
-                declareArray(lbl, s.declSlot->arrayInit);
-            } else {
-                declareTemp(lbl);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    copy16(lbl, "ac");
-                }
+                genLocalArrayInit(s.declSlot);
+            } else if (s.initOrReturnOrExpr) {
+                // The target address has to survive evaluating the
+                // initializer intact - which might itself index into
+                // an array and so reuse `ptr` as scratch (see
+                // genIndexAddr()) - so it's saved on the real
+                // hardware stack instead, exactly like the indexed-
+                // Assign case below does.
+                loadFrameAddr(s.declSlot);
+                code_ << "    push hl\n";
+                genExpr(*s.initOrReturnOrExpr);
+                code_ << "    pop hl\n";
+                storeAcIndirect();
             }
             return;
         }
@@ -261,7 +327,13 @@ void Z80Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
-            copy16("ac", label(e.slot));
+            if (e.slot->kind == ir::SlotKind::Global) {
+                copy16("ac", label(e.slot));
+            } else {
+                loadFrameAddr(e.slot);
+                readWordAt("e", "d");
+                storePair("ac", "de");
+            }
             return;
         }
         case ir::ExprKind::Index: {
@@ -277,8 +349,20 @@ void Z80Codegen::genExpr(const ir::Expr &e) {
                 storeAcIndirect();
                 return;
             }
+            if (e.slot->kind == ir::SlotKind::Global) {
+                genExpr(*e.rhs);
+                copy16(label(e.slot), "ac");
+                return;
+            }
+            // Same reasoning as the indexed-Assign case just above -
+            // `ptr` isn't safe to park the target address in across
+            // evaluating `rhs`, since `rhs` might itself index into
+            // an array and reuse `ptr` as scratch there.
+            loadFrameAddr(e.slot);
+            code_ << "    push hl\n";
             genExpr(*e.rhs);
-            copy16(label(e.slot), "ac");
+            code_ << "    pop hl\n";
+            storeAcIndirect();
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -316,11 +400,19 @@ void Z80Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            for (size_t i = 0; i < e.args.size(); i++) {
+            // Real argument passing on the real hardware stack -
+            // pushed right-to-left so argument 0 ends up closest to
+            // the return address (see genFunction()'s own header
+            // comment on the resulting `ix+4+2*i` layout); the callee
+            // never cleans these up itself (no `ret n` on this chip),
+            // so this caller pops them back off, one throwaway `pop
+            // hl` per argument, right after the call returns.
+            for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                copy16("p_" + e.func->sourceName + "_" + std::to_string(i), "ac");
+                code_ << "    ld hl, [ac]\n    push hl\n";
             }
             code_ << "    call " << label(e.func) << "\n";
+            for (size_t i = 0; i < e.args.size(); i++) code_ << "    pop hl\n";
             return;
         }
         case ir::ExprKind::CallPtr: {
@@ -373,14 +465,34 @@ void Z80Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
     // HL = index*2 (words are 2 bytes on this byte-addressed target) -
     // `ADD HL,HL` doubles HL in one instruction, same trick as the
-    // 8080 backend's own `DAD H`.
+    // 8080 backend's own `DAD H`. Stashed in `ptr` (not a register)
+    // since loadFrameAddr() below needs HL/DE itself.
     code_ << "    ld hl, [ac]\n    add hl, hl\n";
     code_ << "    ld [ptr], hl\n";
-    std::string lbl = label(slot);
     if (slot->arraySize > 0) {
-        code_ << "    ld de, " << lbl << "\n";
+        if (slot->kind == ir::SlotKind::Global) {
+            code_ << "    ld de, " << label(slot) << "\n";
+            code_ << "    ld hl, [ptr]\n    add hl, de\n    ld [ptr], hl\n";
+        } else {
+            // A Local array's own words sit at decreasing addresses
+            // as its element index increases (loadFrameAddr() gives
+            // the array's own first word, closest to `ix` - later
+            // words are further below it) - the mirror image of a
+            // Global array's increasing-address layout above, so
+            // this is base-minus-scaled-index via a real subtract-
+            // with-carry, not base-plus.
+            loadFrameAddr(slot);               // hl = array's own base address
+            code_ << "    ld de, [ptr]\n";     // de = scaled index, saved above
+            code_ << "    or a\n    sbc hl, de\n";
+            code_ << "    ld [ptr], hl\n";
+        }
+        return;
+    }
+    if (slot->kind == ir::SlotKind::Global) {
+        loadPair("de", label(slot));
     } else {
-        loadPair("de", lbl);
+        loadFrameAddr(slot);
+        readWordAt("e", "d");
     }
     code_ << "    ld hl, [ptr]\n    add hl, de\n    ld [ptr], hl\n";
 }
@@ -394,7 +506,12 @@ void Z80Codegen::genIndex(const ir::Expr &e) {
 
 void Z80Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        code_ << "    ld hl, " << label(operand.slot) << "\n    ld [ac], hl\n";
+        if (operand.slot->kind == ir::SlotKind::Global) {
+            code_ << "    ld hl, " << label(operand.slot) << "\n    ld [ac], hl\n";
+        } else {
+            loadFrameAddr(operand.slot);
+            code_ << "    ld [ac], hl\n";
+        }
         return;
     }
     if (operand.kind == ir::ExprKind::Index) {

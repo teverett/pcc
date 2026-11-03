@@ -67,6 +67,63 @@ void PIC18Codegen::sub16(const std::string &dst, const std::string &a, const std
     code_ << "    movwf " << dst << "+1\n";
 }
 
+// Size, in bytes, of `FSTACK` - see PIC18Codegen.h's own header
+// comment on the real trade-off this constant is: more headroom for
+// simultaneous call frames (deeper recursion before this backend's
+// own frame region runs out, rather than the real 31-level hardware
+// call stack) against fewer bytes left over, in this chip's own 96-
+// byte Access Bank window, for every linked program's own globals.
+constexpr int kFrameStackBytes = 48;
+
+// Saves the caller's own `FP` (untouched by the real hardware `call`
+// that just landed here) at `NFP-1`, then adopts `NFP` - the address
+// the caller already computed for this call's own frame, immediately
+// before `call` - as this call's own `FP`. See PIC18Codegen.h's own
+// header comment.
+void PIC18Codegen::emitPrologue() {
+    code_ << "    movf NFP,w\n    addlw 255\n    movwf ptr\n";  // ptr = NFP-1 (255 == -1 mod 256)
+    code_ << "    movf ptr,w\n    movwf FSR0L\n";
+    code_ << "    movf FP,w\n    movwf INDF0\n";  // [NFP-1] = caller's own FP
+    code_ << "    movf NFP,w\n    movwf FP\n";
+}
+
+// The reverse: restores the caller's own `FP` from `FP-1`, right
+// before falling through to the real hardware `return`.
+void PIC18Codegen::emitEpilogue() {
+    code_ << "    movf FP,w\n    addlw 255\n    movwf ptr\n";  // ptr = FP-1
+    code_ << "    movf ptr,w\n    movwf FSR0L\n";
+    code_ << "    movf INDF0,w\n    movwf FP\n";
+}
+
+void PIC18Codegen::slotAddrToPtr(const ir::Slot *slot) {
+    if (slot->kind == ir::SlotKind::Global) {
+        code_ << "    movlw " << label(slot) << "\n    movwf ptr\n";
+        return;
+    }
+    int off = slotFrameOffsetBytes(slot);
+    code_ << "    movf FP,w\n";
+    if (off != 0) code_ << "    addlw " << off << "\n";
+    code_ << "    movwf ptr\n";
+}
+
+void PIC18Codegen::loadSlotToAc(const ir::Slot *slot) {
+    if (slot->kind == ir::SlotKind::Global) {
+        copy2("ac", label(slot));
+        return;
+    }
+    slotAddrToPtr(slot);
+    loadAcIndirect();
+}
+
+void PIC18Codegen::storeAcToSlot(const ir::Slot *slot) {
+    if (slot->kind == ir::SlotKind::Global) {
+        copy2(label(slot), "ac");
+        return;
+    }
+    slotAddrToPtr(slot);
+    storeAcIndirect();
+}
+
 void PIC18Codegen::inc16(const std::string &lbl) {
     std::string Lskip = newLabel();
     code_ << "    incfsz " << lbl << ",f\n";
@@ -156,7 +213,7 @@ std::string PIC18Codegen::generate(const ir::Program &prog, bool objectMode) {
         // PIC18Assembler.h's own `kPIC18DataBaseAddress` comment for
         // why these specific addresses (and why no relocation is
         // needed for them at all).
-        code_ << "ac = 0\nbc = 2\ncx = 4\ndx = 6\nptr = 8\nSP = 9\nSSTACK = 10\n";
+        code_ << "ac = 0\nbc = 2\ncx = 4\ndx = 6\nptr = 8\nSP = 9\nSSTACK = 10\nFP = 34\nNFP = 35\nFSTACK = 36\n";
     } else {
         declareRam("ac", 2, false);
         declareRam("bc", 2, false);
@@ -165,6 +222,9 @@ std::string PIC18Codegen::generate(const ir::Program &prog, bool objectMode) {
         declareRam("ptr", 1, false);
         declareRam("SP", 1, false);
         declareRam("SSTACK", 24, false);
+        declareRam("FP", 1, false);
+        declareRam("NFP", 1, false);
+        declareRam("FSTACK", kFrameStackBytes, false);
     }
 
     std::ostringstream globalInit;
@@ -196,11 +256,7 @@ std::string PIC18Codegen::generate(const ir::Program &prog, bool objectMode) {
             // the one place every linked program is guaranteed to
             // reach exactly once, before any other code, that this
             // file *does* control.
-            code_ << label(fb.func) << ":\n";
-            for (ir::Slot *p : fb.func->params) declareRam(label(p), 2);
-            code_ << globalInit.str();
-            genStmt(*fb.body);
-            code_ << "    return\n\n";
+            genFunction(fb, globalInit.str());
         } else {
             genFunction(fb);
         }
@@ -235,6 +291,13 @@ std::string PIC18Codegen::generate(const ir::Program &prog, bool objectMode) {
             }
         }
         header << globalInit.str();
+        // `fn_main`'s own prologue expects `NFP` to already hold its
+        // new frame's own address (see this file's own header comment
+        // on `FP`/`NFP`) - `FSTACK+1` (not `FSTACK` itself) leaves one
+        // byte at `FSTACK+0` for that same prologue's own "caller's
+        // FP" save, never read back meaningfully since `main` has no
+        // real caller to return `FP` to in whole-program mode.
+        header << "    movlw FSTACK+1\n    movwf NFP\n";
         header << "    call " << label(mainFn) << "\n";
         header << "HALT:\n    goto HALT\n\n";
     }
@@ -249,10 +312,14 @@ std::string PIC18Codegen::generate(const ir::Program &prog, bool objectMode) {
 
 std::map<std::string, std::string> PIC18Codegen::perFileAsm() const { return perFileAsm_; }
 
-void PIC18Codegen::genFunction(const ir::FunctionBody &fn) {
+void PIC18Codegen::genFunction(const ir::FunctionBody &fn, const std::string &extraPrologue) {
+    paramCount_ = static_cast<int>(fn.func->params.size());
+    frameSizeBytes_ = (paramCount_ + fn.func->frameSize) * 2;
     code_ << label(fn.func) << ":\n";
-    for (ir::Slot *p : fn.func->params) declareRam(label(p), 2);
+    emitPrologue();
+    code_ << extraPrologue;
     genStmt(*fn.body);
+    emitEpilogue();
     code_ << "    return\n\n";
 }
 
@@ -290,19 +357,18 @@ void PIC18Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
+            emitEpilogue();
             code_ << "    return\n";
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            std::string lbl = label(s.declSlot);
-            if (s.declSlot->arraySize > 0) {
-                declareRam(lbl, s.declSlot->arraySize * 2);
-            } else {
-                declareRam(lbl, 2);
-                if (s.initOrReturnOrExpr) {
-                    genExpr(*s.initOrReturnOrExpr);
-                    copy2(lbl, "ac");
-                }
+            // Space for every Local is already accounted for by
+            // `Slot::frameOffset`/`Function::frameSize` (IR.h) - this
+            // only ever has an initializer left to emit, for a
+            // scalar; an array local has none.
+            if (s.declSlot->arraySize == 0 && s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                storeAcToSlot(s.declSlot);
             }
             return;
         }
@@ -329,7 +395,7 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
-            copy2("ac", label(e.slot));
+            loadSlotToAc(e.slot);
             return;
         }
         case ir::ExprKind::Index: {
@@ -346,7 +412,7 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
                 return;
             }
             genExpr(*e.rhs);
-            copy2(label(e.slot), "ac");
+            storeAcToSlot(e.slot);
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -378,10 +444,32 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
+            // The callee's own new frame starts right after this
+            // function's own ("`FP + frameSizeBytes_`"), with one more
+            // byte set aside first for the callee's own saved-FP slot
+            // - see this file's own header comment on `FP`/`NFP`.
+            // `frameSizeBytes_` is this function's own compile-time
+            // constant throughout its whole codegen, so this offset
+            // from the *current* `FP` is correct at whatever call
+            // depth this call site actually runs at, recursive or
+            // not.
+            int newFrameOff = frameSizeBytes_ + 1;
             for (size_t i = 0; i < e.args.size(); i++) {
-                genExpr(*e.args[i]);
-                copy2("p_" + e.func->sourceName + "_" + std::to_string(i), "ac");
+                genExpr(*e.args[i]);  // ac = this argument's value
+                // ptr = FP + newFrameOff + i*2 - recomputed fresh for
+                // every argument, after evaluating it (which may
+                // itself call through its own complete frame, but
+                // always restores `FP` first) rather than carried
+                // across more than one argument's own evaluation.
+                code_ << "    movf FP,w\n    addlw " << (newFrameOff + static_cast<int>(i) * 2) << "\n";
+                code_ << "    movwf ptr\n";
+                storeAcIndirect();
             }
+            // NFP = FP + newFrameOff - handed to the callee's own
+            // prologue, recomputed fresh (not reused from any earlier
+            // value) immediately before `call` so no argument's own
+            // evaluation above can have clobbered it.
+            code_ << "    movf FP,w\n    addlw " << newFrameOff << "\n    movwf NFP\n";
             code_ << "    call " << label(e.func) << "\n";
             return;
         }
@@ -402,14 +490,28 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
 void PIC18Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
     shiftOneBit("ac", /*isLeft=*/true);  // ac *= 2
-    std::string lbl = label(slot);
     if (slot->arraySize > 0) {
-        code_ << "    movlw " << lbl << "\n";
+        // `slot` is itself the array - its own base address is a
+        // fixed, compile-time label for a Global, or `FP` plus this
+        // function's own compile-time offset for it for a Local -
+        // computed into `bc` (not `ac`, which still holds `index*2`
+        // here) either way.
+        if (slot->kind == ir::SlotKind::Global) {
+            code_ << "    movlw " << label(slot) << "\n    movwf bc\n";
+        } else {
+            code_ << "    movf FP,w\n";
+            int off = slotFrameOffsetBytes(slot);
+            if (off != 0) code_ << "    addlw " << off << "\n";
+            code_ << "    movwf bc\n";
+        }
     } else {
-        code_ << "    movf " << lbl << ",w\n";
+        // `slot` holds a pointer *value* - save `index*2` (still in
+        // `ac`) in `bc` before loadSlotToAc() overwrites `ac` with
+        // that value.
+        code_ << "    movf ac,w\n    movwf bc\n";
+        loadSlotToAc(slot);  // ac = the pointer's own current value
     }
-    code_ << "    addwf ac,w\n";
-    code_ << "    movwf ptr\n";
+    code_ << "    movf bc,w\n    addwf ac,w\n    movwf ptr\n";
 }
 
 void PIC18Codegen::genIndex(const ir::Expr &e) {
@@ -445,7 +547,18 @@ void PIC18Codegen::emitInitElem(std::ostream &out, const std::string &loLbl, con
 
 void PIC18Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
-        code_ << "    movlw " << label(operand.slot) << "\n    movwf ac\n";
+        if (operand.slot->kind == ir::SlotKind::Global) {
+            code_ << "    movlw " << label(operand.slot) << "\n    movwf ac\n";
+        } else {
+            // A Local/Param's own address is `FP` plus this
+            // function's own compile-time offset for it - a real
+            // runtime value (`FP` itself varies call to call), unlike
+            // a Global's own fixed label above.
+            code_ << "    movf FP,w\n";
+            int off = slotFrameOffsetBytes(operand.slot);
+            if (off != 0) code_ << "    addlw " << off << "\n";
+            code_ << "    movwf ac\n";
+        }
         code_ << "    clrf ac+1\n";
         return;
     }

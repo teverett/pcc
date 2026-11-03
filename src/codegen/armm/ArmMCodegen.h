@@ -42,25 +42,41 @@ namespace pcc {
 //
 // This language's own `int` is 32 bits here (this target's native
 // register width). Register assignment (this backend's own
-// convention, not a real calling-convention choice - every
-// parameter is a statically allocated slot, same as every other
-// backend):
+// convention, not a real ARM calling convention - see r7/sp/lr below
+// for the one piece of this that *is* real ABI-shaped: a genuine
+// per-call stack frame):
 //   r0 - "ac", genExpr()'s own result (68000's D0, MIPS's $t0) - also
 //        where MULS's own 2-operand form naturally wants its
 //        destination, and where a real ARM calling convention would
 //        put a return value too, so this doubles as a happy
 //        coincidence rather than a real ABI decision
-//   r1 - "the other operand" in a binary op (68000's D1, MIPS's $t1)
+//   r1 - "the other operand" in a binary op (68000's D1, MIPS's $t1),
+//        and the discard register for every dummy `pop` an
+//        epilogue/call-cleanup issues just to move `sp` back (see
+//        emitEpilogue()/ExprKind::Call below) - never read afterward
 //   r2 - holds a computed address when dereferencing one
-//        (array/pointer indexing, `*`/`&`) - 68000's A0, MIPS's $t2
-//   r3 - scratch for a comparison's own materialized boolean and for
-//        genDivMod()'s own software loop
+//        (array/pointer indexing, `*`/`&`, and every Local/Param
+//        frame-relative address - see loadFrameAddr()) - 68000's A0,
+//        MIPS's $t2
+//   r3 - scratch for a comparison's own materialized boolean,
+//        genDivMod()'s own software loop, and loadFrameAddr()'s own
+//        offset-immediate scratch
+//   r7 - the frame pointer: every function's own prologue points it
+//        at this call's own saved-r7 word (see genFunction()) and
+//        every Local/Param address is computed relative to it (see
+//        loadFrameAddr()) - the one register that gives this backend
+//        real recursion, direct or indirect: each nested activation
+//        gets its own r7/frame on the real hardware stack, instead of
+//        every call sharing one permanent memory cell per Local/Param
+//        the way a non-reentrant design would
 //   sp - the real hardware stack pointer: real `PUSH`/`POP` (one
 //        register at a time - see ArmMAssembler.h's own header
 //        comment on why there's no real `{reglist}` syntax here),
-//        used both to save one operand across evaluating the other
-//        in a binary expression and (via the dedicated `pushlr`/
-//        `poppc` mnemonics) for every function call/return
+//        used to save one operand across evaluating the other in a
+//        binary expression, to pass this call's own arguments and
+//        reserve this call's own Local frame storage (see
+//        genFunction()/ExprKind::Call), and (via the dedicated
+//        `pushlr`/`poppc` mnemonics) for every function call/return
 //   lr - the real hardware link register `BL` sets; every function
 //        here saves it with `pushlr` on entry and returns via
 //        `poppc` (`POP {pc}` - a real, single-instruction ARM
@@ -68,19 +84,48 @@ namespace pcc {
 //        `pc`), the same "every function saves/restores its own
 //        link register" discipline MipsCodegen.cpp's own comment
 //        explains (ARM has exactly one link register too - a nested
-//        call would clobber it otherwise)
+//        call would clobber it otherwise). `pushlr`/`poppc` are real,
+//        ordinary sp-relative pushes/pops, so a nested call's own
+//        `pushlr` lands on a fresh stack slot above whatever the
+//        caller's own `pushlr` already saved - already reentrant on
+//        its own, with no frame-pointer involvement needed.
+//
+// Every function's own stack frame (see genFunction()): `pushlr`
+// saves the return address, `push r7` saves the caller's own frame
+// pointer, `mov r7,sp` makes r7 point at that saved-r7 word, and then
+// one dummy `push r0` per word of `Function::frameSize` reserves this
+// call's own Local storage (the pushed value itself is never read -
+// only the resulting `sp` displacement matters). The epilogue
+// (emitEpilogue(), run at every `return` and once more as the
+// fall-off-the-end default) undoes exactly that in reverse: one dummy
+// `pop r1` per reserved word, `pop r7`, `poppc`. A Param's own
+// address is `r7 + 8 + 4*paramIndex` (past the saved r7 and the
+// return address, into the caller's own pushed-argument words - see
+// ExprKind::Call); a Local's is `r7 - 4*frameOffset` (down into this
+// call's own just-reserved words, growing the opposite direction - a
+// Local array's element i therefore sits at frameOffset+i, i.e.
+// address *base-minus* `4*i`, not base-plus - see loadFrameAddr()'s
+// own callers for where this matters, e.g. genIndexAddr()). See
+// I386Codegen.h's/I8086Codegen.h's own `addr()` comment for the same
+// layout one generation lower/higher.
 //
 // ARM has no absolute-addressing memory operand (same situation as
 // MIPS - see MipsCodegen.h's own header comment): every load/store
 // goes through a base register plus an immediate displacement, so
-// reading or writing any global/local/array slot first loads that
+// reading or writing any Global/array-literal slot first loads that
 // slot's own fixed address into `r2` via `MOVW`+`MOVT` (this
 // dialect's own address-loading pair - MipsCodegen.h's `LUI`+`ORI`
 // equivalent; ArmMAssembler.cpp resolves a label operand to its
 // lower/upper 16 bits respectively for these two mnemonics), then
 // `ldind`/`stind r2,r0` (this backend's own dedicated mnemonics for
 // `LDR`/`STR` with a fixed zero displacement - same convention as
-// MIPS's own `ldind`/`stind`).
+// MIPS's own `ldind`/`stind`). This dialect's own assembler has no
+// `[Rn,#imm]` displacement syntax at all (see ArmMAssembler.cpp's own
+// `buildOperand()`), so a Local/Param's own frame-relative address
+// (`r7` plus/minus a word count - see this file's own header comment)
+// is instead computed directly into a register with `mov`/`adds`/
+// `subs` (see loadFrameAddr()), then read/written the same
+// `ldind`/`stind r2,r0` way as any other computed address.
 //
 // `*` uses the real hardware `MULS` (Thumb-1's own 2-operand form,
 // universal across every M-profile core including baseline) - a
@@ -170,9 +215,18 @@ class ArmMCodegen : public Backend {
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
 
     // Leaves slot[idxExpr]'s own effective address in `r2`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
+
+    // Emits the epilogue every `return` (and the fall-off-the-end
+    // default at the bottom of genFunction()) needs: pops this call's
+    // own reserved Local words (into the scratch `r1`, discarded -
+    // the point is only the `sp` displacement), restores the
+    // caller's own `r7`, then `poppc`. See this file's own header
+    // comment on the matching prologue in genFunction().
+    void emitEpilogue();
 
     // Loads `lbl`'s own address into register `reg` (MOVW+MOVT - see
     // this file's own header comment on why ARM needs two
@@ -181,6 +235,29 @@ class ArmMCodegen : public Backend {
     // Loads an arbitrary 32-bit compile-time constant into `reg` -
     // `MOVS` alone if it fits in 8 bits, MOVW+MOVT otherwise.
     void loadImm32(const std::string &reg, uint32_t value);
+
+    // Loads `r7 + 4*wordsFromFp` into `reg` (`wordsFromFp` may be
+    // negative - `subs` is used in that case, matching this file's
+    // own header comment on which direction each of a Local's/Param's
+    // own storage grows from `r7`). Uses `r3` as its own scratch
+    // register, never as `reg` itself.
+    void loadFrameWordAddr(const std::string &reg, int wordsFromFp);
+    // Loads a Local or Param Slot's own effective address into `reg`
+    // - a Param's is `r7 + 8 + 4*paramIndex` (past the saved `r7` and
+    // the return address, into the caller's own pushed-argument
+    // words); a Local's is `r7 - 4*frameOffset`. Never called for a
+    // Global Slot - see loadAddress()/label() for that case instead.
+    void loadFrameAddr(const std::string &reg, const ir::Slot *slot);
+    // Loads a Slot's own effective address into `reg`, dispatching on
+    // `slot->kind` between loadAddress() (Global) and loadFrameAddr()
+    // (Local/Param).
+    void loadSlotAddr(const std::string &reg, const ir::Slot *slot);
+    // Loads one ir::ArrayInitElem's own value (a literal, or a
+    // symbol's own address - see arrayElemText()'s identical
+    // literal/symbol split) into `reg` at runtime - used by
+    // genLocalArrayInit() in place of arrayElemText()'s own bare text,
+    // which only ever means something inside a `dw` data line.
+    void loadArrayInitElem(const std::string &reg, const ir::ArrayInitElem &e);
 
     static std::string label(const ir::Slot *slot) {
         if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
@@ -201,6 +278,10 @@ class ArmMCodegen : public Backend {
     std::map<std::string, std::string> perFileAsm_;
 
     int labelCounter_ = 0;
+    // The function genFunction() is currently emitting's own
+    // Function::frameSize - set once per function, read by
+    // emitEpilogue() at every `return` inside it.
+    int frameSize_ = 0;
 };
 
 }  // namespace pcc

@@ -20,32 +20,40 @@ namespace pcc {
 // `kBaseAddress` directly - halting via the real `HALT` instruction
 // (with a `br` safety net right after it, in case a simulator ever
 // just resumes at the next word instead of actually stopping - see
-// generate()'s own comment), the same "no stack, no recursion" model
-// every backend shares (see README's "Scope and limitations") - on a
-// CPU with eight real 16-bit general registers and genuine register-
-// indirect/autoincrement/autodecrement addressing, so (like the
-// 68000 backend) almost everything maps onto one real instruction.
+// generate()'s own comment) - on a CPU with eight real 16-bit general
+// registers and genuine register-indirect/autoincrement/
+// autodecrement addressing, so (like the 68000 backend) almost
+// everything maps onto one real instruction.
 //
 // This language's own `int` is 16 bits here (the PDP-11's native
 // word size, matching every other 16-bit-word target's own choice -
 // see I8086Codegen.h/M6502Codegen.h) - the PDP-11 is itself byte-
 // addressed but every value this project ever stores is a full 16-
 // bit word, so no byte-sized (`.B`-suffixed) instruction is ever
-// emitted. Every value in flight lives in one of two general
+// emitted. Every value in flight lives in one of three general
 // registers: `R0` (genExpr()'s own result - the "ac" every other
-// backend also calls it) and `R1` ("the other operand" in a binary
-// op - 8086's "bx"/68000's "d1"). `R2` holds a computed address when
-// dereferencing one (array/pointer indexing, `*`/`&`) - the 68000
+// backend also calls it), `R1` ("the other operand" in a binary op -
+// 8086's "bx"/68000's "d1"), and `R2` (a computed address when
+// dereferencing one - array/pointer indexing, `*`/`&` - the 68000
 // backend's own "a0" role, played here by an ordinary general
-// register plus the PDP-11's real register-deferred addressing mode
-// (`(Rn)`, no special placement requirement, unlike the 6502's
-// zero-page-bound `ptr` - see M6502Codegen.h's own comment). `SP`
-// (`R6`) is the real hardware stack pointer - saving one operand
-// across evaluating the other in a binary expression, and every
-// function call/return, use real autodecrement/autoincrement moves
-// and real `JSR`/`RTS`, no synthesis needed (unlike pdp7 - see
-// Pdp7Codegen.cpp's own comment on why it has to improvise this with
-// named memory cells instead).
+// register plus the PDP-11's real register-deferred addressing mode,
+// `(Rn)`, no special placement requirement, unlike the 6502's
+// zero-page-bound `ptr` - see M6502Codegen.h's own comment). `R5` is
+// this backend's own dedicated frame-pointer register (see addr()
+// below) - free for that role because nothing else here ever uses
+// it. `SP` (`R6`) is the real hardware stack pointer: every function
+// call/return uses real `JSR`/`RTS` (pushing/popping the real return
+// address, no synthesis needed - unlike pdp7, see Pdp7Codegen.cpp's
+// own comment on why it has to improvise this with named memory
+// cells instead), every function's own prologue/epilogue pushes and
+// pops the caller's `R5` on it, and every call's own arguments are
+// pushed onto it by the caller before `jsr` and popped off by the
+// caller after it returns (see genFunction()/the `Call` case in
+// genExpr()). Every call therefore gets its own, independent stack
+// frame - direct and indirect/mutual recursion both work, since two
+// overlapping activations of the same function never share a Local's
+// or Param's own storage the way one static memory cell per
+// declaration would force them to.
 //
 // `*`/`/` use the real EIS hardware `MUL`/`DIV` (available on every
 // PDP-11 model this project's own simulator target emulates) -
@@ -133,6 +141,7 @@ class Pdp11Codegen : public Backend {
     void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
 
     // Leaves slot[idxExpr]'s own effective address in `R2`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
@@ -148,17 +157,47 @@ class Pdp11Codegen : public Backend {
     void safeBranch(const std::string &branchMnemonic, const std::string &targetIfTaken,
                      const std::string &targetIfNot);
 
-    static std::string label(const ir::Slot *slot) {
-        if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
-        if (slot->kind == ir::SlotKind::Param) {
-            return "p_" + slot->ownerFunctionName + "_" + std::to_string(slot->paramIndex);
-        }
-        return slot->sourceName + "_" + std::to_string(slot->id);
-    }
+    // Only a Global (or a Function) ever gets a name-based label - a
+    // Local or Param is addressed relative to `R5` instead (see
+    // addr() below): it never crosses a file boundary, so it never
+    // needs a label real separate compilation could resolve by name.
+    static std::string label(const ir::Slot *slot) { return "g_" + slot->sourceName; }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
+    // A Local or Param's own frame-pointer-relative effective-address
+    // operand text, e.g. "[r5-4]"/"[r5+6]" - a real PDP-11 index-mode
+    // operand (see Pdp11Assembler.h's own header comment on the
+    // `[Rn+N]` bracket syntax this backend's assembler reads it as).
+    // Every function gets a real per-call stack frame (see
+    // genFunction()): `push r5`/`mov sp,r5` makes `r5` point at this
+    // call's own saved old `r5`, with the return address one word
+    // above that (`jsr` already pushed it, before `push r5` ran), and
+    // the caller's own pushed arguments above that, in declaration
+    // order (param 0 closest to the return address) - so a Param's
+    // address is `r5+4+2*paramIndex`. Locals live below `r5`, reserved
+    // by the prologue's `sub N,sp`; Slot::frameOffset is already a
+    // 1-based sequential word index in declaration order, so a
+    // Local's address is `r5-2*frameOffset`. Every call gets its own
+    // `r5`/frame, so direct or indirect recursion never shares
+    // storage between overlapping activations - unlike a Global,
+    // which still gets the one real static cell a C global/static is
+    // supposed to have.
+    static std::string addr(const ir::Slot *slot) {
+        if (slot->kind == ir::SlotKind::Param) {
+            return "[r5+" + std::to_string(4 + 2 * slot->paramIndex) + "]";
+        }
+        return "[r5-" + std::to_string(2 * slot->frameOffset) + "]";
+    }
+
+    // The operand text for a plain read/write of `slot`'s own value -
+    // the bare label for a Global (PC-relative addressing to the
+    // value stored there - see label()'s own comment), or addr(slot)
+    // ("[r5±N]") for a Local/Param.
+    static std::string operandOf(const ir::Slot *slot) {
+        return slot->kind == ir::SlotKind::Global ? label(slot) : addr(slot);
+    }
+
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
-    void declareTemp(const std::string &lbl);
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
