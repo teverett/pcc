@@ -89,7 +89,7 @@ std::unique_ptr<TargetLinker> makePdp7Linker() {
         "hlt\n"
         "__one: 1\n"
         "__zero: 0\n"
-        "__sp: 8100\n"
+        "__sp: 8191\n"
         "__fp: 0\n"
         "__stmp: 0\n"
         "__stmp2: 0\n"

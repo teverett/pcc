@@ -295,17 +295,34 @@ std::string Pdp7Codegen::generate(const ir::Program &prog, bool objectMode) {
         trailer_.push_back("__zero: 0");
         // The software stack/frame mechanism every function now uses
         // (see Pdp7Codegen.h's own header comment and pushAC()/
-        // emitPrologue()'s comments) - `__sp` starts at a fixed high-
-        // memory address, well above where this backend's own code/data
-        // naturally grows from (`kPdp7BaseAddress`, see Pdp7Assembler.h),
-        // and grows downward from there; `__fp`'s own starting value is
-        // never read before the very first call (to `main`) gives it a
-        // real one, so 0 is just a placeholder. `__stmp`/`__addr`/
-        // `__retval`/`__retaddr` are this mechanism's own shared scratch
-        // cells - see their use sites' comments for why one shared cell
-        // each is safe under recursion (every use is a single short,
-        // call-free sequence).
-        trailer_.push_back("__sp: 8100");
+        // emitPrologue()'s comments) - `__sp` starts at 8191 (017777
+        // octal), the highest word this target's own 13-bit direct-
+        // addressing field can ever reach (`kAddressFieldLimit` in
+        // Pdp7LinkerFactory.cpp is 8192, one past it), and grows
+        // downward from there, toward where this backend's own
+        // code/data grows UP from (`kPdp7BaseAddress`, see
+        // Pdp7Assembler.h) - the two regions share this same 8192-word
+        // window and only collide if a program's combined code+data
+        // and worst-case call depth together exceed it, same as any
+        // other static allocation on this target already risks (see
+        // `patchPdp7Or`'s own range check). This used to start at a
+        // much lower, arbitrarily-picked 8100 instead - safe only for
+        // a program whose own code+data stayed under roughly 4000
+        // words, which real multi-file links comfortably exceed;
+        // confirmed directly as a real bug, not just a theoretical
+        // one, via a minimal repro (two pointer parameters, each
+        // separately indexed, linked alongside an unrelated, large
+        // enough file) that silently corrupted its own stack the
+        // moment total program size passed 8100 words - every push
+        // after that point overwrote real code/data instead of
+        // reserved stack space. `__fp`'s own starting value is never
+        // read before the very first call (to `main`) gives it a real
+        // one, so 0 is just a placeholder. `__stmp`/`__addr`/
+        // `__retval`/`__retaddr` are this mechanism's own shared
+        // scratch cells - see their use sites' comments for why one
+        // shared cell each is safe under recursion (every use is a
+        // single short, call-free sequence).
+        trailer_.push_back("__sp: 8191");
         trailer_.push_back("__fp: 0");
         trailer_.push_back("__stmp: 0");
         trailer_.push_back("__stmp2: 0");
