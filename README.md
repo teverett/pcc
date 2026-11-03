@@ -3,6 +3,10 @@
 `pcc` is a compiler and linker for a small subset of C, targeting real
 retro hardware through pluggable backends.
 
+# platforms
+
+Supported platforms are:   arm, arm64, armm, i386, i8008, i8080, m16c, m6502, m65c02, m68k, mc68328, mcs51, mips, pdp11, pic16, pic18, powerpc, stm32, stm8, z80,  pdp7, x86_8086
+
 ## Documentation
 
 - Supported platforms/backends: see
