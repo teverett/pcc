@@ -10,7 +10,7 @@ after the IR exists, an optimizer written once benefits every target
 
 Today there are four, run in this order (`src/main.cpp`):
 
-- **`ConstantFolding`** (`src/optimizers/ConstantFolding.cpp`) —
+- **`ConstantFolding`** (`src/optimizers/constant_folding/ConstantFolding.cpp`) —
   bottom-up folds any unary or binary expression whose operand(s) are
   already `IntLit`s into a single `IntLit` (e.g. `((2 + 3) * 4)` →
   `20`). Leaves an op unfolded when evaluating it on the host would
@@ -21,7 +21,7 @@ Today there are four, run in this order (`src/main.cpp`):
   `DeadCodeElimination` can then reason about.
 
 - **`AlgebraicSimplification`**
-  (`src/optimizers/AlgebraicSimplification.cpp`) — strength reduction:
+  (`src/optimizers/algebraic_simplification/AlgebraicSimplification.cpp`) — strength reduction:
   rewrites a binary expression with exactly one `IntLit` operand into
   a cheaper equivalent that holds for every possible value of the
   other operand — `x * 2`/`2 * x` → `x << 1`, `x * -1` → `-x`, `x / 1`
@@ -41,7 +41,7 @@ Today there are four, run in this order (`src/main.cpp`):
   Helps every target, but especially one like pdp7 with no hardware
   multiply/divide shortcut for small constants.
 
-- **`LocalCSE`** (`src/optimizers/LocalCSE.cpp`) — simple local
+- **`LocalCSE`** (`src/optimizers/local_cse/LocalCSE.cpp`) — simple local
   common-subexpression elimination / redundant-load elimination:
   purely syntactic (not flow-sensitive) matching of identical
   `Binary`/`Index` subexpressions within one `Block`'s own statement
@@ -68,7 +68,7 @@ Today there are four, run in this order (`src/main.cpp`):
   subexpression's `--dump-ir` text can read ambiguously, though the
   real tree - and so the actual compiled program - is unaffected).
 
-- **`DeadCodeElimination`** (`src/optimizers/DeadCodeElimination.cpp`)
+- **`DeadCodeElimination`** (`src/optimizers/dead_code_elimination/DeadCodeElimination.cpp`)
   — removes statements that can never run (anything after a `return`
   in the same block, bare `;` statements) and local variables that
   are declared but never read, written, or had their address taken,

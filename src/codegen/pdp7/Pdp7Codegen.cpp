@@ -19,12 +19,13 @@ namespace {
 // loop below is just one token with no sign, so a negative compile-
 // time constant - previously only ever produced by e.g. a literal
 // global initializer, now also by ConstantFolding (see
-// optimizers/ConstantFolding.h) - has to be written out as its own
-// two's-complement 18-bit bit pattern instead of a signed decimal
-// string. That's exactly the bit pattern real PDP-7 hardware would
-// already compute for it at runtime, so every *read* of the word
-// (lac, comparisons, etc.) still sees the same value as before -
-// only how it's spelled in the generated assembly text changes.
+// optimizers/constant_folding/ConstantFolding.h) - has to be written
+// out as its own two's-complement 18-bit bit pattern instead of a
+// signed decimal string. That's exactly the bit pattern real PDP-7
+// hardware would already compute for it at runtime, so every *read*
+// of the word (lac, comparisons, etc.) still sees the same value as
+// before - only how it's spelled in the generated assembly text
+// changes.
 long pdp7Word(long v) { return v & 0777777; }
 
 // See Pdp7Codegen.h's own "Leaf fast path" comment for what this is

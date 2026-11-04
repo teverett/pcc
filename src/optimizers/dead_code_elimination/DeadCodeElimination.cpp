@@ -1,4 +1,4 @@
-#include "optimizers/DeadCodeElimination.h"
+#include "optimizers/dead_code_elimination/DeadCodeElimination.h"
 
 #include <algorithm>
 #include <iostream>

@@ -11,10 +11,10 @@ namespace pcc {
 // (codegen/Codegen.h) - entirely target-independent, since by the
 // time the IR exists every backend-specific decision (instruction
 // selection, register/stack strategy) still lies ahead; see
-// optimizers/DeadCodeElimination.h for the first one. Each concrete
-// optimizer lives in its own file under optimizers/, mirroring how
-// each codegen backend lives in its own subdirectory under codegen/
-// (see Codegen.h).
+// optimizers/dead_code_elimination/DeadCodeElimination.h for the
+// first one. Each concrete optimizer lives in its own subdirectory
+// under optimizers/, mirroring how each codegen backend lives in its
+// own subdirectory under codegen/ (see Codegen.h).
 class Optimizer {
    public:
     virtual ~Optimizer() = default;

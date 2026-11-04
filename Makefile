@@ -81,7 +81,12 @@ IR_DIR       := $(SRC_DIR)/ir
 LINKER_DIR   := $(SRC_DIR)/linker
 FACTORY_DIR  := $(LINKER_DIR)/factory
 PREPROCESSOR_DIR := $(SRC_DIR)/preprocessor
+# One subdirectory per optimizer pass (see Optimizer.h's own header
+# comment), the same "one subdirectory per backend" shape BACKEND_DIRS
+# below uses - Optimizer.h itself (the shared interface) stays directly
+# under OPTIMIZERS_DIR, same as Codegen.h does for BACKEND_DIRS.
 OPTIMIZERS_DIR    := $(SRC_DIR)/optimizers
+OPTIMIZERS_DIRS   := $(OPTIMIZERS_DIR)/constant_folding $(OPTIMIZERS_DIR)/algebraic_simplification $(OPTIMIZERS_DIR)/local_cse $(OPTIMIZERS_DIR)/dead_code_elimination
 # Every file format this project reads/writes lives under one
 # subdirectory each here - see src/fileformat/FileFormat.h's own
 # header comment - instead of being split across src/coff/, src/elf/,
@@ -132,10 +137,10 @@ HAND_SRCS := \
     $(IR_DIR)/IRBuilder.cpp \
     $(IR_DIR)/IRPrinter.cpp \
     $(IR_DIR)/IRValidator.cpp \
-    $(OPTIMIZERS_DIR)/ConstantFolding.cpp \
-    $(OPTIMIZERS_DIR)/DeadCodeElimination.cpp \
-    $(OPTIMIZERS_DIR)/AlgebraicSimplification.cpp \
-    $(OPTIMIZERS_DIR)/LocalCSE.cpp \
+    $(OPTIMIZERS_DIR)/constant_folding/ConstantFolding.cpp \
+    $(OPTIMIZERS_DIR)/dead_code_elimination/DeadCodeElimination.cpp \
+    $(OPTIMIZERS_DIR)/algebraic_simplification/AlgebraicSimplification.cpp \
+    $(OPTIMIZERS_DIR)/local_cse/LocalCSE.cpp \
     $(SRC_DIR)/codegen/pdp7/Pdp7Codegen.cpp \
     $(SRC_DIR)/codegen/pdp7/Pdp7Assembler.cpp \
     $(SRC_DIR)/codegen/x86_8086/I8086Codegen.cpp \
@@ -186,7 +191,7 @@ HAND_SRCS := \
 ALL_SRCS := $(GENERATED_SRCS) $(HAND_SRCS)
 OBJS     := $(patsubst %,$(OBJ_DIR)/%.o,$(notdir $(ALL_SRCS)))
 
-vpath %.cpp $(GEN_DIR):$(SRC_DIR):$(AST_DIR):$(IR_DIR):$(LINKER_DIR):$(FACTORY_DIR):$(PREPROCESSOR_DIR):$(OPTIMIZERS_DIR):$(subst $(SPACE),:,$(BACKEND_DIRS)):$(subst $(SPACE),:,$(FILEFORMAT_DIRS))
+vpath %.cpp $(GEN_DIR):$(SRC_DIR):$(AST_DIR):$(IR_DIR):$(LINKER_DIR):$(FACTORY_DIR):$(PREPROCESSOR_DIR):$(subst $(SPACE),:,$(OPTIMIZERS_DIRS)):$(subst $(SPACE),:,$(BACKEND_DIRS)):$(subst $(SPACE),:,$(FILEFORMAT_DIRS))
 
 .PHONY: all clean generate build test
 

@@ -1,4 +1,4 @@
-#include "optimizers/AlgebraicSimplification.h"
+#include "optimizers/algebraic_simplification/AlgebraicSimplification.h"
 
 #include <iostream>
 #include <optional>
