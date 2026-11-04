@@ -46,6 +46,7 @@
 #include "optimizers/constant_folding/ConstantFolding.h"
 #include "optimizers/dead_code_elimination/DeadCodeElimination.h"
 #include "optimizers/local_cse/LocalCSE.h"
+#include "optimizers/unused_global_elimination/UnusedGlobalElimination.h"
 #include "preprocessor/Preprocessor.h"
 #include "codegen/pdp7/Pdp7Codegen.h"
 #include "codegen/x86_8086/I8086Codegen.h"
@@ -343,6 +344,17 @@ std::string compileOneFile(const std::string &srcPath, const std::map<std::strin
         // buildIR() already assigned every *other* local's own frame
         // offset once - see recomputeFrameLayout's own comment.
         pcc::recomputeFrameLayout(irProg);
+        // Unused-global removal last, and only when this compile sees
+        // the entire program (never under real separate compilation,
+        // --format=coff's own per-file `allowExternal`) - see
+        // UnusedGlobalElimination.h's own comment on why that matters,
+        // and why it runs after DeadCodeElimination (a global touched
+        // only from now-unreachable code must look unused too, not
+        // "used" by code that no longer exists in the tree).
+        if (!allowExternal) {
+            pcc::UnusedGlobalElimination uge;
+            uge.run(irProg);
+        }
     }
 
     // A self-check, not a user-facing feature: parses this program's

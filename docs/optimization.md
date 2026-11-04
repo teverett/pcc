@@ -8,7 +8,7 @@ backend is selected — since every backend-specific decision
 after the IR exists, an optimizer written once benefits every target
 (see `docs/platforms.md` for the full list).
 
-Today there are four, run in this order (`src/main.cpp`):
+Today there are five, run in this order (`src/main.cpp`):
 
 - **`ConstantFolding`** (`src/optimizers/constant_folding/ConstantFolding.cpp`) —
   bottom-up folds any unary or binary expression whose operand(s) are
@@ -75,6 +75,24 @@ Today there are four, run in this order (`src/main.cpp`):
   dropping their storage entirely unless their own initializer has a
   side effect (a call), in which case it's kept as a bare expression
   statement instead.
+
+- **`UnusedGlobalElimination`**
+  (`src/optimizers/unused_global_elimination/UnusedGlobalElimination.cpp`)
+  — `DeadCodeElimination`'s own local-variable removal, extended to
+  globals: drops a global `Slot` nothing reads, writes, or takes the
+  address of, directly or (the dispatch-table idiom) through another
+  still-live global's own array initializer. Globals need one extra
+  safety check locals never do — this subset has no `static`, so a
+  global is implicitly external and another, separately compiled file
+  could `extern` it — so `main.cpp` only ever runs this pass when
+  `!allowExternal` (never under real separate compilation,
+  `--format=coff`). Also never removes an explicitly `@addr`-pinned
+  global (the pin is itself a statement of intent this pass has no
+  way to know is safe to undo) or a `Function`, even an uncalled one
+  (see `UnusedGlobalElimination.h`'s own comment on why that's a
+  separate, larger feature). Runs last, after `DeadCodeElimination`,
+  so a global touched only from now-unreachable code correctly looks
+  unused too.
 
 Not yet attempted, because they'd need a real control-flow graph
 first: dead-*store* elimination, constant-condition `if`/`while`

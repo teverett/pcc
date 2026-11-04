@@ -86,7 +86,7 @@ PREPROCESSOR_DIR := $(SRC_DIR)/preprocessor
 # below uses - Optimizer.h itself (the shared interface) stays directly
 # under OPTIMIZERS_DIR, same as Codegen.h does for BACKEND_DIRS.
 OPTIMIZERS_DIR    := $(SRC_DIR)/optimizers
-OPTIMIZERS_DIRS   := $(OPTIMIZERS_DIR)/constant_folding $(OPTIMIZERS_DIR)/algebraic_simplification $(OPTIMIZERS_DIR)/local_cse $(OPTIMIZERS_DIR)/dead_code_elimination
+OPTIMIZERS_DIRS   := $(OPTIMIZERS_DIR)/constant_folding $(OPTIMIZERS_DIR)/algebraic_simplification $(OPTIMIZERS_DIR)/local_cse $(OPTIMIZERS_DIR)/dead_code_elimination $(OPTIMIZERS_DIR)/unused_global_elimination
 # Every file format this project reads/writes lives under one
 # subdirectory each here - see src/fileformat/FileFormat.h's own
 # header comment - instead of being split across src/coff/, src/elf/,
@@ -141,6 +141,7 @@ HAND_SRCS := \
     $(OPTIMIZERS_DIR)/dead_code_elimination/DeadCodeElimination.cpp \
     $(OPTIMIZERS_DIR)/algebraic_simplification/AlgebraicSimplification.cpp \
     $(OPTIMIZERS_DIR)/local_cse/LocalCSE.cpp \
+    $(OPTIMIZERS_DIR)/unused_global_elimination/UnusedGlobalElimination.cpp \
     $(SRC_DIR)/codegen/pdp7/Pdp7Codegen.cpp \
     $(SRC_DIR)/codegen/pdp7/Pdp7Assembler.cpp \
     $(SRC_DIR)/codegen/x86_8086/I8086Codegen.cpp \
