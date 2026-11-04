@@ -268,7 +268,13 @@ std::string PIC18Codegen::generate(const ir::Program &prog, bool objectMode) {
     // bottom byte, the exact form every instruction here other than
     // MOVFF resolves via the Access Bank's own 0x60-0xFF->0xF60-0xFFF
     // hardware aliasing).
-    header << "STATUS = 0xD8\nFSR0L = 0xE9\nFSR0H = 0xEA\nPOSTINC0 = 0xEE\nINDF0 = 0xEF\nINTCON = 0xF2\n\n";
+    header << "STATUS = 0xD8\nFSR0L = 0xE9\nFSR0H = 0xEA\nPOSTINC0 = 0xEE\nINDF0 = 0xEF\nINTCON = 0xF2\n";
+    // PCL/PCLATH/PCLATU/STKPTR/TOSL/TOSH/TOSU - the real PIC18 core's
+    // own program-counter-latch and top-of-return-stack registers
+    // (0xFF9-0xFFF, standardized identically across the whole PIC18
+    // family, not a per-chip peripheral address) - see genExpr's own
+    // CallPtr case for what these are for.
+    header << "PCL = 0xF9\nPCLATH = 0xFA\nPCLATU = 0xFB\nSTKPTR = 0xFC\nTOSL = 0xFD\nTOSH = 0xFE\nTOSU = 0xFF\n\n";
     if (objectMode) {
         // No entry sequence here at all - see PIC18Codegen.h's own
         // `objectMode` comment: PIC18LinkerFactory.cpp's own
@@ -488,6 +494,50 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
             code_ << "    call " << label(e.func) << "\n";
             return;
         }
+        case ir::ExprKind::CallPtr: {
+            // Real PIC18F2420 has no indirect-CALL instruction at all
+            // (GOTO/CALL always encode their own 20-bit target
+            // directly in the instruction word) and doesn't enable
+            // the optional Extended Instruction Set's CALLW either
+            // (see this file's own header comment on the classic,
+            // non-enhanced core this backend targets) - so this is
+            // the real mechanism actual PIC18 C compilers use on a
+            // core without CALLW: PUSH reserves a fresh slot on the
+            // real hardware return stack, then that slot's own three
+            // bytes - TOSU/TOSH/TOSL, directly addressable SFRs, the
+            // same as any other - are overwritten with the REAL
+            // desired return point, a symbolic label the assembler
+            // resolves on its own, never a hand-counted offset (that
+            // was the one real risk here - getting "how many
+            // instructions until the jump" wrong by hand would
+            // corrupt the return-address stack silently rather than
+            // failing loudly; a label removes the question entirely).
+            // PCLATU/PCLATH/PCL are then loaded from the callee's own
+            // computed address, PCL last - writing it is what
+            // actually latches PCLATH/PCLATU into the real PC and
+            // jumps.
+            genExpr(*e.lhs);  // ac/ac+1 = the callee's own address
+            // Same NFP handoff the direct Call case above gives every
+            // callee - IRBuilder.cpp already enforces 0 arguments for
+            // this kind (see its own comment on ir::ExprKind::CallPtr),
+            // so there's no argument-copying loop to mirror, but the
+            // callee still needs its own frame to start in the right
+            // place. Recomputed fresh here, after evaluating the
+            // callee (which may itself call through a normal frame),
+            // same as the direct Call case's own reasoning for why.
+            int newFrameOff = frameSizeBytes_ + 1;
+            code_ << "    movf FP,w\n    addlw " << newFrameOff << "\n    movwf NFP\n";
+            std::string Lret = newLabel();
+            code_ << "    push\n";
+            code_ << "    movlwcl " << Lret << "\n    movwf TOSL\n";
+            code_ << "    movlwch " << Lret << "\n    movwf TOSH\n";
+            code_ << "    clrf TOSU\n";
+            code_ << "    clrf PCLATU\n";
+            code_ << "    movf ac+1,w\n    movwf PCLATH\n";
+            code_ << "    movf ac,w\n    movwf PCL\n";
+            code_ << Lret << ":\n";
+            return;
+        }
         case ir::ExprKind::Binary: {
             genBinary(e);
             return;
@@ -588,26 +638,9 @@ void PIC18Codegen::genAddrOf(const ir::Expr &operand) {
         // (see PIC18Assembler.cpp's own `movlwcl`/`movlwch` comment) -
         // GOTO/CALL always encode their own target directly in the
         // instruction word, so there's no single real instruction for
-        // taking a function's address as plain data either.
-        //
-        // There's deliberately no `ir::ExprKind::CallPtr` case in
-        // genExpr()'s own switch above. Unlike PIC16, this core does
-        // have a real, documented mechanism that could call through a
-        // computed address - PUSH (pushes a return address onto the
-        // real hardware call stack with no branch of its own) followed
-        // by loading PCLATH/PCLATU and then writing PCL (a write to
-        // PCL latches PCLATH/PCLATU into the PC and jumps - the same
-        // real "computed GOTO" idiom actual PIC18 C compilers use for
-        // a classic, non-enhanced core with no CALLW). What's missing
-        // isn't a real instruction, it's a way to verify the exact
-        // return-address arithmetic (PUSH's own "PC+2" is measured
-        // from PUSH's own address, not from the end of the whole
-        // PCLATH/PCL sequence that has to follow it before the actual
-        // jump happens, and this target has no simulator in this
-        // project to catch an off-by-one-instruction mistake there) -
-        // getting that wrong would corrupt the return-address stack
-        // silently rather than failing loudly, so it's left
-        // unimplemented rather than guessed at.
+        // taking a function's address as plain data either. See
+        // genExpr's own CallPtr case for calling through a value in
+        // exactly this form.
         code_ << "    movlwcl " << label(operand.func) << "\n    movwf ac\n";
         code_ << "    movlwch " << label(operand.func) << "\n    movwf ac+1\n";
         return;

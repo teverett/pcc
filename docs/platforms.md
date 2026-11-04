@@ -216,7 +216,14 @@ retro hardware through pluggable backends. Today it supports:
   vector (0x0000). Verified by hand-decoding the assembled/linked
   instruction words and relocations directly (no PIC16 instruction-
   level simulator was used); no automated `tests/run_tests.sh` target
-  yet.
+  yet. Taking a function's address works (`genAddrOf`'s `Func`
+  branch), but calling *through* one (`ir::ExprKind::CallPtr`) is a
+  genuine hardware ceiling, not a missing feature: this core's one
+  hardware call/return stack has no software-addressable storage at
+  all (no `PUSH`/`POP`, unlike `pic18`'s own), and `GOTO`/`CALL` only
+  ever take an inline literal target - there is no indirect call or
+  jump of any kind on real PIC16 mid-range silicon, so `genExpr`'s
+  switch has no case for it and never will.
 - **pic18** — real PIC18 assembly for a concrete real chip, the
   classic PIC18F2420 (see `src/codegen/pic18/PIC18Codegen.h`'s own
   header comment): real Access Bank SFR aliasing, a real 16K-word
@@ -235,7 +242,16 @@ retro hardware through pluggable backends. Today it supports:
   `generate()` starts at the real hardware reset vector (0x000000).
   Verified the same way as `pic16` (hand-decoded instruction words and
   relocations, no live simulator); no automated `tests/run_tests.sh`
-  target yet.
+  target yet. Unlike `pic16`, calling through a function pointer
+  (`ir::ExprKind::CallPtr`) does work here - this classic (non-XINST)
+  core has no `CALLW` and no single indirect-call instruction either,
+  but it does have the real mechanism actual PIC18 C compilers use
+  instead: `PUSH` a stack slot, overwrite its `TOSU`/`TOSH`/`TOSL`
+  bytes with the real desired return point (a label the assembler
+  resolves, never a hand-counted offset), then load `PCLATU`/`PCLATH`
+  and write `PCL` from the callee's own computed address - the write
+  to `PCL` is what actually latches the upper bytes into the real `PC`
+  and jumps (see `PIC18Codegen.cpp`'s own `CallPtr` case).
 - **stm32** — real Thumb-2 assembly for a real STM32 (ARMv7-M,
   Cortex-M3 - see `src/codegen/stm32/STM32Codegen.h`'s own header
   comment), the "rich register machine" case here: a real 32-bit

@@ -485,6 +485,10 @@ class Assembler {
     void encodeInstr(const std::string &mnemonic, const std::vector<std::vector<Syllable>> &ops) {
         static const std::unordered_map<std::string, uint16_t> implied = {
             {"nop", 0x0000}, {"return", 0x0012},
+            // Pushes a fresh (soon-to-be-overwritten) slot onto the
+            // real hardware return stack - see PIC18Codegen.cpp's own
+            // CallPtr case for why.
+            {"push", 0x0005},
         };
         if (auto it = implied.find(mnemonic); it != implied.end()) {
             if (!ops.empty()) fail("'" + mnemonic + "' takes no operand");
