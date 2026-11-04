@@ -81,6 +81,28 @@ class Pdp7Codegen : public Backend {
     void genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
+
+    // Branch fusion for an `If`/`While` condition: jumps to `Lfalse`
+    // when `cond` is false, otherwise falls straight through into
+    // whatever code follows (the true-branch's own, placed right
+    // after the call site - same fall-through convention genStmt's
+    // `If`/`While` cases already use for the non-fused case). For a
+    // plain comparison (`==`/`!=`/`</>/<=`/`>=`) or an `&&` of such,
+    // this skips genCompare()'s own "materialize a real 0/1 value,
+    // then test it" dance entirely (the generic path any OTHER
+    // condition shape - `||`, a bare variable, a call, bitwise,
+    // ... - still goes through below) - that materialize-then-test
+    // round trip costs ~7 words beyond the comparison itself, pure
+    // overhead when the only thing the caller ever does with the
+    // 0/1 value is immediately re-test it. Only uses instructions
+    // this file's own other methods already rely on and have
+    // verified against the real pdp7 simulator (`sma`/`sad` - see
+    // emitLt()'s/emitEq()'s own comments); deliberately does NOT use
+    // `spa` (`>=`/`<=`'s otherwise-natural complement to `sma`),
+    // since nothing in this file uses or has verified it yet - see
+    // this method's own .cpp comment for the safe fallback that
+    // avoids it.
+    void genCondBranch(const ir::Expr &cond, const std::string &Lfalse);
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
     void ensureDivModRoutine();

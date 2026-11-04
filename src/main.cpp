@@ -42,6 +42,7 @@
 #include "ir/IRBuilder.h"
 #include "ir/IRPrinter.h"
 #include "ir/IRValidator.h"
+#include "optimizers/AlgebraicSimplification.h"
 #include "optimizers/ConstantFolding.h"
 #include "optimizers/DeadCodeElimination.h"
 #include "preprocessor/Preprocessor.h"
@@ -321,6 +322,13 @@ std::string compileOneFile(const std::string &srcPath, const std::map<std::strin
         // initializer collapsing to a side-effect-free constant).
         pcc::ConstantFolding cf;
         cf.run(irProg);
+        // Strength reduction next - it only ever rewrites an
+        // operation whose OTHER operand isn't a literal (constant
+        // folding already handled both-literal above), so running it
+        // after constant folding rather than before doesn't lose any
+        // opportunity either pass could find alone.
+        pcc::AlgebraicSimplification algsimp;
+        algsimp.run(irProg);
         pcc::DeadCodeElimination dce;
         dce.run(irProg);
     }

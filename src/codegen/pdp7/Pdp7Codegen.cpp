@@ -1,6 +1,7 @@
 #include "Pdp7Codegen.h"
 
 #include <stdexcept>
+#include <utility>
 
 #include "Pdp7Assembler.h"
 
@@ -46,17 +47,23 @@ bool exprMakesCall(const ir::Expr *e) {
 bool stmtRulesOutLeaf(const ir::Stmt *s) {
     if (!s) return false;
     if (s->kind == ir::StmtKind::LocalDecl && s->declSlot && s->declSlot->arraySize > 0) return true;
-    // Raw inline assembly is opaque text, not an IR shape this
-    // analysis can see into - it might embed its own assumptions
-    // about exactly how a Param/Local gets addressed (frame-relative
-    // vs. this fast path's static cells) or about the precise
-    // instruction sequence/timing around it (e.g. a hardware IOT
-    // protocol). Confirmed directly that this isn't just caution for
-    // its own sake: sys/s4.c's `dsktrans` (real RB09 disk IOT
-    // instructions interleaved with bare parameter-reference
-    // statements) hung for real under the pdp7 simulator when this
-    // fast path was applied to it, before this exclusion was added.
-    if (s->kind == ir::StmtKind::Asm) return true;
+    // NOTE: an `asm{...}` block was excluded here for a while, on
+    // the theory that raw inline assembly's opaque text might embed
+    // its own assumptions this analysis can't see into. That theory
+    // was wrong: the real bug behind the symptom that prompted it
+    // (sys/s4.c's `dsktrans` hanging under a real pdp7/disk scenario)
+    // was `__sp`'s own starting value colliding with ordinary
+    // program code/data (see generate()'s own comment on `__sp:
+    // 8191`) - a bug that hit leaf and non-leaf functions alike, not
+    // anything specific to `dsktrans`, leaf-ness, or `asm{...}`.
+    // With that fixed, re-verified directly that a leaf-eligible
+    // function's own `asm{...}` block has no dependency on frame
+    // mechanics to break: every reference to a Param/Local inside
+    // one is an ordinary bare-expression statement (e.g. `dsktrans`'s
+    // own "wordCount;"), which already goes through this file's
+    // normal emitLoadSlot()/emitStoreSlot() (leaf-aware either way) -
+    // the raw instruction text itself never names `__fp`/`__sp`
+    // directly. No exclusion needed.
     if (exprMakesCall(s->cond.get())) return true;
     if (exprMakesCall(s->initOrReturnOrExpr.get())) return true;
     for (const auto &c : s->body) {
@@ -541,17 +548,17 @@ void Pdp7Codegen::genStmt(const ir::Stmt &s) {
             return;
         }
         case ir::StmtKind::If: {
-            genExpr(*s.cond);
             std::string Lelse = newLabel();
             std::string Ldone = newLabel();
-            // `sna` (skip if AC!=0 - see this file's own opcode-table
-            // comment near genCompare) skips the branch to Lelse/
-            // Ldone exactly when the condition is true, falling
-            // straight through into thenStmt's own code right below
-            // with no separate "jmp Lthen" (and no Lthen label)
-            // needed at all - one word cheaper per `if` than jumping
-            // to an explicit "then" label would be.
-            code_ << "   sna\n   jmp " << (s.elseStmt ? Lelse : Ldone) << "\n";
+            // genCondBranch() fuses a plain comparison (or `&&` of
+            // them) straight into this branch, skipping genExpr()'s
+            // own "materialize a real 0/1 value, then re-test it"
+            // round trip - see its own comment. Anything else (`||`,
+            // a bare variable, a call, bitwise, ...) falls back to
+            // exactly the old "evaluate, then `sna`" sequence inside
+            // genCondBranch() itself, so this case doesn't need its
+            // own fallback here any more.
+            genCondBranch(*s.cond, s.elseStmt ? Lelse : Ldone);
             genStmt(*s.thenStmt);
             if (s.elseStmt) {
                 code_ << "   jmp " << Ldone << "\n";
@@ -572,12 +579,8 @@ void Pdp7Codegen::genStmt(const ir::Stmt &s) {
             // I8086Codegen.cpp's own While case for the same pattern.
             std::string Lcont = s.postStmt ? newLabel() : Lstart;
             code_ << Lstart << ":\n";
-            genExpr(*s.cond);
-            // Same one-word-cheaper trick as `If` above: `sna` skips
-            // the branch to Lend exactly when the condition is true,
-            // falling straight through into loopBody's own code with
-            // no separate "jmp Lbody"/Lbody label needed.
-            code_ << "   sna\n   jmp " << Lend << "\n";
+            // See the `If` case above for what genCondBranch() fuses.
+            genCondBranch(*s.cond, Lend);
             loopLabels_.push_back({Lcont, Lend});
             genStmt(*s.loopBody);
             loopLabels_.pop_back();
@@ -923,6 +926,88 @@ void Pdp7Codegen::emitLt(const ir::Expr &lhs, const ir::Expr &rhs, bool negate) 
     if (negate) code_ << "   xor __one\n";
 }
 
+// See Pdp7Codegen.h's own comment for what this is for and why it
+// avoids `spa`. Each comparison computes AC = a - b exactly the way
+// emitLt()/emitEq() already do (reusing their own verified
+// instruction choices), then branches on that raw result directly
+// instead of materializing a 0/1 value first:
+//   `<`/`>`  (swap operands for `>`, so AC = (the smaller side) -
+//            (the larger side) tests the same way `<` already does):
+//            `sma` (skip if AC<0 - verified, see emitLt()) - 2 words:
+//            true (AC<0) skips the jump, false executes it.
+//   `>=`/`<=` (negate of `>`/`<` - swap operands for `<=`): `spa`
+//            would be the natural complement of `sma` here, but
+//            nothing in this file has used or verified it yet, so
+//            this uses the same 3-word "jump either way, fall into
+//            a label placed right before the true-branch code"
+//            shape genCompare()'s own old materializing path used,
+//            just without ever producing a 0/1 value - still 4-5
+//            words cheaper than the full materialize-then-test
+//            round trip.
+//   `==`     `sad` (skip if AC != M[T], i.e. "different" - verified,
+//            see emitEq()) naturally gives "skip if different", the
+//            OPPOSITE sense `==` wants (fall through when SAME) -
+//            same 3-word shape as `>=`/`<=` above.
+//   `!=`     `sad`'s natural "skip if different" sense already
+//            matches what `!=` wants directly - 2 words.
+// `&&` recurses (both sides must be true; either side's own failure
+// goes straight to the same `Lfalse`, so this is just two calls in a
+// row - correctly short-circuiting, since the second genCondBranch
+// call is only ever reached by falling through the first one's own
+// success path). `||` is NOT fused (the short-circuit-success case
+// needs a different intermediate label shape this doesn't build) -
+// it falls through to the generic path below along with anything
+// else (`!`, a bare variable, a call, bitwise, ...), unchanged from
+// before: evaluate normally, test the resulting 0/1 value.
+void Pdp7Codegen::genCondBranch(const ir::Expr &cond, const std::string &Lfalse) {
+    if (cond.kind == ir::ExprKind::Binary) {
+        const std::string &op = cond.op;
+        if (op == "&&") {
+            genCondBranch(*cond.lhs, Lfalse);
+            genCondBranch(*cond.rhs, Lfalse);
+            return;
+        }
+        if (op == "<" || op == ">" || op == ">=" || op == "<=") {
+            const ir::Expr *a = cond.lhs.get();
+            const ir::Expr *b = cond.rhs.get();
+            bool negate = (op == ">=" || op == "<=");
+            if (op == ">" || op == "<=") std::swap(a, b);
+            genExpr(*a);
+            pushAC();  // protect a - b's own evaluation may call
+            genExpr(*b);
+            code_ << "   cma\n   tad __one\n";  // AC = -b
+            code_ << "   dac __stmp2\n";  // __stmp2, not __stmp - popAC() below uses __stmp internally
+            popAC();  // AC = a
+            code_ << "   tad __stmp2\n";  // AC = a - b
+            if (!negate) {
+                code_ << "   sma\n   jmp " << Lfalse << "\n";
+            } else {
+                std::string Ltrue = newLabel();
+                code_ << "   sma\n   jmp " << Ltrue << "\n   jmp " << Lfalse << "\n";
+                code_ << Ltrue << ":\n";
+            }
+            return;
+        }
+        if (op == "==" || op == "!=") {
+            genExpr(*cond.lhs);
+            pushAC();  // protect lhs - rhs's own evaluation may call
+            genExpr(*cond.rhs);
+            code_ << "   dac __stmp2\n";  // __stmp2, not __stmp - popAC() below uses __stmp internally
+            popAC();  // AC = lhs
+            if (op == "!=") {
+                code_ << "   sad __stmp2\n   jmp " << Lfalse << "\n";
+            } else {
+                std::string Ltrue = newLabel();
+                code_ << "   sad __stmp2\n   jmp " << Ltrue << "\n   jmp " << Lfalse << "\n";
+                code_ << Ltrue << ":\n";
+            }
+            return;
+        }
+    }
+    genExpr(cond);
+    code_ << "   sna\n   jmp " << Lfalse << "\n";
+}
+
 void Pdp7Codegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     std::string Lcheckb = newLabel(), Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
@@ -973,16 +1058,50 @@ void Pdp7Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
 }
 
 // Division/modulo via a small shared software routine (repeated
-// subtraction) rather than the EAE "idiv" instruction, whose signed
-// semantics weren't verified for this compiler. Non-negative
-// operands only - see README.
+// subtraction on the operands' absolute values, with the sign of
+// each result reapplied afterward) rather than the EAE "idiv"
+// instruction, whose signed semantics weren't verified for this
+// compiler. Matches C's own truncating (round-toward-zero) division:
+// the quotient's sign is the XOR of the two operands' signs, and the
+// remainder's sign always matches the dividend's (`a == q*b + r`
+// holds either way).
 void Pdp7Codegen::ensureDivModRoutine() {
     if (!needDivMod_) return;
-    trailer_.push_back("__dm_a: 0");
-    trailer_.push_back("__dm_b: 0");
-    trailer_.push_back("__dm_q: 0");
+    trailer_.push_back("__dm_a: 0");   // dividend -> |dividend| -> |remainder| -> signed remainder
+    trailer_.push_back("__dm_b: 0");   // divisor -> |divisor|
+    trailer_.push_back("__dm_q: 0");   // |quotient| -> signed quotient
+    trailer_.push_back("__dm_sa: 0");  // 1 if the dividend was negative, else 0
+    trailer_.push_back("__dm_sb: 0");  // 1 if the divisor was negative, else 0
     trailer_.push_back("__divmod: 0");
     trailer_.push_back("   dzm __dm_q");
+    trailer_.push_back("   dzm __dm_sa");
+    trailer_.push_back("   dzm __dm_sb");
+    // __dm_a = |dividend|, __dm_sa = 1 if it was negative.
+    trailer_.push_back("   lac __dm_a");
+    trailer_.push_back("   sma");
+    trailer_.push_back("   jmp J_dm_adone");
+    trailer_.push_back("   jmp J_dm_aneg");
+    trailer_.push_back("J_dm_aneg:");
+    trailer_.push_back("   isz __dm_sa");
+    trailer_.push_back("   lac __dm_a");
+    trailer_.push_back("   cma");
+    trailer_.push_back("   tad __one");
+    trailer_.push_back("   dac __dm_a");
+    trailer_.push_back("J_dm_adone:");
+    // __dm_b = |divisor|, __dm_sb = 1 if it was negative.
+    trailer_.push_back("   lac __dm_b");
+    trailer_.push_back("   sma");
+    trailer_.push_back("   jmp J_dm_bdone");
+    trailer_.push_back("   jmp J_dm_bneg");
+    trailer_.push_back("J_dm_bneg:");
+    trailer_.push_back("   isz __dm_sb");
+    trailer_.push_back("   lac __dm_b");
+    trailer_.push_back("   cma");
+    trailer_.push_back("   tad __one");
+    trailer_.push_back("   dac __dm_b");
+    trailer_.push_back("J_dm_bdone:");
+    // Unsigned repeated-subtraction division of the two magnitudes:
+    // __dm_a ends up holding |remainder|, __dm_q holding |quotient|.
     trailer_.push_back("J_dmloop:");
     trailer_.push_back("   lac __dm_b");
     trailer_.push_back("   cma");
@@ -996,6 +1115,31 @@ void Pdp7Codegen::ensureDivModRoutine() {
     trailer_.push_back("   isz __dm_q");  // quotient += 1
     trailer_.push_back("   jmp J_dmloop");
     trailer_.push_back("J_dmdone:");
+    // Quotient is negative iff exactly one of the two signs was set.
+    trailer_.push_back("   lac __dm_sa");
+    trailer_.push_back("   cma");
+    trailer_.push_back("   tad __one");
+    trailer_.push_back("   tad __dm_sb");  // AC = __dm_sb - __dm_sa: 0 iff same sign
+    trailer_.push_back("   sza");
+    trailer_.push_back("   jmp J_dm_qflip");
+    trailer_.push_back("   jmp J_dm_qdone");
+    trailer_.push_back("J_dm_qflip:");
+    trailer_.push_back("   lac __dm_q");
+    trailer_.push_back("   cma");
+    trailer_.push_back("   tad __one");
+    trailer_.push_back("   dac __dm_q");
+    trailer_.push_back("J_dm_qdone:");
+    // Remainder's sign always matches the dividend's.
+    trailer_.push_back("   lac __dm_sa");
+    trailer_.push_back("   sza");
+    trailer_.push_back("   jmp J_dm_rflip");
+    trailer_.push_back("   jmp J_dm_rdone");
+    trailer_.push_back("J_dm_rflip:");
+    trailer_.push_back("   lac __dm_a");
+    trailer_.push_back("   cma");
+    trailer_.push_back("   tad __one");
+    trailer_.push_back("   dac __dm_a");
+    trailer_.push_back("J_dm_rdone:");
     trailer_.push_back("   lac __dm_q");
     trailer_.push_back("   jmp i __divmod");
 }

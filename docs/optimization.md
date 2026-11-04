@@ -8,7 +8,7 @@ backend is selected — since every backend-specific decision
 after the IR exists, an optimizer written once benefits every target
 (see `docs/platforms.md` for the full list).
 
-Today there are two, run in this order (`src/main.cpp`):
+Today there are three, run in this order (`src/main.cpp`):
 
 - **`ConstantFolding`** (`src/optimizers/ConstantFolding.cpp`) —
   bottom-up folds any unary or binary expression whose operand(s) are
@@ -19,6 +19,27 @@ Today there are two, run in this order (`src/main.cpp`):
   shift by an out-of-range amount. Runs first because it often turns
   a once-variable initializer or condition into a literal that
   `DeadCodeElimination` can then reason about.
+
+- **`AlgebraicSimplification`**
+  (`src/optimizers/AlgebraicSimplification.cpp`) — strength reduction:
+  rewrites a binary expression with exactly one `IntLit` operand into
+  a cheaper equivalent that holds for every possible value of the
+  other operand — `x * 2`/`2 * x` → `x << 1`, `x * -1` → `-x`, `x / 1`
+  → `x`, `x / -1` → `-x`, `x + 0`/`0 + x` → `x`, `x - 0` → `x`,
+  `x << 0`/`x >> 0` → `x`, `x | 0`/`0 | x` → `x`, `x ^ 0`/`0 ^ x` → `x`.
+  This is strictly narrower than `ConstantFolding`: it never touches a
+  both-literal expression (that's already folded by the time this
+  pass runs) and never drops the non-literal operand's own
+  subexpression, so a side effect inside it (a call) still runs
+  exactly once either way. Deliberately *not* rewritten, because it
+  would have to drop that operand entirely to reach the answer, which
+  is only safe if it has no side effect: `x * 0`, `x % 1`, `x & 0`.
+  Also not rewritten: `x / <power of two>` / `x % <power of two>` as a
+  shift/mask — truncating (round-toward-zero) division isn't
+  bit-identical to an arithmetic right-shift for a negative `x`, and
+  this pass has no way to know `x`'s sign at compile time in general.
+  Helps every target, but especially one like pdp7 with no hardware
+  multiply/divide shortcut for small constants.
 
 - **`DeadCodeElimination`** (`src/optimizers/DeadCodeElimination.cpp`)
   — removes statements that can never run (anything after a `return`

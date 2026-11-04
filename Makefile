@@ -134,6 +134,7 @@ HAND_SRCS := \
     $(IR_DIR)/IRValidator.cpp \
     $(OPTIMIZERS_DIR)/ConstantFolding.cpp \
     $(OPTIMIZERS_DIR)/DeadCodeElimination.cpp \
+    $(OPTIMIZERS_DIR)/AlgebraicSimplification.cpp \
     $(SRC_DIR)/codegen/pdp7/Pdp7Codegen.cpp \
     $(SRC_DIR)/codegen/pdp7/Pdp7Assembler.cpp \
     $(SRC_DIR)/codegen/x86_8086/I8086Codegen.cpp \

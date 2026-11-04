@@ -34,12 +34,15 @@ void collectStmtSlots(const ir::Stmt *s, std::unordered_set<ir::Slot *> &used) {
         case ir::StmtKind::While:
             collectExprSlots(s->cond.get(), used);
             collectStmtSlots(s->loopBody.get(), used);
+            collectStmtSlots(s->postStmt.get(), used);
             return;
         case ir::StmtKind::Return:
         case ir::StmtKind::LocalDecl:
         case ir::StmtKind::ExprStmt:
             collectExprSlots(s->initOrReturnOrExpr.get(), used);
             return;
+        case ir::StmtKind::Break:
+        case ir::StmtKind::Continue:
         case ir::StmtKind::Empty:
         case ir::StmtKind::Asm:
             return;
@@ -101,6 +104,7 @@ void removeUnreachable(ir::Stmt *s, bool &changed) {
             return;
         case ir::StmtKind::While:
             removeUnreachable(s->loopBody.get(), changed);
+            removeUnreachable(s->postStmt.get(), changed);
             return;
         default:
             return;
@@ -142,6 +146,7 @@ void removeDeadDecls(ir::Stmt *s, const std::unordered_set<ir::Slot *> &used, bo
             return;
         case ir::StmtKind::While:
             removeDeadDecls(s->loopBody.get(), used, changed);
+            removeDeadDecls(s->postStmt.get(), used, changed);
             return;
         default:
             return;

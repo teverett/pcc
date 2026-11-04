@@ -89,12 +89,15 @@ void foldStmt(ir::Stmt *s, bool &changed) {
         case ir::StmtKind::While:
             foldExpr(s->cond, changed);
             foldStmt(s->loopBody.get(), changed);
+            foldStmt(s->postStmt.get(), changed);
             return;
         case ir::StmtKind::Return:
         case ir::StmtKind::LocalDecl:
         case ir::StmtKind::ExprStmt:
             foldExpr(s->initOrReturnOrExpr, changed);
             return;
+        case ir::StmtKind::Break:
+        case ir::StmtKind::Continue:
         case ir::StmtKind::Empty:
         case ir::StmtKind::Asm:
             return;
