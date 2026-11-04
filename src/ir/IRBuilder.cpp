@@ -471,4 +471,10 @@ ir::Program buildIR(const Program &prog, bool allowExternal) {
     return b.build(prog);
 }
 
+void recomputeFrameLayout(ir::Program &prog) {
+    for (auto &fb : prog.functionBodies) {
+        fb.func->frameSize = assignFrameOffsets(fb.body.get(), 1) - 1;
+    }
+}
+
 }  // namespace pcc

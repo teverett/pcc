@@ -25,4 +25,15 @@ namespace pcc {
 // and `prog` must define a parameterless `main`.
 ir::Program buildIR(const Program &prog, bool allowExternal = false);
 
+// Re-walks every function body's own `LocalDecl`s and reassigns each
+// one's `Slot::frameOffset` (and its `Function::frameSize`) from
+// scratch, in whatever declaration order the tree currently has -
+// exactly what `buildIR` itself already does once, right after
+// building a function's body. An optimizer that introduces a brand
+// new local (see `LocalCSE.cpp`) runs after that one-time assignment
+// already happened, so without a second pass here, the new local's
+// `frameOffset` would be left at its default (0), silently aliasing
+// whatever real local or parameter already sits there.
+void recomputeFrameLayout(ir::Program &prog);
+
 }  // namespace pcc

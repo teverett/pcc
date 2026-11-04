@@ -1,6 +1,7 @@
 #include "optimizers/DeadCodeElimination.h"
 
 #include <algorithm>
+#include <iostream>
 #include <unordered_set>
 
 namespace pcc {
@@ -85,6 +86,8 @@ void removeUnreachable(ir::Stmt *s, bool &changed) {
         case ir::StmtKind::Block: {
             for (size_t i = 0; i < s->body.size(); i++) {
                 if (s->body[i]->kind == ir::StmtKind::Return && i + 1 < s->body.size()) {
+                    std::cerr << "dce: line " << s->body[i]->line << ": removed "
+                               << (s->body.size() - i - 1) << " statement(s) after `return`\n";
                     s->body.resize(i + 1);
                     changed = true;
                     break;
@@ -94,7 +97,10 @@ void removeUnreachable(ir::Stmt *s, bool &changed) {
             s->body.erase(std::remove_if(s->body.begin(), s->body.end(),
                                            [](const ir::StmtPtr &child) { return child->kind == ir::StmtKind::Empty; }),
                             s->body.end());
-            if (s->body.size() != before) changed = true;
+            if (s->body.size() != before) {
+                std::cerr << "dce: removed " << (before - s->body.size()) << " empty statement(s)\n";
+                changed = true;
+            }
             for (auto &child : s->body) removeUnreachable(child.get(), changed);
             return;
         }
@@ -127,8 +133,12 @@ void removeDeadDecls(ir::Stmt *s, const std::unordered_set<ir::Slot *> &used, bo
                     changed = true;
                     bool isArray = child->declSlot->arraySize > 0;
                     if (isArray || !child->initOrReturnOrExpr || !hasSideEffect(child->initOrReturnOrExpr.get())) {
+                        std::cerr << "dce: line " << child->line << ": removed unused local `"
+                                   << child->declSlot->sourceName << "`\n";
                         continue;  // drop the declaration entirely
                     }
+                    std::cerr << "dce: line " << child->line << ": local `" << child->declSlot->sourceName
+                               << "` is unused but its initializer has side effects; kept as an expression statement\n";
                     child->kind = ir::StmtKind::ExprStmt;
                     child->declSlot = nullptr;
                     newBody.push_back(std::move(child));

@@ -8,7 +8,7 @@ backend is selected — since every backend-specific decision
 after the IR exists, an optimizer written once benefits every target
 (see `docs/platforms.md` for the full list).
 
-Today there are three, run in this order (`src/main.cpp`):
+Today there are four, run in this order (`src/main.cpp`):
 
 - **`ConstantFolding`** (`src/optimizers/ConstantFolding.cpp`) —
   bottom-up folds any unary or binary expression whose operand(s) are
@@ -41,6 +41,33 @@ Today there are three, run in this order (`src/main.cpp`):
   Helps every target, but especially one like pdp7 with no hardware
   multiply/divide shortcut for small constants.
 
+- **`LocalCSE`** (`src/optimizers/LocalCSE.cpp`) — simple local
+  common-subexpression elimination / redundant-load elimination:
+  purely syntactic (not flow-sensitive) matching of identical
+  `Binary`/`Index` subexpressions within one `Block`'s own statement
+  list (an `If`/`While`'s own `cond` counts as part of its enclosing
+  block; its `then`/`else`/loop body gets its own separate, unrelated
+  scope). On a repeated, side-effect-free occurrence, the *first* one
+  is wrapped in place with an assignment into a fresh temporary (still
+  evaluating at exactly its original program point - nothing is ever
+  moved), and every later occurrence becomes a plain read of it
+  instead of recomputing it. An occurrence stops being eligible to
+  match again the moment something could have changed its value: a
+  direct write to a `Slot` it depends on drops only that occurrence,
+  while a `Call`/`CallPtr`/`Intrinsic`/`DerefAssign` conservatively
+  drops every occurrence recorded so far in the scope. Runs after
+  `AlgebraicSimplification` so it sees each subexpression in its own
+  already-canonicalized form. Introduces brand new locals after
+  `IRBuilder` already assigned every other local's own frame offset
+  once, which is why `main.cpp` calls `IRBuilder.h`'s own
+  `recomputeFrameLayout` right after this pass runs. See
+  `LocalCSE.h`'s own comment for the deliberate gaps (no operand-order
+  normalization, no iterating to a fixpoint, nothing but `Binary`/
+  `Index` ever considered) and the one pre-existing `IRPrinter.cpp`
+  cosmetic gap this pass makes far more visible (a promoted
+  subexpression's `--dump-ir` text can read ambiguously, though the
+  real tree - and so the actual compiled program - is unaffected).
+
 - **`DeadCodeElimination`** (`src/optimizers/DeadCodeElimination.cpp`)
   — removes statements that can never run (anything after a `return`
   in the same block, bare `;` statements) and local variables that
@@ -51,7 +78,7 @@ Today there are three, run in this order (`src/main.cpp`):
 
 Not yet attempted, because they'd need a real control-flow graph
 first: dead-*store* elimination, constant-condition `if`/`while`
-removal, and CSE.
+removal, and a flow-sensitive (cross-block) CSE.
 
 ## IR grammar
 

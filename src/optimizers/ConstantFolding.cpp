@@ -1,5 +1,6 @@
 #include "optimizers/ConstantFolding.h"
 
+#include <iostream>
 #include <optional>
 #include <string>
 
@@ -63,12 +64,16 @@ void foldExpr(ir::ExprPtr &e, bool &changed) {
 
     if (e->kind == ir::ExprKind::Unary && e->rhs->kind == ir::ExprKind::IntLit) {
         if (std::optional<long> v = evalUnary(e->op, e->rhs->intValue)) {
+            std::cerr << "constant-folding: line " << e->line << ": folded `" << e->op
+                       << e->rhs->intValue << "` to `" << *v << "`\n";
             e = makeIntLit(*v, e->line);
             changed = true;
         }
     } else if (e->kind == ir::ExprKind::Binary && e->lhs->kind == ir::ExprKind::IntLit &&
                e->rhs->kind == ir::ExprKind::IntLit) {
         if (std::optional<long> v = evalBinary(e->op, e->lhs->intValue, e->rhs->intValue)) {
+            std::cerr << "constant-folding: line " << e->line << ": folded `" << e->lhs->intValue
+                       << " " << e->op << " " << e->rhs->intValue << "` to `" << *v << "`\n";
             e = makeIntLit(*v, e->line);
             changed = true;
         }

@@ -1,5 +1,6 @@
 #include "optimizers/AlgebraicSimplification.h"
 
+#include <iostream>
 #include <optional>
 #include <string>
 
@@ -99,6 +100,11 @@ void simplifyExpr(ir::ExprPtr &e, bool &changed) {
 
     long litVal = rhsLit ? e->rhs->intValue : e->lhs->intValue;
     if (!hasIdentityRewrite(e->op, litVal, /*literalWasLhs=*/lhsLit)) return;
+
+    std::cerr << "algebraic-simplification: line " << e->line << ": rewrote `"
+               << (lhsLit ? std::to_string(litVal) + " " + e->op + " <expr>"
+                          : "<expr> " + e->op + " " + std::to_string(litVal))
+               << "`\n";
 
     ir::ExprPtr nonLit = std::move(rhsLit ? e->lhs : e->rhs);
     e = applyIdentityRewrite(e->op, std::move(nonLit), litVal, e->line);

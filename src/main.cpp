@@ -45,6 +45,7 @@
 #include "optimizers/AlgebraicSimplification.h"
 #include "optimizers/ConstantFolding.h"
 #include "optimizers/DeadCodeElimination.h"
+#include "optimizers/LocalCSE.h"
 #include "preprocessor/Preprocessor.h"
 #include "codegen/pdp7/Pdp7Codegen.h"
 #include "codegen/x86_8086/I8086Codegen.h"
@@ -329,8 +330,19 @@ std::string compileOneFile(const std::string &srcPath, const std::map<std::strin
         // opportunity either pass could find alone.
         pcc::AlgebraicSimplification algsimp;
         algsimp.run(irProg);
+        // Local CSE next, so it sees each pass above's own
+        // canonicalized form (e.g. a strength-reduced `x << 1` now
+        // matches another occurrence written as `x << 1` to begin
+        // with, where the pre-simplification `x * 2` wouldn't have) -
+        // see LocalCSE.h's own "syntactic, not flow-sensitive" scope.
+        pcc::LocalCSE cse;
+        cse.run(irProg);
         pcc::DeadCodeElimination dce;
         dce.run(irProg);
+        // LocalCSE may have introduced brand new locals (temps) after
+        // buildIR() already assigned every *other* local's own frame
+        // offset once - see recomputeFrameLayout's own comment.
+        pcc::recomputeFrameLayout(irProg);
     }
 
     // A self-check, not a user-facing feature: parses this program's
