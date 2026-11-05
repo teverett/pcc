@@ -502,14 +502,15 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Deref is untyped (plain ints with '*'/'&' applied, see
-            // Type.h's own header comment) - always a full native-int
-            // word, unaffected by the new type system.
+            // Stores at e.type's own width/signedness - the pointee
+            // type of a real typed pointer, or plain native-int-width
+            // for the still-supported untyped-int-as-address style -
+            // see IRBuilder.cpp's own DerefAssign comment.
             genExpr(*e.lhs);  // w0 = pointer value
             code_ << "    sub sp,sp,16\n    stind sp,w0\n";
-            genExpr(*e.rhs);
+            genExpr(*e.rhs);  // w0, or x0 if wide
             code_ << "    ldind sp,w2\n    add sp,sp,16\n";
-            code_ << "    stind x2,w0\n";
+            storeOperand("x2", e.type);
             return;
         }
         case ir::ExprKind::Unary: {
@@ -520,9 +521,11 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                genExpr(*e.rhs);  // w0 = pointer value (deref is untyped - always native word)
+                // Loads at e.type's own width/signedness - see
+                // DerefAssign's identical comment above.
+                genExpr(*e.rhs);  // w0 = pointer value
                 code_ << "    mov x2,x0\n";
-                code_ << "    ldind x2,w0\n";
+                loadOperand("x2", e.type);
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "    mvn " << reg(0, wide) << "," << reg(0, wide) << "\n";

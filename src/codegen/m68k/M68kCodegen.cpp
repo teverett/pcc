@@ -269,15 +269,16 @@ void M68kCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Deref is untyped (plain ints with '*'/'&' applied, see
-            // Type.h's own header comment) - always a full native-int
-            // word, unaffected by the new type system.
+            // Stores through at e.type's own width/signedness - the
+            // pointee type of a real typed pointer, or a plain native
+            // int word for the still-supported untyped-int-as-address
+            // style - see IRBuilder.cpp's own DerefAssign comment.
             genExpr(*e.lhs);  // d0 = pointer value
             code_ << "    movel d0,a0\n";
             code_ << "    pushl a0\n";
             genExpr(*e.rhs);
             code_ << "    popl a0\n";
-            code_ << "    stind d0,a0\n";
+            storeIndirect(e.type);
             return;
         }
         case ir::ExprKind::Unary: {
@@ -291,9 +292,11 @@ void M68kCodegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
+                // Loads at e.type's own width/signedness - see
+                // DerefAssign's identical comment above.
                 genExpr(*e.rhs);  // d0 = pointer value
                 code_ << "    movel d0,a0\n";
-                code_ << "    ldind a0,d0\n";
+                loadIndirect(e.type);
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "    notl d0\n";

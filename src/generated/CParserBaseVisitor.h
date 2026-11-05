@@ -19,6 +19,10 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitTypeSpec(CParser::TypeSpecContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitCharType(CParser::CharTypeContext *ctx) override {
     return visitChildren(ctx);
   }
@@ -168,6 +172,10 @@ public:
   }
 
   virtual std::any visitAddrOfExpr(CParser::AddrOfExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitStringLitExpr(CParser::StringLitExprContext *ctx) override {
     return visitChildren(ctx);
   }
 

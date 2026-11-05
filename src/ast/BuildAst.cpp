@@ -112,7 +112,43 @@ void parseIntLiteral(const std::string &text, antlr4::ParserRuleContext *ctx, lo
     type = parseNumberSuffix(text.substr(digitsEnd), ctx);
 }
 
-Type buildType(CParser::TypeSpecContext *ctx) {
+// Strips the surrounding quotes from a STRINGLIT token's raw text and
+// resolves each of its own STRINGLIT_ESC escapes - the grammar only
+// admits the small fixed set CLexer.g4's own STRINGLIT_ESC fragment
+// lists (\\ \" \n \t \r \0), so every escape seen here is one of
+// those by construction.
+std::string decodeStringLit(const std::string &raw) {
+    std::string out;
+    out.reserve(raw.size());
+    for (size_t i = 1; i + 1 < raw.size(); i++) {
+        char c = raw[i];
+        if (c != '\\') {
+            out.push_back(c);
+            continue;
+        }
+        i++;
+        switch (raw[i]) {
+            case 'n':
+                out.push_back('\n');
+                break;
+            case 't':
+                out.push_back('\t');
+                break;
+            case 'r':
+                out.push_back('\r');
+                break;
+            case '0':
+                out.push_back('\0');
+                break;
+            default:
+                out.push_back(raw[i]);  // \\ or \" - the backslash itself is dropped
+                break;
+        }
+    }
+    return out;
+}
+
+Type buildBaseType(CParser::BaseTypeSpecContext *ctx) {
     bool isUnsigned = false;
     if (auto *c = dynamic_cast<CParser::CharTypeContext *>(ctx)) {
         isUnsigned = c->UNSIGNED_KW() != nullptr;
@@ -138,7 +174,15 @@ Type buildType(CParser::TypeSpecContext *ctx) {
         isUnsigned = c->UNSIGNED_KW() != nullptr;
         return Type{BaseType::Int, isUnsigned};
     }
-    err(ctx, "internal: unhandled typeSpec alternative");
+    err(ctx, "internal: unhandled baseTypeSpec alternative");
+}
+
+// A typeSpec is a baseTypeSpec plus a trailing run of '*'s - see
+// grammar/CParser.g4's own comment on typeSpec/Type::ptrDepth.
+Type buildType(CParser::TypeSpecContext *ctx) {
+    Type t = buildBaseType(ctx->baseTypeSpec());
+    t.ptrDepth = static_cast<int>(ctx->STAR().size());
+    return t;
 }
 
 std::vector<ArrayInitElem> buildArrayInit(CParser::ArrayInitContext *ctx) {
@@ -230,6 +274,13 @@ ExprPtr buildCondExpr(CParser::CondExprContext *ctx) {
         // A character constant's type is plain int, same as real C
         // (see ../../README.md's "Scope and limitations").
         e->intValue = static_cast<unsigned char>(text[1]);
+        return e;
+    }
+    if (auto *c = dynamic_cast<CParser::StringLitExprContext *>(ctx)) {
+        auto e = std::make_unique<Expr>();
+        e->kind = ExprKind::StringLit;
+        e->line = c->getStart()->getLine();
+        e->name = decodeStringLit(c->STRINGLIT()->getText());
         return e;
     }
     if (auto *c = dynamic_cast<CParser::ParenExprContext *>(ctx)) {

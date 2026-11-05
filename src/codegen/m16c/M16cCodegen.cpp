@@ -307,14 +307,42 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Deref is untyped (plain ints with '*'/'&' applied, see
-            // Type.h's own header comment) - always a native word.
+            // Stores through at e.type's own width - the pointee type
+            // of a real typed pointer, or plain native-word width for
+            // the still-supported untyped-int-as-address style - see
+            // IRBuilder.cpp's own DerefAssign comment. A wide pointee
+            // has no `[a0+N]` offset addressing to lean on (this
+            // dialect's own `ld`/`st` only ever address through a0
+            // with no displacement - see M16cAssembler.cpp's own
+            // Operand comment), so each word is stored through a0
+            // one at a time, advancing it by 2 bytes between words.
             genExpr(*e.lhs);  // r0 = pointer value
             code_ << "    mov.w r0,a0\n";
-            code_ << "    push.w a0\n";
+            code_ << "    push.w a0\n";  // save the address below rhs's own pushed words
             genExpr(*e.rhs);
+            if (isWide(e.type)) {
+                int words = wordCountOf(e.type);
+                // rhs left `words` words on the stack above the saved
+                // address, least-significant word on top (see
+                // genWideLoad()'s own header comment on this
+                // convention) - a0 is reloaded from beneath all of
+                // them (a non-destructive `[sp+N]` read, same idiom
+                // as the plain wide Assign's own branch above), then
+                // each word is popped off (least-significant first,
+                // matching genWideStore()'s own word-0-is-LSW
+                // convention) and stored at the matching offset from
+                // the pointer's own address.
+                code_ << "    mov.w [sp+" << (2 * words) << "],a0\n";
+                for (int i = 0; i < words; i++) {
+                    code_ << "    pop.w r0\n";
+                    code_ << "    st r0,a0\n";
+                    if (i + 1 < words) code_ << "    add.w 2,a0\n";
+                }
+                code_ << "    add.w 2,sp\n";  // discard the now-read saved address word
+                return;
+            }
             code_ << "    pop.w a0\n";
-            code_ << "    st r0,a0\n";
+            code_ << "    " << (widthOfType(e.type) == 1 ? "stb" : "st") << " r0,a0\n";
             return;
         }
         case ir::ExprKind::Unary: {
@@ -328,9 +356,27 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
+                // Loads at e.type's own width - see DerefAssign's
+                // identical comment above.
                 genExpr(*e.rhs);  // r0 = pointer value
                 code_ << "    mov.w r0,a0\n";
-                code_ << "    ld a0,r0\n";
+                if (isWide(e.type)) {
+                    // Pushes MSW first .. LSW last (ending on top),
+                    // matching genWideLoad()'s own convention - each
+                    // word is read through a0 one at a time (see
+                    // DerefAssign's identical comment above on why
+                    // there's no `[a0+N]` form to use instead).
+                    int words = wordCountOf(e.type);
+                    if (words > 1) code_ << "    add.w " << (2 * (words - 1)) << ",a0\n";
+                    for (int i = words - 1; i >= 0; i--) {
+                        code_ << "    ld a0,r0\n";
+                        code_ << "    push.w r0\n";
+                        if (i > 0) code_ << "    sub.w 2,a0\n";
+                    }
+                    return;
+                }
+                code_ << "    " << (widthOfType(e.type) == 1 ? "ldb" : "ld") << " a0,r0\n";
+                if (widthOfType(e.type) == 1 && e.type.isUnsigned) code_ << "    and.w 0x00FF,r0\n";
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "    not.w r0\n";

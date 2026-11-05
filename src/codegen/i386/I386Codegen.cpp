@@ -280,14 +280,18 @@ void I386Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Deref is untyped (plain ints with '*'/'&' applied, see
-            // Type.h's own header comment) - always a full native-int
-            // word, unaffected by the new type system.
+            // Stores through at e.type's own width/signedness - the
+            // pointee type of a real typed pointer (char*/short*/
+            // long*/long long*/...), or a plain native int word for
+            // the still-supported untyped-int-as-address style - see
+            // IRBuilder.cpp's own DerefAssign comment. A wide (8-byte)
+            // pointee needs both halves' addresses, one dword apart,
+            // same as any other wide store.
             genExpr(*e.lhs);  // eax = pointer value
             code_ << "    mov ebx,eax\n    push ebx\n";
-            genExpr(*e.rhs);  // eax = value to store
+            genExpr(*e.rhs);  // eax, or edx:eax if wide = value to store
             code_ << "    pop ebx\n";
-            code_ << "    mov [ebx],eax\n";
+            storeOperand("[ebx]", "[ebx+4]", e.type);
             return;
         }
         case ir::ExprKind::Unary: {
@@ -301,8 +305,11 @@ void I386Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
+                // Loads at e.type's own width/signedness - see
+                // DerefAssign's identical comment above.
                 genExpr(*e.rhs);  // eax = pointer value
-                code_ << "    mov ebx,eax\n    mov eax,[ebx]\n";
+                code_ << "    mov ebx,eax\n";
+                loadOperand("[ebx]", "[ebx+4]", e.type);
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "    not eax\n";

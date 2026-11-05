@@ -22,6 +22,7 @@ enum class ExprKind {
     CallPtr,      // (lhs)(args) - callee is a computed address, not a name; see IRBuilder's buildExpr
     Cast,         // (type)rhs
     Sizeof,       // sizeof(type) or sizeof(rhs) - see sizeofIsType
+    StringLit,    // "..." - decoded bytes in `name`; see IRBuilder's buildExpr
 };
 
 struct Expr {
@@ -31,7 +32,7 @@ struct Expr {
     long intValue = 0;        // IntLit
     Type type;                 // IntLit (from its suffix); Cast/Sizeof (the operand/measured type)
     bool sizeofIsType = false;  // Sizeof: true -> `type` is what's measured, false -> `rhs` is (unevaluated)
-    std::string name;         // Var / Index / Assign (target) / Call (callee)
+    std::string name;         // Var / Index / Assign (target) / Call (callee) / StringLit (decoded bytes)
     std::string op;           // Unary / Binary operator text
     std::unique_ptr<Expr> lhs;  // Binary lhs, Index/indexed-Assign subscript, DerefAssign's pointer,
                                  // CallPtr's callee expression

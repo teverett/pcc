@@ -21,6 +21,8 @@ public:
    */
     virtual std::any visitProgram(CParser::ProgramContext *context) = 0;
 
+    virtual std::any visitTypeSpec(CParser::TypeSpecContext *context) = 0;
+
     virtual std::any visitCharType(CParser::CharTypeContext *context) = 0;
 
     virtual std::any visitShortType(CParser::ShortTypeContext *context) = 0;
@@ -96,6 +98,8 @@ public:
     virtual std::any visitSizeofTypeExpr(CParser::SizeofTypeExprContext *context) = 0;
 
     virtual std::any visitAddrOfExpr(CParser::AddrOfExprContext *context) = 0;
+
+    virtual std::any visitStringLitExpr(CParser::StringLitExprContext *context) = 0;
 
     virtual std::any visitOrExpr(CParser::OrExprContext *context) = 0;
 

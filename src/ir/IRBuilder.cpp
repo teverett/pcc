@@ -15,19 +15,25 @@ namespace {
 
 std::string typeText(Type t) {
     std::string prefix = t.isUnsigned ? "unsigned " : "";
+    std::string base;
     switch (t.base) {
         case BaseType::Char:
-            return prefix + "char";
+            base = "char";
+            break;
         case BaseType::Short:
-            return prefix + "short";
+            base = "short";
+            break;
         case BaseType::Int:
-            return prefix + "int";
+            base = "int";
+            break;
         case BaseType::Long:
-            return prefix + "long";
+            base = "long";
+            break;
         case BaseType::LongLong:
-            return prefix + "long long";
+            base = "long long";
+            break;
     }
-    return prefix + "int";
+    return prefix + base + std::string(t.ptrDepth, '*');
 }
 
 // Flags an explicit `(type)expr` cast that either narrows the value
@@ -132,6 +138,7 @@ class Builder {
             pushScope();
             for (ir::Slot *p : irFn->params) declareLocal(p->sourceName, p, fn.line);
             currentReturnType_ = irFn->returnType;
+            currentSourceFile_ = fn.sourceFile;
             ir::StmtPtr body = buildStmt(*fn.body);
             popScope();
             int reserved = widthOf(Type{BaseType::Int, false}, widths_);
@@ -434,6 +441,108 @@ class Builder {
         err(e.line, "'&' requires a plain variable, array element, or function name, e.g. &x, &arr[i], or &f");
     }
 
+    // Pointer arithmetic/comparison - called once at least one of
+    // lhs/rhs is a real pointer (ptrDepth>0). Handles exactly the
+    // operators real C defines on a pointer operand: ptr +/- int
+    // (scaled by the pointee's own width - an unscaled add/sub of two
+    // native words would walk `int` BYTES, not `int` ELEMENTS, now
+    // that a pointer tracks a real pointee type instead of being a
+    // plain untyped int - see Type.h's own header comment), ptr - ptr
+    // of the same type (address difference, itself scaled down to an
+    // element count), and every comparison operator (raw, unsigned,
+    // native-word address compare - a pointer's own storage is always
+    // exactly one native int's width, see Type.h's widthOf()).
+    // Anything else involving a pointer operand is rejected, same as
+    // real C.
+    ir::ExprPtr buildPointerBinary(const std::string &op, ir::ExprPtr lhs, ir::ExprPtr rhs, int line) {
+        if (op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=") {
+            Type word = Type{BaseType::Int, true};
+            auto out = std::make_unique<ir::Expr>();
+            out->kind = ir::ExprKind::Binary;
+            out->line = line;
+            out->op = op;
+            out->type = Type{BaseType::Int, false};
+            out->lhs = wrapConvert(std::move(lhs), word, line);
+            out->rhs = wrapConvert(std::move(rhs), word, line);
+            return out;
+        }
+        if (op != "+" && op != "-") {
+            err(line, "'" + op + "' is not defined on a pointer operand");
+        }
+
+        bool lhsPtr = isPointer(lhs->type);
+        bool rhsPtr = isPointer(rhs->type);
+
+        if (lhsPtr && rhsPtr) {
+            if (op != "-") err(line, "'+' between two pointers is invalid - did you mean '-'?");
+            if (lhs->type != rhs->type) err(line, "'-' between pointers to different types");
+            // Both the raw address difference and the division below
+            // stay at a pointer's own real width (plain native `int` -
+            // see Type.h's own header comment on a pointer's own
+            // storage) rather than some wider result type: lhs/rhs are
+            // themselves narrow pointer-typed operands, and tagging a
+            // Binary node with a WIDER .type than its own children's
+            // actual type would wrongly route a backend's wide
+            // (`long`/`long long`) codegen onto them (that codegen
+            // assumes every operand it's handed is already that same
+            // wide type - see e.g. Pdp7Codegen.cpp's genWideExpr).
+            int elemWidth = widthOf(pointeeOf(lhs->type), widths_);
+            Type nativeInt = Type{BaseType::Int, false};
+            auto diff = std::make_unique<ir::Expr>();
+            diff->kind = ir::ExprKind::Binary;
+            diff->line = line;
+            diff->op = "-";
+            diff->type = nativeInt;
+            diff->lhs = std::move(lhs);
+            diff->rhs = std::move(rhs);
+            if (elemWidth == 1) return diff;  // the raw address difference is already the element count
+            auto divisor = std::make_unique<ir::Expr>();
+            divisor->kind = ir::ExprKind::IntLit;
+            divisor->line = line;
+            divisor->type = nativeInt;
+            divisor->intValue = elemWidth;
+            auto scaled = std::make_unique<ir::Expr>();
+            scaled->kind = ir::ExprKind::Binary;
+            scaled->line = line;
+            scaled->op = "/";
+            scaled->type = nativeInt;
+            scaled->lhs = std::move(diff);
+            scaled->rhs = std::move(divisor);
+            return scaled;
+        }
+
+        if (rhsPtr && !lhsPtr) {
+            if (op == "-") err(line, "cannot subtract a pointer from an int");
+            std::swap(lhs, rhs);  // normalize: lhs is always the pointer from here on
+        }
+        Type ptrType = lhs->type;
+        int elemWidth = widthOf(pointeeOf(ptrType), widths_);
+        rhs = promote(std::move(rhs), line);
+        if (elemWidth != 1) {
+            auto factor = std::make_unique<ir::Expr>();
+            factor->kind = ir::ExprKind::IntLit;
+            factor->line = line;
+            factor->type = rhs->type;
+            factor->intValue = elemWidth;
+            auto scaled = std::make_unique<ir::Expr>();
+            scaled->kind = ir::ExprKind::Binary;
+            scaled->line = line;
+            scaled->op = "*";
+            scaled->type = rhs->type;
+            scaled->lhs = std::move(rhs);
+            scaled->rhs = std::move(factor);
+            rhs = std::move(scaled);
+        }
+        auto out = std::make_unique<ir::Expr>();
+        out->kind = ir::ExprKind::Binary;
+        out->line = line;
+        out->op = op;
+        out->type = ptrType;
+        out->lhs = std::move(lhs);
+        out->rhs = std::move(rhs);
+        return out;
+    }
+
     ir::ExprPtr buildExpr(const Expr &e) {
         auto out = std::make_unique<ir::Expr>();
         out->line = e.line;
@@ -472,28 +581,50 @@ class Builder {
                 out->rhs = wrapConvert(buildExpr(*e.rhs), out->type, e.line);
                 return out;
             }
-            case ExprKind::DerefAssign:
-                // '*' has no pointee type to track (pointers are
-                // plain, untyped ints - see Type.h's own header
-                // comment) - the stored-through value stays at native
-                // pointer-word width, same as today.
+            case ExprKind::DerefAssign: {
                 out->kind = ir::ExprKind::DerefAssign;
-                out->type = Type{BaseType::Int, false};
                 out->lhs = buildExpr(*e.lhs);
-                out->rhs = buildExpr(*e.rhs);
+                if (isPointer(out->lhs->type)) {
+                    // A real pointer (ptrDepth>0) stores through at
+                    // its own pointee type/width - see every backend's
+                    // own genExpr DerefAssign case, which now reads
+                    // this type instead of always writing a full
+                    // native word.
+                    Type pointee = pointeeOf(out->lhs->type);
+                    out->type = pointee;
+                    out->rhs = wrapConvert(buildExpr(*e.rhs), pointee, e.line);
+                } else {
+                    // A plain int used as an untyped address (the
+                    // original, still-supported style - see Type.h's
+                    // own header comment) keeps writing a full native
+                    // word, exactly as before real pointer types
+                    // existed.
+                    out->type = Type{BaseType::Int, false};
+                    out->rhs = buildExpr(*e.rhs);
+                }
                 return out;
+            }
             case ExprKind::Unary: {
                 out->kind = ir::ExprKind::Unary;
                 out->op = e.op;
                 if (e.op == "&") {
-                    // An address is native pointer-word width,
-                    // unaffected by the operand's own type.
-                    out->type = Type{BaseType::Int, false};
                     out->rhs = buildAddressableOperand(*e.rhs);
+                    out->type = pointerTo(out->rhs->type);
                     return out;
                 }
                 ir::ExprPtr operand = buildExpr(*e.rhs);
-                if (e.op == "*" || e.op == "!") {
+                if (e.op == "*") {
+                    // A real pointer dereferences at its own pointee
+                    // type/width; a plain int used as an untyped
+                    // address keeps reading a full native word,
+                    // exactly as before real pointer types existed -
+                    // see DerefAssign's own identical comment above.
+                    out->type =
+                        isPointer(operand->type) ? pointeeOf(operand->type) : Type{BaseType::Int, false};
+                    out->rhs = std::move(operand);
+                    return out;
+                }
+                if (e.op == "!") {
                     out->type = Type{BaseType::Int, false};
                     out->rhs = std::move(operand);
                     return out;
@@ -505,18 +636,24 @@ class Builder {
                 return out;
             }
             case ExprKind::Binary: {
-                out->kind = ir::ExprKind::Binary;
-                out->op = e.op;
                 ir::ExprPtr lhs = buildExpr(*e.lhs);
                 ir::ExprPtr rhs = buildExpr(*e.rhs);
                 if (e.op == "&&" || e.op == "||") {
                     // Truth-testing is width-independent - no
-                    // conversion needed on either operand.
+                    // conversion needed on either operand, pointer or
+                    // not.
+                    out->kind = ir::ExprKind::Binary;
+                    out->op = e.op;
                     out->type = Type{BaseType::Int, false};
                     out->lhs = std::move(lhs);
                     out->rhs = std::move(rhs);
                     return out;
                 }
+                if (isPointer(lhs->type) || isPointer(rhs->type)) {
+                    return buildPointerBinary(e.op, std::move(lhs), std::move(rhs), e.line);
+                }
+                out->kind = ir::ExprKind::Binary;
+                out->op = e.op;
                 if (e.op == "<<" || e.op == ">>") {
                     // The RHS promotes on its own for its own
                     // evaluation but never affects the result type -
@@ -610,6 +747,47 @@ class Builder {
                 out->intValue = widthOf(measured, widths_);
                 return out;
             }
+            case ExprKind::StringLit: {
+                // Lowers to exactly what `&arrayName` already means
+                // for a real declared char array (see
+                // buildAddressableOperand's Var case and every
+                // backend's own genAddrOf) - a synthetic, anonymous
+                // global char array holding the decoded bytes plus a
+                // trailing NUL, and this expression's own value is
+                // that array's address. No new IR node kind, no
+                // codegen changes anywhere: every backend already
+                // emits a literal char-array global and takes a bare
+                // array's address correctly, from the char/short/
+                // long work this same session added. Each occurrence
+                // gets its own global (no string pooling), and the
+                // pointer this produces, like every other pointer in
+                // this language, is just a plain int - see Type.h's
+                // own header comment on why there's no separate
+                // pointer type to decay to here.
+                ir::Slot *slot = allocSlot(ir::SlotKind::Global, "__strlit" + std::to_string(nextStringLitId_++),
+                                            static_cast<int>(e.name.size()) + 1);
+                slot->type = Type{BaseType::Char, false};
+                slot->sourceFile = currentSourceFile_;
+                slot->arrayInit.reserve(slot->arraySize);
+                for (unsigned char ch : e.name) {
+                    ir::ArrayInitElem elem;
+                    elem.value = ch;
+                    slot->arrayInit.push_back(elem);
+                }
+                slot->arrayInit.push_back(ir::ArrayInitElem{});  // trailing NUL
+
+                auto arrVar = std::make_unique<ir::Expr>();
+                arrVar->kind = ir::ExprKind::Var;
+                arrVar->line = e.line;
+                arrVar->slot = slot;
+                arrVar->type = slot->type;
+
+                out->kind = ir::ExprKind::Unary;
+                out->op = "&";
+                out->type = Type{BaseType::Int, false};
+                out->rhs = std::move(arrVar);
+                return out;
+            }
         }
         err(e.line, "internal: unhandled expr kind");
     }
@@ -687,10 +865,12 @@ class Builder {
     std::vector<std::unordered_map<std::string, ir::Slot *>> scopes_;
     int nextSlotId_ = 0;
     int nextFuncId_ = 0;
+    int nextStringLitId_ = 0;  // ExprKind::StringLit's own synthetic globals - see buildExpr's own case
     bool allowExternal_ = false;
     int loopDepth_ = 0;  // >0 while building a While's own loopBody/postStmt - see Break/Continue
     TypeWidths widths_{};
     Type currentReturnType_;  // the function currently being built - see StmtKind::Return
+    std::string currentSourceFile_;  // ditto - stamped onto a StringLit's own synthetic global
 };
 
 }  // namespace

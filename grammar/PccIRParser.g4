@@ -23,13 +23,15 @@ program
 // typeSpecText() there) - always the shortest real-C spelling
 // ("int"/"unsigned int"/"char"/.../"long long"/"unsigned long long"),
 // never the source grammar's fuller combinatorial typeSpec (e.g.
-// "short int"/"signed short").
+// "short int"/"signed short"), plus a trailing run of '*'s for a
+// pointer (see ../src/Type.h's Type::ptrDepth).
 typeSpec
-    : UNSIGNED_KW? CHAR_KW
-    | UNSIGNED_KW? SHORT_KW
-    | UNSIGNED_KW? INT_KW
-    | UNSIGNED_KW? LONG_KW LONG_KW
-    | UNSIGNED_KW? LONG_KW
+    : (UNSIGNED_KW? CHAR_KW
+      | UNSIGNED_KW? SHORT_KW
+      | UNSIGNED_KW? INT_KW
+      | UNSIGNED_KW? LONG_KW LONG_KW
+      | UNSIGNED_KW? LONG_KW
+      ) STAR*
     ;
 
 // "int name#id;" / "int name#id = 5;" / "int name#id[3];" /

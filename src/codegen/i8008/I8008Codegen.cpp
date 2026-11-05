@@ -850,12 +850,29 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
+            // Stores through at e.type's own width - the pointee type
+            // of a real typed pointer, or plain native-word width for
+            // the still-supported untyped-int-as-address style - see
+            // IRBuilder.cpp's own DerefAssign comment. Mirrors the
+            // indexed Assign's own identical width dispatch above,
+            // with `ptr` set directly from the pointer value instead
+            // of genIndexAddr().
             genExpr(*e.lhs);  // ac = pointer value
             copy16("ptr", "ac");
             pushAc();  // ac already equals the pointer value - push it directly
             genExpr(*e.rhs);
-            popInto("ptr");
-            storeAcIndirect("ptr");
+            popInto("ptr");  // ac/wac is untouched by popInto() - it still holds rhs's value
+            int w = widthOfType(e.type);
+            if (w > 2) {
+                genWideStoreAtPtr(wordCountOf(e.type));
+            } else if (w == 1) {
+                loadByte("ac");
+                code_ << "    mov b, a\n";
+                loadHLFromCell("ptr");
+                code_ << "    mov a, b\n    mov m, a\n";
+            } else {
+                storeAcIndirect("ptr");
+            }
             return;
         }
         case ir::ExprKind::Unary: {
@@ -877,8 +894,24 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
+                // Loads at e.type's own width - see DerefAssign's
+                // identical comment above. Mirrors genIndex()'s own
+                // identical width dispatch, with `ptr` set directly
+                // from the pointer value instead of genIndexAddr().
                 genExpr(*e.rhs);  // ac = pointer value
                 copy16("ptr", "ac");
+                int w = widthOfType(e.type);
+                if (w > 2) {
+                    genWideLoadAtPtr(wordCountOf(e.type));
+                    return;
+                }
+                if (w == 1) {
+                    loadHLFromCell("ptr");
+                    code_ << "    mov a, m\n";
+                    storeByte("ac");
+                    emitSignExtendByte("ac", "ac+1", e.type.isUnsigned);
+                    return;
+                }
                 loadHLFromCell("ptr");  // HL = the pointer's own value (the target address)
                 code_ << "    mov a, m\n    mov b, a\n";
                 incHL();

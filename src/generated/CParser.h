@@ -19,15 +19,15 @@ public:
     ASSIGN = 24, STAR = 25, AMP = 26, MINUS = 27, BANG = 28, TILDE = 29, 
     SLASH = 30, PERCENT = 31, PLUS = 32, SHL = 33, SHR = 34, LE = 35, GE = 36, 
     LT = 37, GT = 38, EQ = 39, NE = 40, CARET = 41, PIPE = 42, ANDAND = 43, 
-    OROR = 44, IDENT = 45, NUMBER = 46, CHARLIT = 47, LINE_COMMENT = 48, 
-    BLOCK_COMMENT = 49, WS = 50, ASM_BEGIN = 51, ASM_TEXT = 52, ASM_END = 53
+    OROR = 44, IDENT = 45, NUMBER = 46, CHARLIT = 47, STRINGLIT = 48, LINE_COMMENT = 49, 
+    BLOCK_COMMENT = 50, WS = 51, ASM_BEGIN = 52, ASM_TEXT = 53, ASM_END = 54
   };
 
   enum {
-    RuleProgram = 0, RuleTypeSpec = 1, RuleTopLevelDecl = 2, RuleFunctionDecl = 3, 
-    RuleParamList = 4, RuleParam = 5, RuleGlobalDecl = 6, RuleArrayInit = 7, 
-    RuleArrayInitElem = 8, RuleBlock = 9, RuleStatement = 10, RuleSimpleStmt = 11, 
-    RuleExpr = 12, RuleCondExpr = 13, RuleArgList = 14
+    RuleProgram = 0, RuleTypeSpec = 1, RuleBaseTypeSpec = 2, RuleTopLevelDecl = 3, 
+    RuleFunctionDecl = 4, RuleParamList = 5, RuleParam = 6, RuleGlobalDecl = 7, 
+    RuleArrayInit = 8, RuleArrayInitElem = 9, RuleBlock = 10, RuleStatement = 11, 
+    RuleSimpleStmt = 12, RuleExpr = 13, RuleCondExpr = 14, RuleArgList = 15
   };
 
   explicit CParser(antlr4::TokenStream *input);
@@ -49,6 +49,7 @@ public:
 
   class ProgramContext;
   class TypeSpecContext;
+  class BaseTypeSpecContext;
   class TopLevelDeclContext;
   class FunctionDeclContext;
   class ParamListContext;
@@ -81,9 +82,24 @@ public:
   class  TypeSpecContext : public antlr4::ParserRuleContext {
   public:
     TypeSpecContext(antlr4::ParserRuleContext *parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    BaseTypeSpecContext *baseTypeSpec();
+    std::vector<antlr4::tree::TerminalNode *> STAR();
+    antlr4::tree::TerminalNode* STAR(size_t i);
+
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
    
-    TypeSpecContext() = default;
-    void copyFrom(TypeSpecContext *context);
+  };
+
+  TypeSpecContext* typeSpec();
+
+  class  BaseTypeSpecContext : public antlr4::ParserRuleContext {
+  public:
+    BaseTypeSpecContext(antlr4::ParserRuleContext *parent, size_t invokingState);
+   
+    BaseTypeSpecContext() = default;
+    void copyFrom(BaseTypeSpecContext *context);
     using antlr4::ParserRuleContext::copyFrom;
 
     virtual size_t getRuleIndex() const override;
@@ -91,9 +107,9 @@ public:
    
   };
 
-  class  CharTypeContext : public TypeSpecContext {
+  class  CharTypeContext : public BaseTypeSpecContext {
   public:
-    CharTypeContext(TypeSpecContext *ctx);
+    CharTypeContext(BaseTypeSpecContext *ctx);
 
     antlr4::tree::TerminalNode *CHAR_KW();
     antlr4::tree::TerminalNode *SIGNED_KW();
@@ -102,9 +118,9 @@ public:
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
 
-  class  SignedOrUnsignedTypeContext : public TypeSpecContext {
+  class  SignedOrUnsignedTypeContext : public BaseTypeSpecContext {
   public:
-    SignedOrUnsignedTypeContext(TypeSpecContext *ctx);
+    SignedOrUnsignedTypeContext(BaseTypeSpecContext *ctx);
 
     antlr4::tree::TerminalNode *SIGNED_KW();
     antlr4::tree::TerminalNode *UNSIGNED_KW();
@@ -112,9 +128,9 @@ public:
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
 
-  class  IntTypeContext : public TypeSpecContext {
+  class  IntTypeContext : public BaseTypeSpecContext {
   public:
-    IntTypeContext(TypeSpecContext *ctx);
+    IntTypeContext(BaseTypeSpecContext *ctx);
 
     antlr4::tree::TerminalNode *INT_KW();
     antlr4::tree::TerminalNode *SIGNED_KW();
@@ -123,9 +139,9 @@ public:
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
 
-  class  ShortTypeContext : public TypeSpecContext {
+  class  ShortTypeContext : public BaseTypeSpecContext {
   public:
-    ShortTypeContext(TypeSpecContext *ctx);
+    ShortTypeContext(BaseTypeSpecContext *ctx);
 
     antlr4::tree::TerminalNode *SHORT_KW();
     antlr4::tree::TerminalNode *INT_KW();
@@ -135,9 +151,9 @@ public:
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
 
-  class  LongLongTypeContext : public TypeSpecContext {
+  class  LongLongTypeContext : public BaseTypeSpecContext {
   public:
-    LongLongTypeContext(TypeSpecContext *ctx);
+    LongLongTypeContext(BaseTypeSpecContext *ctx);
 
     std::vector<antlr4::tree::TerminalNode *> LONG_KW();
     antlr4::tree::TerminalNode* LONG_KW(size_t i);
@@ -148,9 +164,9 @@ public:
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
 
-  class  LongTypeContext : public TypeSpecContext {
+  class  LongTypeContext : public BaseTypeSpecContext {
   public:
-    LongTypeContext(TypeSpecContext *ctx);
+    LongTypeContext(BaseTypeSpecContext *ctx);
 
     antlr4::tree::TerminalNode *LONG_KW();
     antlr4::tree::TerminalNode *INT_KW();
@@ -160,7 +176,7 @@ public:
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
 
-  TypeSpecContext* typeSpec();
+  BaseTypeSpecContext* baseTypeSpec();
 
   class  TopLevelDeclContext : public antlr4::ParserRuleContext {
   public:
@@ -668,6 +684,15 @@ public:
 
     antlr4::tree::TerminalNode *AMP();
     CondExprContext *condExpr();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  StringLitExprContext : public CondExprContext {
+  public:
+    StringLitExprContext(CondExprContext *ctx);
+
+    antlr4::tree::TerminalNode *STRINGLIT();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };

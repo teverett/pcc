@@ -336,11 +336,15 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
+            // Stores at e.type's own width/signedness - the pointee
+            // type of a real typed pointer, or plain native-int-width
+            // for the still-supported untyped-int-as-address style -
+            // see IRBuilder.cpp's own DerefAssign comment.
             genExpr(*e.lhs);  // t0 = pointer value
             code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
-            genExpr(*e.rhs);
+            genExpr(*e.rhs);  // t0, or t1:t0 if wide
             code_ << "    ldind sp,t2\n    addi sp,sp,4\n";
-            code_ << "    stind t2,t0\n";
+            storeOperand("t2", "t0", e.type);
             return;
         }
         case ir::ExprKind::Unary: {
@@ -354,10 +358,12 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
+                // Loads at e.type's own width/signedness - see
+                // DerefAssign's identical comment above.
                 genExpr(*e.rhs);  // t0 = pointer value
                 code_ << "    or t2,t0,t0\n";  // t2 = t0 (real PowerPC "mr" idiom - see genBinary()'s own
                                                 // header comment on why r0 can't be used as a zero register here)
-                code_ << "    ldind t2,t0\n";
+                loadOperand("t2", "t0", e.type);
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "    nor t0,t0,t0\n";

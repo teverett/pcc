@@ -1,5 +1,6 @@
 #include "STM8Codegen.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 
@@ -182,6 +183,30 @@ void STM8Codegen::genWideStore(const ir::Slot *slot, int words) {
     for (int i = 0; i < words; i++) {
         code_ << "    pop x\n    ldw bc, x\n";
         genWideWordAddr(slot, words, i);
+        storeIndirect("bc");
+    }
+}
+
+// Word `wordIndex`'s (0 = least significant) own effective address,
+// left in `x` - the runtime-address counterpart of genWideWordAddr(),
+// same most-significant-word-first layout, with the base read out of
+// `addrCell` instead of coming from a Slot.
+void STM8Codegen::pushWideFromAddress(const std::string &addrCell, int words) {
+    for (int i = words - 1; i >= 0; i--) {
+        int byteOff = 2 * (words - 1 - i);
+        code_ << "    ldw x, " << addrCell << "\n";
+        if (byteOff > 0) code_ << "    ldwi y, " << byteOff << "\n    addw x, y\n";
+        loadIndirect("bc");
+        code_ << "    ldw x, bc\n    push x\n";
+    }
+}
+
+void STM8Codegen::popWideToAddress(const std::string &addrCell, int words) {
+    for (int i = 0; i < words; i++) {
+        code_ << "    pop x\n    ldw bc, x\n";
+        int byteOff = 2 * (words - 1 - i);
+        code_ << "    ldw x, " << addrCell << "\n";
+        if (byteOff > 0) code_ << "    ldwi y, " << byteOff << "\n    addw x, y\n";
         storeIndirect("bc");
     }
 }
@@ -443,8 +468,14 @@ void STM8Codegen::genConvert(const ir::Expr &e) {
         int toWords = wordCountOf(to);
         genExpr(*e.lhs);  // ac already holds the native-width value, correctly sign/zero-extended to 16 bits
         code_ << "    ldw x, ac\n    ldw " << wideScratch("a", 0) << ", x\n";
+        // A pointer's own native-word value is always zero-extended
+        // above - `from.isUnsigned` would otherwise describe the
+        // POINTEE's signedness instead of the pointer's own (see
+        // Type.h's own header comment on Type::ptrDepth), and a
+        // pointer value has no sign to extend regardless.
+        bool extendUnsigned = isPointer(from) || from.isUnsigned;
         for (int i = 1; i < toWords; i++) {
-            if (from.isUnsigned) {
+            if (extendUnsigned) {
                 code_ << "    ldwi x, 0\n    ldw " << wideScratch("a", i) << ", x\n";
             } else {
                 code_ << "    ld a, ac\n";  // a = the int's own high byte (bit 7 is the int's own sign bit)
@@ -889,13 +920,22 @@ void STM8Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Deref is untyped (plain ints with '*'/'&' applied, see
-            // Type.h's own header comment) - always a native word.
+            // Stores at e.type's own width/signedness - the pointee
+            // type of a real typed pointer (char*/short*/long*/long
+            // long*/...), or a plain native word for the still-
+            // supported untyped-int-as-address style - see
+            // IRBuilder.cpp's own DerefAssign comment.
             genExpr(*e.lhs);  // ac = pointer value
+            if (isWide(e.type)) {
+                code_ << "    ldw ptr, ac\n";
+                genExpr(*e.rhs);
+                popWideToAddress("ptr", wordCountOf(e.type));
+                return;
+            }
             code_ << "    ldw x, ac\n    push x\n";
             genExpr(*e.rhs);
             code_ << "    pop x\n";
-            storeAcIndirect();
+            storeOperand(e.type);
             return;
         }
         case ir::ExprKind::Unary: {
@@ -909,9 +949,16 @@ void STM8Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
+                // Loads at e.type's own width/signedness - see
+                // DerefAssign's identical comment above.
                 genExpr(*e.rhs);  // ac = pointer value
-                code_ << "    ldw x, ac\n";
-                loadAcIndirect();
+                if (isWide(e.type)) {
+                    code_ << "    ldw ptr, ac\n";
+                    pushWideFromAddress("ptr", wordCountOf(e.type));
+                } else {
+                    code_ << "    ldw x, ac\n";
+                    loadOperand(e.type);
+                }
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 if (isWide(e.rhs->type)) {

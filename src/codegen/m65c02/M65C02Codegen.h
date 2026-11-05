@@ -220,6 +220,15 @@ class M65C02Codegen : public Backend {
     void genWideStore(const ir::Slot *slot, int words);
     void genWideLoadAtPtr(int words);
     void genWideStoreAtPtr(int words);
+    // Assumes `ptr`/`ptr+1` already holds the effective storage
+    // address - loads/stores a value of `type`'s own width there,
+    // same width dispatch genIndex()'s own identical inline logic
+    // uses: one byte, sign/zero-extended into/from `ac`'s own high
+    // byte for a `char`-width type; `ac`'s own two bytes for any
+    // other type up to a native word; or genWideLoadAtPtr()/
+    // genWideStoreAtPtr() (`wac`) for a `long`/`long long` pointee.
+    void loadOperandAtPtr(Type type);
+    void storeOperandAtPtr(Type type);
 
     void genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd, int words);
     void genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int words);

@@ -845,12 +845,28 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
+            // Stores through at e.type's own width - the pointee type
+            // of a real typed pointer, or plain native-word width for
+            // the still-supported untyped-int-as-address style - see
+            // IRBuilder.cpp's own DerefAssign comment. A wide pointee
+            // mirrors the indexed Assign's own wide branch above,
+            // except `ptr` comes from evaluating e.lhs (the pointer,
+            // always narrow) instead of genIndexAddr().
             genExpr(*e.lhs);  // ac = pointer value
             copy16("ptr", "ac");
+            if (isWide(e.type)) {
+                int words = wordCountOf(e.type);
+                code_ << "    lhld ptr\n    push h\n";
+                genExpr(*e.rhs);
+                popWideInto("b", words);
+                code_ << "    pop h\n    shld ptr\n";
+                genWideStoreAtPtr("b", words);
+                return;
+            }
             code_ << "    lhld ptr\n    push h\n";
             genExpr(*e.rhs);
             code_ << "    pop h\n";
-            storeAcIndirect();
+            storeOperand(e.type);
             return;
         }
         case ir::ExprKind::Unary: {
@@ -868,11 +884,16 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                genExpr(*e.rhs);  // ac = pointer value - deref is always a plain native word (see Type.h)
+                // Loads at e.type's own width - see DerefAssign's
+                // identical comment above.
+                genExpr(*e.rhs);  // ac = pointer value
                 copy16("ptr", "ac");
+                if (isWide(e.type)) {
+                    genWideLoadAtPtr(wordCountOf(e.type));
+                    return;
+                }
                 code_ << "    lhld ptr\n";
-                code_ << "    mov e,m\n    inx h\n    mov d,m\n";
-                storePair("ac", "d");
+                loadOperand(e.type);
             } else if (e.op == "~") {
                 if (wide) {
                     genExpr(*e.rhs);

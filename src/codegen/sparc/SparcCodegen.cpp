@@ -415,14 +415,17 @@ void SparcCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Deref is untyped (plain ints with '*'/'&' applied, see
-            // Type.h's own header comment) - always a full native-int
-            // word, unaffected by the new type system.
+            // Stores through at e.type's own width/signedness - the
+            // pointee type of a real typed pointer, or a plain native
+            // int word for the still-supported untyped-int-as-address
+            // style - see IRBuilder.cpp's own DerefAssign comment.
+            // storeOperand() already handles a wide (8-byte) pointee
+            // too, storing t0/t1 at addrReg/addrReg+4.
             genExpr(*e.lhs);  // t0 = pointer value
             code_ << "    sub sp,4,sp\n    stind sp,t0\n";
-            genExpr(*e.rhs);
+            genExpr(*e.rhs);  // t0, or t1:t0 if wide
             code_ << "    ldind sp,t2\n    add sp,4,sp\n";
-            code_ << "    stind t2,t0\n";
+            storeOperand("t2", e.type);
             return;
         }
         case ir::ExprKind::Unary: {
@@ -436,9 +439,11 @@ void SparcCodegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
+                // Loads at e.type's own width/signedness - see
+                // DerefAssign's identical comment above.
                 genExpr(*e.rhs);  // t0 = pointer value
                 movReg("t2", "t0");
-                code_ << "    ldind t2,t0\n";
+                loadOperand("t2", e.type);
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "    xor t0,-1,t0\n";

@@ -5,15 +5,13 @@ options { tokenVocab = CLexer; }
 // ---------------------------------------------------------------------
 // Parser half of pdp-c-compiler's C-subset grammar (see CLexer.g4 for
 // the lexer half, and ../README.md for exactly what's in and out of
-// scope: char/short/int/long/long long, each signed or unsigned, no
-// structs or floats, no preprocessor; an array's initializer is always
-// a literal list, never a general expression, and a pointer is just an
-// int that a '*'/'&' happens to be applied to - there's no separate
-// pointer-typed declaration, so pointer arithmetic stays word-granular
-// even though array indexing is now scaled by the array's own element
-// type). This is a from-scratch grammar sized for that subset, not a
-// full ISO C grammar - the same approach ../../pdp-assembler takes for
-// as.s with grammar/Pdp7.g4. Keyword/punctuation literals (`'if'`,
+// scope: char/short/int/long/long long, each signed or unsigned, each
+// optionally pointer-typed (typeSpec's own trailing '*'s - see
+// ../src/Type.h's Type::ptrDepth), no structs or floats, no
+// preprocessor; an array's initializer is always a literal list, never
+// a general expression). This is a from-scratch grammar sized for that
+// subset, not a full ISO C grammar - the same approach ../../pdp-assembler
+// takes for as.s with grammar/Pdp7.g4. Keyword/punctuation literals (`'if'`,
 // `'('`, ...) are written directly here rather than named in
 // CLexer.g4 - ANTLR resolves them against the shared token vocabulary
 // automatically; CLexer.g4 only names tokens that need real lexer
@@ -26,10 +24,22 @@ program
 
 // A declared type - every 'int' this grammar used to hardcode (in a
 // function/param/global/local declaration, or a cast/sizeof's
-// parenthesized operand) is one of these now. BuildAst turns this into
-// a pcc::Type (see ../src/Type.h); a bare 'signed'/'unsigned' with no
-// following width keyword means int, same as real C.
+// parenthesized operand) is one of these now. A trailing run of '*'s
+// (zero or more) makes it a pointer - 'int*' one level, 'int**' two,
+// etc; see ../src/Type.h's own Type::ptrDepth. No ambiguity with
+// mulExpr/parenExpr: baseTypeSpec always starts with one of
+// char/short/int/long/signed/unsigned, none of which can start an
+// expr, so ANTLR tells a cast/sizeof's parenthesized type apart from a
+// parenthesized expression by that first token alone, same as before
+// this rule grew its own trailing '*'s.
 typeSpec
+    : baseTypeSpec '*'*
+    ;
+
+// BuildAst turns this into a pcc::Type (see ../src/Type.h); a bare
+// 'signed'/'unsigned' with no following width keyword means int, same
+// as real C.
+baseTypeSpec
     : ('signed' | 'unsigned')? 'char'                        # charType
     | ('signed' | 'unsigned')? 'short' 'int'?                 # shortType
     | ('signed' | 'unsigned')? 'int'                          # intType
@@ -149,6 +159,7 @@ condExpr
     | IDENT                                           # varExpr
     | NUMBER                                          # numExpr
     | CHARLIT                                         # charExpr
+    | STRINGLIT                                       # stringLitExpr
     | '(' expr ')'                                    # parenExpr
     // No ambiguity with parenExpr/callPtrExpr above: typeSpec always
     // starts with one of char/short/int/long/signed/unsigned, none of

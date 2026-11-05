@@ -67,6 +67,14 @@ NUMBER  : [0-9]+ [uUlL]* ;
 // A single character, no escapes - enough for ASCII-arithmetic use
 // like '0' + digit; see ../README.md's "Scope and limitations".
 CHARLIT : '\'' ~['\r\n] '\'' ;
+// A double-quoted byte string with a small, fixed escape set (just
+// enough to write a message with embedded newlines/tabs/quotes - no
+// octal/hex escapes, same deliberately-minimal spirit as CHARLIT's
+// own lack of any). BuildAst decodes STRINGLIT_ESC itself; this rule
+// only admits the syntax. No line continuation - a string literal
+// can't span a physical line.
+STRINGLIT : '"' (STRINGLIT_ESC | ~["\\\r\n])* '"' ;
+fragment STRINGLIT_ESC : '\\' ["\\ntr0] ;
 
 LINE_COMMENT  : '//' ~[\r\n]* -> skip ;
 BLOCK_COMMENT : '/*' .*? '*/' -> skip ;

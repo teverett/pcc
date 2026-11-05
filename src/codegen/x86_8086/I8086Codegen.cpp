@@ -444,14 +444,37 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Deref is untyped (plain ints with '*'/'&' applied - see
-            // Type.h's own header comment) - always a full native-
-            // int word, unaffected by the new type system.
+            // Stores through at e.type's own width - the pointee type
+            // of a real typed pointer, or a plain native int word for
+            // the still-supported untyped-int-as-address style - see
+            // IRBuilder.cpp's own DerefAssign comment. A wide pointee
+            // reuses the same "fresh protected copy, then copy into
+            // the real destination" shape as a wide Assign's own
+            // unindexed branch above, except the destination address
+            // comes directly from evaluating e.lhs (the pointer,
+            // always narrow - see Unary "*"'s own identical comment
+            // below) instead of genWideSlotAddr()/computeElementAddr().
+            if (isWide(e.type)) {
+                int n = widthOfType(e.type) / 2;
+                genExpr(*e.rhs);  // ax = source address
+                code_ << "    mov bx, ax\n";
+                copyWideBlock(n, n, /*isUnsignedExt=*/false);  // ax = fresh protected copy's address
+                code_ << "    mov di, ax\n";
+                genExpr(*e.lhs);  // ax = pointer value = destination address
+                code_ << "    mov si, ax\n";
+                for (int i = 0; i < n; i++) {
+                    code_ << "    mov bx, di\n    mov ax, [bx+" << (2 * i) << "]\n";
+                    code_ << "    mov bx, si\n    mov [bx+" << (2 * i) << "], ax\n";
+                }
+                code_ << "    add sp, " << (2 * n) << "\n";
+                code_ << "    mov ax, si\n";
+                return;
+            }
             genExpr(*e.lhs);  // ax = pointer value
             code_ << "    mov bx, ax\n    push bx\n";
             genExpr(*e.rhs);  // ax = value to store
             code_ << "    pop bx\n";
-            code_ << "    mov [bx], ax\n";
+            storeOperand("[bx]", e.type);
             return;
         }
         case ir::ExprKind::Unary: {
@@ -466,8 +489,17 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
+                // Loads at e.type's own width - see DerefAssign's
+                // identical comment above. A wide pointee's own
+                // evaluation leaves ax = the pointee storage's address
+                // (the convention every wide expression here uses -
+                // see genWideSlotAddr()'s own comment) - which is
+                // already exactly the pointer value itself, so there
+                // is nothing further to load.
                 genExpr(*e.rhs);  // ax = pointer value
-                code_ << "    mov bx, ax\n    mov ax, [bx]\n";
+                if (isWide(e.type)) return;
+                code_ << "    mov bx, ax\n";
+                loadOperand("[bx]", e.type);
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 if (isWide(e.rhs->type)) {

@@ -504,7 +504,11 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
             pushPtrCell();
             genExpr(*e.rhs);
             popPtrCell();
-            storeAcIndirect(2);  // '*' is always native-int-width - see PIC16Codegen.h's own header comment
+            // e.type is the pointee's own real type for a typed
+            // pointer, or plain native-int-width for the still-
+            // supported untyped-int-as-address style - see
+            // IRBuilder.cpp's own DerefAssign comment.
+            storeAcIndirect(widthOfType(e.type));
             return;
         }
         case ir::ExprKind::Unary: {
@@ -517,7 +521,7 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "*") {
                 genExpr(*e.rhs);  // ac = pointer value
                 code_ << "    movf ac,w\n    movwf ptr\n";
-                loadAcIndirect(2, /*isUnsigned=*/false);  // '*' is always native-int-width
+                loadAcIndirect(widthOfType(e.type), e.type.isUnsigned);  // see DerefAssign's comment above
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "    comf ac,f\n    comf ac+1,f\n";

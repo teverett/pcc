@@ -53,7 +53,14 @@ bool exprMakesCall(const ir::Expr *e) {
 // (emitLeafParamBinding()) are both hardcoded to exactly one word
 // per slot - so a wide Local/Param disqualifies the leaf path
 // entirely, the same way a Local/Param array already does above.
-bool slotIsWide(const ir::Slot *s) { return s->type.base == BaseType::Long || s->type.base == BaseType::LongLong; }
+// A pointer (ptrDepth>0) is always exactly one word, no matter what
+// it points to - checked first so a `long*`/`long long*` slot (whose
+// `.base` names its POINTEE's type, not its own - see Type.h's own
+// header comment on Type::ptrDepth) isn't mistaken for an actual wide
+// value here.
+bool slotIsWide(const ir::Slot *s) {
+    return !isPointer(s->type) && (s->type.base == BaseType::Long || s->type.base == BaseType::LongLong);
+}
 
 bool stmtRulesOutLeaf(const ir::Stmt *s) {
     if (!s) return false;
@@ -154,6 +161,14 @@ std::string Pdp7Codegen::newLabel() { return "J" + std::to_string(labelCounter_+
 // harmless noise no later read of that same slot can ever observe
 // (every read already goes through this same masking step).
 void Pdp7Codegen::narrowAC(Type to) {
+    // A pointer (ptrDepth>0) is always exactly one native word, no
+    // matter what it points to - `to.base` here names the POINTEE's
+    // type, not the pointer's own (see Type.h's own header comment),
+    // so narrowing/sign-extending AC as if it held an actual `char`
+    // value would corrupt a real address (e.g. storing `char *cp`
+    // would silently truncate/sign-extend cp's own 18-bit address
+    // down to 8 bits).
+    if (isPointer(to)) return;
     if (to.base != BaseType::Char) return;
     code_ << "   and " << literalLabel(0377) << "\n";
     if (to.isUnsigned) return;
@@ -1017,6 +1032,39 @@ void Pdp7Codegen::genWideExpr(const ir::Expr &e) {
             pushWideFromAddress(e.type);
             return;
         }
+        case ir::ExprKind::DerefAssign: {
+            // Same shape as a wide Assign's own non-indexed branch
+            // below, except the store address comes from evaluating
+            // e.lhs (the pointer, always narrow - see Unary "*"'s own
+            // identical comment above) instead of emitLoadSlotAddress().
+            int w = widthOfType(e.type);
+            genExpr(*e.lhs);  // AC = pointer value
+            pushAC();          // protect it while evaluating rhs (which may itself call)
+            genWideExpr(*e.rhs);
+            std::vector<std::string> temps(w);
+            for (auto &t : temps) {
+                t = allocTemp();
+                declareTemp(t);
+            }
+            for (auto &t : temps) {
+                popAC();
+                code_ << "   dac " << t << "\n";
+            }
+            popAC();  // AC = the pointer's own address
+            code_ << "   dac __addr\n";
+            for (int i = 0; i < w; i++) {
+                code_ << "   lac __addr\n";
+                if (i > 0) code_ << "   tad " << literalLabel(i) << "\n";
+                code_ << "   dac __stmp2\n";
+                code_ << "   lac " << temps[i] << "\n";
+                code_ << "   dac __stmp2 i\n";
+            }
+            for (int i = w - 1; i >= 0; i--) {
+                code_ << "   lac " << temps[i] << "\n";
+                pushAC();
+            }
+            return;
+        }
         case ir::ExprKind::Assign: {
             int w = widthOfType(e.slot->type);
             std::vector<std::string> temps(w);
@@ -1059,6 +1107,19 @@ void Pdp7Codegen::genWideExpr(const ir::Expr &e) {
             if (e.op == "-") {
                 genWideExpr(*e.rhs);
                 genWideNegate(widthOfType(e.type));
+                return;
+            }
+            if (e.op == "*") {
+                // A wide (`long`/`long long`) pointee - the pointer
+                // itself is always a narrow, single-word address (see
+                // Type.h's own header comment on a pointer's own
+                // storage width) - pushWideFromAddress() reads
+                // `widthOfType(e.type)` consecutive words starting
+                // there, same convention pushWideFromAddress()'s own
+                // header comment and a wide Var's own identical case
+                // above already establish.
+                genExpr(*e.rhs);  // AC = pointer value
+                pushWideFromAddress(e.type);
                 return;
             }
             if (e.op == "~") {

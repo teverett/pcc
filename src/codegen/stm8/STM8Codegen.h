@@ -229,6 +229,19 @@ class STM8Codegen : public Backend {
     void genWideLoad(const ir::Slot *slot, int words);
     void genWideLoadLiteral(long value, int words);
     void genWideStore(const ir::Slot *slot, int words);
+    // The same "words"-word, most-significant-word-first layout
+    // genWideWordAddr()/genWideLoad()/genWideStore() use for a Slot's
+    // own storage, except the base address is a runtime pointer value
+    // already sitting in `addrCell` (a named 16-bit memory cell, e.g.
+    // `ptr`) instead of a Slot's compile-time-known address - used to
+    // dereference a wide (`long`/`long long`) pointee, whose address
+    // is only known at runtime. pushWideFromAddress() reads `words`
+    // consecutive words starting there and pushes them onto the real
+    // hardware stack, LSW on top (matching every other genWide*()
+    // load); popWideToAddress() is the reverse, popping LSW first and
+    // writing back the same way.
+    void pushWideFromAddress(const std::string &addrCell, int words);
+    void popWideToAddress(const std::string &addrCell, int words);
     void genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd, int words);
     void genWideNegate(int words);
     void genWideBitwise(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &op, int words);

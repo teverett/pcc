@@ -185,6 +185,29 @@ class Pdp11Codegen : public Backend {
     // touching whatever shares the other byte of that word).
     void storeOperand(const std::string &mem, Type type);
 
+    // The register-indirect counterpart of loadOperand() above, for a
+    // dereferenced pointer (`*p`) whose own effective address is a
+    // runtime value already sitting in `addrReg`, not a compile-time-
+    // known slot operand - this dialect's `ldind` mnemonic only ever
+    // addresses a bare `(Rn)` (no displacement - see
+    // Pdp11Assembler.cpp's own comment), so a wide (`long`/`long long`)
+    // pointee instead goes through the general `[Rn+N]` indexed operand
+    // form (see Pdp11Assembler.cpp's own `classifyEA`) to reach its own
+    // word 1, 2, ... Leaves r0 (narrow) or pushes
+    // `wordCountOf(type)` words (wide, least significant on top), same
+    // convention as every other genExpr case here.
+    void loadIndirect(const std::string &addrReg, Type type);
+    // `*lhs = rhs`'s own store, given that `r2` already holds `lhs`'s
+    // pointer value pushed onto the stack (see the DerefAssign case's
+    // own comment on why the address has to ride the data stack,
+    // rather than stay in a register, across evaluating `rhs`) and
+    // `rhs`'s own value then evaluated on top of it - r0 if narrow, or
+    // `wordCountOf(type)` words (least significant on top) if wide.
+    // Pops everything this leaves on the stack, recovering the address
+    // last (underneath a wide rhs's own pushed words) and writing
+    // through it at `type`'s own width.
+    void storeIndirect(Type type);
+
     // `long`/`long long` arithmetic - a value of word count N lives
     // on the stack as N consecutive words, word 0 (least
     // significant) closest to `sp`, word N-1 (most significant)

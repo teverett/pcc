@@ -322,14 +322,21 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Deref is untyped (plain ints with '*'/'&' applied, see
-            // Type.h's own header comment) - always a native word.
+            // Stores through at e.type's own width/signedness - the
+            // pointee type of a real typed pointer, or a plain native
+            // int word for the still-supported untyped-int-as-address
+            // style - see IRBuilder.cpp's own DerefAssign comment. The
+            // pointer value is always narrow (one word) and has to
+            // ride the data stack (not a register) across evaluating
+            // rhs, since rhs's own evaluation may use any register as
+            // scratch (e.g. a nested narrow division uses r2 itself -
+            // see genDivMod()) - storeIndirect() then recovers it,
+            // underneath rhs's own pushed value if that's wide.
             genExpr(*e.lhs);  // r0 = pointer value
             code_ << "    mov r0,r2\n";
             code_ << "    push r2\n";
-            genExpr(*e.rhs);
-            code_ << "    pop r2\n";
-            code_ << "    stind r0,r2\n";
+            genExpr(*e.rhs);  // r0, or pushes `words` words (LSW on top) if wide
+            storeIndirect(e.type);
             return;
         }
         case ir::ExprKind::Unary: {
@@ -343,9 +350,14 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
+                // Loads at e.type's own width/signedness - see
+                // DerefAssign's identical comment above. No competing
+                // stack use happens between computing the address and
+                // dereferencing it here, so (unlike DerefAssign) r2
+                // can safely hold the address directly.
                 genExpr(*e.rhs);  // r0 = pointer value
                 code_ << "    mov r0,r2\n";
-                code_ << "    ldind r2,r0\n";
+                loadIndirect("r2", e.type);
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "    com r0\n";
@@ -484,6 +496,36 @@ void Pdp11Codegen::storeOperand(const std::string &mem, Type type) {
     } else {
         code_ << "    mov r0," << mem << "\n";
     }
+}
+
+void Pdp11Codegen::loadIndirect(const std::string &addrReg, Type type) {
+    if (!isWide(type)) {
+        loadOperand("[" + addrReg + "+0]", type);
+        return;
+    }
+    int words = wordCountOf(type);
+    for (int i = words - 1; i >= 0; i--) {
+        code_ << "    mov [" << addrReg << "+" << (2 * i) << "],r0\n";
+        code_ << "    push r0\n";
+    }
+}
+
+void Pdp11Codegen::storeIndirect(Type type) {
+    if (!isWide(type)) {
+        code_ << "    pop r2\n";
+        storeOperand("[r2+0]", type);
+        return;
+    }
+    int words = wordCountOf(type);
+    // r5 is the frame pointer and r2 ends up holding the address -
+    // r0/r1/r3/r4 are the only four registers left free, exactly
+    // enough to stash a `long long`'s own 4 words while the address
+    // (pushed before rhs - see the DerefAssign case's own comment)
+    // still sits buried underneath them.
+    static const char *const tempRegs[] = {"r0", "r1", "r3", "r4"};
+    for (int i = 0; i < words; i++) code_ << "    pop " << tempRegs[i] << "\n";
+    code_ << "    pop r2\n";
+    for (int i = 0; i < words; i++) code_ << "    mov " << tempRegs[i] << ",[r2+" << (2 * i) << "]\n";
 }
 
 // Pushes `slot`'s own `words`-word value, least-significant word on
@@ -725,12 +767,22 @@ void Pdp11Codegen::genConvert(const ir::Expr &e) {
         return;
     }
     if (!fromWide && toWide) {
+        // The least significant word has to end up on TOP of the
+        // stack (word index 0 - see genWideLoad()'s own header
+        // comment on this convention), so the real narrow value (saved
+        // in r1 before computing the extension word, since SXT
+        // overwrites r0 in place) is pushed LAST, after every
+        // extension-word copy - pushing it first, the way a plain
+        // top-to-bottom reading of this conversion might suggest,
+        // would instead bury the real value under the padding and
+        // leave an extension word sitting in the least-significant
+        // slot.
         int toWords = wordCountOf(to);
         genExpr(*e.lhs);  // r0 = the native-width value, already correctly sign/zero-extended to 16 bits
-        code_ << "    push r0\n";
-        for (int i = 1; i < toWords; i++) {
-            code_ << "    " << (from.isUnsigned ? "mov 0,r0\n" : "sxt r0\n") << "    push r0\n";
-        }
+        code_ << "    mov r0,r1\n";
+        code_ << "    " << (from.isUnsigned ? "mov 0,r0\n" : "sxt r0\n");
+        for (int i = 1; i < toWords; i++) code_ << "    push r0\n";
+        code_ << "    push r1\n";
         return;
     }
     // fromWide && toWide: pad/truncate word count, preserving sign.
@@ -738,8 +790,17 @@ void Pdp11Codegen::genConvert(const ir::Expr &e) {
     int toWords = wordCountOf(to);
     genExpr(*e.lhs);
     if (toWords > fromWords) {
+        // Same "least significant word stays on top" requirement as
+        // the !fromWide branch above - the extension words have to
+        // land *underneath* the existing fromWords words, so those are
+        // popped into registers first and pushed back on top of the
+        // newly pushed extension words, restoring their own original
+        // order (word 0 ending up on top again).
         code_ << "    mov [sp+" << (2 * (fromWords - 1)) << "],r0\n    sxt r0\n";
+        static const char *const tempRegs[] = {"r1", "r3", "r4"};
+        for (int i = 0; i < fromWords; i++) code_ << "    pop " << tempRegs[i] << "\n";
         for (int i = 0; i < toWords - fromWords; i++) code_ << "    push r0\n";
+        for (int i = fromWords - 1; i >= 0; i--) code_ << "    push " << tempRegs[i] << "\n";
     } else if (toWords < fromWords) {
         code_ << "    add " << (2 * (fromWords - toWords)) << ",sp\n";
     }

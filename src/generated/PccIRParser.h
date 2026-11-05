@@ -86,11 +86,13 @@ public:
     TypeSpecContext(antlr4::ParserRuleContext *parent, size_t invokingState);
     virtual size_t getRuleIndex() const override;
     antlr4::tree::TerminalNode *CHAR_KW();
-    antlr4::tree::TerminalNode *UNSIGNED_KW();
     antlr4::tree::TerminalNode *SHORT_KW();
     antlr4::tree::TerminalNode *INT_KW();
     std::vector<antlr4::tree::TerminalNode *> LONG_KW();
     antlr4::tree::TerminalNode* LONG_KW(size_t i);
+    std::vector<antlr4::tree::TerminalNode *> STAR();
+    antlr4::tree::TerminalNode* STAR(size_t i);
+    antlr4::tree::TerminalNode *UNSIGNED_KW();
 
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;

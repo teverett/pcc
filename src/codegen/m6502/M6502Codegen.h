@@ -286,6 +286,15 @@ class M6502Codegen : public Backend {
     // element's own read) / the reverse (its own write).
     void genWideLoadAtPtr(int words);
     void genWideStoreAtPtr(int words);
+    // Assumes `ptr`/`ptr+1` already holds the effective storage
+    // address - loads/stores a value of `type`'s own width there,
+    // same width dispatch genIndex()'s own identical inline logic
+    // uses: one byte, sign/zero-extended into/from `ac`'s own high
+    // byte for a `char`-width type; `ac`'s own two bytes for any
+    // other type up to a native word; or genWideLoadAtPtr()/
+    // genWideStoreAtPtr() (`wac`) for a `long`/`long long` pointee.
+    void loadOperandAtPtr(Type type);
+    void storeOperandAtPtr(Type type);
     // Word `wordIndex` (0 = least significant) of `slot`'s own multi-
     // word storage, as a byte offset added to `extraByteOffset` -
     // word `i` sits `2*i` bytes past `slot`'s own ordinary (word 0)

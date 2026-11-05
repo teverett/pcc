@@ -399,12 +399,16 @@ void STM32Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            genExpr(*e.lhs);              // r0 = pointer value (deref is untyped - always native-word)
+            // Stores through at e.type's own width/signedness - the
+            // pointee type of a real typed pointer, or a plain native
+            // int word for the still-supported untyped-int-as-address
+            // style - see IRBuilder.cpp's own DerefAssign comment.
+            genExpr(*e.lhs);  // r0 = pointer value
             code_ << "    mov r2,r0\n";
             code_ << "    push r2\n";
-            genExpr(*e.rhs);
+            genExpr(*e.rhs);  // r0, or r1:r0 if wide
             code_ << "    pop r2\n";
-            code_ << "    str r0,[r2]\n";
+            storeOperand("r2", e.type);
             return;
         }
         case ir::ExprKind::Unary: {
@@ -418,9 +422,11 @@ void STM32Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                genExpr(*e.rhs);  // r0 = pointer value (deref is untyped - always native-word)
+                // Loads at e.type's own width/signedness - see
+                // DerefAssign's identical comment above.
+                genExpr(*e.rhs);  // r0 = pointer value
                 code_ << "    mov r2,r0\n";
-                code_ << "    ldr r0,[r2]\n";
+                loadOperand("r2", e.type);
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "    mvn r0,r0\n";

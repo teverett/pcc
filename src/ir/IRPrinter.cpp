@@ -16,19 +16,25 @@ std::string funcRef(const ir::Function *f) { return f->sourceName + "#" + std::t
 // exactly these spellings and no others.
 std::string typeSpecText(Type t) {
     std::string prefix = t.isUnsigned ? "unsigned " : "";
+    std::string base;
     switch (t.base) {
         case BaseType::Char:
-            return prefix + "char";
+            base = "char";
+            break;
         case BaseType::Short:
-            return prefix + "short";
+            base = "short";
+            break;
         case BaseType::Int:
-            return prefix + "int";
+            base = "int";
+            break;
         case BaseType::Long:
-            return prefix + "long";
+            base = "long";
+            break;
         case BaseType::LongLong:
-            return prefix + "long long";
+            base = "long long";
+            break;
     }
-    return prefix + "int";
+    return prefix + base + std::string(t.ptrDepth, '*');
 }
 
 // A plain literal, or a symbol element's `ref` - see IR.h's

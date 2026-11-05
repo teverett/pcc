@@ -8,12 +8,20 @@ namespace pcc {
 // gives each one (see TypeWidths).
 enum class BaseType { Char, Short, Int, Long, LongLong };
 
+// A pointer is represented as the SAME Type as its ultimate pointee,
+// with `ptrDepth` counting how many levels of pointer-to wrap around
+// it - e.g. `char*` is {Char, false, 1}, `int**` is {Int, false, 2}.
+// `base`/`isUnsigned` always describe that ultimate pointee's own
+// type, never the pointer itself (a pointer's own storage is always
+// one native int's width - see widthOf() below - regardless of what
+// it points to). ptrDepth == 0 means an ordinary, non-pointer value.
 struct Type {
     BaseType base = BaseType::Int;
     bool isUnsigned = false;
+    int ptrDepth = 0;
 
     bool operator==(const Type &other) const {
-        return base == other.base && isUnsigned == other.isUnsigned;
+        return base == other.base && isUnsigned == other.isUnsigned && ptrDepth == other.ptrDepth;
     }
     bool operator!=(const Type &other) const { return !(*this == other); }
 };
@@ -38,14 +46,33 @@ struct TypeWidths {
 int rank(BaseType base);
 
 // How many of `widths`'s storage units a value of type `t` occupies on
-// that target.
+// that target. A pointer (ptrDepth>0) always occupies exactly one
+// native int's worth, regardless of what it points to - real pointers
+// here are still, as before, native-word-sized addresses; only what a
+// *dereference* reads/writes now depends on the pointee type.
 int widthOf(Type t, const TypeWidths &widths);
 
 // The result type of a binary operator applied to two already-built
 // operands, per the "usual arithmetic conversions" - greater rank wins;
 // equal rank, unsigned wins. Does not itself apply integer promotion to
 // either operand - callers promote sub-Int operands first (see
-// IRBuilder.cpp's buildExpr).
+// IRBuilder.cpp's buildExpr). Not meaningful on a pointer operand -
+// IRBuilder.cpp's buildExpr special-cases pointer arithmetic/comparison
+// before ever reaching this.
 Type commonType(Type a, Type b);
+
+inline bool isPointer(Type t) { return t.ptrDepth > 0; }
+
+// `T*`'s own pointee type, `T` - error to call on a non-pointer.
+inline Type pointeeOf(Type t) {
+    t.ptrDepth--;
+    return t;
+}
+
+// `T`'s own "pointer to T" type.
+inline Type pointerTo(Type t) {
+    t.ptrDepth++;
+    return t;
+}
 
 }  // namespace pcc

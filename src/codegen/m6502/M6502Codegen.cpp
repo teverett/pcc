@@ -196,6 +196,40 @@ void M6502Codegen::genWideStoreAtPtr(int words) {
     }
 }
 
+void M6502Codegen::loadOperandAtPtr(Type type) {
+    int w = widthOfType(type);
+    if (w > 2) {
+        genWideLoadAtPtr(wordCountOf(type));
+        return;
+    }
+    if (w == 1) {
+        code_ << "    ldyi 0\n    ldaind ptr\n    sta ac\n";
+        if (type.isUnsigned) {
+            code_ << "    ldai 0\n    sta ac+1\n";
+            return;
+        }
+        code_ << "    lda ac\n    sta cx\n    asl cx\n";
+        std::string Lneg = newLabel(), Ldone = newLabel();
+        code_ << "    ldai 0\n    sta ac+1\n";
+        safeBranch("bcs", Lneg, Ldone);
+        code_ << Lneg << ":\n    ldai 255\n    sta ac+1\n";
+        code_ << Ldone << ":\n";
+        return;
+    }
+    code_ << "    ldyi 0\n    ldaind ptr\n    sta ac\n";
+    code_ << "    ldyi 1\n    ldaind ptr\n    sta ac+1\n";
+}
+
+void M6502Codegen::storeOperandAtPtr(Type type) {
+    int w = widthOfType(type);
+    if (w > 2) {
+        genWideStoreAtPtr(wordCountOf(type));
+        return;
+    }
+    code_ << "    ldyi 0\n    lda ac\n    staind ptr\n";
+    if (w == 2) code_ << "    ldyi 1\n    lda ac+1\n    staind ptr\n";
+}
+
 void M6502Codegen::inc16(const std::string &lbl) {
     std::string Lskip = newLabel();
     code_ << "    inc " << lbl << "\n";
@@ -615,13 +649,17 @@ void M6502Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
+            // Stores at e.type's own width/signedness - the pointee
+            // type of a real typed pointer (char*/short*/long*/long
+            // long*/...), or a plain native word for the still-
+            // supported untyped-int-as-address style - see
+            // IRBuilder.cpp's own DerefAssign comment.
             genExpr(*e.lhs);  // ac = pointer value
             copy16("ptr", "ac");
             code_ << "    lda ptr\n    pha\n    lda ptr+1\n    pha\n";
             genExpr(*e.rhs);
             code_ << "    pla\n    sta ptr+1\n    pla\n    sta ptr\n";
-            code_ << "    ldyi 0\n    lda ac\n    staind ptr\n";
-            code_ << "    ldyi 1\n    lda ac+1\n    staind ptr\n";
+            storeOperandAtPtr(e.type);
             return;
         }
         case ir::ExprKind::Unary: {
@@ -637,10 +675,11 @@ void M6502Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
+                // Loads at e.type's own width/signedness - see
+                // DerefAssign's identical comment above.
                 genExpr(*e.rhs);  // ac = pointer value
                 copy16("ptr", "ac");
-                code_ << "    ldyi 0\n    ldaind ptr\n    sta ac\n";
-                code_ << "    ldyi 1\n    ldaind ptr\n    sta ac+1\n";
+                loadOperandAtPtr(e.type);
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 if (wide) {
@@ -940,8 +979,13 @@ void M6502Codegen::genConvert(const ir::Expr &e) {
         code_ << "    lda ac+1\n    sta " << byteAt("wac", 1) << "\n";
         if (toWords > 1) {
             // Sign/zero-extend ac's own top byte into every
-            // remaining byte, per the SOURCE's own signedness.
-            if (from.isUnsigned) {
+            // remaining byte, per the SOURCE's own signedness - a
+            // pointer's own native-word value is always zero-extended
+            // instead, since `from.isUnsigned` would otherwise
+            // describe the POINTEE's signedness, not the pointer's
+            // own (see Type.h's own header comment on Type::ptrDepth),
+            // and a pointer value has no sign to extend regardless.
+            if (isPointer(from) || from.isUnsigned) {
                 code_ << "    ldai 0\n    sta dx\n";
             } else {
                 code_ << "    lda ac+1\n    sta cx\n    asl cx\n";
