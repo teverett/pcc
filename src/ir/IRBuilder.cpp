@@ -1,6 +1,7 @@
 #include "IRBuilder.h"
 
 #include <algorithm>
+#include <iostream>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -10,6 +11,46 @@ namespace {
 
 [[noreturn]] void err(int line, const std::string &msg) {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
+}
+
+std::string typeText(Type t) {
+    std::string prefix = t.isUnsigned ? "unsigned " : "";
+    switch (t.base) {
+        case BaseType::Char:
+            return prefix + "char";
+        case BaseType::Short:
+            return prefix + "short";
+        case BaseType::Int:
+            return prefix + "int";
+        case BaseType::Long:
+            return prefix + "long";
+        case BaseType::LongLong:
+            return prefix + "long long";
+    }
+    return prefix + "int";
+}
+
+// Flags an explicit `(type)expr` cast that either narrows the value
+// (the target's own real storage width, per this compile's active
+// `widths`, is smaller than the source's) or keeps the same width
+// but flips signedness (so the same bit pattern reads as a different
+// value) - both silently reinterpret the value rather than convert
+// it, the two classes GCC/Clang's own `-Wconversion`/`-Wsign-
+// conversion` warn about. An implicit conversion (assignment, a
+// `return`, a call argument) is NOT checked here - only an explicit
+// cast, which is the one place a programmer is asserting "I know
+// this is fine," worth a warning if it might not be.
+void warnRiskyCast(Type from, Type to, int line, const TypeWidths &widths) {
+    if (from == to) return;
+    int fromWidth = widthOf(from, widths);
+    int toWidth = widthOf(to, widths);
+    if (toWidth < fromWidth) {
+        std::cerr << "line " << line << ": warning: cast from '" << typeText(from) << "' to '" << typeText(to)
+                   << "' narrows the value (" << fromWidth << " to " << toWidth << " byte(s)) and may lose data\n";
+    } else if (toWidth == fromWidth && from.isUnsigned != to.isUnsigned) {
+        std::cerr << "line " << line << ": warning: cast from '" << typeText(from) << "' to '" << typeText(to)
+                   << "' changes signedness - a negative value will be reinterpreted\n";
+    }
 }
 
 int alignUp(int value, int align) {
@@ -549,8 +590,11 @@ class Builder {
                 out->type = Type{BaseType::Int, false};
                 out->lhs = buildExpr(*e.lhs);
                 return out;
-            case ExprKind::Cast:
-                return wrapConvert(buildExpr(*e.rhs), e.type, e.line);
+            case ExprKind::Cast: {
+                ir::ExprPtr inner = buildExpr(*e.rhs);
+                warnRiskyCast(inner->type, e.type, e.line, widths_);
+                return wrapConvert(std::move(inner), e.type, e.line);
+            }
             case ExprKind::Sizeof: {
                 // sizeof(expr) never evaluates expr - it's built here
                 // purely to learn its static type (still raising any
