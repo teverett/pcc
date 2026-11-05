@@ -82,8 +82,15 @@ namespace pcc {
 // `CPW x,y` after loading both operands is a plain full-width compare.
 class STM8Codegen : public Backend {
    public:
+    // `role`'s own `words`-word value, as individual byte labels -
+    // see STM8Codegen.cpp's own header comment. Public (unlike every
+    // other helper below) because it's also used by a free function
+    // in that file's own anonymous namespace.
+    static std::string wideScratch(const char *role, int i) { return std::string("w") + role + std::to_string(i); }
+
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "stm8"; }
+    TypeWidths typeWidths() const override { return {1, 2, 2, 4, 8}; }
     std::string sourceExtension() const override { return ".s8m"; }
     std::vector<std::string> assembledFormats() const override {
         return {"raw", "coff", "elf", "macho", "aout", "objraw"};
@@ -140,23 +147,108 @@ class STM8Codegen : public Backend {
     void genSlotAddress(const ir::Slot *slot);
 
     void genBinary(const ir::Expr &e);
-    void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
-    void emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert);
+    void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned);
+    void emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert, bool isUnsigned);
     void emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, bool wantEqual);
     void genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
+    // After genExpr(e) has just run, leaves `ac` holding 0 (false) or
+    // nonzero (true) - for a wide value (left on the real hardware
+    // stack as `words` words, LSW on top), ORs them all together into
+    // `ac` first and discards that stack space, since a multi-word
+    // value is true iff ANY of its words is nonzero.
+    void testTruthy(const ir::Expr &e);
     void genBitwise(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
-    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
-    void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft);
+    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
+    void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genConvert(const ir::Expr &e);
 
     // Leaves slot[idxExpr]'s own effective address in the `ptr`
     // memory cell - same role as I8080Codegen::genIndexAddr, via `x`/
     // `y` instead of HL/DE.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
+
+    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
+    // How many native 16-bit words `t` occupies - 1 for every type up
+    // to `int`, 2 for `long`, 4 for `long long` (see typeWidths()).
+    int wordCountOf(Type t) const { return widthOfType(t) / 2; }
+    // log2 of the element width (1/2/4/8 bytes -> 0/1/2/3) - the
+    // number of real one-bit `slaw`s genIndexAddr() scales an index
+    // by, instead of the old fixed "always one" (*2).
+    int elemShift(Type t) const {
+        switch (widthOfType(t)) {
+            case 1: return 0;
+            case 2: return 1;
+            case 4: return 2;
+            default: return 3;
+        }
+    }
+
+    // Assumes `x` already holds the effective storage address (same
+    // precondition as loadAcIndirect()/storeAcIndirect()) and loads/
+    // stores `ac` with a value of `type`'s own width - a `char` only
+    // ever touches one byte (`ldxind`/`stxind`), sign/zero-extending
+    // the rest of `ac` on a load via genSignFillByte(); every wider
+    // type is the existing two-byte `loadAcIndirect()`/
+    // `storeAcIndirect()`.
+    void loadOperand(Type type);
+    void storeOperand(Type type);
+
+    // `role`'s own `words`-word value, as individual byte labels,
+    // least significant byte first - `wideScratch(role,0)` is that
+    // byte, `wideScratch(role,0)+"+1"` the next, `wideScratch(role,1)`
+    // the one after that, and so on. Each word is a real 2-byte
+    // `db hi, lo` cell (see declareTemp()) - `wideScratch(role,i)`
+    // itself names the HIGH byte (matching every other named cell's
+    // own big-endian layout - see this file's own header comment), so
+    // the LOW byte is always `wideScratch(role,i)+"+1"`; swapping
+    // these would silently corrupt the first `adc`/`sbc` of every
+    // multi-byte op, since it's the chip's own *low* byte, not the
+    // high one, that has no incoming carry to fold in (see this
+    // class's own public wideScratch() declaration above).
+    // Pops `words` words off the real hardware stack (LSW on top -
+    // see genWideAdd()'s own header comment) into `role`'s own
+    // wideScratch() cells.
+    void popWideInto(const char *role, int words);
+    // Pushes `role`'s own wideScratch() cells onto the real hardware
+    // stack, LSW ending up on top.
+    void pushWideFrom(const char *role, int words);
+    // Leaves word `wordIndex`'s (0 = least significant) own effective
+    // address in `x` - a Global's storage is genuinely big-endian
+    // (the most significant word first - see generate()'s own
+    // comment), so word `wordIndex` sits at an *increasing* offset as
+    // `wordIndex` *decreases*; a Local/Param's own multi-word scalar
+    // storage is one contiguous block starting at genSlotAddress()'s
+    // own address, laid out the same way.
+    void genWideWordAddr(const ir::Slot *slot, int words, int wordIndex);
+    void genWideLoad(const ir::Slot *slot, int words);
+    void genWideLoadLiteral(long value, int words);
+    void genWideStore(const ir::Slot *slot, int words);
+    void genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd, int words);
+    void genWideNegate(int words);
+    void genWideBitwise(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &op, int words);
+    void genWideEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, bool wantEqual, int words);
+    void genWideLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert, bool isUnsigned, int words);
+    void genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned, int words);
+    void genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned, int words);
+    // `long`/`long long` `*`/`/`/`%` need a genuine bit-serial
+    // multi-byte software routine - deliberately not implemented
+    // here: this backend has no simulator in this project's own test
+    // harness to verify one against at all (the same situation this
+    // project's own pdp11/i8080 backends are in - see
+    // Pdp11Codegen.cpp's own genWideMul() comment) - failing loudly is
+    // safer than shipping an unverifiable, possibly wrong one.
+    void genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int words);
+    void genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, int words);
+    // Leaves `a` holding 0xFF if `a` (already loaded, a signed byte)
+    // has its own top bit set, else 0x00 - see STM8Codegen.cpp's own
+    // comment.
+    void genSignFillByte();
 
     // Assumes `x` already holds a target address (genIndexAddr's
     // `ptr`, or DerefAssign's own pointer value) and writes `ac`'s two
@@ -195,7 +287,7 @@ class STM8Codegen : public Backend {
 
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
     void declareTemp(const std::string &lbl);
-    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
+    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 

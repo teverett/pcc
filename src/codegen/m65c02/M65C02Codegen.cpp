@@ -1,5 +1,6 @@
 #include "M65C02Codegen.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 
@@ -45,13 +46,30 @@ std::string M65C02Codegen::arrayElemText(const ir::ArrayInitElem &e) {
     return e.slot ? label(e.slot) : label(e.func);
 }
 
-void M65C02Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values) {
+// See ../m6502/M6502Codegen.cpp's own version of this same function
+// for why a `char`-width element is a single plain `db` and a wide
+// (`long`/`long long`) one is split into plain bytes directly,
+// little-endian, instead of using "dblo"/"dbhi" at all.
+void M65C02Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values,
+                                  Type elemType) {
     if (values.empty()) return;
-    for (size_t i = 0; i < values.size(); i++) {
-        std::string text = arrayElemText(values[i]);
-        if (i == 0) trailer_.push_back(lbl + ": dblo " + text);
-        else trailer_.push_back("dblo " + text);
-        trailer_.push_back("dbhi " + text);
+    int w = widthOfType(elemType);
+    bool first = true;
+    auto emit = [&](const std::string &text) {
+        trailer_.push_back((first ? lbl + ": " : "") + text);
+        first = false;
+    };
+    for (const auto &e : values) {
+        if (w == 1) {
+            emit("db " + std::to_string(static_cast<int>(static_cast<uint8_t>(e.value))));
+        } else if (w == 2) {
+            std::string text = arrayElemText(e);
+            emit("dblo " + text);
+            trailer_.push_back("dbhi " + text);
+        } else {
+            auto uv = static_cast<unsigned long>(e.value);
+            for (int b = 0; b < w; b++) emit("db " + std::to_string(static_cast<int>((uv >> (8 * b)) & 0xFF)));
+        }
     }
 }
 
@@ -62,6 +80,31 @@ void M65C02Codegen::copy16(const std::string &dst, const std::string &src) {
 
 void M65C02Codegen::zeroZp(const std::string &lbl) {
     code_ << "    stzp " << lbl << "\n    stzp " << lbl << "+1\n";
+}
+
+namespace {
+std::string byteAt(const char *base, int i) { return i == 0 ? base : (std::string(base) + "+" + std::to_string(i)); }
+}  // namespace
+
+void M65C02Codegen::pushWide(const char *base, int nbytes) {
+    for (int i = 0; i < nbytes; i++) code_ << "    lda " << byteAt(base, i) << "\n    pha\n";
+}
+
+void M65C02Codegen::popWide(const char *base, int nbytes) {
+    for (int i = nbytes - 1; i >= 0; i--) code_ << "    pla\n    sta " << byteAt(base, i) << "\n";
+}
+
+void M65C02Codegen::copyWide(const char *dst, const char *src, int nbytes) {
+    for (int i = 0; i < nbytes; i++) code_ << "    lda " << byteAt(src, i) << "\n    sta " << byteAt(dst, i) << "\n";
+}
+
+void M65C02Codegen::negateWideBuffer(const char *buf, int nbytes) {
+    for (int i = 0; i < nbytes; i++) code_ << "    lda " << byteAt(buf, i) << "\n    eori 255\n    sta "
+                                            << byteAt(buf, i) << "\n";
+    code_ << "    clc\n    lda " << byteAt(buf, 0) << "\n    adci 1\n    sta " << byteAt(buf, 0) << "\n";
+    for (int i = 1; i < nbytes; i++) {
+        code_ << "    lda " << byteAt(buf, i) << "\n    adci 0\n    sta " << byteAt(buf, i) << "\n";
+    }
 }
 
 void M65C02Codegen::safeBranch(const std::string &branchMnemonic, const std::string &targetIfTaken,
@@ -114,13 +157,41 @@ void M65C02Codegen::storeIndirect(const std::string &zpPtr, const std::string &s
 
 void M65C02Codegen::slotAddrToPtr(const ir::Slot *slot) {
     if (slot->kind == ir::SlotKind::Param) {
-        addConst16("ptr", "fp", 2 * (slot->paramIndex + 1));
+        // IRBuilder's own Slot::frameOffset for a Param is counted
+        // past a fixed two-native-`int`-widths reservation (see
+        // IR.h's own comment); this backend's own frame only reserves
+        // ONE word there (the caller's saved `fp` - see
+        // genFunction()'s own prologue), landing param 0 at `fp+2`
+        // instead - so that extra reservation is subtracted back off
+        // here, the same fix ../m6502/M6502Codegen.cpp's own
+        // frameByteOffset() needed for the same reason.
+        addConst16("ptr", "fp", slot->frameOffset - 2 * widthOfType(Type{BaseType::Int, false}) + 2);
     } else {
-        addConst16("ptr", "fp", -2 * slot->frameOffset);
+        addConst16("ptr", "fp", -slot->frameOffset);
     }
 }
 
 void M65C02Codegen::loadSlotToAc(const ir::Slot *slot) {
+    int w = widthOfType(slot->type);
+    if (w == 1) {
+        if (slot->kind == ir::SlotKind::Global) {
+            code_ << "    lda " << label(slot) << "\n    sta ac\n";
+        } else {
+            slotAddrToPtr(slot);
+            code_ << "    ldyi 0\n    ldaind ptr\n    sta ac\n";
+        }
+        if (slot->type.isUnsigned) {
+            code_ << "    stzp ac+1\n";
+            return;
+        }
+        code_ << "    lda ac\n    sta cx\n    asl cx\n";
+        std::string Lneg = newLabel(), Ldone = newLabel();
+        code_ << "    stzp ac+1\n";
+        safeBranch("bcs", Lneg, Ldone);
+        code_ << Lneg << ":\n    ldai 255\n    sta ac+1\n";
+        code_ << Ldone << ":\n";
+        return;
+    }
     if (slot->kind == ir::SlotKind::Global) {
         copy16("ac", label(slot));
         return;
@@ -130,12 +201,68 @@ void M65C02Codegen::loadSlotToAc(const ir::Slot *slot) {
 }
 
 void M65C02Codegen::storeAcToSlot(const ir::Slot *slot) {
+    if (widthOfType(slot->type) == 1) {
+        if (slot->kind == ir::SlotKind::Global) {
+            code_ << "    lda ac\n    sta " << label(slot) << "\n";
+        } else {
+            slotAddrToPtr(slot);
+            code_ << "    ldyi 0\n    lda ac\n    staind ptr\n";
+        }
+        return;
+    }
     if (slot->kind == ir::SlotKind::Global) {
         copy16(label(slot), "ac");
         return;
     }
     slotAddrToPtr(slot);
     storeIndirect("ptr", "ac");
+}
+
+void M65C02Codegen::genWideLoad(const ir::Slot *slot, int words) {
+    int n = 2 * words;
+    if (slot->kind == ir::SlotKind::Global) {
+        std::string lbl = label(slot);
+        for (int i = 0; i < n; i++) {
+            code_ << "    lda " << lbl << (i ? "+" + std::to_string(i) : "") << "\n    sta " << byteAt("wac", i)
+                  << "\n";
+        }
+        return;
+    }
+    slotAddrToPtr(slot);
+    genWideLoadAtPtr(words);
+}
+
+void M65C02Codegen::genWideLoadLiteral(long value, int words) {
+    auto uv = static_cast<unsigned long>(value);
+    int n = 2 * words;
+    for (int i = 0; i < n; i++) code_ << "    ldai " << ((uv >> (8 * i)) & 0xFF) << "\n    sta " << byteAt("wac", i)
+                                       << "\n";
+}
+
+void M65C02Codegen::genWideStore(const ir::Slot *slot, int words) {
+    int n = 2 * words;
+    if (slot->kind == ir::SlotKind::Global) {
+        std::string lbl = label(slot);
+        for (int i = 0; i < n; i++) {
+            code_ << "    lda " << byteAt("wac", i) << "\n    sta " << lbl << (i ? "+" + std::to_string(i) : "")
+                  << "\n";
+        }
+        return;
+    }
+    slotAddrToPtr(slot);
+    genWideStoreAtPtr(words);
+}
+
+void M65C02Codegen::genWideLoadAtPtr(int words) {
+    int n = 2 * words;
+    for (int i = 0; i < n; i++) code_ << "    ldyi " << i << "\n    ldaind ptr\n    sta " << byteAt("wac", i)
+                                       << "\n";
+}
+
+void M65C02Codegen::genWideStoreAtPtr(int words) {
+    int n = 2 * words;
+    for (int i = 0; i < n; i++) code_ << "    ldyi " << i << "\n    lda " << byteAt("wac", i)
+                                       << "\n    staind ptr\n";
 }
 
 void M65C02Codegen::loadArrayElemToAc(const ir::ArrayInitElem &e) {
@@ -151,10 +278,27 @@ void M65C02Codegen::loadArrayElemToAc(const ir::ArrayInitElem &e) {
 }
 
 void M65C02Codegen::genLocalArrayInit(const ir::Slot *slot) {
+    int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
-        loadArrayElemToAc(slot->arrayInit[i]);
-        addConst16("ptr", "fp", -2 * (slot->frameOffset + static_cast<int>(i)));
-        storeIndirect("ptr", "ac");
+        const ir::ArrayInitElem &elem = slot->arrayInit[i];
+        addConst16("ptr", "fp", -(slot->frameOffset + w * static_cast<int>(i)));
+        if (w <= 2) {
+            loadArrayElemToAc(elem);
+            if (w == 1) {
+                code_ << "    ldyi 0\n    lda ac\n    staind ptr\n";
+            } else {
+                storeIndirect("ptr", "ac");
+            }
+        } else {
+            // A wide element's own literal is never a symbol (see
+            // declareArray()'s own comment) - split directly into
+            // `w` plain bytes, least significant first.
+            auto uv = static_cast<unsigned long>(elem.value);
+            for (int b = 0; b < w; b++) {
+                code_ << "    ldai " << ((uv >> (8 * b)) & 0xFF) << "\n    sta ac\n";
+                code_ << "    ldyi " << b << "\n    lda ac\n    staind ptr\n";
+            }
+        }
     }
 }
 
@@ -200,7 +344,11 @@ std::string M65C02Codegen::generate(const ir::Program &prog, bool objectMode) {
     // silently. `sp`/`fp` are the two that hold the software call-
     // frame stack's own state - see M65C02Codegen.h's own calling-
     // convention comment for what each holds.
-    code_ << "ptr = 0\nac = 2\nbc = 4\ncx = 6\ndx = 8\nsp = 10\nfp = 12\n\n";
+    code_ << "ptr = 0\nac = 2\nbc = 4\ncx = 6\ndx = 8\nsp = 10\nfp = 12\n";
+    // `wac`/`wbc`/`wtmp`/`wtmp2` - the wide (`long`/`long long`) value
+    // buffers (see ../m6502/M6502Codegen.h's own header comment on
+    // this mechanism), 8 bytes each.
+    code_ << "wac = 14\nwbc = 22\nwtmp = 30\nwtmp2 = 38\n\n";
     if (!objectMode) {
         code_ << "_start:\n";
         // Seeds the software call-frame stack (see
@@ -240,12 +388,13 @@ std::string M65C02Codegen::generate(const ir::Program &prog, bool objectMode) {
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
-            declareArray(lbl, slot->arrayInit);
+            declareArray(lbl, slot->arrayInit, slot->type);
         } else {
             long v = slot->hasInit ? slot->initValue : 0;
-            uint16_t v16 = static_cast<uint16_t>(v);
-            trailer_.push_back(lbl + ": db " + std::to_string(v16 & 0xFF) + "  ; " + slot->sourceName);
-            trailer_.push_back("db " + std::to_string((v16 >> 8) & 0xFF));
+            auto uv = static_cast<unsigned long>(v);
+            int w = widthOfType(slot->type);
+            trailer_.push_back(lbl + ": db " + std::to_string(uv & 0xFF) + "  ; " + slot->sourceName);
+            for (int i = 1; i < w; i++) trailer_.push_back("db " + std::to_string((uv >> (8 * i)) & 0xFF));
         }
     }
 
@@ -279,7 +428,7 @@ void M65C02Codegen::genFunction(const ir::FunctionBody &fn) {
     addConst16("ptr", "sp", -2);     // ptr = this call's own saved-fp word's address
     storeIndirect("ptr", "fp");      // [ptr] = the caller's own fp
     copy16("fp", "ptr");             // fp = this call's own frame base
-    addConst16("sp", "fp", -2 * fn.func->frameSize);  // reserve the locals below fp
+    addConst16("sp", "fp", -fn.func->frameSize);  // reserve the locals below fp
     genStmt(*fn.body);
     emitEpilogue();
     code_ << "    rts\n\n";
@@ -293,7 +442,7 @@ void M65C02Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::If: {
             genExpr(*s.cond);
-            code_ << "    lda ac\n    ora ac+1\n";
+            testTruthy(*s.cond);
             std::string Lthen = newLabel();
             std::string Lelse = s.elseStmt ? newLabel() : "";
             std::string Ldone = newLabel();
@@ -313,7 +462,7 @@ void M65C02Codegen::genStmt(const ir::Stmt &s) {
             std::string Lcont = s.postStmt ? newLabel() : Lstart;
             code_ << Lstart << ":\n";
             genExpr(*s.cond);
-            code_ << "    lda ac\n    ora ac+1\n";
+            testTruthy(*s.cond);
             safeBranch("beq", Lend, Lbody);
             code_ << Lbody << ":\n";
             loopLabels_.push_back({Lcont, Lend});
@@ -349,7 +498,11 @@ void M65C02Codegen::genStmt(const ir::Stmt &s) {
                 genLocalArrayInit(s.declSlot);
             } else if (s.initOrReturnOrExpr) {
                 genExpr(*s.initOrReturnOrExpr);
-                storeAcToSlot(s.declSlot);
+                if (isWide(s.declSlot->type)) {
+                    genWideStore(s.declSlot, wordCountOf(s.declSlot->type));
+                } else {
+                    storeAcToSlot(s.declSlot);
+                }
             }
             // No "else" case for a bare, uninitialized scalar: its
             // frame word already exists (genFunction()'s own prologue
@@ -375,6 +528,10 @@ void M65C02Codegen::genStmt(const ir::Stmt &s) {
 void M65C02Codegen::genExpr(const ir::Expr &e) {
     switch (e.kind) {
         case ir::ExprKind::IntLit: {
+            if (isWide(e.type)) {
+                genWideLoadLiteral(e.intValue, wordCountOf(e.type));
+                return;
+            }
             // A zero byte stores via `stzp` (see zeroZp()'s own
             // comment) rather than ../m6502/M6502Codegen.cpp's own
             // "ldai 0 / sta" - one instruction instead of two, and
@@ -395,6 +552,10 @@ void M65C02Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
+            if (isWide(e.slot->type)) {
+                genWideLoad(e.slot, wordCountOf(e.slot->type));
+                return;
+            }
             loadSlotToAc(e.slot);
             return;
         }
@@ -404,6 +565,7 @@ void M65C02Codegen::genExpr(const ir::Expr &e) {
         }
         case ir::ExprKind::Assign: {
             if (e.lhs) {  // slot[idx] = rhs
+                int w = widthOfType(e.slot->type);
                 genIndexAddr(e.slot, *e.lhs);  // ptr = target address
                 // Save `ptr` across evaluating rhs (which might
                 // itself index through `ptr` again) on the real
@@ -413,12 +575,20 @@ void M65C02Codegen::genExpr(const ir::Expr &e) {
                 code_ << "    lda ptr\n    pha\n    lda ptr+1\n    pha\n";
                 genExpr(*e.rhs);
                 code_ << "    pla\n    sta ptr+1\n    pla\n    sta ptr\n";
-                code_ << "    ldyi 0\n    lda ac\n    staind ptr\n";
-                code_ << "    ldyi 1\n    lda ac+1\n    staind ptr\n";
+                if (w > 2) {
+                    genWideStoreAtPtr(wordCountOf(e.slot->type));
+                } else {
+                    code_ << "    ldyi 0\n    lda ac\n    staind ptr\n";
+                    if (w == 2) code_ << "    ldyi 1\n    lda ac+1\n    staind ptr\n";
+                }
                 return;
             }
             genExpr(*e.rhs);
-            storeAcToSlot(e.slot);
+            if (isWide(e.slot->type)) {
+                genWideStore(e.slot, wordCountOf(e.slot->type));
+            } else {
+                storeAcToSlot(e.slot);
+            }
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -432,10 +602,15 @@ void M65C02Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Unary: {
+            bool wide = isWide(e.rhs->type);
             if (e.op == "-") {
                 genExpr(*e.rhs);
-                code_ << "    ldai 0\n    sec\n    sbc ac\n    sta ac\n";
-                code_ << "    ldai 0\n    sbc ac+1\n    sta ac+1\n";
+                if (wide) {
+                    negateWideBuffer("wac", 2 * wordCountOf(e.rhs->type));
+                } else {
+                    code_ << "    ldai 0\n    sec\n    sbc ac\n    sta ac\n";
+                    code_ << "    ldai 0\n    sbc ac+1\n    sta ac+1\n";
+                }
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
@@ -445,8 +620,16 @@ void M65C02Codegen::genExpr(const ir::Expr &e) {
                 code_ << "    ldyi 1\n    ldaind ptr\n    sta ac+1\n";
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
-                code_ << "    lda ac\n    eori 255\n    sta ac\n";
-                code_ << "    lda ac+1\n    eori 255\n    sta ac+1\n";
+                if (wide) {
+                    int n = 2 * wordCountOf(e.rhs->type);
+                    for (int i = 0; i < n; i++) {
+                        std::string b = byteAt("wac", i);
+                        code_ << "    lda " << b << "\n    eori 255\n    sta " << b << "\n";
+                    }
+                } else {
+                    code_ << "    lda ac\n    eori 255\n    sta ac\n";
+                    code_ << "    lda ac+1\n    eori 255\n    sta ac+1\n";
+                }
             } else {  // "&"
                 genAddrOf(*e.rhs);
             }
@@ -465,13 +648,21 @@ void M65C02Codegen::genExpr(const ir::Expr &e) {
             // pushed words back off afterward (`sp += 2*N`) - cdecl's
             // own convention, chosen here only because it needs no
             // cooperation from the callee at all.
+            int totalBytes = 0;
             for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                addConst16("sp", "sp", -2);
-                storeIndirect("sp", "ac");
+                int w = std::max(widthOfType(e.args[i]->type), 2);
+                totalBytes += w;
+                addConst16("sp", "sp", -w);
+                if (w > 2) {
+                    for (int b = 0; b < w; b++) code_ << "    ldyi " << b << "\n    lda " << byteAt("wac", b)
+                                                         << "\n    staind sp\n";
+                } else {
+                    storeIndirect("sp", "ac");
+                }
             }
             code_ << "    jsr " << label(e.func) << "\n";
-            if (!e.args.empty()) addConst16("sp", "sp", 2 * static_cast<int>(e.args.size()));
+            if (totalBytes > 0) addConst16("sp", "sp", totalBytes);
             return;
         }
         case ir::ExprKind::CallPtr: {
@@ -522,6 +713,12 @@ void M65C02Codegen::genExpr(const ir::Expr &e) {
             code_ << "    " << (e.op == "ion" ? "cli" : "sei") << "\n";
             return;
         }
+        case ir::ExprKind::Convert: {
+            genConvert(e);
+            return;
+        }
+        case ir::ExprKind::Func:
+            err(e.line, "internal: Func reached genExpr - should only ever appear as '&'s operand");
     }
 }
 
@@ -545,9 +742,10 @@ void M65C02Codegen::genExpr(const ir::Expr &e) {
 // of where the pointer variable itself lives.
 void M65C02Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
-    // ac *= 2 (words are 2 bytes on this byte-addressed target, same
-    // reason as ../x86_8086/I8086Codegen.cpp's own `shl ax,1`).
-    code_ << "    asl ac\n    rol ac+1\n";
+    // ac *= widthOf(slot->type) (a power of two - see elemShift()),
+    // same reason as ../x86_8086/I8086Codegen.cpp's own `shl ax,N`.
+    int shift = elemShift(slot->type);
+    for (int i = 0; i < shift; i++) code_ << "    asl ac\n    rol ac+1\n";
     if (slot->arraySize > 0) {
         if (slot->kind == ir::SlotKind::Global) {
             std::string lbl = label(slot);
@@ -555,7 +753,7 @@ void M65C02Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) 
             code_ << "    lda ac\n    adci " << lbl << "\n    sta ptr\n";
             code_ << "    lda ac+1\n    adci_hi " << lbl << "\n    sta ptr+1\n";
         } else {
-            addConst16("ptr", "fp", -2 * slot->frameOffset);  // ptr = element 0's own address
+            addConst16("ptr", "fp", -slot->frameOffset);  // ptr = element 0's own address
             sub16("ptr", "ptr", "ac");                         // ptr -= idx*2
         }
     } else if (slot->kind == ir::SlotKind::Global) {
@@ -572,6 +770,25 @@ void M65C02Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) 
 
 void M65C02Codegen::genIndex(const ir::Expr &e) {
     genIndexAddr(e.slot, *e.lhs);
+    int w = widthOfType(e.slot->type);
+    if (w > 2) {
+        genWideLoadAtPtr(wordCountOf(e.slot->type));
+        return;
+    }
+    if (w == 1) {
+        code_ << "    ldyi 0\n    ldaind ptr\n    sta ac\n";
+        if (e.slot->type.isUnsigned) {
+            code_ << "    stzp ac+1\n";
+            return;
+        }
+        code_ << "    lda ac\n    sta cx\n    asl cx\n";
+        std::string Lneg = newLabel(), Ldone = newLabel();
+        code_ << "    stzp ac+1\n";
+        safeBranch("bcs", Lneg, Ldone);
+        code_ << Lneg << ":\n    ldai 255\n    sta ac+1\n";
+        code_ << Ldone << ":\n";
+        return;
+    }
     code_ << "    ldyi 0\n    ldaind ptr\n    sta ac\n";
     code_ << "    ldyi 1\n    ldaind ptr\n    sta ac+1\n";
 }
@@ -602,9 +819,320 @@ void M65C02Codegen::genAddrOf(const ir::Expr &operand) {
     err(operand.line, "internal: unhandled addressable-operand kind");
 }
 
+// An implicit or explicit type conversion - see
+// ../m6502/M6502Codegen.cpp's own version of this same function for
+// the full rationale (identical here, just using `stzp` in place of
+// that file's own "ldai 0 / sta" where zeroing a whole byte).
+void M65C02Codegen::genConvert(const ir::Expr &e) {
+    Type from = e.lhs->type;
+    Type to = e.type;
+    bool fromWide = isWide(from);
+    bool toWide = isWide(to);
+    auto narrowCharFixup = [&]() {
+        if (widthOfType(to) != 1) return;
+        if (to.isUnsigned) {
+            code_ << "    stzp ac+1\n";
+            return;
+        }
+        code_ << "    lda ac\n    sta cx\n    asl cx\n";
+        std::string Lneg = newLabel(), Ldone = newLabel();
+        code_ << "    stzp ac+1\n";
+        safeBranch("bcs", Lneg, Ldone);
+        code_ << Lneg << ":\n    ldai 255\n    sta ac+1\n";
+        code_ << Ldone << ":\n";
+    };
+    if (!fromWide && !toWide) {
+        genExpr(*e.lhs);
+        narrowCharFixup();
+        return;
+    }
+    if (fromWide && !toWide) {
+        genExpr(*e.lhs);
+        code_ << "    lda " << byteAt("wac", 0) << "\n    sta ac\n";
+        code_ << "    lda " << byteAt("wac", 1) << "\n    sta ac+1\n";
+        narrowCharFixup();
+        return;
+    }
+    if (!fromWide && toWide) {
+        int toWords = wordCountOf(to);
+        genExpr(*e.lhs);
+        code_ << "    lda ac\n    sta " << byteAt("wac", 0) << "\n";
+        code_ << "    lda ac+1\n    sta " << byteAt("wac", 1) << "\n";
+        if (toWords > 1) {
+            if (from.isUnsigned) {
+                code_ << "    stzp dx\n";
+            } else {
+                code_ << "    lda ac+1\n    sta cx\n    asl cx\n";
+                std::string Lneg = newLabel(), Ldone = newLabel();
+                code_ << "    stzp dx\n";
+                safeBranch("bcc", Ldone, Lneg);
+                code_ << Lneg << ":\n    ldai 255\n    sta dx\n";
+                code_ << Ldone << ":\n";
+            }
+            for (int i = 2; i < 2 * toWords; i++) code_ << "    lda dx\n    sta " << byteAt("wac", i) << "\n";
+        }
+        return;
+    }
+    int fromN = 2 * wordCountOf(from);
+    int toN = 2 * wordCountOf(to);
+    genExpr(*e.lhs);
+    if (toN > fromN) {
+        if (from.isUnsigned) {
+            code_ << "    stzp dx\n";
+        } else {
+            code_ << "    lda " << byteAt("wac", fromN - 1) << "\n    sta cx\n    asl cx\n";
+            std::string Lneg = newLabel(), Ldone = newLabel();
+            code_ << "    stzp dx\n";
+            safeBranch("bcc", Ldone, Lneg);
+            code_ << Lneg << ":\n    ldai 255\n    sta dx\n";
+            code_ << Ldone << ":\n";
+        }
+        for (int i = fromN; i < toN; i++) code_ << "    lda dx\n    sta " << byteAt("wac", i) << "\n";
+    }
+}
+
+void M65C02Codegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd, int words) {
+    int n = 2 * words;
+    genExpr(lhs);
+    pushWide("wac", n);
+    genExpr(rhs);
+    popWide("wbc", n);  // wbc = lhs, wac = rhs
+    code_ << "    " << (isAdd ? "clc" : "sec") << "\n";
+    for (int i = 0; i < n; i++) {
+        code_ << "    lda " << byteAt("wbc", i) << "\n    " << (isAdd ? "adc" : "sbc") << " " << byteAt("wac", i)
+              << "\n    sta " << byteAt("wac", i) << "\n";
+    }
+}
+
+void M65C02Codegen::genWideBitwise(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &op, int words) {
+    int n = 2 * words;
+    genExpr(lhs);
+    pushWide("wac", n);
+    genExpr(rhs);
+    popWide("wbc", n);  // wbc = lhs, wac = rhs
+    const char *insn = (op == "&") ? "and" : (op == "|") ? "ora" : "eor";
+    for (int i = 0; i < n; i++) {
+        code_ << "    lda " << byteAt("wbc", i) << "\n    " << insn << " " << byteAt("wac", i) << "\n    sta "
+              << byteAt("wac", i) << "\n";
+    }
+}
+
+void M65C02Codegen::emitWideEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, int words, bool wantEqual) {
+    int n = 2 * words;
+    genExpr(lhs);
+    pushWide("wac", n);
+    genExpr(rhs);
+    popWide("wbc", n);  // wbc = lhs, wac = rhs
+    code_ << "    lda " << byteAt("wbc", 0) << "\n    eor " << byteAt("wac", 0) << "\n    sta dx\n";
+    for (int i = 1; i < n; i++) {
+        code_ << "    lda " << byteAt("wbc", i) << "\n    eor " << byteAt("wac", i) << "\n    ora dx\n    sta dx\n";
+    }
+    std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
+    code_ << "    lda dx\n";
+    safeBranch(wantEqual ? "beq" : "bne", Ltrue, Lfalse);
+    code_ << Ltrue << ":\n    ldai 1\n    sta ac\n    stzp ac+1\n    jmp " << Ldone << "\n";
+    code_ << Lfalse << ":\n";
+    zeroZp("ac");
+    code_ << Ldone << ":\n";
+}
+
+void M65C02Codegen::emitWideLessCompare(const ir::Expr &a, const ir::Expr &b, bool isUnsigned, int words,
+                                         bool invert) {
+    int n = 2 * words;
+    genExpr(a);
+    pushWide("wac", n);
+    genExpr(b);
+    popWide("wbc", n);  // wbc = a, wac = b
+    code_ << "    sec\n";
+    for (int i = 0; i < n; i++) {
+        code_ << "    lda " << byteAt("wbc", i) << "\n    sbc " << byteAt("wac", i) << "\n";
+    }
+    std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
+    if (isUnsigned) {
+        safeBranch(invert ? "bcs" : "bcc", Ltrue, Lfalse);
+    } else {
+        std::string Lfixskip = newLabel();
+        code_ << "    bvc " << Lfixskip << "\n    eori 128\n" << Lfixskip << ":\n";
+        safeBranch(invert ? "bpl" : "bmi", Ltrue, Lfalse);
+    }
+    code_ << Ltrue << ":\n    ldai 1\n    sta ac\n    stzp ac+1\n    jmp " << Ldone << "\n";
+    code_ << Lfalse << ":\n";
+    zeroZp("ac");
+    code_ << Ldone << ":\n";
+}
+
+void M65C02Codegen::genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned,
+                                    int words) {
+    if (op == "==") return emitWideEqualityCompare(lhs, rhs, words, /*wantEqual=*/true);
+    if (op == "!=") return emitWideEqualityCompare(lhs, rhs, words, /*wantEqual=*/false);
+    if (op == "<") return emitWideLessCompare(lhs, rhs, isUnsigned, words, /*invert=*/false);
+    if (op == ">") return emitWideLessCompare(rhs, lhs, isUnsigned, words, /*invert=*/false);
+    if (op == "<=") return emitWideLessCompare(rhs, lhs, isUnsigned, words, /*invert=*/true);
+    if (op == ">=") return emitWideLessCompare(lhs, rhs, isUnsigned, words, /*invert=*/true);
+    err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
+}
+
+void M65C02Codegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned, int words) {
+    int n = 2 * words;
+    genExpr(lhs);
+    pushWide("wac", n);
+    genExpr(rhs);
+    code_ << "    lda ac\n    sta cx\n";
+    popWide("wac", n);
+    std::string Lloop = newLabel(), Lbody = newLabel(), Ldone = newLabel();
+    code_ << Lloop << ":\n    lda cx\n";
+    safeBranch("beq", Ldone, Lbody);
+    code_ << Lbody << ":\n";
+    if (isLeft) {
+        code_ << "    asl " << byteAt("wac", 0) << "\n";
+        for (int i = 1; i < n; i++) code_ << "    rol " << byteAt("wac", i) << "\n";
+    } else if (isUnsigned) {
+        code_ << "    lsr " << byteAt("wac", n - 1) << "\n";
+        for (int i = n - 2; i >= 0; i--) code_ << "    ror " << byteAt("wac", i) << "\n";
+    } else {
+        code_ << "    lda " << byteAt("wac", n - 1) << "\n    sta dx\n    asl dx\n";
+        code_ << "    ror " << byteAt("wac", n - 1) << "\n";
+        for (int i = n - 2; i >= 0; i--) code_ << "    ror " << byteAt("wac", i) << "\n";
+    }
+    code_ << "    dec cx\n";
+    code_ << "    jmp " << Lloop << "\n";
+    code_ << Ldone << ":\n";
+}
+
+void M65C02Codegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int words) {
+    int n = 2 * words;
+    genExpr(lhs);
+    pushWide("wac", n);
+    genExpr(rhs);
+    popWide("wbc", n);  // wbc = multiplicand, wac = multiplier
+    for (int i = 0; i < n; i++) code_ << "    ldai 0\n    sta " << byteAt("wtmp", i) << "\n";
+    code_ << "    ldai " << (8 * n) << "\n    sta cx\n";
+    std::string Lloop = newLabel(), Lbody = newLabel(), Ldone = newLabel();
+    std::string Ladd = newLabel(), Lskipadd = newLabel();
+    code_ << Lloop << ":\n    lda cx\n";
+    safeBranch("beq", Ldone, Lbody);
+    code_ << Lbody << ":\n";
+    code_ << "    lda " << byteAt("wac", 0) << "\n    andi 1\n";
+    safeBranch("bne", Ladd, Lskipadd);
+    code_ << Ladd << ":\n";
+    code_ << "    clc\n";
+    for (int i = 0; i < n; i++) {
+        code_ << "    lda " << byteAt("wtmp", i) << "\n    adc " << byteAt("wbc", i) << "\n    sta "
+              << byteAt("wtmp", i) << "\n";
+    }
+    code_ << Lskipadd << ":\n";
+    code_ << "    asl " << byteAt("wbc", 0) << "\n";
+    for (int i = 1; i < n; i++) code_ << "    rol " << byteAt("wbc", i) << "\n";
+    code_ << "    lsr " << byteAt("wac", n - 1) << "\n";
+    for (int i = n - 2; i >= 0; i--) code_ << "    ror " << byteAt("wac", i) << "\n";
+    code_ << "    dec cx\n";
+    code_ << "    jmp " << Lloop << "\n";
+    code_ << Ldone << ":\n";
+    copyWide("wac", "wtmp", n);
+}
+
+void M65C02Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned,
+                                   int words) {
+    int n = 2 * words;
+    auto isNegByte = [&](const std::string &lblByte, const char *dst) {
+        code_ << "    lda " << lblByte << "\n    sta cx\n    asl cx\n";
+        std::string Lneg = newLabel(), Ldone = newLabel();
+        code_ << "    ldai 0\n    sta " << dst << "\n";
+        safeBranch("bcc", Ldone, Lneg);
+        code_ << Lneg << ":\n    ldai 1\n    sta " << dst << "\n";
+        code_ << Ldone << ":\n";
+    };
+    auto negateIfFlag = [&](const char *flag, const char *buf) {
+        std::string Lskip = newLabel(), Ldo = newLabel();
+        code_ << "    lda " << flag << "\n";
+        safeBranch("beq", Lskip, Ldo);
+        code_ << Ldo << ":\n";
+        negateWideBuffer(buf, n);
+        code_ << Lskip << ":\n";
+    };
+    genExpr(lhs);
+    pushWide("wac", n);
+    genExpr(rhs);
+    popWide("wbc", n);  // wbc = dividend, wac = divisor
+    if (!isUnsigned) {
+        isNegByte(byteAt("wbc", n - 1), "dx");
+        isNegByte(byteAt("wac", n - 1), "dx+1");
+        negateIfFlag("dx", "wbc");
+        negateIfFlag("dx+1", "wac");
+    }
+    for (int i = 0; i < n; i++) code_ << "    ldai 0\n    sta " << byteAt("wtmp", i) << "\n    sta "
+                                       << byteAt("wtmp2", i) << "\n";
+    code_ << "    ldai " << (8 * n) << "\n    sta cx\n";
+    std::string Lloop = newLabel(), Lbody = newLabel(), Ldone = newLabel();
+    std::string Lrestore = newLabel(), Lsetbit = newLabel(), Lshiftq = newLabel();
+    code_ << Lloop << ":\n    lda cx\n";
+    safeBranch("beq", Ldone, Lbody);
+    code_ << Lbody << ":\n";
+    code_ << "    asl " << byteAt("wbc", 0) << "\n";
+    for (int i = 1; i < n; i++) code_ << "    rol " << byteAt("wbc", i) << "\n";
+    for (int i = 0; i < n; i++) code_ << "    rol " << byteAt("wtmp", i) << "\n";
+    code_ << "    sec\n";
+    for (int i = 0; i < n; i++) {
+        code_ << "    lda " << byteAt("wtmp", i) << "\n    sbc " << byteAt("wac", i) << "\n    sta "
+              << byteAt("wtmp", i) << "\n";
+    }
+    safeBranch("bcs", Lsetbit, Lrestore);
+    code_ << Lrestore << ":\n";
+    code_ << "    clc\n";
+    for (int i = 0; i < n; i++) {
+        code_ << "    lda " << byteAt("wtmp", i) << "\n    adc " << byteAt("wac", i) << "\n    sta "
+              << byteAt("wtmp", i) << "\n";
+    }
+    code_ << "    clc\n    jmp " << Lshiftq << "\n";
+    code_ << Lsetbit << ":\n    sec\n";
+    code_ << Lshiftq << ":\n";
+    for (int i = 0; i < n; i++) code_ << "    rol " << byteAt("wtmp2", i) << "\n";
+    code_ << "    dec cx\n";
+    code_ << "    jmp " << Lloop << "\n";
+    code_ << Ldone << ":\n";
+    if (!isUnsigned) {
+        code_ << "    lda dx\n    eor dx+1\n";
+        std::string Lskip = newLabel(), Ldo = newLabel();
+        safeBranch("beq", Lskip, Ldo);
+        code_ << Ldo << ":\n";
+        negateWideBuffer("wtmp2", n);
+        code_ << Lskip << ":\n";
+        negateIfFlag("dx", "wtmp");
+    }
+    copyWide("wac", wantRemainder ? "wtmp" : "wtmp2", n);
+}
+
+void M65C02Codegen::testTruthy(const ir::Expr &e) {
+    if (!isWide(e.type)) {
+        code_ << "    lda ac\n    ora ac+1\n";
+        return;
+    }
+    int n = 2 * wordCountOf(e.type);
+    code_ << "    lda " << byteAt("wac", 0) << "\n";
+    for (int i = 1; i < n; i++) code_ << "    ora " << byteAt("wac", i) << "\n";
+    code_ << "    sta ac\n    stzp ac+1\n";
+    code_ << "    lda ac\n";
+}
+
 void M65C02Codegen::genBinary(const ir::Expr &e) {
     const std::string &op = e.op;
+    if (op == "&&") {
+        genLogicalAnd(*e.lhs, *e.rhs);
+        return;
+    }
+    if (op == "||") {
+        genLogicalOr(*e.lhs, *e.rhs);
+        return;
+    }
+    Type operandType = e.lhs->type;
+    bool wide = isWide(operandType);
+    bool isUnsigned = operandType.isUnsigned;
+    int words = wide ? wordCountOf(operandType) : 1;
     if (op == "+" || op == "-") {
+        if (wide) {
+            genWideAdd(*e.lhs, *e.rhs, op == "+", words);
+            return;
+        }
         genExpr(*e.lhs);
         code_ << "    lda ac\n    pha\n    lda ac+1\n    pha\n";
         genExpr(*e.rhs);
@@ -619,18 +1147,26 @@ void M65C02Codegen::genBinary(const ir::Expr &e) {
         return;
     }
     if (op == "*") {
-        genMul(*e.lhs, *e.rhs);
+        if (wide) {
+            genWideMul(*e.lhs, *e.rhs, words);
+        } else {
+            genMul(*e.lhs, *e.rhs);
+        }
         return;
     }
-    if (op == "/") {
-        genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/false);
-        return;
-    }
-    if (op == "%") {
-        genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/true);
+    if (op == "/" || op == "%") {
+        if (wide) {
+            genWideDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/op == "%", isUnsigned, words);
+        } else {
+            genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/op == "%", isUnsigned);
+        }
         return;
     }
     if (op == "&" || op == "|" || op == "^") {
+        if (wide) {
+            genWideBitwise(*e.lhs, *e.rhs, op, words);
+            return;
+        }
         genExpr(*e.lhs);
         code_ << "    lda ac\n    pha\n    lda ac+1\n    pha\n";
         genExpr(*e.rhs);
@@ -641,42 +1177,47 @@ void M65C02Codegen::genBinary(const ir::Expr &e) {
         return;
     }
     if (op == "<<" || op == ">>") {
-        genShift(*e.lhs, *e.rhs, op == "<<");
+        if (wide) {
+            genWideShift(*e.lhs, *e.rhs, op == "<<", isUnsigned, words);
+            return;
+        }
+        genShift(*e.lhs, *e.rhs, op == "<<", isUnsigned);
         return;
     }
-    if (op == "&&") {
-        genLogicalAnd(*e.lhs, *e.rhs);
+    if (wide) {
+        genWideCompare(op, *e.lhs, *e.rhs, isUnsigned, words);
         return;
     }
-    if (op == "||") {
-        genLogicalOr(*e.lhs, *e.rhs);
-        return;
-    }
-    genCompare(op, *e.lhs, *e.rhs);
+    genCompare(op, *e.lhs, *e.rhs, isUnsigned);
 }
 
 // No variable-count shift instruction (ASL/LSR always shift exactly
 // one bit) - loop `rhs` times instead, the same fix
 // ../pdp7/Pdp7Codegen.cpp's own `<<`/`>>` already needed for the
 // same reason (see M65C02Codegen.h's own header comment).
-void M65C02Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft) {
+void M65C02Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    lda ac\n    pha\n    lda ac+1\n    pha\n";
     genExpr(rhs);
     code_ << "    lda ac\n    sta cx\n";  // cx = shift count (always small; low byte is enough)
     code_ << "    pla\n    sta bc+1\n    pla\n    sta bc\n";
-    copy16("ac", "bc");  // ac = value to shift
+    copy16("ac", "bc");  // ac = value to shift; bc is dead from here on (free as scratch)
     std::string Lloop = newLabel(), Lbody = newLabel(), Ldone = newLabel();
     code_ << Lloop << ":\n    lda cx\n";
     safeBranch("beq", Ldone, Lbody);
     code_ << Lbody << ":\n";
     if (isLeft) {
         code_ << "    asl ac\n    rol ac+1\n";
-    } else {
-        // Logical (unsigned) shift - same convention, and the same
-        // reason (no unsigned type to make the distinction with in
-        // the first place), as every other backend's own `>>`.
+    } else if (isUnsigned) {
+        // Logical (unsigned) shift: fills with 0 either way.
         code_ << "    lsr ac+1\n    ror ac\n";
+    } else {
+        // Arithmetic (signed) shift: re-derive the current sign bit
+        // (ac+1's own bit 7) into the carry each iteration (via a
+        // throwaway copy in `bc+1`) and rotate that bit back in at
+        // the top, instead of LSR's own fixed 0-fill.
+        code_ << "    lda ac+1\n    sta bc+1\n    asl bc+1\n";
+        code_ << "    ror ac+1\n    ror ac\n";
     }
     code_ << "    dec cx\n";
     code_ << "    jmp " << Lloop << "\n";
@@ -721,12 +1262,41 @@ void M65C02Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
 // fixed divisor), `ac` the quotient, counting how many times `bc`
 // was subtracted out of `dx` before it would've gone negative. Only
 // verified against non-negative operands.
-void M65C02Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder) {
+void M65C02Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
+    auto negate16 = [&](const char *lbl) {
+        code_ << "    ldai 0\n    sec\n    sbc " << lbl << "\n    sta " << lbl << "\n";
+        code_ << "    ldai 0\n    sbc " << lbl << "+1\n    sta " << lbl << "+1\n";
+    };
+    auto isNeg = [&](const char *lbl, const char *dst) {
+        code_ << "    lda " << lbl << "+1\n    sta cx\n    asl cx\n";
+        std::string Lneg = newLabel(), Ldone = newLabel();
+        code_ << "    ldai 0\n    sta " << dst << "\n";
+        safeBranch("bcc", Ldone, Lneg);
+        code_ << Lneg << ":\n    ldai 1\n    sta " << dst << "\n";
+        code_ << Ldone << ":\n";
+    };
+    auto negateIf = [&](const char *flag, const char *lbl) {
+        std::string Lskip = newLabel(), Ldo = newLabel();
+        code_ << "    lda " << flag << "\n";
+        safeBranch("beq", Lskip, Ldo);
+        code_ << Ldo << ":\n";
+        negate16(lbl);
+        code_ << Lskip << ":\n";
+    };
     genExpr(lhs);
     code_ << "    lda ac\n    pha\n    lda ac+1\n    pha\n";
     genExpr(rhs);
     copy16("bc", "ac");  // bc = divisor
     code_ << "    pla\n    sta dx+1\n    pla\n    sta dx\n";  // dx = dividend (running remainder)
+    // `ptr`'s own low/high byte double as this operation's two 0/1
+    // sign flags (dividend/divisor) - `ptr` itself is otherwise never
+    // touched by this routine.
+    if (!isUnsigned) {
+        isNeg("dx", "ptr");
+        isNeg("bc", "ptr+1");
+        negateIf("ptr", "dx");
+        negateIf("ptr+1", "bc");
+    }
     zeroZp("ac");  // ac = quotient = 0
     std::string Lloop = newLabel(), Lcommit = newLabel(), Llt = newLabel(), Ldone = newLabel();
     code_ << Lloop << ":\n";
@@ -745,20 +1315,29 @@ void M65C02Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wan
     code_ << "    pla\n";  // discard the stashed tentative low byte - this iteration's subtraction is rejected
     code_ << "    jmp " << Ldone << "\n";
     code_ << Ldone << ":\n";
+    if (!isUnsigned) {
+        code_ << "    lda ptr\n    eor ptr+1\n";
+        std::string Lskip = newLabel(), Ldo = newLabel();
+        safeBranch("beq", Lskip, Ldo);
+        code_ << Ldo << ":\n";
+        negate16("ac");
+        code_ << Lskip << ":\n";
+        negateIf("ptr", "dx");
+    }
     if (wantRemainder) copy16("ac", "dx");
 }
 
-void M65C02Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs) {
+void M65C02Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned) {
     if (op == "==") return emitEqualityCompare(lhs, rhs, /*wantEqual=*/true);
     if (op == "!=") return emitEqualityCompare(lhs, rhs, /*wantEqual=*/false);
     // Every ordering comparison reduces to one "is a < b?" primitive
     // (emitLessCompare) by choosing which operand goes first and
     // whether to invert the final sense: a>b is b<a; a<=b is !(b<a);
     // a>=b is !(a<b).
-    if (op == "<") return emitLessCompare(lhs, rhs, /*invert=*/false);
-    if (op == ">") return emitLessCompare(rhs, lhs, /*invert=*/false);
-    if (op == "<=") return emitLessCompare(rhs, lhs, /*invert=*/true);
-    if (op == ">=") return emitLessCompare(lhs, rhs, /*invert=*/true);
+    if (op == "<") return emitLessCompare(lhs, rhs, isUnsigned, /*invert=*/false);
+    if (op == ">") return emitLessCompare(rhs, lhs, isUnsigned, /*invert=*/false);
+    if (op == "<=") return emitLessCompare(rhs, lhs, isUnsigned, /*invert=*/true);
+    if (op == ">=") return emitLessCompare(lhs, rhs, isUnsigned, /*invert=*/true);
     err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
 }
 
@@ -792,19 +1371,23 @@ void M65C02Codegen::emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs
 // ../x86_8086/I8086Codegen.cpp's own signed `cmp`+`jl`/`jle`/etc.) -
 // the 6502 has both flags too, just no one instruction to test their
 // XOR directly, hence the explicit fixup.
-void M65C02Codegen::emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert) {
+void M65C02Codegen::emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool isUnsigned, bool invert) {
     genExpr(a);
     code_ << "    lda ac\n    pha\n    lda ac+1\n    pha\n";
     genExpr(b);
     code_ << "    pla\n    sta bc+1\n    pla\n    sta bc\n";  // bc = a
     code_ << "    sec\n    lda bc\n    sbc ac\n    lda bc+1\n    sbc ac+1\n";
-    std::string Lfixskip = newLabel();
-    code_ << "    bvc " << Lfixskip << "\n";
-    code_ << "    eori 128\n";
-    code_ << Lfixskip << ":\n";
-    // N now correctly reflects "a < b" (BMI) / "a >= b" (BPL).
     std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
-    safeBranch(invert ? "bpl" : "bmi", Ltrue, Lfalse);
+    if (isUnsigned) {
+        safeBranch(invert ? "bcs" : "bcc", Ltrue, Lfalse);
+    } else {
+        std::string Lfixskip = newLabel();
+        code_ << "    bvc " << Lfixskip << "\n";
+        code_ << "    eori 128\n";
+        code_ << Lfixskip << ":\n";
+        // N now correctly reflects "a < b" (BMI) / "a >= b" (BPL).
+        safeBranch(invert ? "bpl" : "bmi", Ltrue, Lfalse);
+    }
     code_ << Ltrue << ":\n    ldai 1\n    sta ac\n    stzp ac+1\n    jmp " << Ldone << "\n";
     code_ << Lfalse << ":\n";
     zeroZp("ac");
@@ -814,11 +1397,11 @@ void M65C02Codegen::emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool i
 void M65C02Codegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
     std::string Lcont = newLabel(), Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
     genExpr(lhs);
-    code_ << "    lda ac\n    ora ac+1\n";
+    testTruthy(lhs);
     safeBranch("beq", Lfalse, Lcont);
     code_ << Lcont << ":\n";
     genExpr(rhs);
-    code_ << "    lda ac\n    ora ac+1\n";
+    testTruthy(rhs);
     safeBranch("beq", Lfalse, Ltrue);
     code_ << Ltrue << ":\n    ldai 1\n    sta ac\n    stzp ac+1\n    jmp " << Ldone << "\n";
     code_ << Lfalse << ":\n";
@@ -829,11 +1412,11 @@ void M65C02Codegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
 void M65C02Codegen::genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs) {
     std::string Lcont = newLabel(), Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
     genExpr(lhs);
-    code_ << "    lda ac\n    ora ac+1\n";
+    testTruthy(lhs);
     safeBranch("bne", Ltrue, Lcont);
     code_ << Lcont << ":\n";
     genExpr(rhs);
-    code_ << "    lda ac\n    ora ac+1\n";
+    testTruthy(rhs);
     safeBranch("bne", Ltrue, Lfalse);
     code_ << Ltrue << ":\n    ldai 1\n    sta ac\n    stzp ac+1\n    jmp " << Ldone << "\n";
     code_ << Lfalse << ":\n";
@@ -843,7 +1426,7 @@ void M65C02Codegen::genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs) {
 
 void M65C02Codegen::genLogicalNot(const ir::Expr &rhs) {
     genExpr(rhs);
-    code_ << "    lda ac\n    ora ac+1\n";
+    testTruthy(rhs);
     std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
     safeBranch("beq", Ltrue, Lfalse);
     code_ << Ltrue << ":\n    ldai 1\n    sta ac\n    stzp ac+1\n    jmp " << Ldone << "\n";

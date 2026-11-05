@@ -152,6 +152,7 @@ class M65C02Codegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "65c02"; }
+    TypeWidths typeWidths() const override { return {1, 2, 2, 4, 8}; }
     std::string sourceExtension() const override { return ".s65c"; }
     std::vector<std::string> assembledFormats() const override {
         return {"raw", "coff", "elf", "macho", "aout", "objraw"};
@@ -171,22 +172,63 @@ class M65C02Codegen : public Backend {
                                                   const std::string &format) const override;
 
    private:
+    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    bool isWide(Type t) const { return widthOfType(t) > 2; }
+    int wordCountOf(Type t) const { return widthOfType(t) / 2; }
+    int elemShift(Type t) const {
+        switch (widthOfType(t)) {
+            case 1: return 0;
+            case 2: return 1;
+            case 4: return 2;
+            default: return 3;
+        }
+    }
+
     void genFunction(const ir::FunctionBody &fn);
     void genStmt(const ir::Stmt &s);
     void genExpr(const ir::Expr &e);  // leaves the result in the `ac` pseudo-register
 
     void genBinary(const ir::Expr &e);
-    void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
-    void emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert);
+    void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned);
+    void emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool isUnsigned, bool invert);
     void emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, bool wantEqual);
     void genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
+    void testTruthy(const ir::Expr &e);
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
-    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
-    void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft);
+    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
+    void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot, &slot[idx], or &fn
+    void genConvert(const ir::Expr &e);
+
+    // --- `long`/`long long` ("wide") values - see
+    // ../m6502/M6502Codegen.h's own header comment on this whole
+    // mechanism (identical here: three more fixed 8-byte zero-page
+    // buffers, `wac`/`wbc`/`wtmp`/`wtmp2`, each byte-addressed
+    // little-endian, with the real hardware stack used only as a
+    // transient save slot for one operand while the other is
+    // evaluated - never as the operand's own long-term home).
+    void pushWide(const char *base, int nbytes);
+    void popWide(const char *base, int nbytes);
+    void copyWide(const char *dst, const char *src, int nbytes);
+    void negateWideBuffer(const char *buf, int nbytes);
+
+    void genWideLoad(const ir::Slot *slot, int words);
+    void genWideLoadLiteral(long value, int words);
+    void genWideStore(const ir::Slot *slot, int words);
+    void genWideLoadAtPtr(int words);
+    void genWideStoreAtPtr(int words);
+
+    void genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd, int words);
+    void genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int words);
+    void genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned, int words);
+    void genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned, int words);
+    void genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned, int words);
+    void emitWideLessCompare(const ir::Expr &a, const ir::Expr &b, bool isUnsigned, int words, bool invert);
+    void emitWideEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, int words, bool wantEqual);
+    void genWideBitwise(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &op, int words);
 
     // Leaves slot[idxExpr]'s own effective address in `ptr` - the
     // only thing in this whole backend that has to live in zero
@@ -326,7 +368,7 @@ class M65C02Codegen : public Backend {
     }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
-    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
+    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 

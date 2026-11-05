@@ -52,6 +52,7 @@ class I386Codegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "i386"; }
+    TypeWidths typeWidths() const override { return {1, 2, 4, 4, 8}; }
     std::string sourceExtension() const override { return ".s386"; }
     std::vector<std::string> assembledFormats() const override {
         return {"raw", "coff", "elf", "macho", "aout", "objraw"};
@@ -76,15 +77,61 @@ class I386Codegen : public Backend {
 
     void genBinary(const ir::Expr &e);
     void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
-    void emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &jumpIfTrue);
+    void emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &jumpIfTrue, bool isUnsigned);
     void genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
-    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
+    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
+    void genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd);
+    void genWideMul(const ir::Expr &lhs, const ir::Expr &rhs);
+    // Software 64-bit divide/modulo (no 32-bit x86 hardware
+    // instruction is wide enough) - a classic bit-serial shift/
+    // compare/subtract long division, 64 iterations, operating on a
+    // small stack-resident scratch block addressed via `ebx` (see the
+    // .cpp's own comment on this method for the full layout and the
+    // signed case's sign handling). Leaves the result in edx:eax.
+    void genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
+    void genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
+    void genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned);
+    // Negates the 64-bit value already in edx:eax, in place.
+    void genNegate64();
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
+    void genConvert(const ir::Expr &e);
+
+    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
+    // log2 of an element type's own width (1/2/4/8 bytes -> 0/1/2/3) -
+    // the shift amount computeElementAddr()/genAddrOf()'s Index case
+    // scale an index by, instead of the old fixed "always 4 bytes".
+    int elemShift(Type t) const {
+        switch (widthOfType(t)) {
+            case 1: return 0;
+            case 2: return 1;
+            case 4: return 2;
+            default: return 3;
+        }
+    }
+
+    // Loads a value of `type` from the effective-address text `mem`
+    // (no trailing size prefix - e.g. "[g_x]"/"[ebp-8]"/"[ebx]") into
+    // eax (or edx:eax, for a `long long` - see isWide()), sign- or
+    // zero-extending a narrower-than-native-int source per its own
+    // signedness. `offsetMem` (defaulting to a plain copy of `mem`'s
+    // own shape with +4 added to its own fixed displacement) gives
+    // the high dword's own operand text for that case.
+    void loadOperand(const std::string &mem, const std::string &highMem, Type type);
+    // Stores eax (or edx:eax, for a `long long`) into `mem`/`highMem`,
+    // truncating to `type`'s own width (the low N bytes only - never
+    // touches whatever else shares that memory, e.g. an adjacent
+    // array element or local).
+    void storeOperand(const std::string &mem, const std::string &highMem, Type type);
+    // Re-extends eax from its own low widthOf(to) bytes, per `to`'s
+    // signedness - every Convert between two types no wider than a
+    // native int (see genConvert()).
+    void narrowEaxTo(Type to);
 
     // Emits the i386 effective-address operand text (e.g.
     // "[g_arr3+ebx]") for slot[idxExpr], with ebx already loaded -
@@ -102,33 +149,42 @@ class I386Codegen : public Backend {
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
     // A Local or Param's own effective-address operand text, e.g.
-    // "[ebp-8]"/"[ebp+12]" - every function gets a real per-call stack
-    // frame (see genFunction()): `push ebp`/`mov ebp,esp` makes `ebp`
-    // point just above this call's own saved old `ebp`, with the
-    // return address one dword above that, and the caller's pushed
-    // arguments above the return address in declaration order (param
-    // 0 closest to it) - so a Param's address is `ebp+8+4*paramIndex`.
-    // Locals live below `ebp`, reserved by the prologue's `sub esp,N`;
-    // Slot::frameOffset is already a 1-based sequential dword index in
-    // declaration order, so a Local's address is `ebp-4*frameOffset`.
-    // See I8086Codegen.h's own identical `addr()` comment for why this
-    // makes recursion (direct or indirect) safe: every activation gets
-    // its own ebp/frame, unlike a Global's one real static cell.
-    static std::string addr(const ir::Slot *slot) {
+    // "[ebp-8]"/"[ebp+12]", optionally offset by `byteOffset` more
+    // bytes into the value (used for a `long long`'s own high dword,
+    // 4 bytes further in - see loadOperand()/storeOperand()). Every
+    // function gets a real per-call stack frame (see genFunction()):
+    // `push ebp`/`mov ebp,esp` makes `ebp` point just above this
+    // call's own saved old `ebp`, with the return address one dword
+    // above that. `Slot::frameOffset` is already IRBuilder's own
+    // real byte offset from that point - a Param's grows upward
+    // (`ebp+frameOffset`, past IRBuilder's own two-native-int
+    // reservation for the saved `ebp`/return address), a Local's
+    // grows downward (`ebp-frameOffset`, reserved by the prologue's
+    // `sub esp,N`) - see IR.h's own comment on Slot::frameOffset for
+    // why this already accounts for each slot's own type's width and
+    // alignment, with no backend-side multiplication needed any more.
+    // See I8086Codegen.h's own identical `addr()` comment for why
+    // this makes recursion (direct or indirect) safe: every
+    // activation gets its own ebp/frame, unlike a Global's one real
+    // static cell.
+    static std::string addr(const ir::Slot *slot, int byteOffset = 0) {
         if (slot->kind == ir::SlotKind::Param) {
-            return "[ebp+" + std::to_string(8 + 4 * slot->paramIndex) + "]";
+            return "[ebp+" + std::to_string(slot->frameOffset + byteOffset) + "]";
         }
-        return "[ebp-" + std::to_string(4 * slot->frameOffset) + "]";
+        return "[ebp-" + std::to_string(slot->frameOffset + byteOffset) + "]";
     }
 
     // The memory-operand text for a plain read/write of `slot`'s own
-    // value - see I8086Codegen.h's own identical `operandOf()`.
-    static std::string operandOf(const ir::Slot *slot) {
-        return slot->kind == ir::SlotKind::Global ? ("[" + label(slot) + "]") : addr(slot);
+    // value, `byteOffset` bytes into it - see I8086Codegen.h's own
+    // identical `operandOf()`.
+    static std::string operandOf(const ir::Slot *slot, int byteOffset = 0) {
+        if (slot->kind != ir::SlotKind::Global) return addr(slot, byteOffset);
+        std::string lbl = label(slot);
+        return byteOffset == 0 ? ("[" + lbl + "]") : ("[" + lbl + "+" + std::to_string(byteOffset) + "]");
     }
 
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
-    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
+    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 

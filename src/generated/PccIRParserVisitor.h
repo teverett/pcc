@@ -21,6 +21,8 @@ public:
    */
     virtual std::any visitProgram(PccIRParser::ProgramContext *context) = 0;
 
+    virtual std::any visitTypeSpec(PccIRParser::TypeSpecContext *context) = 0;
+
     virtual std::any visitGlobalDecl(PccIRParser::GlobalDeclContext *context) = 0;
 
     virtual std::any visitInitList(PccIRParser::InitListContext *context) = 0;
@@ -68,6 +70,8 @@ public:
     virtual std::any visitUnaryExpr(PccIRParser::UnaryExprContext *context) = 0;
 
     virtual std::any visitBinaryExpr(PccIRParser::BinaryExprContext *context) = 0;
+
+    virtual std::any visitConvertExpr(PccIRParser::ConvertExprContext *context) = 0;
 
     virtual std::any visitCallExpr(PccIRParser::CallExprContext *context) = 0;
 

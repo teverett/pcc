@@ -209,6 +209,7 @@ class PIC16Codegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "pic16"; }
+    TypeWidths typeWidths() const override { return {1, 2, 2, 4, 8}; }
     std::string sourceExtension() const override { return ".pic16"; }
     std::vector<std::string> assembledFormats() const override {
         return {"hex", "coff", "elf", "macho", "aout", "objraw"};
@@ -232,6 +233,54 @@ class PIC16Codegen : public Backend {
     void genStmt(const ir::Stmt &s);
     void genExpr(const ir::Expr &e);  // leaves the result in the `ac` pseudo-register
 
+    // `ac` (and every other pseudo-register this backend has) is a
+    // fixed 2 bytes - this target's own native `int` width. `char` is
+    // the one narrower-than-native width genConvert() can still honor
+    // correctly within that same 2-byte cell (see its own comment);
+    // `long`/`long long` are wider than `ac` can ever hold, and this
+    // backend's fixed-2-byte pseudo-registers and SSTACK-based
+    // push/pop helpers (pushCell2()/popCell2(), add16()/sub16(),
+    // shiftOneBit(), ...) are all hardcoded to that width with no
+    // parameterized "N bytes" form to generalize them to - the same
+    // wall the MCS51 backend documents hitting (see
+    // ../mcs51/MCS51Codegen.h's own header comment), except this
+    // backend goes one step further and actually detects the case and
+    // fails loudly (via requireNarrow(), called once at the top of
+    // every genExpr()) rather than silently computing a truncated
+    // 16-bit result the way MCS51 currently still does - following
+    // the "fail loudly, don't guess" precedent the PDP-11/Z80/8080/
+    // M16C/STM8 backends already established for wide multiply/
+    // divide specifically, just applied here to every wide operation
+    // at once, since nothing about wide values works on this target
+    // at all. A single check at the top of genExpr() suffices for
+    // every case: every place a value's own bits ever need to end up
+    // in `ac` (a literal, a Var/Index read, a Convert, a Binary/Unary
+    // result, a Call's return value) is already itself a genExpr()
+    // call, directly or by recursion into its own operands - the one
+    // deliberate exception is `&expr` (Unary "&"), whose own result is
+    // always a plain address (this target has no distinct pointer
+    // type - see this file's own header comment on why - so it's
+    // always exactly as narrow as a native int) and which genAddrOf()
+    // computes without ever calling genExpr() on the operand's own
+    // value, so `&someLongVariable` still works correctly even though
+    // reading `someLongVariable` itself would not.
+    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    void requireNarrow(const ir::Expr &e) const;
+    // log2 of an element type's own width (1/2/4/8 bytes -> 0/1/2/3
+    // left shifts) - genIndexAddr()'s own scale factor for an index,
+    // instead of the old fixed "always shift left once" (correct only
+    // for a 2-byte `int`/`short` element, silently wrong for a 1-byte
+    // `char` element, which must not be scaled at all).
+    int elemShift(Type t) const {
+        switch (widthOfType(t)) {
+            case 1: return 0;
+            case 2: return 1;
+            case 4: return 2;
+            default: return 3;
+        }
+    }
+    void genConvert(const ir::Expr &e);
+
     void genBinary(const ir::Expr &e);
     void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
     void emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert);
@@ -247,19 +296,47 @@ class PIC16Codegen : public Backend {
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame words
 
     // Leaves slot[idxExpr]'s own effective (one-byte) file address in
-    // `ptr`. For a Global, the base is a compile-time address (the
-    // array's own label) or, for a plain pointer variable, that
-    // variable's own stored value; for a Local/Param, the base is
-    // instead FP-relative (see frameSlotOffset()'s own comment) - an
-    // array's own base address, or a pointer variable's own value,
-    // read out of its frame slot via FSR/INDF first.
+    // `ptr`, already scaled by `slot`'s own element type width (see
+    // elemShift()'s own comment - a `char` array scales by 1, not 2).
+    // For a Global, the base is a compile-time address (the array's
+    // own label) or, for a plain pointer variable, that variable's own
+    // stored value (always a plain native-width `int` - see this
+    // file's own header comment/grammar/CParser.g4's own header
+    // comment on why a "pointer" here is never itself a distinct,
+    // narrower-or-wider type, so elemShift() of one is always 1,
+    // keeping pointer arithmetic word-granular exactly as documented
+    // there); for a Local/Param, the base is instead FP-relative (see
+    // frameSlotOffset()'s own comment) - an array's own base address,
+    // or a pointer variable's own value, read out of its frame slot
+    // via FSR/INDF first.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
     // Assumes `ptr` already holds a target file address; writes
-    // `ac`'s two bytes there via FSR/INDF.
-    void storeAcIndirect();
-    // The reverse: reads the two bytes at `ptr` into `ac`.
-    void loadAcIndirect();
+    // `ac`'s low `width` byte(s) there via FSR/INDF (`width` 1 or 2 -
+    // never wider, since `ac` itself is only ever 2 bytes - see
+    // requireNarrow()'s own comment). `width == 1`'s own stale high
+    // byte of whatever this cell previously held is simply never
+    // touched - correct, since only the low byte is this `char`
+    // value's own real storage in the first place.
+    void storeAcIndirect(int width);
+    // The reverse: reads `width` byte(s) at `ptr` into `ac`, sign- or
+    // zero-extending a `width == 1` (`char`) source into `ac`'s own
+    // high byte per `isUnsigned` - see signExtendAcHighByte()'s own
+    // comment.
+    void loadAcIndirect(int width, bool isUnsigned);
+    // Sets `ac`'s own high byte to 0 (unsigned) or a sign-extension of
+    // `ac`'s own low byte's bit 7 (signed) - the shared fixup every
+    // `char`-width read (loadAcIndirect(1, ...), loadAcFromLabel(...,
+    // 1, ...), genConvert()'s own narrowing case) needs to leave `ac`
+    // holding the same 16-bit value a real signed/unsigned `char`
+    // variable's own promotion to `int` would.
+    void signExtendAcHighByte(bool isUnsigned);
+    // The Global counterpart of storeAcIndirect()/loadAcIndirect()
+    // above - `lbl` is a compile-time label (never a runtime address
+    // in `ptr`), used by genExpr()'s own Var/Assign cases for a Global
+    // scalar.
+    void loadAcFromLabel(const std::string &lbl, int width, bool isUnsigned);
+    void storeAcToLabel(const std::string &lbl, int width);
 
     // "movf src,w / movwf dst / movf src+1,w / movwf dst+1" - copies
     // one 2-byte pseudo-register/slot to another.
@@ -308,11 +385,10 @@ class PIC16Codegen : public Backend {
     void popPtrCell();
 
     // Emits the globalInit startup code that writes one array
-    // element's own value into its already-reserved two RAM bytes
-    // (`loLbl`/`hiLbl`) - see generate()'s own call site for how
-    // those are named.
-    void emitInitElem(std::ostream &out, const std::string &loLbl, const std::string &hiLbl,
-                       const ir::ArrayInitElem &e);
+    // element's own `width`-byte value into its already-reserved RAM
+    // bytes starting at `base` - see generate()'s own call site for
+    // how that's named and sized.
+    void emitInitElem(std::ostream &out, const std::string &base, int width, const ir::ArrayInitElem &e);
 
     // A Local/Param's own word offset from `FP` - see this file's own
     // header comment for the frame layout this lays out. A Param's
@@ -324,7 +400,14 @@ class PIC16Codegen : public Backend {
     // the whole function currently being generated) supplies that.
     int frameSlotOffset(const ir::Slot *slot) const {
         if (slot->kind == ir::SlotKind::Param) return 2 * slot->paramIndex;
-        return 2 * curNumParams_ + 2 * slot->frameOffset - 1;
+        // `Slot::frameOffset` is now a real byte offset, 1-based from
+        // 2 (this target's own word size - see IR.h's own comment on
+        // Slot::frameOffset) - the "-1" below recovers the same "one
+        // byte for the caller's saved FP" placement the old 1-based
+        // word-index formula gave (first local's frameOffset of 2
+        // must still land right after that one byte, at
+        // 2*curNumParams_+1).
+        return 2 * curNumParams_ - 1 + slot->frameOffset;
     }
     // Leaves FP + frameSlotOffset(slot) in `W`, without touching
     // `ptr`/FSR - the shared arithmetic behind both loadFrameAddr()

@@ -9,6 +9,28 @@ namespace {
 std::string slotRef(const ir::Slot *s) { return s->sourceName + "#" + std::to_string(s->id); }
 std::string funcRef(const ir::Function *f) { return f->sourceName + "#" + std::to_string(f->id); }
 
+// The canonical, shortest real-C spelling of `t` - always this one
+// fixed spelling per (base, signedness) pair, never the source
+// grammar's fuller combinatorial typeSpec (e.g. "short int"/"signed
+// short") - see grammar/PccIRParser.g4's own typeSpec, which accepts
+// exactly these spellings and no others.
+std::string typeSpecText(Type t) {
+    std::string prefix = t.isUnsigned ? "unsigned " : "";
+    switch (t.base) {
+        case BaseType::Char:
+            return prefix + "char";
+        case BaseType::Short:
+            return prefix + "short";
+        case BaseType::Int:
+            return prefix + "int";
+        case BaseType::Long:
+            return prefix + "long";
+        case BaseType::LongLong:
+            return prefix + "long long";
+    }
+    return prefix + "int";
+}
+
 // A plain literal, or a symbol element's `ref` - see IR.h's
 // ArrayInitElem and grammar/PccIRParser.g4's initElem, which this
 // shape matches exactly.
@@ -90,6 +112,11 @@ void printExpr(const ir::Expr &e, std::ostream &out) {
         case ir::ExprKind::Intrinsic:
             out << "_" << e.op << "()";
             return;
+        case ir::ExprKind::Convert:
+            out << "(" << typeSpecText(e.type) << ")(";
+            printExpr(*e.lhs, out);
+            out << ")";
+            return;
     }
 }
 
@@ -141,7 +168,7 @@ void printStmt(const ir::Stmt &s, std::ostream &out, int indent) {
             out << pad << "continue;\n";
             return;
         case ir::StmtKind::LocalDecl:
-            out << pad << "local " << slotRef(s.declSlot);
+            out << pad << "local " << typeSpecText(s.declSlot->type) << " " << slotRef(s.declSlot);
             if (s.declSlot->arraySize > 0) {
                 out << "[" << s.declSlot->arraySize << "] = {";
                 for (size_t i = 0; i < s.declSlot->arrayInit.size(); i++) {
@@ -178,7 +205,7 @@ std::string printIR(const ir::Program &prog, const std::string &sourceFile) {
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
         if (!sourceFile.empty() && slot->sourceFile != sourceFile) continue;
-        out << "int " << slotRef(slot.get());
+        out << typeSpecText(slot->type) << " " << slotRef(slot.get());
         if (slot->arraySize > 0) {
             out << "[" << slot->arraySize << "]";
             if (!slot->arrayInit.empty()) {
@@ -198,10 +225,10 @@ std::string printIR(const ir::Program &prog, const std::string &sourceFile) {
     out << "\n; --- functions ---\n";
     for (const auto &fb : prog.functionBodies) {
         if (!sourceFile.empty() && fb.func->sourceFile != sourceFile) continue;
-        out << "int " << funcRef(fb.func) << "(";
+        out << typeSpecText(fb.func->returnType) << " " << funcRef(fb.func) << "(";
         for (size_t i = 0; i < fb.func->params.size(); i++) {
             if (i > 0) out << ", ";
-            out << "int " << slotRef(fb.func->params[i]);
+            out << typeSpecText(fb.func->params[i]->type) << " " << slotRef(fb.func->params[i]);
         }
         out << ")\n";
         printStmt(*fb.body, out, 0);

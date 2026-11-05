@@ -48,6 +48,12 @@ struct Line {
     enum Kind { None, Equate, Org, Dw, Instr } kind = None;
     std::string equateName;
     std::vector<std::vector<Syllable>> exprList;  // Equate (1)/Org (1)/Dw (N)
+    // Element width in bytes for a `Dw`-kind line - 1 for `db`
+    // (char-sized globals/array elements), 2 for `dh` (`short`), 4
+    // for `dw` (every native-int-or-wider slot - a `long long`'s own
+    // own two halves are emitted as two separate `dw` elements by
+    // ArmMCodegen.cpp, never one 8-byte directive).
+    int dataWidth = 4;
     std::string mnemonic;                           // Instr
     std::vector<Operand> operands;                  // Instr
 };
@@ -93,7 +99,8 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
 // it. Returns -1 if `name` isn't one of them.
 int regNumber(const std::string &lower) {
     static const std::unordered_map<std::string, int> names = {
-        {"r0", 0}, {"r1", 1}, {"r2", 2}, {"r3", 3}, {"r7", 7}, {"sp", 13}, {"lr", 14},
+        {"r0", 0}, {"r1", 1}, {"r2", 2}, {"r3", 3}, {"r4", 4}, {"r5", 5},
+        {"r6", 6}, {"r7", 7},  {"sp", 13}, {"lr", 14},
     };
     auto it = names.find(lower);
     return it == names.end() ? -1 : it->second;
@@ -161,10 +168,11 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         line.exprList.push_back(exprToSyllables(instr->operand(0)->expr()));
         return line;
     }
-    if (mnemonic == "dw") {
+    if (mnemonic == "dw" || mnemonic == "dh" || mnemonic == "db") {
         line.kind = Line::Dw;
+        line.dataWidth = mnemonic == "db" ? 1 : mnemonic == "dh" ? 2 : 4;
         for (auto *op : instr->operand()) {
-            if (op->LBRACKET()) fail("'dw' operand can't be bracketed");
+            if (op->LBRACKET()) fail("'" + mnemonic + "' operand can't be bracketed");
             line.exprList.push_back(exprToSyllables(op->expr()));
         }
         return line;
@@ -252,7 +260,16 @@ class Assembler {
                 orgBase_ = evalExpr(line.exprList.at(0));
                 return;
             case Line::Dw:
-                for (const auto &e : line.exprList) emit32(evalExpr(e));
+                for (const auto &e : line.exprList) {
+                    uint32_t v = evalExpr(e);
+                    if (line.dataWidth == 1) {
+                        emit8(static_cast<uint8_t>(v));
+                    } else if (line.dataWidth == 2) {
+                        emit16(static_cast<uint16_t>(v));
+                    } else {
+                        emit32(v);
+                    }
+                }
                 return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
@@ -307,6 +324,10 @@ class Assembler {
     }
 
     // --- byte/halfword/word emission ------------------------------------
+    void emit8(uint8_t b) {
+        bytes_.push_back(b);
+        offset_ += 1;
+    }
     void emit16(uint16_t w) {
         bytes_.push_back(static_cast<uint8_t>(w & 0xFF));
         bytes_.push_back(static_cast<uint8_t>((w >> 8) & 0xFF));
@@ -464,6 +485,22 @@ class Assembler {
         emit16(static_cast<uint16_t>(base | (rn << 3) | rt));
     }
 
+    // LDRB/STRB Rt,[Rn,#0] (T1, imm5=0): 0111 1/0 00000 Rn Rt.
+    // LDRH/STRH Rt,[Rn,#0] (T1, imm5=0): 1000 1/0 00000 Rn Rt.
+    // Both are always zero-extending loads on real hardware - a
+    // signed narrower-than-native-int value is re-sign-extended by
+    // ArmMCodegen.cpp's own `asr`-after-`lsl` idiom once loaded (no
+    // register-offset LDRSB/LDRSH form is reachable with a fixed #0
+    // displacement, unlike A32's own immediate-form sign-extending
+    // loads - see ArmCodegen.h's own `ldindsb`/`ldindsh`).
+    void encodeLdStIndNarrow(bool isLoad, bool isByte, const std::vector<Operand> &ops) {
+        const std::string &mnemonic = isLoad ? (isByte ? "ldindb" : "ldindh") : (isByte ? "stindb" : "stindh");
+        uint8_t rn = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+        uint8_t rt = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+        uint16_t base = isByte ? (isLoad ? 0x7800 : 0x7000) : (isLoad ? 0x8800 : 0x8000);
+        emit16(static_cast<uint16_t>(base | (rn << 3) | rt));
+    }
+
     // PUSH {Rd} / POP {Rd} (T1, single-register list, M/P=0):
     // 1011010 0 reglist / 1011110 0 reglist.
     void encodePushPop(bool isPush, const std::vector<Operand> &ops) {
@@ -565,6 +602,9 @@ class Assembler {
         if (mnemonic == "eor") return encodeAluOp2(0b0001, ops, mnemonic);
         if (mnemonic == "lsl") return encodeAluOp2(0b0010, ops, mnemonic);
         if (mnemonic == "lsr") return encodeAluOp2(0b0011, ops, mnemonic);
+        if (mnemonic == "asr") return encodeAluOp2(0b0100, ops, mnemonic);
+        if (mnemonic == "adc") return encodeAluOp2(0b0101, ops, mnemonic);
+        if (mnemonic == "sbc") return encodeAluOp2(0b0110, ops, mnemonic);
         if (mnemonic == "neg") return encodeAluOp2(0b1001, ops, mnemonic);
         if (mnemonic == "orr") return encodeAluOp2(0b1100, ops, mnemonic);
         if (mnemonic == "muls") return encodeAluOp2(0b1101, ops, mnemonic);
@@ -572,6 +612,10 @@ class Assembler {
         if (mnemonic == "lsli") return encodeLsli(ops);
         if (mnemonic == "ldind") return encodeLdStInd(/*isLoad=*/true, ops);
         if (mnemonic == "stind") return encodeLdStInd(/*isLoad=*/false, ops);
+        if (mnemonic == "ldindb") return encodeLdStIndNarrow(/*isLoad=*/true, /*isByte=*/true, ops);
+        if (mnemonic == "stindb") return encodeLdStIndNarrow(/*isLoad=*/false, /*isByte=*/true, ops);
+        if (mnemonic == "ldindh") return encodeLdStIndNarrow(/*isLoad=*/true, /*isByte=*/false, ops);
+        if (mnemonic == "stindh") return encodeLdStIndNarrow(/*isLoad=*/false, /*isByte=*/false, ops);
         if (mnemonic == "push") return encodePushPop(/*isPush=*/true, ops);
         if (mnemonic == "pop") return encodePushPop(/*isPush=*/false, ops);
         if (mnemonic == "pushlr") {
@@ -591,6 +635,8 @@ class Assembler {
             // Thumb condition codes, inverted (what encodeConditionalBranch's
             // own short Bcc actually tests): beq<->bne, blt<->bge, bgt<->ble.
             {"beq", 0x1}, {"bne", 0x0}, {"blt", 0xA}, {"bge", 0xB}, {"bgt", 0xD}, {"ble", 0xC},
+            // Unsigned orderings - blo<->bhs, bhi<->bls.
+            {"blo", 0x2}, {"bhs", 0x3}, {"bhi", 0x9}, {"bls", 0x8},
         };
         if (auto it = condBranch.find(mnemonic); it != condBranch.end()) {
             encodeConditionalBranch(it->second, ops, mnemonic);

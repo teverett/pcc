@@ -45,7 +45,7 @@ struct Operand {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Equate, Org, Dw, Instr } kind = None;
+    enum Kind { None, Equate, Org, Db, Dh, Dw, Instr } kind = None;
     std::string equateName;
     std::vector<std::vector<Syllable>> exprList;  // Equate (1)/Org (1)/Dw (N)
     std::string mnemonic;                           // Instr
@@ -91,7 +91,8 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
 // isn't one of them.
 int regNumber(const std::string &lower) {
     static const std::unordered_map<std::string, int> names = {
-        {"zero", 0}, {"at", 1}, {"t0", 8}, {"t1", 9}, {"t2", 10}, {"sp", 29}, {"fp", 30}, {"ra", 31},
+        {"zero", 0}, {"at", 1},  {"t0", 8},  {"t1", 9},  {"t2", 10}, {"t3", 11},
+        {"t4", 12},  {"t5", 13}, {"t6", 14}, {"sp", 29}, {"fp", 30}, {"ra", 31},
     };
     auto it = names.find(lower);
     return it == names.end() ? -1 : it->second;
@@ -158,10 +159,10 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         line.exprList.push_back(exprToSyllables(instr->operand(0)->expr()));
         return line;
     }
-    if (mnemonic == "dw") {
-        line.kind = Line::Dw;
+    if (mnemonic == "dw" || mnemonic == "db" || mnemonic == "dh") {
+        line.kind = mnemonic == "dw" ? Line::Dw : mnemonic == "dh" ? Line::Dh : Line::Db;
         for (auto *op : instr->operand()) {
-            if (op->LBRACKET()) fail("'dw' operand can't be bracketed");
+            if (op->LBRACKET()) fail("'" + mnemonic + "' operand can't be bracketed");
             line.exprList.push_back(exprToSyllables(op->expr()));
         }
         return line;
@@ -260,6 +261,15 @@ class Assembler {
                     emit32(v);
                 }
                 return;
+            case Line::Db:
+                // A `char` global/array element - no relocation
+                // possible at this width (an address never fits in a
+                // byte), so this is always a plain literal.
+                for (const auto &e : line.exprList) emit8(static_cast<uint8_t>(evalExpr(e)));
+                return;
+            case Line::Dh:
+                for (const auto &e : line.exprList) emit16(static_cast<uint16_t>(evalExpr(e)));
+                return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
                 return;
@@ -313,6 +323,17 @@ class Assembler {
     }
 
     // --- word emission -------------------------------------------------
+    void emit8(uint8_t v) {
+        bytes_.push_back(v);
+        offset_ += 1;
+    }
+
+    void emit16(uint16_t v) {
+        bytes_.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+        bytes_.push_back(static_cast<uint8_t>(v & 0xFF));
+        offset_ += 2;
+    }
+
     void emit32(uint32_t v) {
         bytes_.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
         bytes_.push_back(static_cast<uint8_t>((v >> 16) & 0xFF));
@@ -459,12 +480,14 @@ class Assembler {
             encodeRRR(it->second, ops, mnemonic);
             return;
         }
-        if (mnemonic == "sllv" || mnemonic == "srlv") {
-            encodeShiftV(mnemonic == "sllv" ? 0x04 : 0x06, ops, mnemonic);
+        if (mnemonic == "sllv" || mnemonic == "srlv" || mnemonic == "srav") {
+            uint8_t funct = mnemonic == "sllv" ? 0x04 : mnemonic == "srlv" ? 0x06 : 0x07;
+            encodeShiftV(funct, ops, mnemonic);
             return;
         }
-        if (mnemonic == "sll") {
-            encodeShiftImm(0x00, ops, mnemonic);
+        if (mnemonic == "sll" || mnemonic == "sra" || mnemonic == "srl") {
+            uint8_t funct = mnemonic == "sll" ? 0x00 : mnemonic == "srl" ? 0x02 : 0x03;
+            encodeShiftImm(funct, ops, mnemonic);
             return;
         }
         if (mnemonic == "addiu") {
@@ -486,25 +509,44 @@ class Assembler {
             encodeHiLo(0x0F, 0, rt, requireOperand(ops, 1, mnemonic), /*hi=*/true, kMipsRelocHi);
             return;
         }
-        // Dedicated zero-displacement load/store - see MipsCodegen.h's
-        // own header comment: `ldind addrReg,destReg` / `stind
-        // addrReg,srcReg`, real LW/SW underneath with imm16=0.
-        if (mnemonic == "ldind") {
+        // `ldind addrReg,destReg[,disp]` / `stind addrReg,srcReg[,disp]`
+        // - real LW/SW underneath; `disp` (a compile-time-constant
+        // signed displacement, imm16) defaults to 0 when omitted - see
+        // MipsCodegen.h's own header comment. A `long long`'s own
+        // high word sits 4 bytes past its low word (see
+        // MipsCodegen.cpp's loadOperand()/storeOperand()), the one
+        // place this backend needs a nonzero displacement at all.
+        // Byte/halfword load (sign- or zero-extending into a full
+        // register) / store (writing only that many low bytes) - the
+        // real LB/LBU/LH/LHU/SB/SH, same zero-displacement-by-default
+        // shape as ldind/stind above - a narrower-than-native-int
+        // Var/Slot's own load/store (see MipsCodegen.cpp's
+        // loadOperand()/storeOperand()).
+        static const std::unordered_map<std::string, uint8_t> sized = {
+            {"ldindb", 0x20}, {"ldindbu", 0x24}, {"ldindh", 0x21},
+            {"ldindhu", 0x25}, {"stindb", 0x28}, {"stindh", 0x29},
+        };
+        if (auto it = sized.find(mnemonic); it != sized.end()) {
             uint8_t base = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rt = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
-            emitI(0x23, base, rt, 0);
+            int16_t disp = 0;
+            if (ops.size() > 2) disp = static_cast<int16_t>(evalExpr(requireOperand(ops, 2, mnemonic).expr));
+            emitI(it->second, base, rt, static_cast<uint16_t>(disp));
             return;
         }
-        if (mnemonic == "stind") {
+        if (mnemonic == "ldind" || mnemonic == "stind") {
             uint8_t base = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rt = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
-            emitI(0x2B, base, rt, 0);
+            int16_t disp = 0;
+            if (ops.size() > 2) disp = static_cast<int16_t>(evalExpr(requireOperand(ops, 2, mnemonic).expr));
+            emitI(mnemonic == "ldind" ? 0x23 : 0x2B, base, rt, static_cast<uint16_t>(disp));
             return;
         }
-        if (mnemonic == "mult" || mnemonic == "div") {
+        if (mnemonic == "mult" || mnemonic == "div" || mnemonic == "multu" || mnemonic == "divu") {
             uint8_t rs = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rt = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
-            emitR(0, rs, rt, 0, 0, mnemonic == "mult" ? 0x18 : 0x1A);
+            uint8_t funct = mnemonic == "mult" ? 0x18 : mnemonic == "multu" ? 0x19 : mnemonic == "div" ? 0x1A : 0x1B;
+            emitR(0, rs, rt, 0, 0, funct);
             return;
         }
         if (mnemonic == "mflo" || mnemonic == "mfhi") {

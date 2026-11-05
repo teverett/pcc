@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "../Type.h"
 #include "ir/IR.h"
 
 namespace pcc {
@@ -48,6 +49,15 @@ class Backend {
 
     // The short name this backend is selected with (--target=<name>).
     virtual std::string name() const = 0;
+
+    // This target's own storage unit for each of char/short/int/long/
+    // long long (see Type.h) - bytes on every byte-addressable
+    // backend, this target's own native word on one that isn't
+    // (pdp7). Every backend documents its own int width in its own
+    // *Codegen.h header comment already; this is that same fact, plus
+    // the other four widths, in one place IRBuilder/IRPrinter can read
+    // without knowing which backend is selected.
+    virtual TypeWidths typeWidths() const = 0;
 
     // File extension to give a temp file holding this backend's
     // generated text, before handing it to the real assembler (e.g.

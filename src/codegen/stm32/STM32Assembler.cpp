@@ -43,8 +43,8 @@ struct Operand {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Org, RamOrg, Ds, Dl, Dlt, Instr } kind = None;
-    std::vector<std::vector<Syllable>> exprList;  // Org/RamOrg (1)/Ds (1)/Dl (N)/Dlt (1)
+    enum Kind { None, Org, RamOrg, Ds, Dsb, Dl, Dlt, Instr } kind = None;
+    std::vector<std::vector<Syllable>> exprList;  // Org/RamOrg (1)/Ds (1)/Dsb (1)/Dl (N)/Dlt (1)
     std::string mnemonic;                          // Instr
     std::vector<Operand> operands;                 // Instr
 };
@@ -162,9 +162,11 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         line.exprList.push_back(exprToSyllables(instr->operand(0)->expr()));
         return line;
     }
-    if (mnemonic == "ds") {
-        line.kind = Line::Ds;
-        if (instr->operand().empty() || instr->operand(0)->LBRACKET()) fail("'ds' needs a plain count operand");
+    if (mnemonic == "ds" || mnemonic == "dsb") {
+        line.kind = mnemonic == "ds" ? Line::Ds : Line::Dsb;
+        if (instr->operand().empty() || instr->operand(0)->LBRACKET()) {
+            fail("'" + mnemonic + "' needs a plain count operand");
+        }
         line.exprList.push_back(exprToSyllables(instr->operand(0)->expr()));
         return line;
     }
@@ -285,6 +287,15 @@ class Assembler {
             case Line::Ds:
                 if (!inRam_) fail("'ds' only valid after 'ramorg'");
                 ramOffset_ += 4 * evalExpr(line.exprList.at(0));
+                return;
+            case Line::Dsb:
+                // Byte-granular reservation - a `char`/`short` global
+                // or array (see STM32Codegen.cpp's own declareTemp()/
+                // declareArray()) doesn't need a whole RAM word per
+                // element the way the original word-only `ds` above
+                // always did.
+                if (!inRam_) fail("'dsb' only valid after 'ramorg'");
+                ramOffset_ += evalExpr(line.exprList.at(0));
                 return;
             case Line::Dl:
                 if (inRam_) fail("'dl' only valid in the flash section");
@@ -585,11 +596,20 @@ class Assembler {
             emit16(static_cast<uint16_t>(0x4340 | (rn << 3) | rd));
             return;
         }
-        if (mnemonic == "and" || mnemonic == "orr" || mnemonic == "eor" || mnemonic == "mvn") {
+        if (mnemonic == "and" || mnemonic == "orr" || mnemonic == "eor" || mnemonic == "mvn" ||
+            mnemonic == "adc" || mnemonic == "sbc") {
             uint8_t rd = requireLowReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rm = requireLowReg(requireOperand(ops, 1, mnemonic), mnemonic);
             static const std::unordered_map<std::string, uint16_t> base = {
                 {"and", 0x4000}, {"orr", 0x4300}, {"eor", 0x4040}, {"mvn", 0x43C0},
+                // Thumb-1 2-operand ALU-op-table forms (same table
+                // and/orr/eor/mvn above already use): ADC=0101,
+                // SBC=0110 - `Rdn += Rm + C` / `Rdn -= Rm + NOT(C)`,
+                // used by STM32Codegen.cpp's own wide (`long long`)
+                // add/sub to ripple the carry/borrow across a word
+                // pair, same reasoning as ../armm/ArmMAssembler.cpp's
+                // own identical addition.
+                {"adc", 0x4140}, {"sbc", 0x4180},
             };
             emit16(static_cast<uint16_t>(base.at(mnemonic) | (rm << 3) | rd));
             return;
@@ -600,19 +620,33 @@ class Assembler {
             emit16(static_cast<uint16_t>(0x4240 | (rn << 3) | rd));
             return;
         }
-        if (mnemonic == "sdiv" || mnemonic == "lsl" || mnemonic == "lsr") {
+        if (mnemonic == "sdiv" || mnemonic == "udiv" || mnemonic == "lsl" || mnemonic == "lsr" ||
+            mnemonic == "asr") {
             uint8_t rd = requireLowReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rn = requireLowReg(requireOperand(ops, 1, mnemonic), mnemonic);
             uint8_t rm = requireLowReg(requireOperand(ops, 2, mnemonic), mnemonic);
             uint16_t hw1;
             if (mnemonic == "sdiv") {
                 hw1 = static_cast<uint16_t>(0xFB90 | rn);
+            } else if (mnemonic == "udiv") {
+                // UDIV.W Rd,Rn,Rm - same Thumb-2 "Signed/Unsigned
+                // Divide" encoding family as `sdiv` above, differing
+                // only in bit 4 of hw1 (0=signed,1=unsigned per the
+                // real ARMv7-M architecture reference).
+                hw1 = static_cast<uint16_t>(0xFBB0 | rn);
             } else if (mnemonic == "lsl") {
                 hw1 = static_cast<uint16_t>(0xFA10 | rn);
-            } else {
+            } else if (mnemonic == "lsr") {
                 hw1 = static_cast<uint16_t>(0xFA30 | rn);
+            } else {
+                // ASR.W Rd,Rn,Rm (register-shifted-register, S=1) -
+                // same Thumb-2 "Shift (register)" encoding family as
+                // `lsl`/`lsr` above, confirmed against a real
+                // toolchain's own encoding the same way they were.
+                hw1 = static_cast<uint16_t>(0xFA50 | rn);
             }
-            uint16_t hw2 = static_cast<uint16_t>((mnemonic == "sdiv" ? 0xF0F0 : 0xF000) | (rd << 8) | rm);
+            bool isDivide = mnemonic == "sdiv" || mnemonic == "udiv";
+            uint16_t hw2 = static_cast<uint16_t>((isDivide ? 0xF0F0 : 0xF000) | (rd << 8) | rm);
             emit16(hw1);
             emit16(hw2);
             return;
@@ -621,6 +655,20 @@ class Assembler {
             uint8_t rd = requireLowReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rn = requireIndirectReg(requireOperand(ops, 1, mnemonic), mnemonic);
             emit16(static_cast<uint16_t>((mnemonic == "ldr" ? 0x6800 : 0x6000) | (rn << 3) | rd));
+            return;
+        }
+        if (mnemonic == "ldrb" || mnemonic == "strb" || mnemonic == "ldrh" || mnemonic == "strh") {
+            // LDRB/STRB/LDRH/STRH Rt,[Rn] (T1, imm5=0) - zero-
+            // extending loads (a signed narrower-than-native-int
+            // value is re-sign-extended by STM32Codegen.cpp's own
+            // `lsl`+`asr` idiom once loaded, same reasoning as
+            // ../armm/ArmMAssembler.cpp's own identical pair).
+            uint8_t rd = requireLowReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            uint8_t rn = requireIndirectReg(requireOperand(ops, 1, mnemonic), mnemonic);
+            bool isLoad = mnemonic[0] == 'l';
+            bool isByte = mnemonic.back() == 'b';
+            uint16_t base = isByte ? (isLoad ? 0x7800 : 0x7000) : (isLoad ? 0x8800 : 0x8000);
+            emit16(static_cast<uint16_t>(base | (rn << 3) | rd));
             return;
         }
         if (mnemonic == "bl" || mnemonic == "b") {
@@ -642,6 +690,11 @@ class Assembler {
         }
         static const std::unordered_map<std::string, uint8_t> branchCond = {
             {"beq", 0x0}, {"bne", 0x1}, {"blt", 0xB}, {"ble", 0xD}, {"bgt", 0xC}, {"bge", 0xA},
+            // Unsigned orderings - real ARM condition-field values
+            // (CS/HS=2, CC/LO=3, HI=8, LS=9), used directly with no
+            // inversion the way ../armm/ArmMAssembler.cpp's own
+            // 2-instruction `Bcc`+`B.W` expansion needs.
+            {"blo", 0x3}, {"bhs", 0x2}, {"bhi", 0x8}, {"bls", 0x9},
         };
         if (auto it = branchCond.find(mnemonic); it != branchCond.end()) {
             encodeBcc(it->second, requireOperand(ops, 0, mnemonic), mnemonic);

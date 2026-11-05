@@ -29,7 +29,7 @@ int buf#2[16];
 ; --- functions ---
 int main#3()
 {
-  local x#4 = (1 + 2);
+  local int x#4 = (1 + 2);
   if ((x#4 > 0))
   {
     return x#4;
@@ -45,9 +45,20 @@ Described by `grammar/PccIRLexer.g4` + `grammar/PccIRParser.g4`:
 ```
 program    : '; --- globals ---' globalDecl*
              '; --- functions ---' funcDecl* EOF
-globalDecl : 'int' ref ('[' NUMBER ']' ('=' initList)? | ('=' NUMBER)?) ';'
-funcDecl   : 'int' ref '(' (param (',' param)*)? ')' block
-param      : 'int' ref
+
+// The canonical, shortest real-C spelling of a pcc::Type (src/Type.h)
+// - IRPrinter.cpp's typeSpecText(): always this one fixed spelling per
+// (base, signedness) pair, never the source grammar's fuller
+// combinatorial typeSpec (e.g. "short int"/"signed short").
+typeSpec   : 'unsigned'? 'char'
+           | 'unsigned'? 'short'
+           | 'unsigned'? 'int'
+           | 'unsigned'? 'long' 'long'
+           | 'unsigned'? 'long'
+
+globalDecl : typeSpec ref ('[' NUMBER ']' ('=' initList)? | ('=' NUMBER)?) ';'
+funcDecl   : typeSpec ref '(' (param (',' param)*)? ')' block
+param      : typeSpec ref
 block      : '{' stmt* '}'
 
 stmt : block
@@ -56,7 +67,7 @@ stmt : block
      | 'return' expr? ';'
      | 'break' ';'
      | 'continue' ';'
-     | 'local' ref ('[' NUMBER ']' ('=' initList)? | ('=' expr)?) ';'
+     | 'local' typeSpec ref ('[' NUMBER ']' ('=' initList)? | ('=' expr)?) ';'
      | 'asm' '{' <raw target text> '}'
      | ';'
      | expr ';'
@@ -68,6 +79,7 @@ expr : NUMBER                                    // int literal
      | '*' '(' expr ')' ('=' expr)?               // deref read, or deref assign
      | ('-'|'!'|'~'|'&') '(' expr ')'              // unary
      | '(' expr binOp expr ')'                    // binary
+     | '(' typeSpec ')' '(' expr ')'              // Convert - an implicit or explicit type conversion
      | ref '(' (expr (',' expr)*)? ')'            // call
      | '(' expr ')' '(' ')'                       // call through a computed address - always 0 args
      | IDENT '(' ')'                               // intrinsic, e.g. _ion()
@@ -77,6 +89,12 @@ expr : NUMBER                                    // int literal
 - `ref` (`name#id`) names a `Slot` or `Function` — the `#id` suffix
   disambiguates locals that shadow across scopes or share a name with
   a global; every reference to the same slot prints the same id.
+- `Convert` is every implicit conversion the type-checking pass folded
+  into `IRBuilder::buildExpr` (integer promotion, the usual arithmetic
+  conversions, assignment/return/call-argument conversion) *and* a
+  source-level cast `(type)expr` — both print and parse identically,
+  since a cast is exactly this with no separate node of its own; see
+  `IR.h`'s `ExprKind::Convert`.
 - Every binary and unary expression is always fully parenthesized by
   the printer, so the grammar needs no operator-precedence table at
   all — it only has to accept the exact shapes `IRPrinter.cpp` ever

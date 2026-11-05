@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "../Type.h"
+
 namespace pcc {
 
 // --- Expressions ------------------------------------------------------
@@ -18,6 +20,8 @@ enum class ExprKind {
     Binary,       // + - * / % == != < <= > >= && ||
     Call,
     CallPtr,      // (lhs)(args) - callee is a computed address, not a name; see IRBuilder's buildExpr
+    Cast,         // (type)rhs
+    Sizeof,       // sizeof(type) or sizeof(rhs) - see sizeofIsType
 };
 
 struct Expr {
@@ -25,11 +29,14 @@ struct Expr {
     int line = 0;
 
     long intValue = 0;        // IntLit
+    Type type;                 // IntLit (from its suffix); Cast/Sizeof (the operand/measured type)
+    bool sizeofIsType = false;  // Sizeof: true -> `type` is what's measured, false -> `rhs` is (unevaluated)
     std::string name;         // Var / Index / Assign (target) / Call (callee)
     std::string op;           // Unary / Binary operator text
     std::unique_ptr<Expr> lhs;  // Binary lhs, Index/indexed-Assign subscript, DerefAssign's pointer,
                                  // CallPtr's callee expression
-    std::unique_ptr<Expr> rhs;                  // Binary rhs, Assign/DerefAssign rhs, Unary operand
+    std::unique_ptr<Expr> rhs;                  // Binary rhs, Assign/DerefAssign rhs, Unary operand,
+                                                  // Cast operand, Sizeof's measured expression
     std::vector<std::unique_ptr<Expr>> args;    // Call / CallPtr arguments
 };
 
@@ -80,6 +87,7 @@ struct Stmt {
     // same as always). Null for a real `while`.
     std::unique_ptr<Stmt> postStmt;              // While (for-loop desugaring only)
     std::string declName;                        // LocalDecl
+    Type type;                                     // LocalDecl: declared type (scalar, or array element type)
     ExprPtr initOrReturnOrExpr;                   // LocalDecl init / Return value / ExprStmt expr
     int arraySize = 0;                            // LocalDecl: >0 means an array of this many words
     std::vector<ArrayInitElem> arrayInit;         // LocalDecl array: initializer (padded with 0s)
@@ -92,10 +100,12 @@ using StmtPtr = std::unique_ptr<Stmt>;
 
 struct Param {
     std::string name;
+    Type type;
 };
 
 struct FunctionDecl {
     std::string name;
+    Type returnType;
     std::vector<Param> params;
     std::unique_ptr<Stmt> body;  // null for a prototype-only declaration
     int line = 0;
@@ -106,6 +116,7 @@ struct FunctionDecl {
 
 struct GlobalVar {
     std::string name;
+    Type type;                     // scalar type, or array element type
     bool hasInit = false;
     long initValue = 0;
     int line = 0;

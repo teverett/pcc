@@ -455,7 +455,8 @@ class Assembler {
             return;
         }
         static const std::unordered_map<std::string, uint8_t> branch = {
-            {"beq", 0xF0}, {"bne", 0xD0}, {"bcs", 0xB0}, {"bmi", 0x30}, {"bpl", 0x10}, {"bvc", 0x50},
+            {"beq", 0xF0}, {"bne", 0xD0}, {"bcs", 0xB0}, {"bcc", 0x90},
+            {"bmi", 0x30}, {"bpl", 0x10}, {"bvc", 0x50},
         };
         if (auto it = branch.find(mnemonic); it != branch.end()) {
             emit8(it->second);

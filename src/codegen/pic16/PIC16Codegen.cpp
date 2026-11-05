@@ -131,18 +131,55 @@ void PIC16Codegen::gotoIfNonZero(const std::string &target) {
     code_ << "    goto " << target << "\n";
 }
 
-void PIC16Codegen::storeAcIndirect() {
+void PIC16Codegen::storeAcIndirect(int width) {
     code_ << "    movf ptr,w\n    movwf FSR\n";
     code_ << "    movf ac,w\n    movwf INDF\n";
+    if (width == 1) return;
     code_ << "    incf FSR,f\n";
     code_ << "    movf ac+1,w\n    movwf INDF\n";
 }
 
-void PIC16Codegen::loadAcIndirect() {
+void PIC16Codegen::loadAcIndirect(int width, bool isUnsigned) {
     code_ << "    movf ptr,w\n    movwf FSR\n";
     code_ << "    movf INDF,w\n    movwf ac\n";
+    if (width == 1) {
+        signExtendAcHighByte(isUnsigned);
+        return;
+    }
     code_ << "    incf FSR,f\n";
     code_ << "    movf INDF,w\n    movwf ac+1\n";
+}
+
+// See PIC16Codegen.h's own comment on this.
+void PIC16Codegen::signExtendAcHighByte(bool isUnsigned) {
+    if (isUnsigned) {
+        code_ << "    clrf ac+1\n";
+        return;
+    }
+    // The branch on `andlw`'s own Z flag has to come immediately after
+    // it - any other instruction in between can just as easily
+    // clobber STATUS<Z> first.
+    code_ << "    movf ac,w\n    andlw 0x80\n";
+    std::string Lneg = newLabel(), Ldone = newLabel();
+    gotoIfNonZero(Lneg);
+    code_ << "    clrf ac+1\n    goto " << Ldone << "\n";
+    code_ << Lneg << ":\n    movlw 0xFF\n    movwf ac+1\n";
+    code_ << Ldone << ":\n";
+}
+
+void PIC16Codegen::loadAcFromLabel(const std::string &lbl, int width, bool isUnsigned) {
+    code_ << "    movf " << lbl << ",w\n    movwf ac\n";
+    if (width == 1) {
+        signExtendAcHighByte(isUnsigned);
+        return;
+    }
+    code_ << "    movf " << lbl << "+1,w\n    movwf ac+1\n";
+}
+
+void PIC16Codegen::storeAcToLabel(const std::string &lbl, int width) {
+    code_ << "    movf ac,w\n    movwf " << lbl << "\n";
+    if (width == 1) return;
+    code_ << "    movf ac+1,w\n    movwf " << lbl << "+1\n";
 }
 
 // Real runtime push/pop on the shared `SSTACK` region via `SP`/FSR/
@@ -180,31 +217,38 @@ void PIC16Codegen::popPtrCell() {
     code_ << "    movf INDF,w\n    movwf ptr\n";
 }
 
-// A literal element's own value, split into two compile-time-known
-// bytes and loaded via emitInitByte()'s usual clrf/movlw+movwf
-// choice; a symbol element (a dispatch-table address-of-function/
-// global, see IR.h's ArrayInitElem) has no compile-time byte value at
-// all - a Function's own real program-memory *word* address is split
-// low byte/high byte the same way genAddrOf()'s own Func case does
-// (`movlwcl`/`movlwch`), and a Slot's own one-byte RAM address (data
-// space, always 0-255 on this baseline/mid-range target) is loaded
-// with a zero high byte, the same way genAddrOf()'s own Var case
-// does.
-void PIC16Codegen::emitInitElem(std::ostream &out, const std::string &loLbl, const std::string &hiLbl,
-                                 const ir::ArrayInitElem &e) {
+// A literal element's own value, split into `width` compile-time-known
+// bytes (1 for a `char` element, up to 8 for a `long long` one - this
+// runs entirely at compile time, so it's never bound by `ac`'s own
+// 2-byte width the way a *runtime* read of a wide element would be -
+// see requireNarrow()'s own comment) and loaded via emitInitByte()'s
+// usual clrf/movlw+movwf choice; a symbol element (a dispatch-table
+// address-of-function/global, see IR.h's ArrayInitElem) has no
+// compile-time byte value at all and is always exactly native-int-
+// width (2 bytes - a dispatch table is always an array of addresses,
+// never of `long`/`long long`) - a Function's own real program-memory
+// *word* address is split low byte/high byte the same way genAddrOf()'s
+// own Func case does (`movlwcl`/`movlwch`), and a Slot's own one-byte
+// RAM address (data space, always 0-255 on this baseline/mid-range
+// target) is loaded with a zero high byte, the same way genAddrOf()'s
+// own Var case does.
+void PIC16Codegen::emitInitElem(std::ostream &out, const std::string &base, int width, const ir::ArrayInitElem &e) {
     if (e.isSymbol) {
+        const std::string hi = base + "+1";
         if (e.func) {
-            out << "    movlwcl " << label(e.func) << "\n    movwf " << loLbl << "\n";
-            out << "    movlwch " << label(e.func) << "\n    movwf " << hiLbl << "\n";
+            out << "    movlwcl " << label(e.func) << "\n    movwf " << base << "\n";
+            out << "    movlwch " << label(e.func) << "\n    movwf " << hi << "\n";
         } else {
-            out << "    movlw " << label(e.slot) << "\n    movwf " << loLbl << "\n";
-            out << "    clrf " << hiLbl << "\n";
+            out << "    movlw " << label(e.slot) << "\n    movwf " << base << "\n";
+            out << "    clrf " << hi << "\n";
         }
+        for (int i = 2; i < width; i++) out << "    clrf " << base << "+" << i << "\n";
         return;
     }
-    uint16_t v16 = static_cast<uint16_t>(e.value);
-    emitInitByte(out, loLbl, static_cast<uint8_t>(v16 & 0xFF));
-    emitInitByte(out, hiLbl, static_cast<uint8_t>((v16 >> 8) & 0xFF));
+    for (int i = 0; i < width; i++) {
+        uint8_t b = static_cast<uint8_t>((static_cast<unsigned long>(e.value) >> (8 * i)) & 0xFF);
+        emitInitByte(out, i == 0 ? base : base + "+" + std::to_string(i), b);
+    }
 }
 
 std::string PIC16Codegen::generate(const ir::Program &prog, bool objectMode) {
@@ -256,19 +300,20 @@ std::string PIC16Codegen::generate(const ir::Program &prog, bool objectMode) {
         // against whichever other object actually defines it.
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
+        int elemWidth = widthOfType(slot->type);
         if (slot->arraySize > 0) {
-            declareRam(lbl, slot->arraySize * 2);
+            declareRam(lbl, slot->arraySize * elemWidth);
             for (size_t i = 0; i < slot->arrayInit.size(); i++) {
-                std::string base = lbl + "+" + std::to_string(i * 2);
-                std::string hi = lbl + "+" + std::to_string(i * 2 + 1);
-                emitInitElem(globalInit, base, hi, slot->arrayInit[i]);
+                std::string base = lbl + "+" + std::to_string(i * elemWidth);
+                emitInitElem(globalInit, base, elemWidth, slot->arrayInit[i]);
             }
         } else {
-            declareRam(lbl, 2);
+            declareRam(lbl, elemWidth);
             long v = slot->hasInit ? slot->initValue : 0;
-            uint16_t v16 = static_cast<uint16_t>(v);
-            emitInitByte(globalInit, lbl, static_cast<uint8_t>(v16 & 0xFF));
-            emitInitByte(globalInit, lbl + "+1", static_cast<uint8_t>((v16 >> 8) & 0xFF));
+            for (int i = 0; i < elemWidth; i++) {
+                uint8_t b = static_cast<uint8_t>((static_cast<unsigned long>(v) >> (8 * i)) & 0xFF);
+                emitInitByte(globalInit, i == 0 ? lbl : lbl + "+" + std::to_string(i), b);
+            }
         }
     }
 
@@ -386,7 +431,7 @@ void PIC16Codegen::emitPrologue(int numParams, int frameSize) {
     code_ << "    incf SP,f\n";
     code_ << "    movf ptr,w\n    movwf FP\n";
     if (frameSize > 0) {
-        code_ << "    movlw " << (2 * frameSize) << "\n";
+        code_ << "    movlw " << frameSize << "\n";
         code_ << "    addwf SP,f\n";
     }
 }
@@ -488,7 +533,7 @@ void PIC16Codegen::genStmt(const ir::Stmt &s) {
             } else if (s.initOrReturnOrExpr) {
                 genExpr(*s.initOrReturnOrExpr);
                 loadFrameAddr(s.declSlot);
-                storeAcIndirect();
+                storeAcIndirect(widthOfType(s.declSlot->type));
             }
             // No "else" case for a bare, uninitialized scalar: its
             // own frame word already exists - same as a real,
@@ -513,7 +558,37 @@ void PIC16Codegen::genStmt(const ir::Stmt &s) {
     }
 }
 
+// See PIC16Codegen.h's own header comment on why a single check here
+// suffices for every wide (`long`/`long long`) value this backend
+// could ever be asked to materialize into `ac`.
+void PIC16Codegen::requireNarrow(const ir::Expr &e) const {
+    if (widthOfType(e.type) > 2) {
+        err(e.line, "'long'/'long long' arithmetic isn't supported on this target - "
+                    "see PIC16Codegen.h's own header comment on requireNarrow()");
+    }
+}
+
+// An implicit or explicit type conversion (see IR.h's own ExprKind::
+// Convert comment). `ac` is always a plain 2-byte cell - every
+// same-width C type (signed <-> unsigned, or `short` <-> `int`,
+// already identical at this width) is already a pure
+// reinterpretation, nothing left to do once `e.lhs` is evaluated.
+// `char` is the one narrower-than-native width this cell can still
+// honor correctly: narrowing *to* `char` masks off the high byte and,
+// for a signed target, sign-extends bit 7 back across it, so `ac`
+// ends up holding exactly the same 16-bit value a real signed/
+// unsigned `char` variable's own promotion to `int` would - which in
+// turn makes narrowing *from* `char` (back to `int`, or none at all) a
+// pure pass-through, since every `char` value already arrives here
+// correctly sign/zero-extended by construction.
+void PIC16Codegen::genConvert(const ir::Expr &e) {
+    genExpr(*e.lhs);
+    if (widthOfType(e.type) != 1) return;  // not narrowing to `char` - already correct at this width
+    signExtendAcHighByte(e.type.isUnsigned);
+}
+
 void PIC16Codegen::genExpr(const ir::Expr &e) {
+    requireNarrow(e);
     switch (e.kind) {
         case ir::ExprKind::IntLit: {
             uint16_t v16 = static_cast<uint16_t>(e.intValue);
@@ -526,10 +601,10 @@ void PIC16Codegen::genExpr(const ir::Expr &e) {
             // `&` (which bypasses this path), so e.slot is always a
             // scalar here.
             if (e.slot->kind == ir::SlotKind::Global) {
-                copy2("ac", label(e.slot));
+                loadAcFromLabel(label(e.slot), widthOfType(e.slot->type), e.slot->type.isUnsigned);
             } else {
                 loadFrameAddr(e.slot);
-                loadAcIndirect();
+                loadAcIndirect(widthOfType(e.slot->type), e.slot->type.isUnsigned);
             }
             return;
         }
@@ -543,7 +618,7 @@ void PIC16Codegen::genExpr(const ir::Expr &e) {
                 pushPtrCell();
                 genExpr(*e.rhs);
                 popPtrCell();
-                storeAcIndirect();
+                storeAcIndirect(widthOfType(e.slot->type));
                 return;
             }
             genExpr(*e.rhs);
@@ -552,10 +627,10 @@ void PIC16Codegen::genExpr(const ir::Expr &e) {
             // do after the rhs is already evaluated into it, Global
             // or Local/Param alike.
             if (e.slot->kind == ir::SlotKind::Global) {
-                copy2(label(e.slot), "ac");
+                storeAcToLabel(label(e.slot), widthOfType(e.slot->type));
             } else {
                 loadFrameAddr(e.slot);
-                storeAcIndirect();
+                storeAcIndirect(widthOfType(e.slot->type));
             }
             return;
         }
@@ -565,7 +640,7 @@ void PIC16Codegen::genExpr(const ir::Expr &e) {
             pushPtrCell();
             genExpr(*e.rhs);
             popPtrCell();
-            storeAcIndirect();
+            storeAcIndirect(2);  // '*' is always native-int-width - see this file's own header comment
             return;
         }
         case ir::ExprKind::Unary: {
@@ -578,7 +653,7 @@ void PIC16Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "*") {
                 genExpr(*e.rhs);  // ac = pointer value
                 code_ << "    movf ac,w\n    movwf ptr\n";
-                loadAcIndirect();
+                loadAcIndirect(2, /*isUnsigned=*/false);  // '*' is always native-int-width
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "    comf ac,f\n    comf ac+1,f\n";
@@ -610,6 +685,10 @@ void PIC16Codegen::genExpr(const ir::Expr &e) {
             genBinary(e);
             return;
         }
+        case ir::ExprKind::Convert: {
+            genConvert(e);
+            return;
+        }
         case ir::ExprKind::Intrinsic: {
             // Real PIC16 global-interrupt enable/disable - INTCON<7>
             // (GIE), the same real hardware feature every other
@@ -633,7 +712,11 @@ void PIC16Codegen::genExpr(const ir::Expr &e) {
 // register this function could otherwise clobber.
 void PIC16Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
-    shiftOneBit("ac", /*isLeft=*/true);  // ac *= 2 (words are 2 bytes on this byte-addressed target)
+    // ac *= slot's own element width (1/2/4/8 bytes -> 0/1/2/3 left
+    // shifts - see elemShift()'s own comment); a `char` element (shift
+    // 0) needs no shift at all, unlike the old fixed "always shift
+    // left once".
+    for (int i = 0, n = elemShift(slot->type); i < n; i++) shiftOneBit("ac", /*isLeft=*/true);
     if (slot->kind == ir::SlotKind::Global) {
         std::string lbl = label(slot);
         if (slot->arraySize > 0) {
@@ -663,7 +746,7 @@ void PIC16Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
 
 void PIC16Codegen::genIndex(const ir::Expr &e) {
     genIndexAddr(e.slot, *e.lhs);
-    loadAcIndirect();
+    loadAcIndirect(widthOfType(e.slot->type), e.slot->type.isUnsigned);
 }
 
 void PIC16Codegen::genAddrOf(const ir::Expr &operand) {
@@ -719,12 +802,22 @@ void PIC16Codegen::genAddrOf(const ir::Expr &operand) {
 // for a Local/Param (e.g. `int x; int *p[] = {&x};` - a valid,
 // already-resolved reference to a sibling Local/Param - see
 // IRBuilder.cpp's own `resolveArrayInit`). Element `i`'s own address
-// is `slot`'s own first word plus `i` words - *increasing*, never the
-// base-minus-`i` arithmetic a decreasing-address frame would need
-// here (see PIC16Codegen.h's own header comment).
+// is `slot`'s own first word plus `i` element-widths - *increasing*,
+// never the base-minus-`i` arithmetic a decreasing-address frame
+// would need here (see PIC16Codegen.h's own header comment). A
+// literal (non-symbol) element's own value is written directly, byte
+// by byte, rather than detouring through `ac`: that keeps this
+// correct for an element wider than `ac` itself (a `long`/`long long`
+// local array's own literal initializer - unlike reading one back at
+// runtime, writing a compile-time-constant byte needs no pseudo-
+// register at all, so none of requireNarrow()'s own restrictions
+// apply here). A symbol element (the dispatch-table idiom) is always
+// exactly native-int-width, same as genAddrOf()'s own Func/Var cases.
 void PIC16Codegen::genLocalArrayInit(const ir::Slot *slot) {
+    int elemWidth = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
         const ir::ArrayInitElem &elem = slot->arrayInit[i];
+        int addrOffset = frameSlotOffset(slot) + elemWidth * static_cast<int>(i);
         if (elem.isSymbol) {
             if (elem.func) {
                 code_ << "    movlwcl " << label(elem.func) << "\n    movwf ac\n";
@@ -737,14 +830,22 @@ void PIC16Codegen::genLocalArrayInit(const ir::Slot *slot) {
                 code_ << "    movf ptr,w\n    movwf ac\n";
                 code_ << "    clrf ac+1\n";
             }
-        } else {
-            uint16_t v16 = static_cast<uint16_t>(elem.value);
-            code_ << "    movlw " << (v16 & 0xFF) << "\n    movwf ac\n";
-            code_ << "    movlw " << ((v16 >> 8) & 0xFF) << "\n    movwf ac+1\n";
+            code_ << "    movlw " << addrOffset << "\n";
+            code_ << "    addwf FP,w\n    movwf ptr\n";
+            storeAcIndirect(2);
+            continue;
         }
-        code_ << "    movlw " << (frameSlotOffset(slot) + 2 * static_cast<int>(i)) << "\n";
-        code_ << "    addwf FP,w\n    movwf ptr\n";
-        storeAcIndirect();
+        for (int b = 0; b < elemWidth; b++) {
+            uint8_t byteVal = static_cast<uint8_t>((static_cast<unsigned long>(elem.value) >> (8 * b)) & 0xFF);
+            code_ << "    movlw " << (addrOffset + b) << "\n";
+            code_ << "    addwf FP,w\n    movwf ptr\n";
+            code_ << "    movf ptr,w\n    movwf FSR\n";
+            if (byteVal == 0) {
+                code_ << "    clrf INDF\n";
+            } else {
+                code_ << "    movlw " << static_cast<int>(byteVal) << "\n    movwf INDF\n";
+            }
+        }
     }
 }
 

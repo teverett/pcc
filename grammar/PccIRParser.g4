@@ -19,13 +19,26 @@ program
     : GLOBALS_HEADER globalDecl* FUNCTIONS_HEADER funcDecl* EOF
     ;
 
+// IRPrinter.cpp's own canonical spelling of a pcc::Type (see
+// typeSpecText() there) - always the shortest real-C spelling
+// ("int"/"unsigned int"/"char"/.../"long long"/"unsigned long long"),
+// never the source grammar's fuller combinatorial typeSpec (e.g.
+// "short int"/"signed short").
+typeSpec
+    : UNSIGNED_KW? CHAR_KW
+    | UNSIGNED_KW? SHORT_KW
+    | UNSIGNED_KW? INT_KW
+    | UNSIGNED_KW? LONG_KW LONG_KW
+    | UNSIGNED_KW? LONG_KW
+    ;
+
 // "int name#id;" / "int name#id = 5;" / "int name#id[3];" /
 // "int name#id[3] = {1, 2, 3};" - see IRPrinter.cpp's own globals
 // loop. A global's scalar initializer is always a plain literal (the
 // language requires a compile-time constant there - see
 // IRBuilder.h), never a general expr the way a LocalDecl's can be.
 globalDecl
-    : INT_KW ref (LBRACK NUMBER RBRACK (ASSIGN initList)? | (ASSIGN NUMBER)?) SEMI
+    : typeSpec ref (LBRACK NUMBER RBRACK (ASSIGN initList)? | (ASSIGN NUMBER)?) SEMI
     ;
 
 initList
@@ -44,7 +57,7 @@ initElem
 // "int name#id(int p#id, ...)\n{ ... }\n" - see IRPrinter.cpp's own
 // functions loop.
 funcDecl
-    : INT_KW ref LPAREN paramList? RPAREN block
+    : typeSpec ref LPAREN paramList? RPAREN block
     ;
 
 paramList
@@ -52,7 +65,7 @@ paramList
     ;
 
 param
-    : INT_KW ref
+    : typeSpec ref
     ;
 
 block
@@ -70,7 +83,7 @@ stmt
     | RETURN_KW expr? SEMI                                                          # returnStmt
     | BREAK_KW SEMI                                                                 # breakStmt
     | CONTINUE_KW SEMI                                                              # continueStmt
-    | LOCAL_KW ref (LBRACK NUMBER RBRACK (ASSIGN initList)? | (ASSIGN expr)?) SEMI  # localDeclStmt
+    | LOCAL_KW typeSpec ref (LBRACK NUMBER RBRACK (ASSIGN initList)? | (ASSIGN expr)?) SEMI  # localDeclStmt
     | ASM_BEGIN ASM_TEXT ASM_END                                                    # asmStmt
     | SEMI                                                                          # emptyStmt
     | expr SEMI                                                                     # exprStmt
@@ -93,6 +106,12 @@ expr
     | STAR LPAREN expr RPAREN (ASSIGN expr)?                       # starExpr         // Unary "*" (deref read), or DerefAssign
     | (MINUS | BANG | TILDE | AMP) LPAREN expr RPAREN               # unaryExpr
     | LPAREN expr binOp expr RPAREN                                 # binaryExpr
+    // ExprKind::Convert - an implicit or explicit type conversion
+    // (IRPrinter.cpp's printExpr: "(" typeSpecText(e.type) ")(" ... ")").
+    // No ambiguity with binaryExpr/callPtrExpr above: typeSpec always
+    // starts with CHAR_KW/SHORT_KW/INT_KW/LONG_KW/UNSIGNED_KW, none of
+    // which can start an expr.
+    | LPAREN typeSpec RPAREN LPAREN expr RPAREN                     # convertExpr
     | ref LPAREN argList? RPAREN                                    # callExpr
     | LPAREN expr RPAREN LPAREN RPAREN                              # callPtrExpr      // CallPtr - always 0 args, see IR.h
     | IDENT LPAREN RPAREN                                           # intrinsicExpr    // "_ion()" / "_iof()"

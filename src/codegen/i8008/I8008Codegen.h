@@ -115,6 +115,7 @@ class I8008Codegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "8008"; }
+    TypeWidths typeWidths() const override { return {1, 2, 2, 4, 8}; }
     std::string sourceExtension() const override { return ".s08"; }
     std::vector<std::string> assembledFormats() const override {
         return {"raw", "coff", "elf", "macho", "aout", "objraw"};
@@ -133,53 +134,124 @@ class I8008Codegen : public Backend {
                                                   const std::string &format) const override;
 
    private:
+    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    bool isWide(Type t) const { return widthOfType(t) > 2; }
+    int wordCountOf(Type t) const { return widthOfType(t) / 2; }
+    int elemShift(Type t) const {
+        switch (widthOfType(t)) {
+            case 1: return 0;
+            case 2: return 1;
+            case 4: return 2;
+            default: return 3;
+        }
+    }
+
     void genFunction(const ir::FunctionBody &fn);
     void genStmt(const ir::Stmt &s);
     void genExpr(const ir::Expr &e);  // leaves the result in the `ac` memory cell
 
     void genBinary(const ir::Expr &e);
-    void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
-    void emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert);
+    void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned);
+    void emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool isUnsigned, bool invert);
     void emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, bool wantEqual);
     void genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
+    void testTruthy(const ir::Expr &e);
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
-    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
-    void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft);
+    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
+    void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genConvert(const ir::Expr &e);
 
     // Leaves slot[idxExpr]'s own effective address in the `ptr`
     // memory cell - see ../i8080/I8080Codegen.cpp's own genIndexAddr()
     // comment on why `idxExpr` is always evaluated first, and alone.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
-    // A Local or Param's own 0-based word index within its function's
-    // own per-call frame (see genFunction()'s own comment): a Param
-    // is simply its own `paramIndex`; a Local continues on right
-    // after every one of the current function's own params, in
-    // declaration order (`currentParamCount_ + frameOffset - 1`,
-    // `frameOffset` already being 1-based - see IR.h's own comment on
-    // it). Only ever called while generating code for the function
-    // that actually owns `slot` - `currentParamCount_` is that
-    // function's own param count, set once by genFunction() for the
-    // whole of its own body. A Global has no word index at all (it
-    // never reaches this function - see pointAtSlot()).
-    int wordIndexOf(const ir::Slot *slot) const;
+    // A Local or Param's own byte offset within its function's own
+    // per-call frame (see genFunction()'s own comment), generalized
+    // from a fixed 2-bytes-per-slot word index to a real, possibly
+    // narrower/wider byte count - the same fix (and the same reason)
+    // ../m6502/M6502Codegen.cpp's own frameByteOffset() needed:
+    // IRBuilder's own Slot::frameOffset already accounts for each
+    // slot's own real width (see IR.h's own comment on it); a Param's
+    // own reservation here is `2*nativeIntWidth` less than IRBuilder
+    // assumes (this backend's own `fp` lands directly on param 0,
+    // with no saved-frame-pointer word taking up space in-frame - see
+    // genFunction()'s own comment: the caller's `fp` is saved on the
+    // separate `fpsp` chain instead), and a Local's own region starts
+    // right after the real total byte size of every param (not
+    // `paramCount*2`, now that a param can be wider or narrower).
+    // Only ever called while generating code for the function that
+    // actually owns `slot` - `currentParamCount_`/`currentParamBytes_`
+    // are that function's own counts, set once by genFunction() for
+    // the whole of its own body. A Global has no frame offset at all
+    // (it never reaches this function - see pointAtSlot()).
+    int frameByteOffset(const ir::Slot *slot) const;
 
-    // Points the real H,L registers at `slot`'s own storage, `wordOffset`
-    // words (plus one more byte, if `highByte`) past its first word -
-    // the Local/Param-or-Global-agnostic equivalent of pointAt(),
-    // used everywhere a *slot*, rather than a plain named cell, needs
-    // addressing. A Global still resolves to pointAt() on its own
-    // fixed label (byte-for-byte the same code this backend always
-    // emitted for one); a Local or Param instead loads `fp`'s own
-    // runtime value into H,L (loadHLFromCell()) and adds the word
-    // offset's byte equivalent on top (addConstToHL()) - there is no
+    // Points the real H,L registers at `slot`'s own storage,
+    // `extraByteOffset` bytes past its first byte - the Local/Param-
+    // or-Global-agnostic equivalent of pointAt(), used everywhere a
+    // *slot*, rather than a plain named cell, needs addressing. A
+    // Global still resolves to pointAt() on its own fixed label
+    // (byte-for-byte the same code this backend always emitted for
+    // one); a Local or Param instead loads `fp`'s own runtime value
+    // into H,L (loadHLFromCell()) and adds frameByteOffset() plus
+    // `extraByteOffset` on top (addConstToHL()) - there is no
     // compile-time label for one of these to begin with, since `fp`
     // itself differs on every call.
-    void pointAtSlot(const ir::Slot *slot, int wordOffset = 0, bool highByte = false);
+    void pointAtSlot(const ir::Slot *slot, int extraByteOffset = 0);
+
+    // "pointAt(cell); mov a, m" / "pointAt(cell); mov m, a" - the one-
+    // byte read/write every wide (`long`/`long long`) helper below is
+    // built out of; `storeByte` expects its own value already in A
+    // (pointAt() itself never touches A, so a `loadByte` immediately
+    // followed by a `storeByte` of a different cell is always safe,
+    // with nothing in between needing to preserve A).
+    void loadByte(const std::string &cell);
+    void storeByte(const std::string &cell);
+    // Sign/zero-extends the byte at `valueCell` (per `isUnsigned`)
+    // into the single byte at `highDestCell` - 0x00 or 0xFF - via
+    // `and a` (an 8008 idiom that clears CY as a side effect, without
+    // disturbing A - see decHL()'s own comment) followed by `ral`
+    // (rotating A's own top bit into CY), since this target has no
+    // direct way to test a bit otherwise. Used for a `char`'s own
+    // promotion to `int`, and for a `long`/`long long` conversion's
+    // own fill byte.
+    void emitSignExtendByte(const std::string &valueCell, const std::string &highDestCell, bool isUnsigned);
+
+    // --- `long`/`long long` ("wide") values - see
+    // ../m6502/M6502Codegen.h's own header comment on this whole
+    // mechanism: three more fixed 8-byte memory-cell buffers
+    // (`wac`/`wbc`/`wtmp`/`wtmp2`), byte-addressed little-endian,
+    // with this backend's own real `sp`-indexed runtime stack (see
+    // pushByte()/popByte() below - a byte-granular version of the
+    // existing word-granular pushCell()/popCell()) used only as a
+    // transient save slot for one operand while the other is
+    // evaluated.
+    void pushByte(const std::string &srcCell);
+    void popByte(const std::string &dstCell);
+    void pushWide(const char *base, int nbytes);
+    void popWide(const char *base, int nbytes);
+    void copyWide(const char *dst, const char *src, int nbytes);
+    void negateWideBuffer(const char *buf, int nbytes);
+
+    void genWideLoad(const ir::Slot *slot, int words);
+    void genWideLoadLiteral(long value, int words);
+    void genWideStore(const ir::Slot *slot, int words);
+    void genWideLoadAtPtr(int words);   // wac = the value at the address stored in `ptr`
+    void genWideStoreAtPtr(int words);
+
+    void genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd, int words);
+    void genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int words);
+    void genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned, int words);
+    void genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned, int words);
+    void genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned, int words);
+    void emitWideLessCompare(const ir::Expr &a, const ir::Expr &b, bool isUnsigned, int words, bool invert);
+    void emitWideEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, int words, bool wantEqual);
+    void genWideBitwise(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &op, int words);
 
     // Adds the compile-time constant `byteOffset` to the real H,L
     // register pair in place, via the same ADI/ACI carry chain as
@@ -335,7 +407,7 @@ class I8008Codegen : public Backend {
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
-    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
+    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 
@@ -349,6 +421,11 @@ class I8008Codegen : public Backend {
     // wordIndexOf()'s own comment; set once per genFunction() call,
     // for the whole of that function's own body.
     int currentParamCount_ = 0;
+    // The current function's own total param byte count (sum of
+    // max(widthOfType(p->type), 2) over every param) - see
+    // frameByteOffset()'s own comment; set once per genFunction()
+    // call alongside currentParamCount_.
+    int currentParamBytes_ = 0;
     // One entry per currently-open loop (innermost last) - {continue
     // label, break label} - pushed/popped by genStmt's own While
     // case, consulted by its Break/Continue cases.

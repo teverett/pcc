@@ -107,21 +107,23 @@ void PIC18Codegen::slotAddrToPtr(const ir::Slot *slot) {
 }
 
 void PIC18Codegen::loadSlotToAc(const ir::Slot *slot) {
+    int width = widthOfType(slot->type);
     if (slot->kind == ir::SlotKind::Global) {
-        copy2("ac", label(slot));
+        loadAcFromLabel(label(slot), width, slot->type.isUnsigned);
         return;
     }
     slotAddrToPtr(slot);
-    loadAcIndirect();
+    loadAcIndirect(width, slot->type.isUnsigned);
 }
 
 void PIC18Codegen::storeAcToSlot(const ir::Slot *slot) {
+    int width = widthOfType(slot->type);
     if (slot->kind == ir::SlotKind::Global) {
-        copy2(label(slot), "ac");
+        storeAcToLabel(label(slot), width);
         return;
     }
     slotAddrToPtr(slot);
-    storeAcIndirect();
+    storeAcIndirect(width);
 }
 
 void PIC18Codegen::inc16(const std::string &lbl) {
@@ -148,16 +150,54 @@ void PIC18Codegen::gotoIfNonZero(const std::string &target) {
 // own FSR/INDF-plus-explicit-INCF pair (see PIC18Codegen.h's own
 // header comment): POSTINC0 reads/writes through FSR0 and then
 // auto-increments it in the same instruction.
-void PIC18Codegen::storeAcIndirect() {
+void PIC18Codegen::storeAcIndirect(int width) {
     code_ << "    movf ptr,w\n    movwf FSR0L\n";
+    if (width == 1) {
+        code_ << "    movf ac,w\n    movwf INDF0\n";
+        return;
+    }
     code_ << "    movf ac,w\n    movwf POSTINC0\n";
     code_ << "    movf ac+1,w\n    movwf INDF0\n";
 }
 
-void PIC18Codegen::loadAcIndirect() {
+void PIC18Codegen::loadAcIndirect(int width, bool isUnsigned) {
     code_ << "    movf ptr,w\n    movwf FSR0L\n";
+    if (width == 1) {
+        code_ << "    movf INDF0,w\n    movwf ac\n";
+        signExtendAcHighByte(isUnsigned);
+        return;
+    }
     code_ << "    movf POSTINC0,w\n    movwf ac\n";
     code_ << "    movf INDF0,w\n    movwf ac+1\n";
+}
+
+// See PIC16Codegen.cpp's own identical helper.
+void PIC18Codegen::signExtendAcHighByte(bool isUnsigned) {
+    if (isUnsigned) {
+        code_ << "    clrf ac+1\n";
+        return;
+    }
+    code_ << "    movf ac,w\n    andlw 0x80\n";
+    std::string Lneg = newLabel(), Ldone = newLabel();
+    gotoIfNonZero(Lneg);
+    code_ << "    clrf ac+1\n    goto " << Ldone << "\n";
+    code_ << Lneg << ":\n    movlw 0xFF\n    movwf ac+1\n";
+    code_ << Ldone << ":\n";
+}
+
+void PIC18Codegen::loadAcFromLabel(const std::string &lbl, int width, bool isUnsigned) {
+    code_ << "    movff " << lbl << ",ac\n";
+    if (width == 1) {
+        signExtendAcHighByte(isUnsigned);
+        return;
+    }
+    code_ << "    movff " << lbl << "+1,ac+1\n";
+}
+
+void PIC18Codegen::storeAcToLabel(const std::string &lbl, int width) {
+    code_ << "    movff ac," << lbl << "\n";
+    if (width == 1) return;
+    code_ << "    movff ac+1," << lbl << "+1\n";
 }
 
 // Real runtime push/pop on the shared `SSTACK` region via `SP`/FSR0 -
@@ -232,19 +272,20 @@ std::string PIC18Codegen::generate(const ir::Program &prog, bool objectMode) {
         if (slot->kind != ir::SlotKind::Global) continue;
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
+        int elemWidth = widthOfType(slot->type);
         if (slot->arraySize > 0) {
-            declareRam(lbl, slot->arraySize * 2, false);
+            declareRam(lbl, slot->arraySize * elemWidth, false);
             for (size_t i = 0; i < slot->arrayInit.size(); i++) {
-                std::string base = lbl + "+" + std::to_string(i * 2);
-                std::string hi = lbl + "+" + std::to_string(i * 2 + 1);
-                emitInitElem(globalInit, base, hi, slot->arrayInit[i]);
+                std::string base = lbl + "+" + std::to_string(i * elemWidth);
+                emitInitElem(globalInit, base, elemWidth, slot->arrayInit[i]);
             }
         } else {
-            declareRam(lbl, 2, false);
+            declareRam(lbl, elemWidth, false);
             long v = slot->hasInit ? slot->initValue : 0;
-            uint16_t v16 = static_cast<uint16_t>(v);
-            emitInitByte(globalInit, lbl, static_cast<uint8_t>(v16 & 0xFF));
-            emitInitByte(globalInit, lbl + "+1", static_cast<uint8_t>((v16 >> 8) & 0xFF));
+            for (int i = 0; i < elemWidth; i++) {
+                uint8_t b = static_cast<uint8_t>((static_cast<unsigned long>(v) >> (8 * i)) & 0xFF);
+                emitInitByte(globalInit, i == 0 ? lbl : lbl + "+" + std::to_string(i), b);
+            }
         }
     }
 
@@ -320,7 +361,10 @@ std::map<std::string, std::string> PIC18Codegen::perFileAsm() const { return per
 
 void PIC18Codegen::genFunction(const ir::FunctionBody &fn, const std::string &extraPrologue) {
     paramCount_ = static_cast<int>(fn.func->params.size());
-    frameSizeBytes_ = (paramCount_ + fn.func->frameSize) * 2;
+    // `fn.func->frameSize` is now a real byte count (see IR.h's own
+    // comment on Function::frameSize); only the Params region still
+    // needs its own word-to-byte multiplication here.
+    frameSizeBytes_ = paramCount_ * 2 + fn.func->frameSize;
     code_ << label(fn.func) << ":\n";
     emitPrologue();
     code_ << extraPrologue;
@@ -407,7 +451,25 @@ void PIC18Codegen::genStmt(const ir::Stmt &s) {
     }
 }
 
+// See PIC18Codegen.h's own header comment on why a single check here
+// suffices for every wide (`long`/`long long`) value this backend
+// could ever be asked to materialize into `ac`.
+void PIC18Codegen::requireNarrow(const ir::Expr &e) const {
+    if (widthOfType(e.type) > 2) {
+        err(e.line, "'long'/'long long' arithmetic isn't supported on this target - "
+                    "see PIC18Codegen.h's own header comment on requireNarrow()");
+    }
+}
+
+// See PIC16Codegen.cpp's own identical genConvert() comment.
+void PIC18Codegen::genConvert(const ir::Expr &e) {
+    genExpr(*e.lhs);
+    if (widthOfType(e.type) != 1) return;
+    signExtendAcHighByte(e.type.isUnsigned);
+}
+
 void PIC18Codegen::genExpr(const ir::Expr &e) {
+    requireNarrow(e);
     switch (e.kind) {
         case ir::ExprKind::IntLit: {
             uint16_t v16 = static_cast<uint16_t>(e.intValue);
@@ -429,7 +491,7 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
                 pushPtrCell();
                 genExpr(*e.rhs);
                 popPtrCell();
-                storeAcIndirect();
+                storeAcIndirect(widthOfType(e.slot->type));
                 return;
             }
             genExpr(*e.rhs);
@@ -442,7 +504,7 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
             pushPtrCell();
             genExpr(*e.rhs);
             popPtrCell();
-            storeAcIndirect();
+            storeAcIndirect(2);  // '*' is always native-int-width - see PIC16Codegen.h's own header comment
             return;
         }
         case ir::ExprKind::Unary: {
@@ -455,7 +517,7 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "*") {
                 genExpr(*e.rhs);  // ac = pointer value
                 code_ << "    movf ac,w\n    movwf ptr\n";
-                loadAcIndirect();
+                loadAcIndirect(2, /*isUnsigned=*/false);  // '*' is always native-int-width
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "    comf ac,f\n    comf ac+1,f\n";
@@ -484,7 +546,7 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
                 // across more than one argument's own evaluation.
                 code_ << "    movf FP,w\n    addlw " << (newFrameOff + static_cast<int>(i) * 2) << "\n";
                 code_ << "    movwf ptr\n";
-                storeAcIndirect();
+                storeAcIndirect(2);  // every argument reserves a full native-int-width slot - see IRBuilder.cpp
             }
             // NFP = FP + newFrameOff - handed to the callee's own
             // prologue, recomputed fresh (not reused from any earlier
@@ -542,6 +604,10 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
             genBinary(e);
             return;
         }
+        case ir::ExprKind::Convert: {
+            genConvert(e);
+            return;
+        }
         case ir::ExprKind::Intrinsic: {
             // Real PIC18 global-interrupt enable/disable - INTCON<7>
             // (GIE), the exact same bit position and mechanism
@@ -554,7 +620,9 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
 
 void PIC18Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
-    shiftOneBit("ac", /*isLeft=*/true);  // ac *= 2
+    // ac *= slot's own element width - see elemShift()'s own comment
+    // (a `char` element scales by 1, i.e. no shift at all).
+    for (int i = 0, n = elemShift(slot->type); i < n; i++) shiftOneBit("ac", /*isLeft=*/true);
     if (slot->arraySize > 0) {
         // `slot` is itself the array - its own base address is a
         // fixed, compile-time label for a Global, or `FP` plus this
@@ -581,7 +649,7 @@ void PIC18Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
 
 void PIC18Codegen::genIndex(const ir::Expr &e) {
     genIndexAddr(e.slot, *e.lhs);
-    loadAcIndirect();
+    loadAcIndirect(widthOfType(e.slot->type), e.slot->type.isUnsigned);
 }
 
 // A literal element's own value, split into two compile-time-known
@@ -593,21 +661,23 @@ void PIC18Codegen::genIndex(const ir::Expr &e) {
 // (`movlwcl`/`movlwch`), and a Slot's own one-byte RAM address is
 // loaded with a zero high byte, the same way genAddrOf()'s own Var
 // case does.
-void PIC18Codegen::emitInitElem(std::ostream &out, const std::string &loLbl, const std::string &hiLbl,
-                                 const ir::ArrayInitElem &e) {
+void PIC18Codegen::emitInitElem(std::ostream &out, const std::string &base, int width, const ir::ArrayInitElem &e) {
     if (e.isSymbol) {
+        const std::string hi = base + "+1";
         if (e.func) {
-            out << "    movlwcl " << label(e.func) << "\n    movwf " << loLbl << "\n";
-            out << "    movlwch " << label(e.func) << "\n    movwf " << hiLbl << "\n";
+            out << "    movlwcl " << label(e.func) << "\n    movwf " << base << "\n";
+            out << "    movlwch " << label(e.func) << "\n    movwf " << hi << "\n";
         } else {
-            out << "    movlw " << label(e.slot) << "\n    movwf " << loLbl << "\n";
-            out << "    clrf " << hiLbl << "\n";
+            out << "    movlw " << label(e.slot) << "\n    movwf " << base << "\n";
+            out << "    clrf " << hi << "\n";
         }
+        for (int i = 2; i < width; i++) out << "    clrf " << base << "+" << i << "\n";
         return;
     }
-    uint16_t v16 = static_cast<uint16_t>(e.value);
-    emitInitByte(out, loLbl, static_cast<uint8_t>(v16 & 0xFF));
-    emitInitByte(out, hiLbl, static_cast<uint8_t>((v16 >> 8) & 0xFF));
+    for (int i = 0; i < width; i++) {
+        uint8_t b = static_cast<uint8_t>((static_cast<unsigned long>(e.value) >> (8 * i)) & 0xFF);
+        emitInitByte(out, i == 0 ? base : base + "+" + std::to_string(i), b);
+    }
 }
 
 void PIC18Codegen::genAddrOf(const ir::Expr &operand) {

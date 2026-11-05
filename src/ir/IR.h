@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "../Type.h"
+
 namespace pcc::ir {
 
 // The IR is AST.h's tree shape with every name resolved: a Var/Index/
@@ -52,6 +54,7 @@ struct Slot {
     int id = 0;
     std::string sourceName;
     SlotKind kind = SlotKind::Local;
+    Type type;                          // scalar type, or array element type
     int arraySize = 0;                 // 0 = scalar
     bool hasInit = false;               // scalar: literal initializer given
     long initValue = 0;                  // scalar initializer value
@@ -106,30 +109,31 @@ struct Slot {
     std::string ownerFunctionName;
     int paramIndex = -1;
 
-    // Local only: a 1-based sequential word-offset index within its
-    // own function's frame (assigned once, by IRBuilder, in
-    // declaration order - see Function::frameSize). A local array's
-    // frameOffset is its first word's index; the array occupies
-    // frameOffset..frameOffset+arraySize-1. A backend that has
-    // migrated its locals onto a real per-call stack frame (rather
-    // than this backend's own old one-static-cell-per-declaration
-    // model) turns this into a frame-pointer-relative address itself
-    // - this field only carries the index, never a sign or a byte
-    // size, since both are backend-specific (a local's storage grows
-    // *down* from the frame pointer on every target that's migrated
-    // so far, but nothing here assumes that stays universal, and
-    // "words" are always backend-interpreted - see e.g.
-    // computeElementAddr's own word-size doubling elsewhere in this
-    // codebase). A Param's own equivalent position is just its
-    // existing paramIndex above - no separate field needed, since a
-    // parameter's storage already has to be positionally named for
-    // real separate compilation anyway (see paramIndex's own comment).
+    // Local or Param: this slot's own offset within its function's
+    // frame, in the target's real storage units (bytes on every
+    // byte-addressable backend) - assigned once, by IRBuilder, using
+    // the active target's own TypeWidths (see Type.h), so it already
+    // accounts for this slot's own type's width and natural alignment;
+    // a backend reads it directly and no longer multiplies by its own
+    // word size itself. A Local's frameOffset is counted from the
+    // bottom of the locals region (the first local starts one native
+    // `int`'s width down, leaving that reserved space exactly as every
+    // backend's own prologue already expects); a Param's is counted
+    // from the top of the same frame, past a fixed two-native-`int`-
+    // widths reservation for whatever a backend's own call sequence
+    // keeps there (saved frame pointer/return address) - see
+    // Function::frameSize for a Local's own total. A local array's
+    // frameOffset is its first element's offset; the array occupies
+    // frameOffset..frameOffset+widthOf(type)*arraySize-1. Only the
+    // *sign* (which direction from the frame pointer) is still
+    // backend-specific - everything else here is already resolved.
     int frameOffset = 0;
 };
 
 struct Function {
     int id = 0;
     std::string sourceName;
+    Type returnType;
     std::vector<Slot *> params;  // owned by Program::slots
 
     // '@' addr from source - see Slot::hasAddress above; pins the
@@ -147,17 +151,16 @@ struct Function {
     // separate), not validated against anything.
     bool isExternal = false;
 
-    // Total words of local-variable storage this function's own
-    // frame needs - the highest Local Slot::frameOffset declared in
-    // this function's body, plus that local's own size (arraySize,
-    // or 1 for a scalar), minus 1; 0 if it declares no locals at all.
-    // Params aren't counted here - see Slot::frameOffset's own
-    // comment on why a param's position needs no separate field, and
-    // every backend that's moved params onto a real stack frame puts
-    // them in the CALLER's pushed argument space, never inside this
-    // function's own locals region. A backend that hasn't migrated
-    // yet (still giving every Local/Param its own permanent static
-    // cell) simply never reads this field.
+    // Total storage units (bytes, on every byte-addressable backend)
+    // of local-variable storage this function's own frame needs - the
+    // highest Local Slot::frameOffset declared in this function's
+    // body, plus that local's own size (widthOf(type)*arraySize, or
+    // widthOf(type) for a scalar), minus the one-native-`int`-width
+    // reservation every Local::frameOffset is already counted from
+    // (see its own comment); 0 if it declares no locals at all. Params
+    // aren't counted here - every backend puts them in the CALLER's
+    // pushed argument space, never inside this function's own locals
+    // region.
     int frameSize = 0;
 };
 
@@ -198,6 +201,14 @@ enum class ExprKind {
     // arguments" - by the time a backend sees this kind, that's
     // already validated, same as every other ExprKind here.
     Intrinsic,
+    // An implicit or explicit type conversion - `lhs` is the operand
+    // (already typed by this same type-checking pass), `type` is the
+    // target type. Used for every conversion IRBuilder's buildExpr
+    // inserts (integer promotion, the usual arithmetic conversions,
+    // assignment/return/call-argument conversion) and for lowering a
+    // source-level cast `(type)expr` - a cast needs no separate IR kind
+    // of its own, since it's exactly this.
+    Convert,
 };
 
 struct Expr {
@@ -205,12 +216,13 @@ struct Expr {
     int line = 0;
 
     long intValue = 0;  // IntLit
+    Type type;             // this expression's own resolved type (every kind has one)
     Slot *slot = nullptr;  // Var / Index / Assign target (never null for those kinds)
     Function *func = nullptr;  // Call / Func
     std::string op;            // Unary / Binary / Intrinsic ("ion" or "iof")
 
     std::unique_ptr<Expr> lhs;  // Binary lhs; Index/indexed-Assign subscript; DerefAssign's pointer;
-                                  // CallPtr's callee (evaluates to the target address)
+                                  // CallPtr's callee (evaluates to the target address); Convert's operand
     std::unique_ptr<Expr> rhs;  // Binary rhs; Assign/DerefAssign value; Unary operand
     std::vector<std::unique_ptr<Expr>> args;  // Call arguments (CallPtr's is always empty - see ExprKind::CallPtr)
 };

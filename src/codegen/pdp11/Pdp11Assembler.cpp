@@ -51,7 +51,7 @@ struct Operand {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Equate, Org, Dw, Instr } kind = None;
+    enum Kind { None, Equate, Org, Dw, Db, Instr } kind = None;
     std::string equateName;
     std::vector<std::vector<Syllable>> exprList;  // Equate (1)/Org (1)/Dw (N)
     std::string mnemonic;                           // Instr
@@ -174,10 +174,10 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         line.exprList.push_back(exprToSyllables(instr->operand(0)->expr()));
         return line;
     }
-    if (mnemonic == "dw") {
-        line.kind = Line::Dw;
+    if (mnemonic == "dw" || mnemonic == "db") {
+        line.kind = mnemonic == "dw" ? Line::Dw : Line::Db;
         for (auto *op : instr->operand()) {
-            if (op->LBRACKET()) fail("'dw' operand can't be bracketed");
+            if (op->LBRACKET()) fail("'" + mnemonic + "' operand can't be bracketed");
             line.exprList.push_back(exprToSyllables(op->expr()));
         }
         return line;
@@ -275,6 +275,15 @@ class Assembler {
                     emit16(static_cast<uint16_t>(v));
                 }
                 return;
+            case Line::Db:
+                // `db` - a `char` global's own 1-byte storage (see
+                // Pdp11Codegen.cpp's own generate()/declareArray()).
+                // Never a symbol element (there's no 1-byte relocation
+                // kind on this target, and no real use case for one -
+                // the dispatch-table idiom always stores a full-width
+                // address, never a byte).
+                for (const auto &e : line.exprList) emit8(static_cast<uint8_t>(evalExpr(e)));
+                return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
                 return;
@@ -331,6 +340,11 @@ class Assembler {
         bytes_.push_back(static_cast<uint8_t>(w & 0xFF));
         bytes_.push_back(static_cast<uint8_t>((w >> 8) & 0xFF));
         offset_ += 2;
+    }
+
+    void emit8(uint8_t b) {
+        bytes_.push_back(b);
+        offset_ += 1;
     }
 
     // --- general ("double operand"-style) EA field --------------------
@@ -481,6 +495,14 @@ class Assembler {
     void encodeInstr(const std::string &mnemonic, const std::vector<Operand> &ops) {
         static const std::unordered_map<std::string, uint16_t> twoOpWrite = {
             {"mov", 0x1000}, {"add", 0x6000}, {"sub", 0xE000}, {"bic", 0x4000}, {"bis", 0x5000},
+            // `movb` - the real byte form of MOV (bit 15 set - PDP-11's
+            // own "B" bit, shared by every instruction in this general
+            // double-operand group). A register destination gets the
+            // byte real hardware automatically sign-extends to 16 bits
+            // - exactly a `char` load's own signed semantics for free
+            // (see Pdp11Codegen.cpp's own loadOperand()); an unsigned
+            // `char` load zeroes the high byte itself afterward.
+            {"movb", 0x9000},
         };
         if (auto it = twoOpWrite.find(mnemonic); it != twoOpWrite.end()) {
             encodeTwoOp(it->second, requireOperand(ops, 0, mnemonic), requireOperand(ops, 1, mnemonic),
@@ -511,6 +533,15 @@ class Assembler {
         static const std::unordered_map<std::string, uint16_t> oneOp = {
             {"com", 0x0A40}, {"neg", 0x0B00}, {"tst", 0x0BC0}, {"ror", 0x0C00},
             {"asr", 0x0C80}, {"asl", 0x0CC0}, {"sxt", 0x0DC0},
+            // ADC/SBC (add/subtract the carry bit into the operand in
+            // place) - the real single-operand carry-chain instructions
+            // this family's own opcode numbering already implies
+            // between NEG (0x0B00) and TST (0x0BC0) - see
+            // Pdp11Codegen.cpp's own genWideAdd()/genWideSub(), the
+            // ripple-carry generalization of a native add/sub one word
+            // wider, the same idiom every other backend's own ADC/SBB-
+            // equivalent already uses.
+            {"adc", 0x0B40}, {"sbc", 0x0B80},
         };
         if (auto it = oneOp.find(mnemonic); it != oneOp.end()) {
             encodeOneOp(it->second, requireOperand(ops, 0, mnemonic));
@@ -602,6 +633,11 @@ class Assembler {
         static const std::unordered_map<std::string, uint16_t> branchCond = {
             {"br", 0x0100}, {"bne", 0x0200}, {"beq", 0x0300}, {"bge", 0x0400},
             {"blt", 0x0500}, {"bgt", 0x0600}, {"ble", 0x0700},
+            // Unsigned counterparts (real PDP-11 branches on the
+            // carry/zero flags directly rather than N/V the signed
+            // ones above use) - Pdp11Codegen.cpp's own unsigned
+            // comparisons (see genWideCompare()'s own comment).
+            {"blo", 0xA400}, {"bhis", 0xA000}, {"blos", 0x8C00}, {"bhi", 0x8800},
         };
         if (auto it = branchCond.find(mnemonic); it != branchCond.end()) {
             encodeBranch(it->second, requireOperand(ops, 0, mnemonic), mnemonic);

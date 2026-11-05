@@ -13,6 +13,12 @@ lexer grammar CLexer;
 // A split grammar (unlike a combined one) can't auto-create these
 // from the parser's own literals - each needs an explicit rule here.
 INT_KW   : 'int' ;
+CHAR_KW  : 'char' ;
+SHORT_KW : 'short' ;
+LONG_KW  : 'long' ;
+SIGNED_KW: 'signed' ;
+UNSIGNED_KW: 'unsigned' ;
+SIZEOF_KW: 'sizeof' ;
 IF_KW    : 'if' ;
 ELSE_KW  : 'else' ;
 WHILE_KW : 'while' ;
@@ -52,7 +58,12 @@ ANDAND   : '&&' ;
 OROR     : '||' ;
 
 IDENT   : [a-zA-Z_][a-zA-Z_0-9]* ;
-NUMBER  : [0-9]+ ;
+// An optional u/l suffix picks the literal's type (unsigned/long/long
+// long, same spelling as ISO C's integer-suffix rule) - BuildAst parses
+// and validates the suffix text itself; this rule only admits the
+// syntax, same as every other token here that defers meaning to
+// BuildAst.
+NUMBER  : [0-9]+ [uUlL]* ;
 // A single character, no escapes - enough for ASCII-arithmetic use
 // like '0' + digit; see ../README.md's "Scope and limitations".
 CHARLIT : '\'' ~['\r\n] '\'' ;

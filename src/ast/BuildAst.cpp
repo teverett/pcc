@@ -63,13 +63,91 @@ void checkAsmSyntax(const std::string &asmText, int sourceLine) {
 
 ExprPtr buildExpr(CParser::ExprContext *ctx);
 
+// `size=NUMBER`/`addr=NUMBER`/array-initializer elements are plain,
+// untyped compiler-internal integers, never a real typed C value -
+// they reject the integer-suffix syntax a general NUMBER token now
+// carries (see grammar/CLexer.g4's own comment on NUMBER).
+long parsePlainNumber(antlr4::Token *tok, antlr4::ParserRuleContext *ctx, const char *what) {
+    std::string text = tok->getText();
+    for (char ch : text) {
+        if (ch < '0' || ch > '9') err(ctx, std::string(what) + " may not have a 'u'/'l' integer suffix");
+    }
+    return std::stol(text);
+}
+
+// Parses a NUMBER token's optional integer suffix (u/U any number of
+// times at most once, l/L zero/one/two times, same spelling ISO C
+// uses) into the literal's own Type - see grammar/CLexer.g4's own
+// comment on NUMBER for why the lexer admits the syntax but defers
+// its meaning to here.
+Type parseNumberSuffix(const std::string &suffix, antlr4::ParserRuleContext *ctx) {
+    bool isUnsigned = false;
+    int longCount = 0;
+    char longChar = 0;
+    for (char ch : suffix) {
+        if (ch == 'u' || ch == 'U') {
+            if (isUnsigned) err(ctx, "invalid integer suffix '" + suffix + "' - 'u'/'U' given twice");
+            isUnsigned = true;
+        } else if (ch == 'l' || ch == 'L') {
+            if (longCount == 2) err(ctx, "invalid integer suffix '" + suffix + "' - at most 'll'/'LL' is allowed");
+            if (longCount == 1 && ch != longChar) {
+                err(ctx, "invalid integer suffix '" + suffix + "' - 'll'/'LL' must not mix case");
+            }
+            longChar = ch;
+            longCount++;
+        } else {
+            err(ctx, "invalid integer suffix '" + suffix + "'");
+        }
+    }
+    BaseType base = longCount == 2 ? BaseType::LongLong : longCount == 1 ? BaseType::Long : BaseType::Int;
+    return Type{base, isUnsigned};
+}
+
+// Splits a NUMBER token's text into its digits and its suffix, and
+// returns both the parsed value and the suffix's Type.
+void parseIntLiteral(const std::string &text, antlr4::ParserRuleContext *ctx, long &value, Type &type) {
+    size_t digitsEnd = 0;
+    while (digitsEnd < text.size() && text[digitsEnd] >= '0' && text[digitsEnd] <= '9') digitsEnd++;
+    value = std::stol(text.substr(0, digitsEnd));
+    type = parseNumberSuffix(text.substr(digitsEnd), ctx);
+}
+
+Type buildType(CParser::TypeSpecContext *ctx) {
+    bool isUnsigned = false;
+    if (auto *c = dynamic_cast<CParser::CharTypeContext *>(ctx)) {
+        isUnsigned = c->UNSIGNED_KW() != nullptr;
+        return Type{BaseType::Char, isUnsigned};
+    }
+    if (auto *c = dynamic_cast<CParser::ShortTypeContext *>(ctx)) {
+        isUnsigned = c->UNSIGNED_KW() != nullptr;
+        return Type{BaseType::Short, isUnsigned};
+    }
+    if (auto *c = dynamic_cast<CParser::IntTypeContext *>(ctx)) {
+        isUnsigned = c->UNSIGNED_KW() != nullptr;
+        return Type{BaseType::Int, isUnsigned};
+    }
+    if (auto *c = dynamic_cast<CParser::LongLongTypeContext *>(ctx)) {
+        isUnsigned = c->UNSIGNED_KW() != nullptr;
+        return Type{BaseType::LongLong, isUnsigned};
+    }
+    if (auto *c = dynamic_cast<CParser::LongTypeContext *>(ctx)) {
+        isUnsigned = c->UNSIGNED_KW() != nullptr;
+        return Type{BaseType::Long, isUnsigned};
+    }
+    if (auto *c = dynamic_cast<CParser::SignedOrUnsignedTypeContext *>(ctx)) {
+        isUnsigned = c->UNSIGNED_KW() != nullptr;
+        return Type{BaseType::Int, isUnsigned};
+    }
+    err(ctx, "internal: unhandled typeSpec alternative");
+}
+
 std::vector<ArrayInitElem> buildArrayInit(CParser::ArrayInitContext *ctx) {
     std::vector<ArrayInitElem> values;
     if (!ctx) return values;
     for (auto *elem : ctx->elem) {
         ArrayInitElem e;
         if (auto *num = dynamic_cast<CParser::NumArrayElemContext *>(elem)) {
-            e.value = std::stol(num->NUMBER()->getText());
+            e.value = parsePlainNumber(num->NUMBER()->getSymbol(), num, "an array initializer element");
         } else if (auto *sym = dynamic_cast<CParser::SymArrayElemContext *>(elem)) {
             e.isSymbol = true;
             e.symbolName = sym->IDENT()->getText();
@@ -141,7 +219,7 @@ ExprPtr buildCondExpr(CParser::CondExprContext *ctx) {
         auto e = std::make_unique<Expr>();
         e->kind = ExprKind::IntLit;
         e->line = c->getStart()->getLine();
-        e->intValue = std::stol(c->NUMBER()->getText());
+        parseIntLiteral(c->NUMBER()->getText(), c, e->intValue, e->type);
         return e;
     }
     if (auto *c = dynamic_cast<CParser::CharExprContext *>(ctx)) {
@@ -149,11 +227,37 @@ ExprPtr buildCondExpr(CParser::CondExprContext *ctx) {
         e->kind = ExprKind::IntLit;
         e->line = c->getStart()->getLine();
         std::string text = c->CHARLIT()->getText();  // "'x'"
+        // A character constant's type is plain int, same as real C
+        // (see ../../README.md's "Scope and limitations").
         e->intValue = static_cast<unsigned char>(text[1]);
         return e;
     }
     if (auto *c = dynamic_cast<CParser::ParenExprContext *>(ctx)) {
         return buildExpr(c->expr());
+    }
+    if (auto *c = dynamic_cast<CParser::CastExprContext *>(ctx)) {
+        auto e = std::make_unique<Expr>();
+        e->kind = ExprKind::Cast;
+        e->line = c->getStart()->getLine();
+        e->type = buildType(c->typeSpec());
+        e->rhs = buildCondExpr(c->condExpr());
+        return e;
+    }
+    if (auto *c = dynamic_cast<CParser::SizeofTypeExprContext *>(ctx)) {
+        auto e = std::make_unique<Expr>();
+        e->kind = ExprKind::Sizeof;
+        e->line = c->getStart()->getLine();
+        e->sizeofIsType = true;
+        e->type = buildType(c->typeSpec());
+        return e;
+    }
+    if (auto *c = dynamic_cast<CParser::SizeofExprExprContext *>(ctx)) {
+        auto e = std::make_unique<Expr>();
+        e->kind = ExprKind::Sizeof;
+        e->line = c->getStart()->getLine();
+        e->sizeofIsType = false;
+        e->rhs = buildExpr(c->expr());
+        return e;
     }
     if (auto *c = dynamic_cast<CParser::UnaryExprContext *>(ctx)) {
         auto e = std::make_unique<Expr>();
@@ -250,7 +354,8 @@ StmtPtr buildSimpleStmt(CParser::SimpleStmtContext *ctx) {
         s->kind = StmtKind::LocalDecl;
         s->line = c->getStart()->getLine();
         s->declName = c->IDENT()->getText();
-        s->arraySize = std::stoi(c->size->getText());
+        s->type = buildType(c->typeSpec());
+        s->arraySize = static_cast<int>(parsePlainNumber(c->size, c, "an array size"));
         if (s->arraySize <= 0) err(c, "array size must be a positive integer");
         s->arrayInit = buildArrayInit(c->arrayInit());
         padArrayInit(s->arrayInit, s->arraySize, c);
@@ -261,6 +366,7 @@ StmtPtr buildSimpleStmt(CParser::SimpleStmtContext *ctx) {
         s->kind = StmtKind::LocalDecl;
         s->line = c->getStart()->getLine();
         s->declName = c->IDENT()->getText();
+        s->type = buildType(c->typeSpec());
         if (auto *e = c->expr()) s->initOrReturnOrExpr = buildExpr(e);
         return s;
     }
@@ -393,12 +499,15 @@ Program buildProgram(CParser::ProgramContext *ctx) {
             FunctionDecl fn;
             fn.name = fd->IDENT()->getText();
             fn.line = fd->getStart()->getLine();
+            fn.returnType = buildType(fd->typeSpec());
             if (auto *pl = fd->paramList()) {
-                for (auto *p : pl->param()) fn.params.push_back(Param{p->IDENT()->getText()});
+                for (auto *p : pl->param()) {
+                    fn.params.push_back(Param{p->IDENT()->getText(), buildType(p->typeSpec())});
+                }
             }
             if (fd->addr) {
                 fn.hasAddress = true;
-                fn.address = std::stol(fd->addr->getText());
+                fn.address = parsePlainNumber(fd->addr, fd, "a '@' address");
             }
             fn.body = buildBlock(fd->block());
             prog.functions.push_back(std::move(fn));
@@ -407,24 +516,26 @@ Program buildProgram(CParser::ProgramContext *ctx) {
             g.line = gd->getStart()->getLine();
             if (auto *arr = dynamic_cast<CParser::GlobalArrayDeclContext *>(gd)) {
                 g.name = arr->IDENT()->getText();
-                g.arraySize = std::stoi(arr->size->getText());
+                g.type = buildType(arr->typeSpec());
+                g.arraySize = static_cast<int>(parsePlainNumber(arr->size, arr, "an array size"));
                 if (g.arraySize <= 0) err(arr, "array size must be a positive integer");
                 g.arrayInit = buildArrayInit(arr->arrayInit());
                 padArrayInit(g.arrayInit, g.arraySize, arr);
                 if (arr->addr) {
                     g.hasAddress = true;
-                    g.address = std::stol(arr->addr->getText());
+                    g.address = parsePlainNumber(arr->addr, arr, "a '@' address");
                 }
             } else if (auto *sc = dynamic_cast<CParser::GlobalScalarDeclContext *>(gd)) {
                 g.name = sc->IDENT()->getText();
+                g.type = buildType(sc->typeSpec());
                 if (auto *num = sc->val) {
                     g.hasInit = true;
-                    g.initValue = std::stol(num->getText());
+                    g.initValue = parsePlainNumber(num, sc, "a global initializer");
                     if (sc->sign) g.initValue = -g.initValue;
                 }
                 if (sc->addr) {
                     g.hasAddress = true;
-                    g.address = std::stol(sc->addr->getText());
+                    g.address = parsePlainNumber(sc->addr, sc, "a '@' address");
                 }
             }
             prog.globals.push_back(std::move(g));

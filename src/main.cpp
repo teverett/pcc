@@ -311,7 +311,7 @@ std::string compileOneFile(const std::string &srcPath, const std::map<std::strin
     pcc::Program prog;
     parseAndMergeFile(srcPath, pcc::preprocess(srcPath, predefinedMacros), prog);
 
-    pcc::ir::Program irProg = pcc::buildIR(prog, allowExternal);
+    pcc::ir::Program irProg = pcc::buildIR(prog, backend.typeWidths(), allowExternal);
 
     // Every registered Optimizer (see optimizers/Optimizer.h) runs
     // here, before any backend ever sees the IR - target-independent
@@ -343,7 +343,7 @@ std::string compileOneFile(const std::string &srcPath, const std::map<std::strin
         // LocalCSE may have introduced brand new locals (temps) after
         // buildIR() already assigned every *other* local's own frame
         // offset once - see recomputeFrameLayout's own comment.
-        pcc::recomputeFrameLayout(irProg);
+        pcc::recomputeFrameLayout(irProg, backend.typeWidths());
         // Unused-global removal last, and only when this compile sees
         // the entire program (never under real separate compilation,
         // --format=coff's own per-file `allowExternal`) - see

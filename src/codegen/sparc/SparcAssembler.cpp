@@ -45,7 +45,7 @@ struct Operand {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Equate, Org, Dw, Instr } kind = None;
+    enum Kind { None, Equate, Org, Db, Dh, Dw, Instr } kind = None;
     std::string equateName;
     std::vector<std::vector<Syllable>> exprList;  // Equate (1)/Org (1)/Dw (N)
     std::string mnemonic;                           // Instr
@@ -97,7 +97,8 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
 // them.
 int regNumber(const std::string &lower) {
     static const std::unordered_map<std::string, int> names = {
-        {"g0", 0}, {"t0", 8}, {"t1", 9}, {"t2", 10}, {"fp", 11}, {"sp", 14}, {"lr", 15},
+        {"g0", 0}, {"t0", 8}, {"t1", 9}, {"t2", 10}, {"t3", 16}, {"t4", 17}, {"t5", 18}, {"t6", 19},
+        {"fp", 11}, {"sp", 14}, {"lr", 15},
     };
     auto it = names.find(lower);
     return it == names.end() ? -1 : it->second;
@@ -164,10 +165,10 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         line.exprList.push_back(exprToSyllables(instr->operand(0)->expr()));
         return line;
     }
-    if (mnemonic == "dw") {
-        line.kind = Line::Dw;
+    if (mnemonic == "dw" || mnemonic == "db" || mnemonic == "dh") {
+        line.kind = mnemonic == "db" ? Line::Db : mnemonic == "dh" ? Line::Dh : Line::Dw;
         for (auto *op : instr->operand()) {
-            if (op->LBRACKET()) fail("'dw' operand can't be bracketed");
+            if (op->LBRACKET()) fail("'" + mnemonic + "' operand can't be bracketed");
             line.exprList.push_back(exprToSyllables(op->expr()));
         }
         return line;
@@ -266,6 +267,18 @@ class Assembler {
                     emit32(v);
                 }
                 return;
+            case Line::Db:
+                for (const auto &e : line.exprList) {
+                    uint32_t v = evalExpr(e);
+                    emit8(static_cast<uint8_t>(v));
+                }
+                return;
+            case Line::Dh:
+                for (const auto &e : line.exprList) {
+                    uint32_t v = evalExpr(e);
+                    emit16(static_cast<uint16_t>(v));
+                }
+                return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
                 return;
@@ -323,6 +336,15 @@ class Assembler {
     }
 
     // --- word emission -------------------------------------------------
+    void emit8(uint8_t v) {
+        bytes_.push_back(v);
+        offset_ += 1;
+    }
+    void emit16(uint16_t v) {
+        bytes_.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+        bytes_.push_back(static_cast<uint8_t>(v & 0xFF));
+        offset_ += 2;
+    }
     void emit32(uint32_t v) {
         bytes_.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
         bytes_.push_back(static_cast<uint8_t>((v >> 16) & 0xFF));
@@ -477,6 +499,19 @@ class Assembler {
         emit32(fmt3(2, 0, 0x30, rs1, op2));
     }
 
+    // `rdy rd` - the real SPARC RDY (read the Y register, op3=0x28,
+    // rs1 field fixed at 0) - `smul`/`umul` leave the high 32 bits of
+    // their own 64-bit product in Y, the same role i386's `edx` or
+    // MIPS's `$hi` plays after a wide multiply (see
+    // SparcCodegen.cpp's own genWideMul()).
+    void encodeRdy(const std::vector<Operand> &ops) {
+        uint8_t rd = requireReg(requireOperand(ops, 0, "rdy"), "rdy");
+        Operand g0;
+        g0.kind = Operand::Reg;
+        g0.reg = 0;
+        emit32(fmt3(2, rd, 0x28, 0, g0));
+    }
+
     // `ldind`/`stind` - see SparcCodegen.h's own header comment:
     // dedicated, always-zero-displacement mnemonics standing in for
     // real `ld [rs1+0],rd` / `st rd,[rs1+0]` (format 3, op=3), since
@@ -484,17 +519,31 @@ class Assembler {
     // syntax (see SparcAssembler.h's own header comment) and every
     // load/store this backend ever emits is through a freshly
     // computed address with no other displacement needed anyway.
-    void encodeLdind(const std::vector<Operand> &ops) {
-        uint8_t rs1 = requireReg(requireOperand(ops, 0, "ldind"), "ldind");
-        uint8_t rd = requireReg(requireOperand(ops, 1, "ldind"), "ldind");
-        emit32((3u << 30) | (static_cast<uint32_t>(rd) << 25) | (0x00u << 19) | (static_cast<uint32_t>(rs1) << 14) |
-               (1u << 13));
+    // An optional third operand is this dialect's own displacement
+    // (a plain signed immediate, never a register or label) - defaults
+    // to 0 when absent, the original always-zero-displacement shape.
+    // Used by SparcCodegen.cpp's own genWideAdd/genWideMul/
+    // genWideDivMod/genWideShift/genWideCompare to address a `long
+    // long`'s own high word (base+4) or a scratch slot on the real
+    // hardware stack without first computing a separate address.
+    uint16_t dispOf(const std::vector<Operand> &ops, size_t i) {
+        if (ops.size() <= i) return 0;
+        return evalImm(ops[i]);
     }
+    void encodeLdindOp3(uint8_t op3, const std::vector<Operand> &ops, const std::string &mnemonic) {
+        uint8_t rs1 = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+        uint8_t rd = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+        uint16_t disp = dispOf(ops, 2);
+        emit32((3u << 30) | (static_cast<uint32_t>(rd) << 25) | (static_cast<uint32_t>(op3) << 19) |
+               (static_cast<uint32_t>(rs1) << 14) | (1u << 13) | disp);
+    }
+    void encodeLdind(const std::vector<Operand> &ops) { encodeLdindOp3(0x00, ops, "ldind"); }
     void encodeStind(const std::vector<Operand> &ops) {
         uint8_t rs1 = requireReg(requireOperand(ops, 0, "stind"), "stind");
         uint8_t rd = requireReg(requireOperand(ops, 1, "stind"), "stind");
+        uint16_t disp = dispOf(ops, 2);
         emit32((3u << 30) | (static_cast<uint32_t>(rd) << 25) | (0x04u << 19) | (static_cast<uint32_t>(rs1) << 14) |
-               (1u << 13));
+               (1u << 13) | disp);
     }
 
     // `call label` - real SPARC CALL (format 1: op=01 disp30(30)) -
@@ -586,9 +635,17 @@ class Assembler {
         static const std::unordered_map<std::string, uint8_t> alu3 = {
             {"add", 0x00}, {"sub", 0x04}, {"and", 0x01}, {"xor", 0x03},
             {"sll", 0x25}, {"srl", 0x26}, {"sra", 0x27}, {"smul", 0x0B}, {"sdiv", 0x0F},
+            // umul/udiv - the unsigned counterparts (op3=0x0A/0x0E) -
+            // `long long` multiply/divide need both (see
+            // SparcCodegen.cpp's own genWideMul()/genWideDivMod()).
+            {"umul", 0x0A}, {"udiv", 0x0E},
         };
         if (auto it = alu3.find(mnemonic); it != alu3.end()) {
             encodeAlu3(it->second, ops, mnemonic);
+            return;
+        }
+        if (mnemonic == "rdy") {
+            encodeRdy(ops);
             return;
         }
         if (mnemonic == "or") {
@@ -609,6 +666,29 @@ class Assembler {
         }
         if (mnemonic == "ldind") {
             encodeLdind(ops);
+            return;
+        }
+        // Byte/halfword load (zero- or sign-extending into a full
+        // register, real LDUB=0x01/LDSB=0x09/LDUH=0x02/LDSH=0x0A) /
+        // store (writing only that many low bytes, real STB=0x05/
+        // STH=0x06) - a narrower-than-native-int Var/Slot's own
+        // load/store (see SparcCodegen.cpp's loadOperand()/
+        // storeOperand()), always through a freshly computed address
+        // with no displacement, same as ldind/stind above.
+        static const std::unordered_map<std::string, uint8_t> sizedLoad = {
+            {"ldindb", 0x01}, {"ldindsb", 0x09}, {"ldindh", 0x02}, {"ldindsh", 0x0A},
+        };
+        if (auto it = sizedLoad.find(mnemonic); it != sizedLoad.end()) {
+            encodeLdindOp3(it->second, ops, mnemonic);
+            return;
+        }
+        if (mnemonic == "stindb" || mnemonic == "stindh") {
+            uint8_t rs1 = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            uint8_t rd = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+            uint8_t op3 = mnemonic == "stindb" ? 0x05 : 0x06;
+            uint16_t disp = dispOf(ops, 2);
+            emit32((3u << 30) | (static_cast<uint32_t>(rd) << 25) | (static_cast<uint32_t>(op3) << 19) |
+                   (static_cast<uint32_t>(rs1) << 14) | (1u << 13) | disp);
             return;
         }
         if (mnemonic == "stind") {
@@ -639,6 +719,11 @@ class Assembler {
         }
         static const std::unordered_map<std::string, uint8_t> condBranches = {
             {"beq", 0x1}, {"bne", 0x9}, {"blt", 0x3}, {"ble", 0x2}, {"bgt", 0xA}, {"bge", 0xB},
+            // Unsigned counterparts - real SPARC BLEU(4)/BCS(5, aka
+            // BLU)/BGU(0xC)/BGEU(0xD, aka BCC) - signed vs. unsigned
+            // `long long`/native-width comparison (see
+            // SparcCodegen.cpp's own genCompare()/genWideCompare()).
+            {"bltu", 0x5}, {"bleu", 0x4}, {"bgtu", 0xC}, {"bgeu", 0xD},
         };
         if (auto it = condBranches.find(mnemonic); it != condBranches.end()) {
             encodeBicc(it->second, ops, mnemonic);

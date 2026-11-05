@@ -60,6 +60,7 @@ class Pdp7Codegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "pdp7"; }
+    TypeWidths typeWidths() const override { return {1, 1, 1, 2, 4}; }
     std::string sourceExtension() const override { return ".s"; }
     std::vector<std::string> assembledFormats() const override { return {"a7out", "list", "ptr", "rim", "coff"}; }
     std::string defaultAssemblerPath() const override { return "../pdp-assembler/build/bin/pdp7as"; }
@@ -78,9 +79,119 @@ class Pdp7Codegen : public Backend {
     void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
     void emitEq(const ir::Expr &lhs, const ir::Expr &rhs, bool negate);
     void emitLt(const ir::Expr &lhs, const ir::Expr &rhs, bool negate);
+    // Tests the signed less-than of two already-materialized cells,
+    // jumping to `Ltrue`/`Lfalse` accordingly. Deliberately NOT a
+    // plain "subtract then test sign" (`sma` alone) - that overflows
+    // whenever A and B have opposite signs and are far enough apart
+    // (e.g. the most-negative vs. most-positive 18-bit value), which
+    // the unsigned-via-sign-bit-flip trick elsewhere in this file
+    // routinely produces. Differing signs are decided directly, with
+    // no subtraction at all; same-sign operands fall through to the
+    // subtract-and-test-sign path, which is safe there since two
+    // same-sign 18-bit values can never differ by more than the
+    // representable range.
+    void emitSignedLtCells(const std::string &A, const std::string &B, const std::string &Ltrue,
+                            const std::string &Lfalse);
     void genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
+
+    // Masks AC down to `to`'s own real value range and (for a signed
+    // type) re-sign-extends from that range's own top bit - see the
+    // .cpp's own comment on why only `char` ever needs this.
+    void narrowAC(Type to);
+    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    // `char`/`short`/`int` are all exactly 1 pdp7 word (see
+    // typeWidths()) - only `long` (2 words) and `long long` (4
+    // words) are ever "wide" on this backend.
+    bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
+
+    // --- `long`/`long long` (wide) support --------------------------------
+    //
+    // A wide value is represented as `widthOfType(type)` consecutive
+    // pdp7 words - word 0 (the low-order word) first, each
+    // subsequent word one order higher - the exact same "element i"
+    // addressing arithmetic a Global/Local array's own element i
+    // already uses (see emitLoadSlotAddress()'s/declareArray()'s own
+    // comments), since a wide scalar is really just a tiny fixed-size
+    // array under the hood here. genExpr()'s own single-AC contract
+    // doesn't generalize to more than one word at once on a machine
+    // with exactly one accumulator and no general registers, so a
+    // wide value is instead left PUSHED on the real software stack
+    // (see pushAC()/popAC()) when produced, word 0 (low) on TOP (most
+    // recently pushed) - every genExpr()/genStmt() call site checks
+    // `isWide(e.type)` and branches to the matching wide helper
+    // below instead of the plain single-AC path.
+    //
+    // Multiply and divide/modulo are NOT implemented for a wide
+    // operand - see genWideMulDivErr()'s own comment for why.
+
+    // Pushes a wide value's own `widthOfType(type)` words, reading
+    // them from consecutive memory starting at `baseAddr` (already in
+    // AC on entry - typically from emitLoadSlotAddress()) - word 0
+    // (low) is read and pushed LAST, so it ends up on top, per this
+    // file's own "word 0 on top" convention. `baseAddr` is left in
+    // `__addr` throughout (never relies on AC surviving the pushes).
+    void pushWideFromAddress(Type type);
+    // The reverse: pops a wide value's own words off the stack
+    // (word 0/low first, since it's on top) into consecutive memory
+    // starting at the address already in AC on entry (left in
+    // `__addr`).
+    void popWideToAddress(Type type);
+    // Pushes `widthOfType(type)` words representing the wide
+    // sign/zero-extension of `value` (a plain, already-evaluated
+    // narrow literal) - word 0 (low) pushed last.
+    void pushWideLiteral(Type type, long value);
+    // Generalizes genExpr() for a wide-typed expression: leaves its
+    // `widthOfType(e.type)` words pushed on the stack (word 0/low on
+    // top), instead of in AC. Every expression kind this language's
+    // own type-checking pass (IRBuilder.cpp) can ever give a wide
+    // type is handled directly here (Var, IntLit, Assign, Convert,
+    // Unary -/~, and the wide arithmetic/bitwise binary operators);
+    // anything else reaching here is a compile-time error.
+    void genWideExpr(const ir::Expr &e);
+    // Pops two wide operands (rhs word 0 on top, then lhs word 0 on
+    // top beneath it - i.e. evaluated and pushed lhs-then-rhs, same
+    // left-to-right order every narrow binary op here already uses)
+    // and pushes a `wordCount`-word wide +/- result, carry/borrow
+    // ripple-chained via the real link bit (`cll`/`tad`/`snl` - see
+    // this file's own .cpp comment on why each carry-detecting `tad`
+    // needs its own fresh `cll` immediately before it, not a shared
+    // one across the whole chain).
+    void genWideAddSub(bool isAdd, int wordCount);
+    // Pops one wide operand and pushes its 2's-complement negation
+    // (`~x + 1`, word-by-word, reusing genWideAddSub()'s own carry
+    // chain against an all-zero "0" operand pushed first).
+    void genWideNegate(int wordCount);
+    // Pops two wide operands and pushes their bitwise and/xor (word-
+    // by-word, each word independent - no carry chain needed) or or
+    // (De Morgan, same `~a & ~b` identity the narrow case already
+    // uses - see genBitwise()'s own comment).
+    void genWideBitwise(const std::string &op, int wordCount);
+    // Pops two wide operands and leaves a plain narrow 0/1 result in
+    // AC - compares from the most-significant word down, short-
+    // circuiting on the first word where the two operands differ
+    // (same "compare from the top" idea as a real multi-digit
+    // decimal comparison): the sign only matters in the top word
+    // (`isUnsigned` picks whether that one word's own comparison
+    // treats its sign bit as a real sign or just another value bit,
+    // via the same sign-bit-flip trick emitLt()'s unsigned path
+    // uses), every lower word's own comparison is always unsigned
+    // (once the higher words are confirmed equal, the remaining
+    // value is a plain non-negative magnitude).
+    void genWideCompare(const std::string &op, int wordCount, bool isUnsigned);
+    [[noreturn]] void genWideMulDivErr(int line, const std::string &opName);
+    // dest = a + b + (the current 0/1 content of `carryCell`),
+    // leaving `carryCell` updated to this word's own carry-out -
+    // shared by genWideAddSub() (the ripple-carry chain itself, and
+    // subtraction's own "negate rhs first" step) and genWideNegate().
+    // `carry1Cell`/`carry2Cell` are this helper's own private scratch
+    // (its two-stage carry capture - see the .cpp's own comment on
+    // why one `tad` can't directly capture "carry from a+b+carryIn"
+    // in a single step here) - never read by the caller.
+    void emitWideAddWithCarry(const std::string &dest, const std::string &a, const std::string &b,
+                               const std::string &carryCell, const std::string &carry1Cell,
+                               const std::string &carry2Cell);
 
     // Branch fusion for an `If`/`While` condition: jumps to `Lfalse`
     // when `cond` is false, otherwise falls straight through into
@@ -110,6 +221,7 @@ class Pdp7Codegen : public Backend {
     void genShift(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
     void genIndex(const ir::Expr &e);       // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
+    void genConvert(const ir::Expr &e);
 
     // A Global gets a *name*-based label (never `id`) - real separate
     // compilation means the file calling a function and the file
@@ -176,9 +288,15 @@ class Pdp7Codegen : public Backend {
     // sits one word above that, at `__fp+1` (pushed by the prologue
     // itself, before oldFP); the caller's own pushed arguments sit
     // above that, in REVERSE push order (see the ir::ExprKind::Call
-    // case in genExpr) so that param 0 ends up closest to `__fp`, at
-    // `__fp+2` - paramIndex k's own address is always `__fp+2+k` (see
-    // emitLoadSlotAddress()). Locals live below `__fp`, in the
+    // case in genExpr, which pushes a wide argument's own
+    // `widthOfType` words instead of one) so that param 0 ends up
+    // closest to `__fp` - a param's own address is always
+    // `__fp+frameOffset` (see emitLoadSlotAddress()), the same
+    // width-aware offset IRBuilder.cpp's own assignFrameOffsets()
+    // already computes (2*intWidth for param 0, advancing by each
+    // param's own real word count after that - not a fixed "+2+k",
+    // which only ever worked while every param was exactly one word).
+    // Locals live below `__fp`, in the
     // `frameSize` words emitPrologue() reserves by decrementing `__sp`
     // once, in bulk, right after capturing `__fp` - Slot::frameOffset
     // (see IR.h) is already a 1-based sequential word index in
@@ -216,7 +334,7 @@ class Pdp7Codegen : public Backend {
     // and `__retaddr` respectively, and finally "jmp __retaddr i"
     // - an indirect jump through whatever address `__retaddr` now
     // holds - returns to the caller.
-    void emitEpilogueAndReturn(bool hasValue);
+    void emitEpilogueAndReturn(bool hasValue, Type retType);
 
     // --- Leaf fast path ---------------------------------------------------
     //

@@ -35,6 +35,10 @@ FUNCTIONS_HEADER : '; --- functions ---' ;
 // grammars (unlike a combined one) can't auto-create them for the
 // parser; see CLexer.g4's own comment for the same point.
 INT_KW    : 'int' ;
+CHAR_KW   : 'char' ;
+SHORT_KW  : 'short' ;
+LONG_KW   : 'long' ;
+UNSIGNED_KW : 'unsigned' ;
 LOCAL_KW  : 'local' ;
 IF_KW     : 'if' ;
 ELSE_KW   : 'else' ;

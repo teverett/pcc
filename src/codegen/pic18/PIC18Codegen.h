@@ -232,6 +232,7 @@ class PIC18Codegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "pic18"; }
+    TypeWidths typeWidths() const override { return {1, 2, 2, 4, 8}; }
     std::string sourceExtension() const override { return ".pic18"; }
     // `hex` is this backend's own whole-program Intel-HEX output; the
     // other five mean a real relocatable object file for separate
@@ -258,6 +259,35 @@ class PIC18Codegen : public Backend {
     void genStmt(const ir::Stmt &s);
     void genExpr(const ir::Expr &e);  // leaves the result in the `ac` pseudo-register
 
+    // See PIC16Codegen.h's own header comment on requireNarrow() -
+    // identical reasoning applies verbatim here: `ac` (and every
+    // other pseudo-register this backend has) is a fixed 2 bytes,
+    // and this backend's own 16-bit helpers (add16()/sub16(),
+    // shiftOneBit(), pushCell2()/popCell2(), ...) are all hardcoded to
+    // that width, with no parameterized "N bytes" form - the same
+    // wall MCS51Codegen.h documents hitting. A single check at the
+    // top of genExpr() catches every place a wide (`long`/`long long`)
+    // value's own bits would otherwise need to end up in `ac`, the
+    // same single-check reasoning PIC16Codegen.h's own comment gives
+    // (its one exception, `&expr`, applies here too - see
+    // genAddrOf()'s own call sites, none of which ever call genExpr()
+    // on the operand's own value).
+    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    void requireNarrow(const ir::Expr &e) const;
+    // log2 of an element type's own width (1/2/4/8 bytes -> 0/1/2/3
+    // left shifts) - see PIC16Codegen.h's own identical comment on
+    // elemShift(): genIndexAddr()'s own scale factor for an index, so
+    // a `char` array scales by 1 (no shift), not 2.
+    int elemShift(Type t) const {
+        switch (widthOfType(t)) {
+            case 1: return 0;
+            case 2: return 1;
+            case 4: return 2;
+            default: return 3;
+        }
+    }
+    void genConvert(const ir::Expr &e);
+
     void genBinary(const ir::Expr &e);
     void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
     void emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert);
@@ -277,11 +307,12 @@ class PIC18Codegen : public Backend {
     // function's own frame (Local/Param only - a Global never goes
     // through `FP` at all, see slotAddrToPtr()) - a Param's own
     // `paramIndex` placed first (`paramCount_` of them, 2 bytes
-    // each), then a Local's own `frameOffset` (1-based, see IR.h's
-    // own comment) placed right after.
+    // each), then a Local's own `frameOffset` - already a real byte
+    // offset, 1-based from 2 (see IR.h's own comment on
+    // Slot::frameOffset) - placed right after.
     int slotFrameOffsetBytes(const ir::Slot *slot) const {
         if (slot->kind == ir::SlotKind::Param) return slot->paramIndex * 2;
-        return (paramCount_ + slot->frameOffset - 1) * 2;
+        return paramCount_ * 2 + slot->frameOffset - 2;
     }
 
     // Adopts `NFP` (already computed and left by the caller - see
@@ -298,17 +329,28 @@ class PIC18Codegen : public Backend {
     // slotFrameOffsetBytes() for a Local/Param - see this file's own
     // header comment.
     void slotAddrToPtr(const ir::Slot *slot);
-    // `ac` = `slot`'s own current value - a plain copy2() for a
-    // Global, or slotAddrToPtr()+loadAcIndirect() for a Local/Param.
+    // `ac` = `slot`'s own current value, sign/zero-extended into `ac`'s
+    // own high byte per `slot->type` when it's a `char` (see
+    // signExtendAcHighByte()'s own comment) - a plain copy2()/
+    // loadAcFromLabel() for a Global, or slotAddrToPtr()+
+    // loadAcIndirect() for a Local/Param.
     void loadSlotToAc(const ir::Slot *slot);
-    // The reverse: writes `ac` into `slot`.
+    // The reverse: writes `ac`'s own low `widthOfType(slot->type)`
+    // byte(s) into `slot`.
     void storeAcToSlot(const ir::Slot *slot);
 
     // Via FSR0L/INDF0/POSTINC0 - see this file's own header comment
     // on why this core's real auto-increment indirect mode needs one
     // fewer instruction than PIC16's own FSR/INDF-plus-INCF pair.
-    void storeAcIndirect();
-    void loadAcIndirect();
+    // `width` is 1 or 2 (never wider - see requireNarrow()'s own
+    // comment); `loadAcIndirect()`'s own `width == 1` case sign/zero-
+    // extends per `isUnsigned`, the same as PIC16Codegen.h's own
+    // identical pair.
+    void storeAcIndirect(int width);
+    void loadAcIndirect(int width, bool isUnsigned);
+    void signExtendAcHighByte(bool isUnsigned);
+    void loadAcFromLabel(const std::string &lbl, int width, bool isUnsigned);
+    void storeAcToLabel(const std::string &lbl, int width);
 
     // "movff src,dst\nmovff src+1,dst+1\n" - see this file's own
     // header comment on MOVFF.
@@ -334,11 +376,10 @@ class PIC18Codegen : public Backend {
     void popPtrCell();
 
     // Emits the globalInit startup code that writes one array
-    // element's own value into its already-reserved two RAM bytes
-    // (`loLbl`/`hiLbl`) - see generate()'s own call site for how
-    // those are named.
-    void emitInitElem(std::ostream &out, const std::string &loLbl, const std::string &hiLbl,
-                       const ir::ArrayInitElem &e);
+    // element's own `width`-byte value into its already-reserved RAM
+    // bytes starting at `base` - see generate()'s own call site for
+    // how that's named and sized.
+    void emitInitElem(std::ostream &out, const std::string &base, int width, const ir::ArrayInitElem &e);
 
     static std::string label(const ir::Slot *slot) {
         if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;

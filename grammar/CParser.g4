@@ -5,13 +5,14 @@ options { tokenVocab = CLexer; }
 // ---------------------------------------------------------------------
 // Parser half of pdp-c-compiler's C-subset grammar (see CLexer.g4 for
 // the lexer half, and ../README.md for exactly what's in and out of
-// scope: single 'int' type, no structs or floats, no preprocessor; a
-// char literal is just an int literal spelled as an ASCII character,
-// an array's initializer is always a literal list, never a general
-// expression, and a pointer is just an int that a '*'/'&' happens to
-// be applied to - there's no separate pointer-typed declaration).
-// This is a from-scratch grammar sized for that subset, not a full
-// ISO C grammar - the same approach ../../pdp-assembler takes for
+// scope: char/short/int/long/long long, each signed or unsigned, no
+// structs or floats, no preprocessor; an array's initializer is always
+// a literal list, never a general expression, and a pointer is just an
+// int that a '*'/'&' happens to be applied to - there's no separate
+// pointer-typed declaration, so pointer arithmetic stays word-granular
+// even though array indexing is now scaled by the array's own element
+// type). This is a from-scratch grammar sized for that subset, not a
+// full ISO C grammar - the same approach ../../pdp-assembler takes for
 // as.s with grammar/Pdp7.g4. Keyword/punctuation literals (`'if'`,
 // `'('`, ...) are written directly here rather than named in
 // CLexer.g4 - ANTLR resolves them against the shared token vocabulary
@@ -21,6 +22,20 @@ options { tokenVocab = CLexer; }
 
 program
     : topLevelDecl* EOF
+    ;
+
+// A declared type - every 'int' this grammar used to hardcode (in a
+// function/param/global/local declaration, or a cast/sizeof's
+// parenthesized operand) is one of these now. BuildAst turns this into
+// a pcc::Type (see ../src/Type.h); a bare 'signed'/'unsigned' with no
+// following width keyword means int, same as real C.
+typeSpec
+    : ('signed' | 'unsigned')? 'char'                        # charType
+    | ('signed' | 'unsigned')? 'short' 'int'?                 # shortType
+    | ('signed' | 'unsigned')? 'int'                          # intType
+    | ('signed' | 'unsigned')? 'long' 'long' 'int'?           # longLongType
+    | ('signed' | 'unsigned')? 'long' 'int'?                  # longType
+    | ('signed' | 'unsigned')                                  # signedOrUnsignedType
     ;
 
 topLevelDecl
@@ -39,7 +54,7 @@ topLevelDecl
 // address means on each backend, and the real motivation (kernel
 // interrupt/trap vectors).
 functionDecl
-    : 'int' IDENT '(' paramList? ')' ('@' addr=NUMBER)? (block | ';')
+    : typeSpec IDENT '(' paramList? ')' ('@' addr=NUMBER)? (block | ';')
     ;
 
 paramList
@@ -47,14 +62,14 @@ paramList
     ;
 
 param
-    : 'int' IDENT
+    : typeSpec IDENT
     ;
 
 // The optional '@' addr on each alternative is the same fixed-address
 // placement functionDecl takes - see its comment above.
 globalDecl
-    : 'int' IDENT '[' size=NUMBER ']' ('=' arrayInit)? ('@' addr=NUMBER)? ';'   # globalArrayDecl
-    | 'int' IDENT ('=' sign='-'? val=NUMBER)? ('@' addr=NUMBER)? ';'              # globalScalarDecl
+    : typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)? ('@' addr=NUMBER)? ';'   # globalArrayDecl
+    | typeSpec IDENT ('=' sign='-'? val=NUMBER)? ('@' addr=NUMBER)? ';'              # globalScalarDecl
     ;
 
 // Elements are plain (non-negative) literals, or a bare function/
@@ -93,8 +108,8 @@ statement
     ;
 
 simpleStmt
-    : 'int' IDENT '[' size=NUMBER ']' ('=' arrayInit)?    # localArrayDecl
-    | 'int' IDENT ('=' expr)?                              # localDecl
+    : typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)?    # localArrayDecl
+    | typeSpec IDENT ('=' expr)?                              # localDecl
     | expr                                                  # exprStmt
     ;
 
@@ -135,6 +150,13 @@ condExpr
     | NUMBER                                          # numExpr
     | CHARLIT                                         # charExpr
     | '(' expr ')'                                    # parenExpr
+    // No ambiguity with parenExpr/callPtrExpr above: typeSpec always
+    // starts with one of char/short/int/long/signed/unsigned, none of
+    // which can start an expr, so ANTLR tells these apart by their
+    // first token after '('.
+    | '(' typeSpec ')' condExpr                       # castExpr
+    | 'sizeof' '(' typeSpec ')'                       # sizeofTypeExpr
+    | 'sizeof' '(' expr ')'                           # sizeofExprExpr
     | '*' condExpr                                    # derefExpr
     | '&' condExpr                                    # addrOfExpr
     | op=('-'|'!'|'~') condExpr                        # unaryExpr

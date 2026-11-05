@@ -35,13 +35,25 @@ std::string PowerPCCodegen::arrayElemText(const ir::ArrayInitElem &e) {
     return e.slot ? label(e.slot) : label(e.func);
 }
 
-void PowerPCCodegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values) {
+void PowerPCCodegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values,
+                                    Type elemType) {
     if (values.empty()) return;
+    int w = widthOfType(elemType);
+    const char *directive = w == 1 ? "db" : w == 2 ? "dh" : "dw";
     std::ostringstream line;
-    line << lbl << ": dw ";
-    for (size_t i = 0; i < values.size(); i++) {
-        if (i > 0) line << ", ";
-        line << arrayElemText(values[i]);
+    line << lbl << ": " << directive << " ";
+    bool first = true;
+    for (const auto &e : values) {
+        if (w == 8 && !e.isSymbol) {
+            auto v = static_cast<uint64_t>(e.value);
+            if (!first) line << ", ";
+            line << static_cast<uint32_t>(v) << ", " << static_cast<uint32_t>(v >> 32);
+            first = false;
+            continue;
+        }
+        if (!first) line << ", ";
+        line << arrayElemText(e);
+        first = false;
     }
     trailer_.push_back(line.str());
 }
@@ -64,19 +76,19 @@ void PowerPCCodegen::loadImmediate(const std::string &reg, int32_t v) {
 void PowerPCCodegen::loadSlotValue(const std::string &reg, const ir::Slot *slot) {
     if (slot->kind == ir::SlotKind::Global) {
         loadAddress("t2", label(slot));
-        code_ << "    ldind t2," << reg << "\n";
+        loadOperand("t2", reg, slot->type);
         return;
     }
-    code_ << "    ldindd fp," << reg << "," << slotDisp(slot) << "\n";
+    loadOperandDisp(slotDisp(slot), reg, slot->type);
 }
 
 void PowerPCCodegen::storeSlotValue(const ir::Slot *slot, const std::string &reg) {
     if (slot->kind == ir::SlotKind::Global) {
         loadAddress("t2", label(slot));
-        code_ << "    stind t2," << reg << "\n";
+        storeOperand("t2", reg, slot->type);
         return;
     }
-    code_ << "    stindd fp," << reg << "," << slotDisp(slot) << "\n";
+    storeOperandDisp(slotDisp(slot), reg, slot->type);
 }
 
 std::string PowerPCCodegen::generate(const ir::Program &prog, bool objectMode) {
@@ -119,11 +131,20 @@ std::string PowerPCCodegen::generate(const ir::Program &prog, bool objectMode) {
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
-            declareArray(lbl, slot->arrayInit);
+            declareArray(lbl, slot->arrayInit, slot->type);
         } else {
             long v = slot->hasInit ? slot->initValue : 0;
-            trailer_.push_back(lbl + ": dw " + std::to_string(static_cast<int32_t>(static_cast<uint32_t>(v))) +
-                                "  ; " + slot->sourceName);
+            int w = widthOfType(slot->type);
+            if (w == 8) {
+                auto uv = static_cast<uint64_t>(v);
+                trailer_.push_back(lbl + ": dw " + std::to_string(static_cast<uint32_t>(uv)) + ", " +
+                                    std::to_string(static_cast<uint32_t>(uv >> 32)) + "  ; " + slot->sourceName);
+            } else {
+                const char *directive = w == 1 ? "db" : w == 2 ? "dh" : "dw";
+                trailer_.push_back(lbl + ": " + directive + " " +
+                                    std::to_string(static_cast<int32_t>(static_cast<uint32_t>(v))) + "  ; " +
+                                    slot->sourceName);
+            }
         }
     }
 
@@ -173,7 +194,7 @@ void PowerPCCodegen::genFunction(const ir::FunctionBody &fn) {
     code_ << "    addi sp,sp,-4\n    stind sp,r0\n";
     code_ << "    addi sp,sp,-4\n    stind sp,fp\n";
     code_ << "    or fp,sp,sp\n";
-    if (fn.func->frameSize > 0) code_ << "    addi sp,sp,-" << (fn.func->frameSize * 4) << "\n";
+    if (fn.func->frameSize > 0) code_ << "    addi sp,sp,-" << fn.func->frameSize << "\n";
 
     genStmt(*fn.body);
 
@@ -205,6 +226,7 @@ void PowerPCCodegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::If: {
             genExpr(*s.cond);
+            if (isWide(s.cond->type)) code_ << "    or t0,t0,t1\n";
             std::string Lelse = newLabel();
             std::string Ldone = newLabel();
             code_ << "    cmpwi t0,0\n";
@@ -224,6 +246,7 @@ void PowerPCCodegen::genStmt(const ir::Stmt &s) {
             std::string Lcont = s.postStmt ? newLabel() : Lstart;
             code_ << Lstart << ":\n";
             genExpr(*s.cond);
+            if (isWide(s.cond->type)) code_ << "    or t0,t0,t1\n";
             code_ << "    cmpwi t0,0\n";
             code_ << "    beq " << Lend << "\n";
             loopLabels_.push_back({Lcont, Lend});
@@ -282,14 +305,13 @@ void PowerPCCodegen::genStmt(const ir::Stmt &s) {
 void PowerPCCodegen::genExpr(const ir::Expr &e) {
     switch (e.kind) {
         case ir::ExprKind::IntLit: {
-            int32_t v = static_cast<int32_t>(static_cast<uint32_t>(e.intValue));
-            if (v >= -32768 && v <= 32767) {
-                code_ << "    li t0," << v << "\n";
-            } else {
-                uint32_t uv = static_cast<uint32_t>(v);
-                code_ << "    lis t0," << static_cast<int32_t>((uv >> 16) & 0xFFFFu) << "\n";
-                code_ << "    ori t0,t0," << static_cast<int32_t>(uv & 0xFFFFu) << "\n";
+            if (isWide(e.type)) {
+                auto v = static_cast<uint64_t>(e.intValue);
+                loadImmediate("t0", static_cast<int32_t>(static_cast<uint32_t>(v)));
+                loadImmediate("t1", static_cast<int32_t>(static_cast<uint32_t>(v >> 32)));
+                return;
             }
+            loadImmediate("t0", static_cast<int32_t>(static_cast<uint32_t>(e.intValue)));
             return;
         }
         case ir::ExprKind::Var: {
@@ -306,7 +328,7 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
                 code_ << "    addi sp,sp,-4\n    stind sp,t2\n";
                 genExpr(*e.rhs);
                 code_ << "    ldind sp,t2\n    addi sp,sp,4\n";
-                code_ << "    stind t2,t0\n";
+                storeOperand("t2", "t0", e.slot->type);
                 return;
             }
             genExpr(*e.rhs);
@@ -324,7 +346,11 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
         case ir::ExprKind::Unary: {
             if (e.op == "-") {
                 genExpr(*e.rhs);
-                code_ << "    neg t0,t0\n";
+                if (isWide(e.rhs->type)) {
+                    genNegate64();
+                } else {
+                    code_ << "    neg t0,t0\n";
+                }
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
@@ -335,9 +361,14 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "    nor t0,t0,t0\n";
+                if (isWide(e.rhs->type)) code_ << "    nor t1,t1,t1\n";
             } else {  // "&"
                 genAddrOf(*e.rhs);
             }
+            return;
+        }
+        case ir::ExprKind::Convert: {
+            genConvert(e);
             return;
         }
         case ir::ExprKind::Call: {
@@ -351,12 +382,19 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
             // the callee's own epilogue only ever restores `sp` to
             // where it was on entry - argument 0's own address, not
             // any address above it.
+            int totalBytes = 0;
             for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
+                if (isWide(e.args[i]->type)) {
+                    code_ << "    addi sp,sp,-8\n    stind sp,t1\n    stindd sp,t0,4\n";
+                    totalBytes += 8;
+                } else {
+                    code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
+                    totalBytes += 4;
+                }
             }
             code_ << "    bl " << label(e.func) << "\n";
-            if (!e.args.empty()) code_ << "    addi sp,sp," << (e.args.size() * 4) << "\n";
+            if (totalBytes > 0) code_ << "    addi sp,sp," << totalBytes << "\n";
             return;
         }
         case ir::ExprKind::CallPtr: {
@@ -406,7 +444,8 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
 // variable's own stored value first (loadSlotValue, not an address).
 void PowerPCCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // t0 = index
-    code_ << "    slwi t0,t0,2\n";  // t0 *= 4 (words are 4 bytes on this target)
+    int shift = elemShift(slot->type);
+    if (shift > 0) code_ << "    slwi t0,t0," << shift << "\n";
     if (slot->arraySize > 0) {
         if (slot->kind == ir::SlotKind::Global) {
             loadAddress("t2", label(slot));
@@ -423,7 +462,7 @@ void PowerPCCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr)
 
 void PowerPCCodegen::genIndex(const ir::Expr &e) {
     genIndexAddr(e.slot, *e.lhs);
-    code_ << "    ldind t2,t0\n";
+    loadOperand("t2", "t0", e.slot->type);
 }
 
 // Stores `slot->arrayInit` into this Local array's own frame slots -
@@ -432,15 +471,30 @@ void PowerPCCodegen::genIndex(const ir::Expr &e) {
 // trailer line) this has to run as real code, one element at a time,
 // every time this declaration is reached.
 void PowerPCCodegen::genLocalArrayInit(const ir::Slot *slot) {
+    int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
         const ir::ArrayInitElem &elem = slot->arrayInit[i];
+        int disp = slotDisp(slot) - w * static_cast<int>(i);
+        if (w == 8 && !elem.isSymbol) {
+            auto v = static_cast<uint64_t>(elem.value);
+            loadImmediate("t0", static_cast<int32_t>(static_cast<uint32_t>(v)));
+            code_ << "    stindd fp,t0," << disp << "\n";
+            loadImmediate("t0", static_cast<int32_t>(static_cast<uint32_t>(v >> 32)));
+            code_ << "    stindd fp,t0," << (disp + 4) << "\n";
+            continue;
+        }
         if (elem.isSymbol) {
             loadAddress("t0", elem.slot ? label(elem.slot) : label(elem.func));
         } else {
             loadImmediate("t0", static_cast<int32_t>(static_cast<uint32_t>(elem.value)));
         }
-        int disp = slotDisp(slot) - 4 * static_cast<int>(i);
-        code_ << "    stindd fp,t0," << disp << "\n";
+        if (w == 1) {
+            code_ << "    stindb fp,t0," << disp << "\n";
+        } else if (w == 2) {
+            code_ << "    stindh fp,t0," << disp << "\n";
+        } else {
+            code_ << "    stindd fp,t0," << disp << "\n";
+        }
     }
 }
 
@@ -466,53 +520,381 @@ void PowerPCCodegen::genAddrOf(const ir::Expr &operand) {
     err(operand.line, "internal: unhandled addressable-operand kind");
 }
 
+void PowerPCCodegen::loadOperand(const std::string &addrReg, const std::string &reg, Type type) {
+    int w = widthOfType(type);
+    if (w == 1) {
+        code_ << "    ldindb " << addrReg << "," << reg << "\n";
+        if (!type.isUnsigned) code_ << "    slwi " << reg << "," << reg << ",24\n    srawi " << reg << "," << reg
+                                     << ",24\n";
+    } else if (w == 2) {
+        code_ << "    " << (type.isUnsigned ? "ldindhu" : "ldindh") << " " << addrReg << "," << reg << "\n";
+    } else if (w == 4) {
+        code_ << "    ldind " << addrReg << "," << reg << "\n";
+    } else {  // 8 - long long: t1:t0 (hi:lo), low word first (reg is always "t0" here)
+        code_ << "    ldind " << addrReg << "," << reg << "\n";
+        code_ << "    ldindd " << addrReg << ",t1,4\n";
+    }
+}
+
+void PowerPCCodegen::storeOperand(const std::string &addrReg, const std::string &reg, Type type) {
+    int w = widthOfType(type);
+    if (w == 1) {
+        code_ << "    stindb " << addrReg << "," << reg << "\n";
+    } else if (w == 2) {
+        code_ << "    stindh " << addrReg << "," << reg << "\n";
+    } else if (w == 4) {
+        code_ << "    stind " << addrReg << "," << reg << "\n";
+    } else {
+        code_ << "    stind " << addrReg << "," << reg << "\n";
+        code_ << "    stindd " << addrReg << ",t1,4\n";
+    }
+}
+
+void PowerPCCodegen::loadOperandDisp(int disp, const std::string &reg, Type type) {
+    int w = widthOfType(type);
+    if (w == 1) {
+        code_ << "    ldindb fp," << reg << "," << disp << "\n";
+        if (!type.isUnsigned) code_ << "    slwi " << reg << "," << reg << ",24\n    srawi " << reg << "," << reg
+                                     << ",24\n";
+    } else if (w == 2) {
+        code_ << "    " << (type.isUnsigned ? "ldindhu" : "ldindh") << " fp," << reg << "," << disp << "\n";
+    } else if (w == 4) {
+        code_ << "    ldindd fp," << reg << "," << disp << "\n";
+    } else {
+        code_ << "    ldindd fp," << reg << "," << disp << "\n";
+        code_ << "    ldindd fp,t1," << (disp + 4) << "\n";
+    }
+}
+
+void PowerPCCodegen::storeOperandDisp(int disp, const std::string &reg, Type type) {
+    int w = widthOfType(type);
+    if (w == 1) {
+        code_ << "    stindb fp," << reg << "," << disp << "\n";
+    } else if (w == 2) {
+        code_ << "    stindh fp," << reg << "," << disp << "\n";
+    } else if (w == 4) {
+        code_ << "    stindd fp," << reg << "," << disp << "\n";
+    } else {
+        code_ << "    stindd fp," << reg << "," << disp << "\n";
+        code_ << "    stindd fp,t1," << (disp + 4) << "\n";
+    }
+}
+
+void PowerPCCodegen::narrowT0To(Type to) {
+    int w = widthOfType(to);
+    if (w == 1) {
+        code_ << "    slwi t0,t0,24\n";
+        code_ << "    " << (to.isUnsigned ? "srwi" : "srawi") << " t0,t0,24\n";
+    } else if (w == 2) {
+        code_ << "    slwi t0,t0,16\n";
+        code_ << "    " << (to.isUnsigned ? "srwi" : "srawi") << " t0,t0,16\n";
+    }
+}
+
+// An implicit or explicit type conversion. Every arithmetic/
+// comparison operand narrower than `int` is already promoted by
+// IRBuilder before any Binary/Unary ever sees it, so the only real
+// work here is crossing the native-int/`long long` boundary (sign/
+// zero-extending t0 into t1, or just dropping t1), or re-truncating+
+// re-extending t0 for a narrower target - see narrowT0To().
+void PowerPCCodegen::genConvert(const ir::Expr &e) {
+    Type from = e.lhs->type;
+    Type to = e.type;
+    bool fromWide = isWide(from);
+    bool toWide = isWide(to);
+    genExpr(*e.lhs);
+    if (fromWide && !toWide) {
+        narrowT0To(to);
+    } else if (!fromWide && toWide) {
+        if (from.isUnsigned) {
+            code_ << "    li t1,0\n";
+        } else {
+            code_ << "    srawi t1,t0,31\n";
+        }
+    } else if (!fromWide && !toWide) {
+        narrowT0To(to);
+    }
+}
+
+// `long long` add/sub (lhs OP rhs) - PowerPC has no single carry flag
+// GPR instruction this dialect exposes, so the carry/borrow out of
+// the low-word op is recovered the same way a comparison already
+// materializes a boolean here: `cmplw`+a conditional branch.
+void PowerPCCodegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd) {
+    genExpr(lhs);  // t1:t0 = lhs
+    code_ << "    addi sp,sp,-8\n    stind sp,t0\n    stindd sp,t1,4\n";
+    genExpr(rhs);  // t1:t0 = rhs
+    code_ << "    or t3,t0,t0\n    or t4,t1,t1\n";  // t3:t4 = rhs (lo:hi)
+    code_ << "    ldind sp,t0\n    ldindd sp,t1,4\n    addi sp,sp,8\n";  // t1:t0 = lhs
+    std::string Lcarry = newLabel(), Ldone = newLabel();
+    if (isAdd) {
+        code_ << "    add t5,t0,t3\n";           // t5 = lo sum
+        code_ << "    cmplw t5,t0\n    bge " << Lcarry << "\n";  // unsigned: sum >= lhs_lo means no carry
+        code_ << "    li t6,1\n    b " << Ldone << "\n";
+        code_ << Lcarry << ":\n    li t6,0\n";
+        code_ << Ldone << ":\n";
+        code_ << "    add t1,t1,t4\n    add t1,t1,t6\n";
+        code_ << "    or t0,t5,t5\n";
+    } else {
+        code_ << "    cmplw t0,t3\n    bge " << Lcarry << "\n";  // unsigned: lhs_lo >= rhs_lo means no borrow
+        code_ << "    li t6,1\n    b " << Ldone << "\n";
+        code_ << Lcarry << ":\n    li t6,0\n";
+        code_ << Ldone << ":\n";
+        code_ << "    subf t5,t3,t0\n";          // t5 = t0 - t3
+        code_ << "    subf t1,t4,t1\n";          // t1 = t1 - t4
+        code_ << "    subf t1,t6,t1\n";          // t1 -= borrow
+        code_ << "    or t0,t5,t5\n";
+    }
+}
+
+// `long long` multiply, keeping the low 64 bits of the true 128-bit
+// product - the standard 32-on-32 cross-multiply decomposition, using
+// `mullw` (low 32) and `mulhwu` (high 32) three times.
+void PowerPCCodegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs) {
+    genExpr(lhs);
+    code_ << "    addi sp,sp,-8\n    stind sp,t0\n    stindd sp,t1,4\n";
+    genExpr(rhs);
+    code_ << "    or t5,t0,t0\n    or t6,t1,t1\n";  // t5:t6 = rhs (lo:hi)
+    code_ << "    ldind sp,t3\n    ldindd sp,t4,4\n    addi sp,sp,8\n";  // t3:t4 = lhs (lo:hi)
+    code_ << "    mullw t0,t3,t6\n";    // lhs_lo*rhs_hi
+    code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
+    code_ << "    mullw t0,t4,t5\n";    // lhs_hi*rhs_lo
+    code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
+    code_ << "    mullw t0,t3,t5\n    mulhwu t1,t3,t5\n";  // lhs_lo*rhs_lo (final result_lo/carry)
+    code_ << "    ldind sp,t6\n    addi sp,sp,4\n";  // crossB_lo
+    code_ << "    ldind sp,t5\n    addi sp,sp,4\n";  // crossA_lo
+    code_ << "    add t1,t1,t6\n    add t1,t1,t5\n";
+}
+
+void PowerPCCodegen::genNegate64() {
+    code_ << "    nor t0,t0,t0\n    nor t1,t1,t1\n";
+    code_ << "    addi t0,t0,1\n";
+    std::string Lcarry = newLabel(), Ldone = newLabel();
+    code_ << "    cmpwi t0,0\n    bne " << Lcarry << "\n";
+    code_ << "    addi t1,t1,1\n    b " << Ldone << "\n";
+    code_ << Lcarry << ":\n";
+    code_ << Ldone << ":\n";
+}
+
+// Classic bit-serial shift/compare/subtract long division - see
+// I386Codegen.cpp's/MipsCodegen.cpp's own genWideDivMod() for the
+// algorithm, ported onto the stack with $sp playing the role `ebx`/
+// `$sp`+ldind-with-displacement plays there (this backend's own
+// `ldindd`/`stindd` already take a displacement, same as MIPS's).
+void PowerPCCodegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
+    genExpr(lhs);
+    code_ << "    addi sp,sp,-8\n    stind sp,t1\n    stindd sp,t0,4\n";
+    genExpr(rhs);
+    code_ << "    addi sp,sp,-8\n    stind sp,t1\n    stindd sp,t0,4\n";
+    code_ << "    addi sp,sp,-36\n";
+    code_ << "    ldindd sp,t0,44\n    stindd sp,t0,0\n";
+    code_ << "    ldindd sp,t0,40\n    stindd sp,t0,4\n";
+    code_ << "    ldindd sp,t0,36\n    stindd sp,t0,8\n";
+    code_ << "    ldindd sp,t0,32\n    stindd sp,t0,12\n";
+    code_ << "    li t0,0\n    stindd sp,t0,16\n    stindd sp,t0,20\n";
+    code_ << "    stindd sp,t0,24\n    stindd sp,t0,28\n";
+    code_ << "    li t0,32\n    stindd sp,t0,32\n";
+
+    std::string LskipNegN = newLabel(), LskipNegD = newLabel();
+    if (!isUnsigned) {
+        code_ << "    ldindd sp,t0,4\n    srwi t0,t0,31\n    stindd sp,t0,40\n";
+        code_ << "    ldindd sp,t0,12\n    srwi t0,t0,31\n    stindd sp,t0,44\n";
+        code_ << "    ldindd sp,t0,40\n    cmpwi t0,0\n    beq " << LskipNegN << "\n";
+        code_ << "    ldindd sp,t0,0\n    ldindd sp,t1,4\n";
+        genNegate64();
+        code_ << "    stindd sp,t0,0\n    stindd sp,t1,4\n";
+        code_ << LskipNegN << ":\n";
+        code_ << "    ldindd sp,t0,44\n    cmpwi t0,0\n    beq " << LskipNegD << "\n";
+        code_ << "    ldindd sp,t0,8\n    ldindd sp,t1,12\n";
+        genNegate64();
+        code_ << "    stindd sp,t0,8\n    stindd sp,t1,12\n";
+        code_ << LskipNegD << ":\n";
+    }
+
+    std::string Lloop = newLabel(), Ldone = newLabel();
+    std::string LhiDiff = newLabel(), LsubYes = newLabel(), LsubNo = newLabel(), LshiftQ = newLabel();
+    code_ << Lloop << ":\n";
+    code_ << "    ldindd sp,t0,32\n    cmpwi t0,0\n    beq " << Ldone << "\n";
+    code_ << "    addi t0,t0,-1\n    stindd sp,t0,32\n";
+
+    code_ << "    ldindd sp,t0,4\n    srwi t0,t0,31\n    or t3,t0,t0\n";
+    code_ << "    ldindd sp,t0,0\n    srwi t0,t0,31\n    or t4,t0,t0\n";
+    code_ << "    ldindd sp,t0,0\n    slwi t0,t0,1\n    stindd sp,t0,0\n";
+    code_ << "    ldindd sp,t0,4\n    slwi t0,t0,1\n    or t0,t0,t4\n    stindd sp,t0,4\n";
+
+    code_ << "    ldindd sp,t0,16\n    srwi t0,t0,31\n    or t5,t0,t0\n";
+    code_ << "    ldindd sp,t0,16\n    slwi t0,t0,1\n    or t0,t0,t3\n    stindd sp,t0,16\n";
+    code_ << "    ldindd sp,t0,20\n    slwi t0,t0,1\n    or t0,t0,t5\n    stindd sp,t0,20\n";
+
+    code_ << "    ldindd sp,t0,20\n    ldindd sp,t1,12\n    cmpw t0,t1\n    bne " << LhiDiff << "\n";
+    code_ << "    ldindd sp,t0,16\n    ldindd sp,t1,8\n    cmplw t0,t1\n    blt " << LsubNo << "\n";
+    code_ << "    b " << LsubYes << "\n";
+    code_ << LhiDiff << ":\n";
+    code_ << "    cmplw t0,t1\n    blt " << LsubNo << "\n";
+    code_ << "    b " << LsubYes << "\n";
+    code_ << LsubYes << ":\n";
+    code_ << "    ldindd sp,t0,16\n    ldindd sp,t1,8\n    cmplw t0,t1\n    bge " << LshiftQ << "_nb\n";
+    code_ << "    li t6,1\n    b " << LshiftQ << "_bdone\n";
+    code_ << LshiftQ << "_nb:\n    li t6,0\n";
+    code_ << LshiftQ << "_bdone:\n";
+    code_ << "    subf t0,t1,t0\n    stindd sp,t0,16\n";
+    code_ << "    ldindd sp,t0,20\n    ldindd sp,t1,12\n    subf t0,t1,t0\n    subf t0,t6,t0\n    stindd sp,t0,20\n";
+    code_ << "    li t3,1\n    b " << LshiftQ << "\n";
+    code_ << LsubNo << ":\n    li t3,0\n";
+    code_ << LshiftQ << ":\n";
+
+    code_ << "    ldindd sp,t0,24\n    srwi t0,t0,31\n    or t5,t0,t0\n";
+    code_ << "    ldindd sp,t0,24\n    slwi t0,t0,1\n    or t0,t0,t3\n    stindd sp,t0,24\n";
+    code_ << "    ldindd sp,t0,28\n    slwi t0,t0,1\n    or t0,t0,t5\n    stindd sp,t0,28\n";
+    code_ << "    b " << Lloop << "\n";
+
+    code_ << Ldone << ":\n";
+    if (!isUnsigned) {
+        std::string LskipNegQ = newLabel(), LskipNegR = newLabel();
+        code_ << "    ldindd sp,t3,40\n    ldindd sp,t0,44\n    xor t3,t3,t0\n";
+        code_ << "    cmpwi t3,0\n    beq " << LskipNegQ << "\n";
+        code_ << "    ldindd sp,t0,24\n    ldindd sp,t1,28\n";
+        genNegate64();
+        code_ << "    stindd sp,t0,24\n    stindd sp,t1,28\n";
+        code_ << LskipNegQ << ":\n";
+        code_ << "    ldindd sp,t3,40\n    cmpwi t3,0\n    beq " << LskipNegR << "\n";
+        code_ << "    ldindd sp,t0,16\n    ldindd sp,t1,20\n";
+        genNegate64();
+        code_ << "    stindd sp,t0,16\n    stindd sp,t1,20\n";
+        code_ << LskipNegR << ":\n";
+    }
+    code_ << "    ldindd sp,t0,24\n    ldindd sp,t1,28\n";
+    code_ << "    ldindd sp,t4,16\n    ldindd sp,t5,20\n";
+    code_ << "    addi sp,sp,52\n";
+    if (wantRemainder) {
+        code_ << "    or t0,t4,t4\n    or t1,t5,t5\n";
+    }
+}
+
+// A `long long` shifted by a runtime count - a counted loop of 1-bit
+// shifts, each carrying the bit that crosses the word boundary by
+// hand (no hardware 64-bit shift).
+void PowerPCCodegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
+    genExpr(lhs);
+    code_ << "    addi sp,sp,-8\n    stind sp,t0\n    stindd sp,t1,4\n";
+    genExpr(rhs);  // t0 = shift count
+    code_ << "    or t3,t0,t0\n";
+    code_ << "    ldind sp,t0\n    ldindd sp,t1,4\n    addi sp,sp,8\n";
+    std::string Lloop = newLabel(), Ldone = newLabel();
+    code_ << Lloop << ":\n    cmpwi t3,0\n    beq " << Ldone << "\n    addi t3,t3,-1\n";
+    if (isLeft) {
+        code_ << "    srwi t4,t0,31\n";
+        code_ << "    slwi t0,t0,1\n";
+        code_ << "    slwi t1,t1,1\n    or t1,t1,t4\n";
+    } else {
+        code_ << "    slwi t4,t1,31\n";
+        code_ << "    srwi t0,t0,1\n    or t0,t0,t4\n";
+        code_ << "    " << (isUnsigned ? "srwi" : "srawi") << " t1,t1,1\n";
+    }
+    code_ << "    b " << Lloop << "\n";
+    code_ << Ldone << ":\n";
+}
+
+// A `long long` comparison - compare the high words first (signed or
+// unsigned per `isUnsigned`), falling back to an always-unsigned
+// compare of the low words only when the high words are equal.
+void PowerPCCodegen::genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs,
+                                      bool isUnsigned) {
+    genExpr(lhs);
+    code_ << "    addi sp,sp,-8\n    stind sp,t0\n    stindd sp,t1,4\n";
+    genExpr(rhs);
+    code_ << "    or t5,t0,t0\n    or t6,t1,t1\n";  // t5:t6 = rhs (lo:hi)
+    code_ << "    ldind sp,t3\n    ldindd sp,t4,4\n    addi sp,sp,8\n";  // t3:t4 = lhs (lo:hi)
+    if (op == "==" || op == "!=") {
+        std::string Lfalse = newLabel(), Ldone = newLabel();
+        const char *onEqual = op == "==" ? "1" : "0";
+        const char *onDiffer = op == "==" ? "0" : "1";
+        code_ << "    cmpw t3,t5\n    bne " << Lfalse << "\n";
+        code_ << "    cmpw t4,t6\n    bne " << Lfalse << "\n";
+        code_ << "    li t0," << onEqual << "\n    b " << Ldone << "\n";
+        code_ << Lfalse << ":\n    li t0," << onDiffer << "\n";
+        code_ << Ldone << ":\n";
+        return;
+    }
+    std::string LhiDiff = newLabel(), Ldone = newLabel(), Lt = newLabel(), Lf = newLabel();
+    code_ << "    cmpw t4,t6\n    bne " << LhiDiff << "\n";
+    const char *loBranch = op == "<" ? "blt" : op == ">" ? "bgt" : op == "<=" ? "ble" : "bge";
+    code_ << "    cmplw t3,t5\n    " << loBranch << " " << Lt << "\n    b " << Lf << "\n";
+    code_ << Lt << ":\n    li t0,1\n    b " << Ldone << "\n";
+    code_ << Lf << ":\n    li t0,0\n    b " << Ldone << "\n";
+    code_ << LhiDiff << ":\n";
+    const char *hiCmp = isUnsigned ? "cmplw" : "cmpw";
+    code_ << "    " << hiCmp << " t4,t6\n    " << loBranch << " " << Lt << "\n    b " << Lf << "\n";
+    code_ << Ldone << ":\n";
+}
+
 void PowerPCCodegen::genBinary(const ir::Expr &e) {
     const std::string &op = e.op;
+    Type operandType = e.lhs->type;
+    bool wide = isWide(operandType);
+    bool isUnsigned = operandType.isUnsigned;
     if (op == "+" || op == "-") {
+        if (wide) {
+            genWideAdd(*e.lhs, *e.rhs, op == "+");
+            return;
+        }
         genExpr(*e.lhs);
         code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
         genExpr(*e.rhs);
         code_ << "    ldind sp,t1\n    addi sp,sp,4\n";  // t1 = lhs, t0 = rhs
         if (op == "+") {
-            code_ << "    add t0,t1,t0\n";  // t0 = lhs + rhs
+            code_ << "    add t0,t1,t0\n";
         } else {
             code_ << "    subf t0,t0,t1\n";  // t0 = t1 - t0 = lhs - rhs
         }
         return;
     }
     if (op == "*") {
-        genMul(*e.lhs, *e.rhs);
-        return;
-    }
-    if (op == "/") {
-        genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/false);
-        return;
-    }
-    if (op == "%") {
-        genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/true);
-        return;
-    }
-    if (op == "&" || op == "|" || op == "^") {
-        genExpr(*e.lhs);
-        code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
-        genExpr(*e.rhs);
-        code_ << "    ldind sp,t1\n    addi sp,sp,4\n";  // t1 = lhs, t0 = rhs
-        if (op == "&") {
-            code_ << "    and t0,t1,t0\n";
-        } else if (op == "|") {
-            code_ << "    or t0,t1,t0\n";
+        if (wide) {
+            genWideMul(*e.lhs, *e.rhs);
         } else {
-            code_ << "    xor t0,t1,t0\n";
+            genMul(*e.lhs, *e.rhs);
         }
         return;
     }
+    if (op == "/" || op == "%") {
+        if (wide) {
+            genWideDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/op == "%", isUnsigned);
+        } else {
+            genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/op == "%", isUnsigned);
+        }
+        return;
+    }
+    if (op == "&" || op == "|" || op == "^") {
+        const char *insn = op == "&" ? "and" : op == "|" ? "or" : "xor";
+        if (wide) {
+            genExpr(*e.lhs);
+            code_ << "    addi sp,sp,-8\n    stind sp,t0\n    stindd sp,t1,4\n";
+            genExpr(*e.rhs);
+            code_ << "    or t3,t0,t0\n    or t4,t1,t1\n";
+            code_ << "    ldind sp,t0\n    ldindd sp,t1,4\n    addi sp,sp,8\n";
+            code_ << "    " << insn << " t0,t0,t3\n    " << insn << " t1,t1,t4\n";
+            return;
+        }
+        genExpr(*e.lhs);
+        code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
+        genExpr(*e.rhs);
+        code_ << "    ldind sp,t1\n    addi sp,sp,4\n";
+        code_ << "    " << insn << " t0,t1,t0\n";
+        return;
+    }
     if (op == "<<" || op == ">>") {
+        if (wide) {
+            genWideShift(*e.lhs, *e.rhs, op == "<<", isUnsigned);
+            return;
+        }
         genExpr(*e.lhs);
         code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
         genExpr(*e.rhs);  // t0 = shift count
-        code_ << "    or t1,t0,t0\n";                    // t1 = shift count (t0, real PowerPC "mr" idiom)
+        code_ << "    or t1,t0,t0\n";
         code_ << "    ldind sp,t0\n    addi sp,sp,4\n";  // t0 = value to shift
-        code_ << "    " << (op == "<<" ? "slw" : "srw") << " t0,t0,t1\n";
+        const char *insn = op == "<<" ? "slw" : (isUnsigned ? "srw" : "sraw");
+        code_ << "    " << insn << " t0,t0,t1\n";
         return;
     }
     if (op == "&&") {
@@ -528,6 +910,7 @@ void PowerPCCodegen::genBinary(const ir::Expr &e) {
 
 // Real hardware multiply (`mullw`) - a full 32x32->32 product, no
 // operand-size limitation the way the 68000's own `MULS.W` has.
+// Signedness doesn't matter for the low-order 32 bits mullw keeps.
 void PowerPCCodegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
@@ -536,38 +919,45 @@ void PowerPCCodegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << "    mullw t0,t1,t0\n";
 }
 
-// Real hardware divide (`divw`) gives only the quotient - unlike
-// MIPS's own `div` (which leaves both quotient and remainder ready to
-// pull out of HI/LO), classic PowerPC has no remainder instruction at
-// all, so `%` is synthesized the standard way: `divw` for the
-// quotient, `mullw` to multiply the quotient back out by the divisor,
-// then `subf` to recover the remainder as `dividend - quotient *
-// divisor`.
-void PowerPCCodegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder) {
+// Real hardware divide (`divw`/`divwu`) gives only the quotient -
+// unlike MIPS's own `div` (which leaves both quotient and remainder
+// ready to pull out of HI/LO), classic PowerPC has no remainder
+// instruction at all, so `%` is synthesized the standard way: divide
+// for the quotient, `mullw` to multiply the quotient back out by the
+// divisor, then `subf` to recover the remainder as `dividend -
+// quotient * divisor`.
+void PowerPCCodegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
+    const char *divInsn = isUnsigned ? "divwu" : "divw";
     genExpr(lhs);
     code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
     genExpr(rhs);
     code_ << "    ldind sp,t1\n    addi sp,sp,4\n";  // t1 = lhs (dividend), t0 = rhs (divisor)
     if (!wantRemainder) {
-        code_ << "    divw t0,t1,t0\n";
+        code_ << "    " << divInsn << " t0,t1,t0\n";
         return;
     }
-    code_ << "    divw t2,t1,t0\n";    // t2 = quotient (t1/t0)
-    code_ << "    mullw t2,t2,t0\n";   // t2 = quotient * divisor
-    code_ << "    subf t0,t2,t1\n";    // t0 = t1 - t2 = dividend - quotient*divisor
+    code_ << "    " << divInsn << " t2,t1,t0\n";  // t2 = quotient (t1/t0)
+    code_ << "    mullw t2,t2,t0\n";               // t2 = quotient * divisor
+    code_ << "    subf t0,t2,t1\n";                // t0 = t1 - t2 = dividend - quotient*divisor
 }
 
 // PowerPC has no single compare-and-set instruction the way MIPS's
-// own `slt` is - a comparison here always needs `cmpw` plus a real
-// conditional branch to decide which boolean value to materialize,
-// the same "compare, then branch to decide" shape as the 68000's own
-// CMP+Bcc (see M68kCodegen.h's own header comment).
+// own `slt` is - a comparison here always needs `cmpw`/`cmplw` plus a
+// real conditional branch to decide which boolean value to
+// materialize, the same "compare, then branch to decide" shape as the
+// 68000's own CMP+Bcc. `isUnsigned` (the shared operand type's own
+// signedness) picks `cmpw` vs `cmplw`.
 void PowerPCCodegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs) {
+    if (isWide(lhs.type)) {
+        genWideCompare(op, lhs, rhs, lhs.type.isUnsigned);
+        return;
+    }
+    bool isUnsigned = lhs.type.isUnsigned;
     genExpr(lhs);
     code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
     genExpr(rhs);
     code_ << "    ldind sp,t1\n    addi sp,sp,4\n";  // t1 = lhs, t0 = rhs
-    code_ << "    cmpw t1,t0\n";
+    code_ << "    " << (isUnsigned ? "cmplw" : "cmpw") << " t1,t0\n";
     std::string branch;
     if (op == "<") branch = "blt";
     else if (op == ">") branch = "bgt";
@@ -586,9 +976,11 @@ void PowerPCCodegen::genCompare(const std::string &op, const ir::Expr &lhs, cons
 
 void PowerPCCodegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
+    if (isWide(lhs.type)) code_ << "    or t0,t0,t1\n";
     std::string Lfalse = newLabel(), Ltrue = newLabel(), Ldone = newLabel();
     code_ << "    cmpwi t0,0\n    beq " << Lfalse << "\n";
     genExpr(rhs);
+    if (isWide(rhs.type)) code_ << "    or t0,t0,t1\n";
     code_ << "    cmpwi t0,0\n    beq " << Lfalse << "\n";
     code_ << "    b " << Ltrue << "\n";
     code_ << Lfalse << ":\n    li t0,0\n    b " << Ldone << "\n";
@@ -598,9 +990,11 @@ void PowerPCCodegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
 
 void PowerPCCodegen::genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
+    if (isWide(lhs.type)) code_ << "    or t0,t0,t1\n";
     std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
     code_ << "    cmpwi t0,0\n    bne " << Ltrue << "\n";
     genExpr(rhs);
+    if (isWide(rhs.type)) code_ << "    or t0,t0,t1\n";
     code_ << "    cmpwi t0,0\n    bne " << Ltrue << "\n";
     code_ << "    b " << Lfalse << "\n";
     code_ << Ltrue << ":\n    li t0,1\n    b " << Ldone << "\n";
@@ -610,6 +1004,7 @@ void PowerPCCodegen::genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs) {
 
 void PowerPCCodegen::genLogicalNot(const ir::Expr &rhs) {
     genExpr(rhs);
+    if (isWide(rhs.type)) code_ << "    or t0,t0,t1\n";
     std::string Lfalse = newLabel(), Ldone = newLabel();
     code_ << "    cmpwi t0,0\n    bne " << Lfalse << "\n";
     code_ << "    li t0,1\n    b " << Ldone << "\n";

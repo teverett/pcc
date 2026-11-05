@@ -8,11 +8,12 @@ namespace pcc {
 
 namespace {
 
-ir::ExprPtr makeIntLit(long value, int line) {
+ir::ExprPtr makeIntLit(long value, int line, Type type) {
     auto lit = std::make_unique<ir::Expr>();
     lit->kind = ir::ExprKind::IntLit;
     lit->line = line;
     lit->intValue = value;
+    lit->type = type;
     return lit;
 }
 
@@ -66,7 +67,7 @@ void foldExpr(ir::ExprPtr &e, bool &changed) {
         if (std::optional<long> v = evalUnary(e->op, e->rhs->intValue)) {
             std::cerr << "constant-folding: line " << e->line << ": folded `" << e->op
                        << e->rhs->intValue << "` to `" << *v << "`\n";
-            e = makeIntLit(*v, e->line);
+            e = makeIntLit(*v, e->line, e->type);
             changed = true;
         }
     } else if (e->kind == ir::ExprKind::Binary && e->lhs->kind == ir::ExprKind::IntLit &&
@@ -74,7 +75,7 @@ void foldExpr(ir::ExprPtr &e, bool &changed) {
         if (std::optional<long> v = evalBinary(e->op, e->lhs->intValue, e->rhs->intValue)) {
             std::cerr << "constant-folding: line " << e->line << ": folded `" << e->lhs->intValue
                        << " " << e->op << " " << e->rhs->intValue << "` to `" << *v << "`\n";
-            e = makeIntLit(*v, e->line);
+            e = makeIntLit(*v, e->line, e->type);
             changed = true;
         }
     }

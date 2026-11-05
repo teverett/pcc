@@ -45,9 +45,22 @@ bool exprMakesCall(const ir::Expr *e) {
     return false;
 }
 
+// A `long`/`long long` Local/Param needs `widthOf(type)` consecutive
+// words of storage and a width-aware address (the frame-based,
+// non-leaf path already has both - see emitLoadSlotAddress()'s own
+// frameOffset-based arithmetic), while the leaf fast path's own
+// static-cell scheme (leafLabel()) and `__sp`-relative param reads
+// (emitLeafParamBinding()) are both hardcoded to exactly one word
+// per slot - so a wide Local/Param disqualifies the leaf path
+// entirely, the same way a Local/Param array already does above.
+bool slotIsWide(const ir::Slot *s) { return s->type.base == BaseType::Long || s->type.base == BaseType::LongLong; }
+
 bool stmtRulesOutLeaf(const ir::Stmt *s) {
     if (!s) return false;
-    if (s->kind == ir::StmtKind::LocalDecl && s->declSlot && s->declSlot->arraySize > 0) return true;
+    if (s->kind == ir::StmtKind::LocalDecl && s->declSlot &&
+        (s->declSlot->arraySize > 0 || slotIsWide(s->declSlot))) {
+        return true;
+    }
     // NOTE: an `asm{...}` block was excluded here for a while, on
     // the theory that raw inline assembly's opaque text might embed
     // its own assumptions this analysis can't see into. That theory
@@ -80,7 +93,7 @@ bool stmtRulesOutLeaf(const ir::Stmt *s) {
 
 bool Pdp7Codegen::computeIsLeaf(const ir::Function *fn, const ir::Stmt *body) {
     for (const ir::Slot *p : fn->params) {
-        if (p->arraySize > 0) return false;
+        if (p->arraySize > 0 || slotIsWide(p)) return false;
     }
     return !stmtRulesOutLeaf(body);
 }
@@ -125,6 +138,33 @@ std::string Pdp7Codegen::literalLabel(long value) {
 }
 
 std::string Pdp7Codegen::newLabel() { return "J" + std::to_string(labelCounter_++); }
+
+// `char`/`short`/`int` are all exactly one pdp7 word (see
+// typeWidths()) - a `short`/`int` is the native word itself, nothing
+// to truncate, but `char` still has to behave like a real 8-bit C
+// `char` even though its own STORAGE here is a full, untruncated
+// word (every slot, regardless of declared type, occupies exactly
+// one word - there's no sub-word addressing on this target at all).
+// The fix is to truncate the VALUE, not the storage: masking (and,
+// for a signed char, re-sign-extending) happens only here, at every
+// point this value is actually interpreted as a char (an explicit
+// cast, or loading a char Slot's own full-word storage back out via
+// emitLoadSlot()) - never at store time, since a stray untruncated
+// upper bit left behind by, say, assigning 300 to a char is
+// harmless noise no later read of that same slot can ever observe
+// (every read already goes through this same masking step).
+void Pdp7Codegen::narrowAC(Type to) {
+    if (to.base != BaseType::Char) return;
+    code_ << "   and " << literalLabel(0377) << "\n";
+    if (to.isUnsigned) return;
+    code_ << "   dac __stmp\n";
+    code_ << "   and " << literalLabel(0200) << "\n";
+    std::string Lneg = newLabel(), Lpos = newLabel(), Ldone = newLabel();
+    code_ << "   sza\n   jmp " << Lneg << "\n   jmp " << Lpos << "\n";
+    code_ << Lneg << ":\n   lac __stmp\n   tad " << literalLabel(-256) << "\n   jmp " << Ldone << "\n";
+    code_ << Lpos << ":\n   lac __stmp\n";
+    code_ << Ldone << ":\n";
+}
 
 // Placement (`@addr` in source - see IR.h's Slot::hasAddress): a
 // placed function/global is still emitted in its normal position in
@@ -244,15 +284,39 @@ std::string Pdp7Codegen::generate(const ir::Program &prog, bool objectMode) {
             // shared grammar (../../../../grammar/PccAsm.g4) uses ';'
             // for comments, not as a multi-statement-per-line
             // separator the way the historical as.s/as7 dialect does
-            // - see that grammar's own header comment.
-            trailer_.push_back(label(slot.get()) + ": " + arrayElemText(slot->arrayInit[0]) + "  ; " +
-                                slot->sourceName);
-            for (size_t i = 1; i < slot->arrayInit.size(); i++) {
-                trailer_.push_back(arrayElemText(slot->arrayInit[i]));
+            // - see that grammar's own header comment. Each logical
+            // element reserves `elemW` consecutive words (word 0/low
+            // first - see computeElementAddress()'s own comment on
+            // why this is the address every element read/write
+            // already assumes), not always one, now that an element
+            // can be `long`/`long long`; a symbol element (the
+            // dispatch-table idiom) only ever fills word 0, zero-
+            // padded above it, same as emitLocalArrayInit()'s own
+            // comment on that case.
+            int elemW = widthOfType(slot->type);
+            bool first = true;
+            for (size_t i = 0; i < slot->arrayInit.size(); i++) {
+                const ir::ArrayInitElem &elem = slot->arrayInit[i];
+                for (int j = 0; j < elemW; j++) {
+                    std::string text =
+                        (!elem.isSymbol) ? std::to_string(pdp7Word(elem.value >> (18 * j)))
+                                          : (j == 0 ? arrayElemText(elem) : "0");
+                    if (first) {
+                        trailer_.push_back(label(slot.get()) + ": " + text + "  ; " + slot->sourceName);
+                        first = false;
+                    } else {
+                        trailer_.push_back(text);
+                    }
+                }
             }
         } else {
+            int w = widthOfType(slot->type);
             long v = slot->hasInit ? slot->initValue : 0;
-            trailer_.push_back(label(slot.get()) + ": " + std::to_string(pdp7Word(v)) + "  ; " + slot->sourceName);
+            for (int j = 0; j < w; j++) {
+                std::string text = std::to_string(pdp7Word(v >> (18 * j)));
+                trailer_.push_back((j == 0 ? label(slot.get()) + ": " : "") + text +
+                                    (j == 0 ? "  ; " + slot->sourceName : ""));
+            }
         }
         if (slot->hasAddress) trailer_.push_back(". = __saveloc");
         trailerRanges.push_back({slot->sourceFile, gTrailerStart, trailer_.size()});
@@ -337,6 +401,21 @@ std::string Pdp7Codegen::generate(const ir::Program &prog, bool objectMode) {
         trailer_.push_back("__addr: 0");
         trailer_.push_back("__retval: 0");
         trailer_.push_back("__retaddr: 0");
+        // A wide (`long`/`long long`) return value can't survive
+        // emitEpilogueAndReturn()'s own "__sp = __fp" teardown the way
+        // a narrow one survives in `__retval` (that reset discards
+        // everything below `__fp`, including anything freshly pushed
+        // on the real stack) - these four cells (enough for
+        // `long long`'s own 4-word width - see typeWidths()) are the
+        // wide equivalent, word i in `__retvalW<i>`. Shared globally
+        // for the same reason every other "__"-prefixed cell here is:
+        // each one's own live range is a single short, call-free
+        // sequence (see emitEpilogueAndReturn()'s/emitLeafReturn()'s
+        // own comments on exactly which).
+        trailer_.push_back("__retvalW0: 0");
+        trailer_.push_back("__retvalW1: 0");
+        trailer_.push_back("__retvalW2: 0");
+        trailer_.push_back("__retvalW3: 0");
         ensureDivModRoutine();
         trailerRanges.push_back({homeFile, sharedStart, trailer_.size()});
     }
@@ -376,7 +455,7 @@ void Pdp7Codegen::genFunction(const ir::FunctionBody &fn) {
     } else {
         emitPrologue(fn.func);
         genStmt(*fn.body);
-        emitEpilogueAndReturn(/*hasValue=*/false);
+        emitEpilogueAndReturn(/*hasValue=*/false, Type{});
     }
 }
 
@@ -411,15 +490,44 @@ void Pdp7Codegen::emitPrologue(const ir::Function *fn) {
     }
 }
 
-void Pdp7Codegen::emitEpilogueAndReturn(bool hasValue) {
-    if (hasValue) code_ << "   dac __retval\n";
+void Pdp7Codegen::emitEpilogueAndReturn(bool hasValue, Type retType) {
+    bool wide = hasValue && isWide(retType);
+    int w = wide ? widthOfType(retType) : 0;
+    if (hasValue) {
+        if (wide) {
+            // The caller (genStmt's Return case) already pushed `w`
+            // words via genWideExpr (word 0/low on top) - stash them in
+            // `__retvalW<i>` before the teardown below discards
+            // anything still on the real stack below `__fp`.
+            for (int i = 0; i < w; i++) {
+                popAC();
+                code_ << "   dac __retvalW" << i << "\n";
+            }
+        } else {
+            code_ << "   dac __retval\n";
+        }
+    }
     code_ << "   lac __fp\n";
     code_ << "   dac __sp\n";  // discard this call's own Locals (and anything else below __fp)
     popAC();                    // AC = oldFP
     code_ << "   dac __fp\n";
     popAC();                    // AC = this call's own return address
     code_ << "   dac __retaddr\n";
-    if (hasValue) code_ << "   lac __retval\n";
+    if (hasValue) {
+        if (wide) {
+            // Push the saved words back onto the now-restored stack
+            // (word 0/low on top, same convention as any other wide
+            // value) - see the `Call` case in genExpr for why this
+            // lands exactly where that call's own post-call cleanup
+            // expects a wide result to be.
+            for (int i = w - 1; i >= 0; i--) {
+                code_ << "   lac __retvalW" << i << "\n";
+                pushAC();
+            }
+        } else {
+            code_ << "   lac __retval\n";
+        }
+    }
     code_ << "   jmp __retaddr i\n";
 }
 
@@ -462,7 +570,8 @@ void Pdp7Codegen::emitLoadSlotAddress(const ir::Slot *slot) {
         code_ << "   law " << leafLabel(slot) << "\n";
         return;
     }
-    long offset = (slot->kind == ir::SlotKind::Param) ? (slot->paramIndex + 2) : -slot->frameOffset;
+    long offset = (slot->kind == ir::SlotKind::Param) ? static_cast<long>(slot->frameOffset)
+                                                       : -static_cast<long>(slot->frameOffset);
     code_ << "   lac __fp\n";
     code_ << "   tad " << literalLabel(offset) << "\n";
 }
@@ -470,15 +579,18 @@ void Pdp7Codegen::emitLoadSlotAddress(const ir::Slot *slot) {
 void Pdp7Codegen::emitLoadSlot(const ir::Slot *slot) {
     if (slot->kind == ir::SlotKind::Global) {
         code_ << "   lac " << label(slot) << "\n";
+        narrowAC(slot->type);
         return;
     }
     if (currentFunctionIsLeaf_) {
         code_ << "   lac " << leafLabel(slot) << "\n";
+        narrowAC(slot->type);
         return;
     }
     emitLoadSlotAddress(slot);
     code_ << "   dac __addr\n";
     code_ << "   lac __addr i\n";
+    narrowAC(slot->type);
 }
 
 void Pdp7Codegen::emitStoreSlot(const ir::Slot *slot) {
@@ -506,22 +618,44 @@ void Pdp7Codegen::emitSlotBaseAddress(const ir::Slot *slot) {
 }
 
 void Pdp7Codegen::emitLocalArrayInit(const ir::Slot *slot) {
+    // Each logical element occupies `elemW` consecutive words, word 0
+    // (low) at the LOWEST address of its own span - the same
+    // convention computeElementAddress()'s own scaled indexing already
+    // establishes for reading this same array back (see that
+    // function's own comment), so element i's word j sits at
+    // `__fp-(frameOffset+i*elemW-j)`: element i's word-0 address is
+    // exactly what computeElementAddress() would compute for index i,
+    // and each subsequent word within that element increases from
+    // there, matching pushWideFromAddress()/popWideToAddress()'s own
+    // "ascend from the given base" contract.
+    int elemW = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
         const ir::ArrayInitElem &elem = slot->arrayInit[i];
-        if (!elem.isSymbol) {
-            code_ << "   lac " << literalLabel(elem.value) << "\n";
-        } else if (elem.slot) {
-            emitLoadSlotAddress(elem.slot);
-        } else {
-            code_ << "   law " << label(elem.func) << "\n";
+        for (int j = 0; j < elemW; j++) {
+            if (!elem.isSymbol) {
+                long word = (elem.value >> (18 * j)) & 0777777L;
+                code_ << "   lac " << literalLabel(word) << "\n";
+            } else if (j > 0) {
+                // A symbol element (the dispatch-table idiom) is
+                // always a plain native-word address - only word 0 of
+                // a wider-than-1-word element ever holds it; every
+                // higher word is simply zero (same convention
+                // I386Codegen.cpp's own declareArray() uses for the
+                // same case).
+                code_ << "   lac __zero\n";
+            } else if (elem.slot) {
+                emitLoadSlotAddress(elem.slot);
+            } else {
+                code_ << "   law " << label(elem.func) << "\n";
+            }
+            code_ << "   dac __stmp\n";
+            code_ << "   lac __fp\n";
+            long offset = -(static_cast<long>(slot->frameOffset) + static_cast<long>(i) * elemW - j);
+            code_ << "   tad " << literalLabel(offset) << "\n";
+            code_ << "   dac __addr\n";
+            code_ << "   lac __stmp\n";
+            code_ << "   dac __addr i\n";
         }
-        code_ << "   dac __stmp\n";
-        code_ << "   lac __fp\n";
-        long offset = -(static_cast<long>(slot->frameOffset) + static_cast<long>(i));
-        code_ << "   tad " << literalLabel(offset) << "\n";
-        code_ << "   dac __addr\n";
-        code_ << "   lac __stmp\n";
-        code_ << "   dac __addr i\n";
     }
 }
 
@@ -540,6 +674,561 @@ std::string Pdp7Codegen::popAddressIntoScratch() {
     popAC();
     code_ << "   dac __addr\n";
     return "__addr";
+}
+
+// --- `long`/`long long` (wide) support -------------------------------
+
+void Pdp7Codegen::pushWideFromAddress(Type type) {
+    code_ << "   dac __addr\n";
+    int w = widthOfType(type);
+    for (int i = w - 1; i >= 0; i--) {
+        code_ << "   lac __addr\n";
+        if (i > 0) code_ << "   tad " << literalLabel(i) << "\n";
+        code_ << "   dac __stmp\n";
+        code_ << "   lac __stmp i\n";
+        pushAC();
+    }
+}
+
+void Pdp7Codegen::popWideToAddress(Type type) {
+    code_ << "   dac __addr\n";
+    int w = widthOfType(type);
+    for (int i = 0; i < w; i++) {
+        popAC();
+        code_ << "   dac __stmp2\n";  // __stmp2, not __stmp - popAC() above already uses __stmp
+        code_ << "   lac __addr\n";
+        if (i > 0) code_ << "   tad " << literalLabel(i) << "\n";
+        code_ << "   dac __stmp\n";
+        code_ << "   lac __stmp2\n";
+        code_ << "   dac __stmp i\n";
+    }
+}
+
+void Pdp7Codegen::pushWideLiteral(Type type, long value) {
+    int w = widthOfType(type);
+    // Each word is an 18-bit slice of `value`'s own two's-complement
+    // pattern - a plain signed arithmetic right shift (relied on
+    // elsewhere in this codebase too) sign-extends correctly even
+    // past the host `long`'s own 64 bits (the vacated high bits of
+    // an arithmetic shift are indistinguishable from "the number's
+    // own sign, repeated forever"), so this is correct for every
+    // word even on `long long` (4 words = 72 bits, wider than the
+    // host type holding `value`).
+    for (int i = w - 1; i >= 0; i--) {
+        long wordVal = (value >> (18 * i)) & 0777777L;
+        code_ << "   lac " << literalLabel(wordVal) << "\n";
+        pushAC();
+    }
+}
+
+// dest = a + b + (the current 0/1 content of `carryCell`), updating
+// `carryCell` to this word's own carry-out. Verified empirically
+// against the real pdp7 simulator (`tad` complements the LINK on
+// 18-bit overflow - not simply "sets" it, but every `cll` here
+// starts from a known-zero link, so "complement" and "set" coincide;
+// `snl`/`szl` skip on link-set/link-clear respectively): no single
+// `tad` can capture "carry out of a+b+carryIn" in one step (there's
+// no 3-operand add), so this computes it in two independent stages -
+// `a+b` first (carry1), then conditionally `+1` on top of that
+// (carry2, only possible when `a+b` itself wrapped to exactly 0 and
+// carryIn was 1) - and ORs the two, the standard way to build a
+// full add from two half-adds.
+void Pdp7Codegen::emitWideAddWithCarry(const std::string &dest, const std::string &a, const std::string &b,
+                                         const std::string &carryCell, const std::string &carry1Cell,
+                                         const std::string &carry2Cell) {
+    std::string Lc1set = newLabel(), Lc1clear = newLabel(), Lc1done = newLabel();
+    code_ << "   cll\n   lac " << a << "\n   tad " << b << "\n   dac " << dest << "\n";
+    code_ << "   snl\n   jmp " << Lc1clear << "\n   jmp " << Lc1set << "\n";
+    code_ << Lc1set << ":\n   lac __one\n   dac " << carry1Cell << "\n   jmp " << Lc1done << "\n";
+    code_ << Lc1clear << ":\n   lac __zero\n   dac " << carry1Cell << "\n";
+    code_ << Lc1done << ":\n";
+
+    code_ << "   cll\n   lac " << dest << "\n   tad " << carryCell << "\n   dac " << dest << "\n";
+    std::string Lc2set = newLabel(), Lc2clear = newLabel(), Lc2done = newLabel();
+    code_ << "   snl\n   jmp " << Lc2clear << "\n   jmp " << Lc2set << "\n";
+    code_ << Lc2set << ":\n   lac __one\n   dac " << carry2Cell << "\n   jmp " << Lc2done << "\n";
+    code_ << Lc2clear << ":\n   lac __zero\n   dac " << carry2Cell << "\n";
+    code_ << Lc2done << ":\n";
+
+    std::string Lorset = newLabel(), Lorclear = newLabel(), Lordone = newLabel();
+    code_ << "   lac " << carry1Cell << "\n   tad " << carry2Cell << "\n";
+    code_ << "   sza\n   jmp " << Lorset << "\n   jmp " << Lorclear << "\n";
+    code_ << Lorset << ":\n   lac __one\n   dac " << carryCell << "\n   jmp " << Lordone << "\n";
+    code_ << Lorclear << ":\n   lac __zero\n   dac " << carryCell << "\n";
+    code_ << Lordone << ":\n";
+}
+
+void Pdp7Codegen::genWideAddSub(bool isAdd, int wordCount) {
+    std::vector<std::string> rhsT(wordCount), lhsT(wordCount), resT(wordCount);
+    for (auto &t : rhsT) {
+        t = allocTemp();
+        declareTemp(t);
+    }
+    for (auto &t : lhsT) {
+        t = allocTemp();
+        declareTemp(t);
+    }
+    for (auto &t : resT) {
+        t = allocTemp();
+        declareTemp(t);
+    }
+    for (int i = 0; i < wordCount; i++) {
+        popAC();
+        code_ << "   dac " << rhsT[i] << "\n";
+    }
+    for (int i = 0; i < wordCount; i++) {
+        popAC();
+        code_ << "   dac " << lhsT[i] << "\n";
+    }
+
+    std::string carry = allocTemp(), carry1 = allocTemp(), carry2 = allocTemp();
+    declareTemp(carry);
+    declareTemp(carry1);
+    declareTemp(carry2);
+
+    if (!isAdd) {
+        // a - b = a + (~b + 1) - negate rhsT in place first, via the
+        // same ripple-carry machinery below (starting carry=1, the
+        // "+1" of 2's complement negation; `b` is `__zero` here
+        // since there's nothing else to add).
+        code_ << "   lac __one\n   dac " << carry << "\n";
+        for (int i = 0; i < wordCount; i++) {
+            code_ << "   lac " << rhsT[i] << "\n   cma\n   dac " << rhsT[i] << "\n";
+            emitWideAddWithCarry(rhsT[i], rhsT[i], "__zero", carry, carry1, carry2);
+        }
+    }
+
+    code_ << "   lac __zero\n   dac " << carry << "\n";
+    for (int i = 0; i < wordCount; i++) {
+        emitWideAddWithCarry(resT[i], lhsT[i], rhsT[i], carry, carry1, carry2);
+    }
+    for (int i = wordCount - 1; i >= 0; i--) {
+        code_ << "   lac " << resT[i] << "\n";
+        pushAC();
+    }
+}
+
+void Pdp7Codegen::genWideNegate(int wordCount) {
+    std::vector<std::string> t(wordCount);
+    for (auto &x : t) {
+        x = allocTemp();
+        declareTemp(x);
+    }
+    for (int i = 0; i < wordCount; i++) {
+        popAC();
+        code_ << "   cma\n   dac " << t[i] << "\n";
+    }
+    std::string carry = allocTemp(), carry1 = allocTemp(), carry2 = allocTemp();
+    declareTemp(carry);
+    declareTemp(carry1);
+    declareTemp(carry2);
+    code_ << "   lac __one\n   dac " << carry << "\n";
+    for (int i = 0; i < wordCount; i++) {
+        emitWideAddWithCarry(t[i], t[i], "__zero", carry, carry1, carry2);
+    }
+    for (int i = wordCount - 1; i >= 0; i--) {
+        code_ << "   lac " << t[i] << "\n";
+        pushAC();
+    }
+}
+
+// Each word is independent - no carry chain needed (unlike +/-).
+// `|` has no hardware equivalent here either (see genBitwise()'s own
+// comment) - same De Morgan rewrite, word-by-word.
+void Pdp7Codegen::genWideBitwise(const std::string &op, int wordCount) {
+    std::vector<std::string> rhsT(wordCount), lhsT(wordCount);
+    for (auto &t : rhsT) {
+        t = allocTemp();
+        declareTemp(t);
+    }
+    for (auto &t : lhsT) {
+        t = allocTemp();
+        declareTemp(t);
+    }
+    for (int i = 0; i < wordCount; i++) {
+        popAC();
+        code_ << "   dac " << rhsT[i] << "\n";
+    }
+    for (int i = 0; i < wordCount; i++) {
+        popAC();
+        code_ << "   dac " << lhsT[i] << "\n";
+    }
+    for (int i = wordCount - 1; i >= 0; i--) {
+        if (op == "|") {
+            code_ << "   lac " << lhsT[i] << "\n   cma\n   dac __stmp2\n";
+            code_ << "   lac " << rhsT[i] << "\n   cma\n   and __stmp2\n   cma\n";
+        } else {
+            code_ << "   lac " << lhsT[i] << "\n   " << (op == "&" ? "and" : "xor") << " " << rhsT[i] << "\n";
+        }
+        pushAC();
+    }
+}
+
+void Pdp7Codegen::genWideCompare(const std::string &op, int wordCount, bool isUnsigned) {
+    std::vector<std::string> rhsT(wordCount), lhsT(wordCount);
+    for (auto &t : rhsT) {
+        t = allocTemp();
+        declareTemp(t);
+    }
+    for (auto &t : lhsT) {
+        t = allocTemp();
+        declareTemp(t);
+    }
+    for (int i = 0; i < wordCount; i++) {
+        popAC();
+        code_ << "   dac " << rhsT[i] << "\n";
+    }
+    for (int i = 0; i < wordCount; i++) {
+        popAC();
+        code_ << "   dac " << lhsT[i] << "\n";
+    }
+    if (op == "==" || op == "!=") {
+        std::string Ldiffer = newLabel(), Ldone = newLabel();
+        for (int i = wordCount - 1; i >= 0; i--) {
+            std::string Lcontinue = newLabel();
+            code_ << "   lac " << lhsT[i] << "\n   sad " << rhsT[i] << "\n   jmp " << Lcontinue << "\n   jmp "
+                  << Ldiffer << "\n";
+            code_ << Lcontinue << ":\n";
+        }
+        code_ << "   lac " << (op == "==" ? "__one" : "__zero") << "\n   jmp " << Ldone << "\n";
+        code_ << Ldiffer << ":\n   lac " << (op == "==" ? "__zero" : "__one") << "\n";
+        code_ << Ldone << ":\n";
+        return;
+    }
+    // `<`/`>=` (negate of `<`) - `>`/`<=` reduce to these by swapping
+    // operands, same convention genCompare() already uses for the
+    // narrow case.
+    bool negate = (op == ">=" || op == "<=");
+    bool swap = (op == ">" || op == "<=");
+    if (swap) std::swap(lhsT, rhsT);
+    // Compare from the most significant word down: the top word's
+    // own difference decides the whole comparison UNLESS it's
+    // exactly equal, in which case the next lower word decides, and
+    // so on - every word below the top is always a plain unsigned
+    // magnitude compare (the sign, if any, only ever lives in the
+    // top word, so lower words always get the sign-bit-flip trick
+    // below unconditionally, not just when `isUnsigned`), the top
+    // word's own compare only flips when `isUnsigned`. Each word's
+    // actual "is this word less" decision goes through
+    // emitSignedLtCells() rather than a plain subtract-and-test-sign
+    // (see its own comment) - the flip trick routinely produces
+    // operands at opposite extremes, which a naive subtract
+    // overflows.
+    std::string Llt = newLabel(), Lge = newLabel(), Ldone = newLabel();
+    for (int i = wordCount - 1; i >= 0; i--) {
+        bool flip = (i == wordCount - 1) ? isUnsigned : true;
+        std::string A = allocTemp(), B = allocTemp();
+        declareTemp(A);
+        declareTemp(B);
+        code_ << "   lac " << lhsT[i] << "\n";
+        if (flip) code_ << "   xor " << literalLabel(0400000L) << "\n";
+        code_ << "   dac " << A << "\n";
+        code_ << "   lac " << rhsT[i] << "\n";
+        if (flip) code_ << "   xor " << literalLabel(0400000L) << "\n";
+        code_ << "   dac " << B << "\n";
+        if (i > 0) {
+            std::string Lcontinue = newLabel();
+            code_ << "   lac " << A << "\n   sad " << B << "\n   jmp " << Lcontinue << "\n";
+            emitSignedLtCells(A, B, Llt, Lge);
+            code_ << Lcontinue << ":\n";
+        } else {
+            emitSignedLtCells(A, B, Llt, Lge);
+        }
+    }
+    code_ << Llt << ":\n   lac " << (negate ? "__zero" : "__one") << "\n   jmp " << Ldone << "\n";
+    code_ << Lge << ":\n   lac " << (negate ? "__one" : "__zero") << "\n";
+    code_ << Ldone << ":\n";
+}
+
+// Multiply and divide/modulo are NOT implemented for a wide (`long`/
+// `long long`) operand on this backend: every other wide operation
+// above threads its own single carry/borrow bit through a ripple
+// chain this backend's real link bit and `cll`/`tad`/`snl` already
+// support directly (verified empirically against the real simulator
+// - see emitWideAddWithCarry()'s own comment); a genuine multi-word
+// multiply or long division needs the SAME ripple-carry machinery
+// nested inside ITS OWN bit-serial or word-serial loop (shift-and-
+// add for multiply, compare-shift-subtract for divide - the same
+// algorithms every other software-multiply/divide backend here
+// already uses, e.g. ../pdp11/Pdp11Codegen.cpp's own documented
+// choice to leave exactly these two unimplemented for the same
+// reason), and this backend has no general-purpose register to hold
+// even one of the several words such a routine would need live at
+// once - every intermediate here already lives in a named memory
+// cell, reached only through AC and one level of indirection. A
+// genuine implementation would need its own loop-nested variant of
+// every helper above (a per-bit-per-word carry chain, not just a
+// per-word one), disproportionate to attempt without a real way to
+// verify it works beyond "it assembles" - the same judgment call
+// MCS51Codegen.cpp's own header comment documents for its own
+// architecturally narrower reason.
+void Pdp7Codegen::genWideMulDivErr(int line, const std::string &opName) {
+    err(line, "'" + opName + "' on a 'long'/'long long' operand isn't supported on this backend (pdp7 has no "
+                               "general-purpose register and no verified multi-word multiply/divide routine - "
+                               "see Pdp7Codegen.cpp's own genWideMulDivErr() comment)");
+}
+
+// Only ever called when `e.type` itself is narrow (not wide) - see
+// genExpr()'s own Convert case, which dispatches to genWideExpr()
+// instead whenever `e.type` is wide. A wide source just contributes
+// its own low word (every higher word is simply discarded, same as
+// any other narrowing truncation); a narrow source goes through
+// narrowAC() exactly like any other narrow value reaching its own
+// declared type.
+void Pdp7Codegen::genConvert(const ir::Expr &e) {
+    if (isWide(e.lhs->type)) {
+        genWideExpr(*e.lhs);
+        popAC();  // AC = the low word - this is the value being kept
+        std::string Tlow = allocTemp();
+        declareTemp(Tlow);
+        code_ << "   dac " << Tlow << "\n";
+        int w = widthOfType(e.lhs->type);
+        for (int i = 1; i < w; i++) popAC();  // discard every higher word
+        code_ << "   lac " << Tlow << "\n";
+        narrowAC(e.type);
+        return;
+    }
+    genExpr(*e.lhs);
+    narrowAC(e.type);
+}
+
+// Generalizes genExpr() for a wide-typed expression (`e.type` itself
+// is `long`/`long long`) - leaves its `widthOfType(e.type)` words
+// pushed on the real stack, word 0 (low) on top, instead of in AC -
+// see this file's own header comment on why a single-accumulator
+// machine needs this separate contract at all.
+void Pdp7Codegen::genWideExpr(const ir::Expr &e) {
+    switch (e.kind) {
+        case ir::ExprKind::IntLit: {
+            pushWideLiteral(e.type, e.intValue);
+            return;
+        }
+        case ir::ExprKind::Var: {
+            emitLoadSlotAddress(e.slot);
+            pushWideFromAddress(e.slot->type);
+            return;
+        }
+        case ir::ExprKind::Index: {
+            // computeElementAddress() already scales by this array's
+            // own element width and leaves that element's own word-0
+            // address pushed - see its own comment.
+            computeElementAddress(e.slot, *e.lhs);
+            popAC();
+            pushWideFromAddress(e.type);
+            return;
+        }
+        case ir::ExprKind::Assign: {
+            int w = widthOfType(e.slot->type);
+            std::vector<std::string> temps(w);
+            for (auto &t : temps) {
+                t = allocTemp();
+                declareTemp(t);
+            }
+            if (e.lhs) {  // slot[idx] = rhs, a wide array element
+                computeElementAddress(e.slot, *e.lhs);  // pushes the element's own address (1 word)
+                genWideExpr(*e.rhs);                       // pushes w words, above that address
+                for (auto &t : temps) {
+                    popAC();
+                    code_ << "   dac " << t << "\n";
+                }
+                popAC();  // AC = the element's own address
+                code_ << "   dac __addr\n";
+            } else {
+                genWideExpr(*e.rhs);
+                for (auto &t : temps) {
+                    popAC();
+                    code_ << "   dac " << t << "\n";
+                }
+                emitLoadSlotAddress(e.slot);
+                code_ << "   dac __addr\n";
+            }
+            for (int i = 0; i < w; i++) {
+                code_ << "   lac __addr\n";
+                if (i > 0) code_ << "   tad " << literalLabel(i) << "\n";
+                code_ << "   dac __stmp2\n";
+                code_ << "   lac " << temps[i] << "\n";
+                code_ << "   dac __stmp2 i\n";
+            }
+            for (int i = w - 1; i >= 0; i--) {
+                code_ << "   lac " << temps[i] << "\n";
+                pushAC();
+            }
+            return;
+        }
+        case ir::ExprKind::Unary: {
+            if (e.op == "-") {
+                genWideExpr(*e.rhs);
+                genWideNegate(widthOfType(e.type));
+                return;
+            }
+            if (e.op == "~") {
+                int w = widthOfType(e.type);
+                genWideExpr(*e.rhs);
+                std::vector<std::string> t(w);
+                for (auto &x : t) {
+                    x = allocTemp();
+                    declareTemp(x);
+                }
+                for (int i = 0; i < w; i++) {
+                    popAC();
+                    code_ << "   cma\n   dac " << t[i] << "\n";
+                }
+                for (int i = w - 1; i >= 0; i--) {
+                    code_ << "   lac " << t[i] << "\n";
+                    pushAC();
+                }
+                return;
+            }
+            err(e.line, "internal: unary '" + e.op + "' on a wide ('long'/'long long') value isn't supported "
+                                                        "on this backend");
+        }
+        case ir::ExprKind::Convert: {
+            Type from = e.lhs->type;
+            int toW = widthOfType(e.type);
+            if (!isWide(from)) {
+                genExpr(*e.lhs);
+                std::string Tlo = allocTemp();
+                declareTemp(Tlo);
+                code_ << "   dac " << Tlo << "\n";
+                std::string Text = allocTemp();
+                declareTemp(Text);
+                if (from.isUnsigned) {
+                    code_ << "   lac __zero\n   dac " << Text << "\n";
+                } else {
+                    std::string Lneg = newLabel(), Lpos = newLabel(), Ldone = newLabel();
+                    code_ << "   lac " << Tlo << "\n";
+                    code_ << "   sma\n   jmp " << Lpos << "\n   jmp " << Lneg << "\n";
+                    code_ << Lneg << ":\n   lac " << literalLabel(0777777L) << "\n   dac " << Text << "\n   jmp "
+                          << Ldone << "\n";
+                    code_ << Lpos << ":\n   lac __zero\n   dac " << Text << "\n";
+                    code_ << Ldone << ":\n";
+                }
+                for (int i = 0; i < toW - 1; i++) {
+                    code_ << "   lac " << Text << "\n";
+                    pushAC();
+                }
+                code_ << "   lac " << Tlo << "\n";
+                pushAC();
+                return;
+            }
+            int fromW = widthOfType(from);
+            genWideExpr(*e.lhs);
+            std::vector<std::string> temps(fromW);
+            for (auto &t : temps) {
+                t = allocTemp();
+                declareTemp(t);
+            }
+            for (auto &t : temps) {
+                popAC();
+                code_ << "   dac " << t << "\n";
+            }
+            if (toW <= fromW) {
+                for (int i = toW - 1; i >= 0; i--) {
+                    code_ << "   lac " << temps[i] << "\n";
+                    pushAC();
+                }
+                return;
+            }
+            std::string Text = allocTemp();
+            declareTemp(Text);
+            if (from.isUnsigned) {
+                code_ << "   lac __zero\n   dac " << Text << "\n";
+            } else {
+                std::string Lneg = newLabel(), Lpos = newLabel(), Ldone = newLabel();
+                code_ << "   lac " << temps[fromW - 1] << "\n";
+                code_ << "   sma\n   jmp " << Lpos << "\n   jmp " << Lneg << "\n";
+                code_ << Lneg << ":\n   lac " << literalLabel(0777777L) << "\n   dac " << Text << "\n   jmp "
+                      << Ldone << "\n";
+                code_ << Lpos << ":\n   lac __zero\n   dac " << Text << "\n";
+                code_ << Ldone << ":\n";
+            }
+            for (int i = 0; i < toW - fromW; i++) {
+                code_ << "   lac " << Text << "\n";
+                pushAC();
+            }
+            for (int i = fromW - 1; i >= 0; i--) {
+                code_ << "   lac " << temps[i] << "\n";
+                pushAC();
+            }
+            return;
+        }
+        case ir::ExprKind::Call: {
+            // Identical argument-passing convention to genExpr()'s own
+            // Call case (see its comment for the full reasoning). A
+            // wide callee's own emitEpilogueAndReturn() leaves its
+            // `widthOfType` return words pushed on the stack - but
+            // AT `__sp` AS IT STANDS RIGHT AFTER RETURN, which sits
+            // `totalWords` (the ARGUMENT words) further down than
+            // this call's own argument-pushing left it; it does NOT
+            // land wherever `__sp += totalWords` alone would put it.
+            // (An earlier version of this assumed it did - every test
+            // that happened to return one of its own untouched wide
+            // arguments verbatim still "passed" by accident, reading
+            // stale argument memory the callee never touched, rather
+            // than the real returned value; anything that actually
+            // computed its return value, or took more than one wide
+            // argument, read garbage.) So: pop the real return words
+            // from where they actually are FIRST, then undo the
+            // argument push, then push the saved words back - now
+            // genuinely sitting where the rest of this file expects a
+            // wide value it left on the stack to be.
+            int totalWords = 0;
+            for (size_t i = e.args.size(); i-- > 0;) {
+                if (isWide(e.args[i]->type)) {
+                    genWideExpr(*e.args[i]);
+                    totalWords += widthOfType(e.args[i]->type);
+                } else {
+                    genExpr(*e.args[i]);
+                    pushAC();
+                    totalWords += 1;
+                }
+            }
+            code_ << "   jms " << label(e.func) << "\n";
+            int returnWords = widthOfType(e.type);
+            std::vector<std::string> retTemps(returnWords);
+            for (auto &t : retTemps) {
+                t = allocTemp();
+                declareTemp(t);
+            }
+            for (auto &t : retTemps) {
+                popAC();
+                code_ << "   dac " << t << "\n";
+            }
+            if (totalWords > 0) {
+                code_ << "   lac __sp\n";
+                code_ << "   tad " << literalLabel(static_cast<long>(totalWords)) << "\n";
+                code_ << "   dac __sp\n";
+            }
+            for (int i = returnWords - 1; i >= 0; i--) {
+                code_ << "   lac " << retTemps[i] << "\n";
+                pushAC();
+            }
+            return;
+        }
+        case ir::ExprKind::Binary: {
+            const std::string &op = e.op;
+            if (op == "+" || op == "-") {
+                genWideExpr(*e.lhs);
+                genWideExpr(*e.rhs);
+                genWideAddSub(op == "+", widthOfType(e.type));
+                return;
+            }
+            if (op == "&" || op == "|" || op == "^") {
+                genWideExpr(*e.lhs);
+                genWideExpr(*e.rhs);
+                genWideBitwise(op, widthOfType(e.type));
+                return;
+            }
+            if (op == "*") genWideMulDivErr(e.line, "*");
+            if (op == "/") genWideMulDivErr(e.line, "/");
+            if (op == "%") genWideMulDivErr(e.line, "%");
+            err(e.line, "internal: binary '" + op + "' on a wide ('long'/'long long') value isn't supported "
+                                                       "on this backend");
+        }
+        default:
+            err(e.line, "internal: this expression kind can't produce a wide ('long'/'long long') value on this "
+                          "backend");
+    }
 }
 
 void Pdp7Codegen::genStmt(const ir::Stmt &s) {
@@ -603,17 +1292,47 @@ void Pdp7Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             bool hasValue = s.initOrReturnOrExpr != nullptr;
-            if (hasValue) genExpr(*s.initOrReturnOrExpr);
+            if (hasValue) {
+                if (isWide(s.initOrReturnOrExpr->type)) {
+                    genWideExpr(*s.initOrReturnOrExpr);
+                } else {
+                    genExpr(*s.initOrReturnOrExpr);
+                }
+            }
             if (currentFunctionIsLeaf_) {
+                // No stack-frame teardown on this path at all (see
+                // genFunction()'s own leaf branch) - a wide value's
+                // own `w` words, already pushed above, are left
+                // exactly where genWideExpr put them; nothing here
+                // needs to know they're there.
                 emitLeafReturn(hasValue);
             } else {
-                emitEpilogueAndReturn(hasValue);
+                emitEpilogueAndReturn(hasValue, hasValue ? s.initOrReturnOrExpr->type : Type{});
             }
             return;
         }
         case ir::StmtKind::LocalDecl: {
             if (s.declSlot->arraySize > 0) {
                 emitLocalArrayInit(s.declSlot);
+            } else if (isWide(s.declSlot->type)) {
+                // A wide Local always takes the non-leaf, frame-based
+                // path (see stmtRulesOutLeaf()'s own slotIsWide()
+                // check), so its own storage is always `widthOfType`
+                // consecutive frame words, addressed via
+                // emitLoadSlotAddress() exactly like any other Local -
+                // genExpr()'s own blanket wide-collapsing-to-AC
+                // shortcut would silently drop everything but this
+                // value's own low word, so this needs genWideExpr()
+                // and popWideToAddress() directly instead, same as a
+                // wide Assign's own real store (see genWideExpr()'s
+                // Assign case).
+                if (s.initOrReturnOrExpr) {
+                    genWideExpr(*s.initOrReturnOrExpr);
+                } else {
+                    pushWideLiteral(s.declSlot->type, 0);
+                }
+                emitLoadSlotAddress(s.declSlot);
+                popWideToAddress(s.declSlot->type);
             } else {
                 // A leaf function's own Local gets a static cell
                 // the first (and only - genStmt visits each
@@ -652,6 +1371,31 @@ void Pdp7Codegen::genStmt(const ir::Stmt &s) {
 }
 
 void Pdp7Codegen::genExpr(const ir::Expr &e) {
+    // genExpr()'s own contract is "leaves the result in AC" - a wide
+    // (`long`/`long long`) result can't fit there, so genWideExpr()
+    // (see its own header comment) is the real implementation for
+    // every expression kind it supports; this computes the correct
+    // wide value there (including any store a wide Assign performs)
+    // and then collapses it down to just its own low word in AC,
+    // discarding the rest - correct for any caller that only reads a
+    // wide value narrowly (e.g. genConvert()'s own narrow-destination
+    // case), and a safe fallback (truncating, never silently wrong)
+    // for any caller that doesn't itself know to call genWideExpr()
+    // directly for the full value (every entry point that needs the
+    // full value - LocalDecl's initializer, Return's own value - does
+    // call genWideExpr() itself instead; see genStmt()'s own Return/
+    // LocalDecl cases).
+    if (isWide(e.type)) {
+        genWideExpr(e);
+        int w = widthOfType(e.type);
+        std::string Tlow = allocTemp();
+        declareTemp(Tlow);
+        popAC();
+        code_ << "   dac " << Tlow << "\n";
+        for (int i = 1; i < w; i++) popAC();
+        code_ << "   lac " << Tlow << "\n";
+        return;
+    }
     switch (e.kind) {
         case ir::ExprKind::IntLit: {
             code_ << "   lac " << literalLabel(e.intValue) << "\n";
@@ -717,9 +1461,16 @@ void Pdp7Codegen::genExpr(const ir::Expr &e) {
             // every earlier argument already pushed for THIS call is
             // already on the real stack by the time a later one
             // evaluates.
+            int totalWords = 0;
             for (size_t i = e.args.size(); i-- > 0;) {
-                genExpr(*e.args[i]);
-                pushAC();
+                if (isWide(e.args[i]->type)) {
+                    genWideExpr(*e.args[i]);
+                    totalWords += widthOfType(e.args[i]->type);
+                } else {
+                    genExpr(*e.args[i]);
+                    pushAC();
+                    totalWords += 1;
+                }
             }
             code_ << "   jms " << label(e.func) << "\n";
             // The callee's own epilogue leaves AC holding its return
@@ -728,11 +1479,15 @@ void Pdp7Codegen::genExpr(const ir::Expr &e) {
             // emitEpilogueAndReturn()'s comment) - the caller still
             // owns popping them back off (classic caller-cleans-up
             // convention), protecting the return value in `__retval`
-            // across that adjustment since it needs AC too.
-            if (!e.args.empty()) {
+            // across that adjustment since it needs AC too. `totalWords`
+            // is the real word count pushed above (a wide argument
+            // pushes `widthOfType` words, not one), matching exactly
+            // what the callee's own Param::frameOffset layout (see
+            // IRBuilder.cpp) already assumes.
+            if (totalWords > 0) {
                 code_ << "   dac __retval\n";
                 code_ << "   lac __sp\n";
-                code_ << "   tad " << literalLabel(static_cast<long>(e.args.size())) << "\n";
+                code_ << "   tad " << literalLabel(static_cast<long>(totalWords)) << "\n";
                 code_ << "   dac __sp\n";
                 code_ << "   lac __retval\n";
             }
@@ -771,6 +1526,12 @@ void Pdp7Codegen::genExpr(const ir::Expr &e) {
             code_ << "   " << (e.op == "ion" ? "0700042" : "0700002") << "  ; " << e.op << "\n";
             return;
         }
+        case ir::ExprKind::Convert: {
+            genConvert(e);
+            return;
+        }
+        case ir::ExprKind::Func:
+            err(e.line, "internal: Func reached genExpr - should only ever appear as '&'s operand");
     }
 }
 
@@ -799,7 +1560,20 @@ void Pdp7Codegen::computeElementAddress(const ir::Slot *slot, const ir::Expr &id
     // variable's own value - ordinary memory, always increasing).
     bool descending = slot->arraySize > 0 && slot->kind == ir::SlotKind::Local;
     genExpr(idxExpr);     // AC = index (may itself call)
-    if (descending) code_ << "   cma\n   tad __one\n";  // AC = -index
+    // Scale the index by the array's own element width (see
+    // typeWidths()) - every element is `elemW` consecutive words, not
+    // always one, now that an element can be `long`/`long long`.
+    // Unrolled as `elemW`-1 self-adds rather than a real multiply:
+    // cheap for the only widths this backend ever has (1, 2, or 4),
+    // and this is a compile-time constant either way.
+    int elemW = widthOfType(slot->type);
+    if (elemW > 1) {
+        std::string Tidx = allocTemp();
+        declareTemp(Tidx);
+        code_ << "   dac " << Tidx << "\n";
+        for (int i = 1; i < elemW; i++) code_ << "   tad " << Tidx << "\n";
+    }
+    if (descending) code_ << "   cma\n   tad __one\n";  // AC = -(scaled index)
     pushAC();               // protect the (possibly negated) index across the base-address computation below
     emitSlotBaseAddress(slot);
     code_ << "   dac __addr\n";
@@ -882,6 +1656,19 @@ void Pdp7Codegen::genBinary(const ir::Expr &e) {
 }
 
 void Pdp7Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs) {
+    // A comparison's own result type is always plain (narrow) Int
+    // even when its OPERANDS are wide (see IRBuilder's own comment on
+    // comparisons), so genExpr()'s top-of-function `isWide(e.type)`
+    // guard never catches this - dispatch on the operands themselves
+    // here instead, straight to genWideCompare(), rather than falling
+    // into emitEq()/emitLt()'s plain genExpr() calls below, which
+    // would silently truncate a wide operand to just its low word.
+    if (isWide(lhs.type)) {
+        genWideExpr(lhs);
+        genWideExpr(rhs);
+        genWideCompare(op, widthOfType(lhs.type), lhs.type.isUnsigned);
+        return;
+    }
     if (op == "==") return emitEq(lhs, rhs, /*negate=*/false);
     if (op == "!=") return emitEq(lhs, rhs, /*negate=*/true);
     if (op == "<") return emitLt(lhs, rhs, /*negate=*/false);
@@ -911,16 +1698,49 @@ void Pdp7Codegen::emitEq(const ir::Expr &lhs, const ir::Expr &rhs, bool negate) 
     if (negate) code_ << "   xor __one\n";
 }
 
-void Pdp7Codegen::emitLt(const ir::Expr &lhs, const ir::Expr &rhs, bool negate) {
-    genExpr(lhs);
-    pushAC();  // protect lhs - rhs's own evaluation may call
-    genExpr(rhs);
-    code_ << "   cma\n   tad __one\n";  // AC = -rhs
-    code_ << "   dac __stmp2\n";  // __stmp2, not __stmp - popAC() below uses __stmp internally
-    popAC();  // AC = lhs
-    code_ << "   tad __stmp2\n";  // AC = lhs + (-rhs) = lhs - rhs
-    std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
+void Pdp7Codegen::emitSignedLtCells(const std::string &A, const std::string &B, const std::string &Ltrue,
+                                     const std::string &Lfalse) {
+    std::string LaNeg = newLabel(), LaPos = newLabel();
+    std::string LbNegWhenANeg = newLabel(), LbPosWhenANeg = newLabel();
+    std::string LbNegWhenAPos = newLabel(), LbPosWhenAPos = newLabel();
+    std::string Lsub = newLabel();
+    code_ << "   lac " << A << "\n   sma\n   jmp " << LaPos << "\n   jmp " << LaNeg << "\n";
+    code_ << LaNeg << ":\n   lac " << B << "\n   sma\n   jmp " << LbPosWhenANeg << "\n   jmp "
+          << LbNegWhenANeg << "\n";
+    code_ << LbPosWhenANeg << ":\n   jmp " << Ltrue << "\n";  // A<0<=B -> A<B
+    code_ << LbNegWhenANeg << ":\n   jmp " << Lsub << "\n";   // both negative -> safe subtract
+    code_ << LaPos << ":\n   lac " << B << "\n   sma\n   jmp " << LbPosWhenAPos << "\n   jmp "
+          << LbNegWhenAPos << "\n";
+    code_ << LbNegWhenAPos << ":\n   jmp " << Lfalse << "\n";  // A>=0, B<0 -> A>=B
+    code_ << LbPosWhenAPos << ":\n   jmp " << Lsub << "\n";    // both non-negative -> safe subtract
+    code_ << Lsub << ":\n";
+    code_ << "   lac " << B << "\n   cma\n   tad __one\n   dac __stmp2\n";
+    code_ << "   lac " << A << "\n   tad __stmp2\n";  // AC = A-B, safe: same sign, can't overflow
     code_ << "   sma\n   jmp " << Lfalse << "\n   jmp " << Ltrue << "\n";
+}
+
+void Pdp7Codegen::emitLt(const ir::Expr &lhs, const ir::Expr &rhs, bool negate) {
+    // Unsigned path: XOR each side's own sign bit (0400000, bit 17)
+    // before the signed-less-than test below - the same sign-bit-
+    // flip trick genWideCompare()'s own top-word comparison already
+    // uses and documents, maps unsigned order onto signed order.
+    // Delegates the actual `<` test to emitSignedLtCells() rather
+    // than a plain subtract-and-test-sign, since the flip above
+    // routinely produces operands at opposite extremes (e.g. 0 and
+    // the all-ones pattern), which a naive subtract overflows.
+    bool unsignedCmp = lhs.type.isUnsigned;
+    genExpr(lhs);
+    if (unsignedCmp) code_ << "   xor " << literalLabel(0400000L) << "\n";
+    std::string A = allocTemp();
+    declareTemp(A);
+    code_ << "   dac " << A << "\n";
+    genExpr(rhs);
+    if (unsignedCmp) code_ << "   xor " << literalLabel(0400000L) << "\n";
+    std::string B = allocTemp();
+    declareTemp(B);
+    code_ << "   dac " << B << "\n";
+    std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
+    emitSignedLtCells(A, B, Ltrue, Lfalse);
     code_ << Ltrue << ":\n   lac __one\n   jmp " << Ldone << "\n";
     code_ << Lfalse << ":\n   lac __zero\n";
     code_ << Ldone << ":\n";
@@ -968,28 +1788,46 @@ void Pdp7Codegen::genCondBranch(const ir::Expr &cond, const std::string &Lfalse)
             genCondBranch(*cond.rhs, Lfalse);
             return;
         }
-        if (op == "<" || op == ">" || op == ">=" || op == "<=") {
+        // A wide-operand comparison can't use any of this fused
+        // narrow machinery below (it never materializes a value
+        // genExpr() could read without silently truncating it - see
+        // genCompare()'s own comment) - fall through to the generic
+        // "evaluate normally, test the resulting 0/1 value" path at
+        // the bottom of this function instead, which goes through
+        // genExpr()/genBinary()/genCompare() and so already dispatches
+        // a wide comparison to genWideCompare() correctly.
+        bool wideCmp = (op == "<" || op == ">" || op == ">=" || op == "<=" || op == "==" || op == "!=") &&
+                       isWide(cond.lhs->type);
+        if (!wideCmp && (op == "<" || op == ">" || op == ">=" || op == "<=")) {
             const ir::Expr *a = cond.lhs.get();
             const ir::Expr *b = cond.rhs.get();
             bool negate = (op == ">=" || op == "<=");
             if (op == ">" || op == "<=") std::swap(a, b);
+            bool unsignedCmp = a->type.isUnsigned;
             genExpr(*a);
-            pushAC();  // protect a - b's own evaluation may call
+            if (unsignedCmp) code_ << "   xor " << literalLabel(0400000L) << "\n";
+            std::string A = allocTemp();
+            declareTemp(A);
+            code_ << "   dac " << A << "\n";
             genExpr(*b);
-            code_ << "   cma\n   tad __one\n";  // AC = -b
-            code_ << "   dac __stmp2\n";  // __stmp2, not __stmp - popAC() below uses __stmp internally
-            popAC();  // AC = a
-            code_ << "   tad __stmp2\n";  // AC = a - b
+            if (unsignedCmp) code_ << "   xor " << literalLabel(0400000L) << "\n";
+            std::string B = allocTemp();
+            declareTemp(B);
+            code_ << "   dac " << B << "\n";
+            // emitSignedLtCells() below tests A<B directly (see its
+            // own comment for why not a plain subtract-and-sma) -
+            // negate just picks which outcome continues to Lfalse.
+            std::string Ltrue = newLabel();
             if (!negate) {
-                code_ << "   sma\n   jmp " << Lfalse << "\n";
+                emitSignedLtCells(A, B, Ltrue, Lfalse);
+                code_ << Ltrue << ":\n";
             } else {
-                std::string Ltrue = newLabel();
-                code_ << "   sma\n   jmp " << Ltrue << "\n   jmp " << Lfalse << "\n";
+                emitSignedLtCells(A, B, Lfalse, Ltrue);
                 code_ << Ltrue << ":\n";
             }
             return;
         }
-        if (op == "==" || op == "!=") {
+        if (!wideCmp && (op == "==" || op == "!=")) {
             genExpr(*cond.lhs);
             pushAC();  // protect lhs - rhs's own evaluation may call
             genExpr(*cond.rhs);
@@ -1218,8 +2056,18 @@ void Pdp7Codegen::genShift(const std::string &op, const ir::Expr &lhs, const ir:
     code_ << Lbody << ":\n";
     if (op == "<<") {
         code_ << "   lac " << V << "\n   tad " << V << "\n   dac " << V << "\n";
-    } else {
+    } else if (lhs.type.isUnsigned) {
         code_ << "   lac " << V << "\n   cll\n   rar\n   dac " << V << "\n";
+    } else {
+        // Arithmetic right shift: seed the link with V's own current
+        // sign bit (sma skips the next instruction when AC is
+        // negative) before rar rotates it into the vacated top bit,
+        // so the sign replicates instead of always filling with 0.
+        std::string Lpos = newLabel(), Lneg = newLabel(), Lshift = newLabel();
+        code_ << "   lac " << V << "\n   sma\n   jmp " << Lpos << "\n   jmp " << Lneg << "\n";
+        code_ << Lpos << ":\n   cll\n   jmp " << Lshift << "\n";
+        code_ << Lneg << ":\n   stl\n";
+        code_ << Lshift << ":\n   lac " << V << "\n   rar\n   dac " << V << "\n";
     }
     code_ << "   lac __zero\n   cma\n   tad " << N << "\n   dac " << N << "\n";
     code_ << "   jmp " << Lstart << "\n";

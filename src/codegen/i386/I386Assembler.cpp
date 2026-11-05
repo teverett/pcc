@@ -43,7 +43,15 @@ struct Syllable {
 struct Operand {
     enum Kind { Reg, Mem, Imm } kind = Imm;
     int reg = -1;
-    bool is8 = false;
+    bool is8 = false;   // al
+    bool is16 = false;  // ax
+    // A memory operand's own size override ("byte [...]"/"word
+    // [...]" - grammar/PccAsm.g4's own `operand::size`), for a
+    // narrower-than-native-int Var/Slot's own load/store - see
+    // I386Codegen.cpp's loadOperand()/storeOperand(). Absent (0)
+    // means the plain, always-32-bit shapes every other mnemonic
+    // here already used before those existed.
+    enum MemSize { None, Byte, Word } memSize = None;
     bool memHasEbx = false;
     bool memHasEbp = false;
     bool memHasDisp = false;
@@ -111,6 +119,16 @@ Operand buildOperand(PccAsmParser::OperandContext *ctx) {
     Operand op;
     if (ctx->LBRACKET()) {
         op.kind = Operand::Mem;
+        if (ctx->size) {
+            std::string sizeLower = toLower(ctx->size->getText());
+            if (sizeLower == "byte") {
+                op.memSize = Operand::Byte;
+            } else if (sizeLower == "word") {
+                op.memSize = Operand::Word;
+            } else {
+                fail("unrecognized memory operand size '" + ctx->size->getText() + "'");
+            }
+        }
         auto syls = exprToSyllables(ctx->expr());
         auto isEbx = [](const Syllable &s) { return s.kind == SylKind::Symbol && toLower(s.text) == "ebx"; };
         auto isEbp = [](const Syllable &s) { return s.kind == SylKind::Symbol && toLower(s.text) == "ebp"; };
@@ -145,6 +163,12 @@ Operand buildOperand(PccAsmParser::OperandContext *ctx) {
             op.kind = Operand::Reg;
             op.reg = 0;
             op.is8 = true;
+            return op;
+        }
+        if (lower == "ax") {
+            op.kind = Operand::Reg;
+            op.reg = 0;
+            op.is16 = true;
             return op;
         }
         if (int r = regIndex(lower); r >= 0) {
@@ -440,16 +464,20 @@ class Assembler {
             emit8(static_cast<uint8_t>((mnemonic == "push" ? 0x50 : 0x58) | r));
             return;
         }
-        if (mnemonic == "not" || mnemonic == "neg" || mnemonic == "imul" || mnemonic == "idiv") {
+        if (mnemonic == "not" || mnemonic == "neg" || mnemonic == "mul" || mnemonic == "imul" ||
+            mnemonic == "div" || mnemonic == "idiv") {
             uint8_t r = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             static const std::unordered_map<std::string, uint8_t> ext = {
-                {"not", 2}, {"neg", 3}, {"imul", 5}, {"idiv", 7},
+                // mul/div (unsigned) alongside imul/idiv (signed) -
+                // I386Codegen.cpp picks between them per operand
+                // signedness (see genMul()/genDivMod()).
+                {"not", 2}, {"neg", 3}, {"mul", 4}, {"imul", 5}, {"div", 6}, {"idiv", 7},
             };
             emit8(0xF7);
             emit8(static_cast<uint8_t>(0xC0 | (ext.at(mnemonic) << 3) | r));
             return;
         }
-        if (mnemonic == "shl" || mnemonic == "shr") {
+        if (mnemonic == "shl" || mnemonic == "shr" || mnemonic == "sar") {
             // Two shapes: the real variable-count register form
             // (`<reg>,cl` - I386Codegen.cpp's own `<<`/`>>` operator,
             // where the count is itself a runtime value) and the real
@@ -461,7 +489,10 @@ class Assembler {
             // header comment.
             uint8_t r = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             const Operand &count = requireOperand(ops, 1, mnemonic);
-            uint8_t ext = mnemonic == "shl" ? 4 : 5;
+            // sar (arithmetic/signed right shift, ext=7) alongside
+            // shr (logical/unsigned, ext=5) - I386Codegen.cpp picks
+            // between them per the shifted value's own signedness.
+            uint8_t ext = mnemonic == "shl" ? 4 : mnemonic == "shr" ? 5 : 7;
             if (count.kind == Operand::Reg && count.reg == 1) {
                 emit8(0xD3);
                 emit8(static_cast<uint8_t>(0xC0 | (ext << 3) | r));
@@ -497,7 +528,7 @@ class Assembler {
                 emit8(static_cast<uint8_t>(0xC0 | (src.reg << 3) | dst.reg));
                 return;
             }
-            if (dst.kind == Operand::Reg && src.kind == Operand::Mem) {
+            if (dst.kind == Operand::Reg && src.kind == Operand::Mem && src.memSize == Operand::None) {
                 // `mov eax,[label]` (no base register) uses the real
                 // moffs32 shortcut form - confirmed only ever paired
                 // with `eax` here (see I386Codegen.cpp - the "ac"
@@ -514,7 +545,7 @@ class Assembler {
                 emitModRMMem(src, dst.reg);
                 return;
             }
-            if (dst.kind == Operand::Mem && src.kind == Operand::Reg) {
+            if (dst.kind == Operand::Mem && dst.memSize == Operand::None && src.kind == Operand::Reg) {
                 if (src.reg == 0 && !dst.memHasEbx && !dst.memHasEbp) {
                     emit8(0xA3);
                     emitAbs32(dst.expr);
@@ -524,7 +555,54 @@ class Assembler {
                 emitModRMMem(dst, src.reg);
                 return;
             }
+            // `mov byte [mem],al` - a narrower-than-native-int Var/
+            // Slot's own store (see I386Codegen.cpp's storeOperand())
+            // - the real r/m8,r8 form (88 /r), writing only that one
+            // byte of memory, unlike the always-32-bit forms above.
+            if (dst.kind == Operand::Mem && dst.memSize == Operand::Byte && src.kind == Operand::Reg && src.is8) {
+                emit8(0x88);
+                emitModRMMem(dst, static_cast<uint8_t>(src.reg));
+                return;
+            }
+            // `mov word [mem],ax` - same idea, 16 bits: the real
+            // r/m16,r16 form, which is the always-32-bit 89 /r above
+            // with the standard 0x66 operand-size override prefix.
+            if (dst.kind == Operand::Mem && dst.memSize == Operand::Word && src.kind == Operand::Reg && src.is16) {
+                emit8(0x66);
+                emit8(0x89);
+                emitModRMMem(dst, static_cast<uint8_t>(src.reg));
+                return;
+            }
             fail("'mov': unsupported operand combination in this dialect");
+        }
+        if (mnemonic == "movzx" || mnemonic == "movsx") {
+            // `movzx/movsx eax, byte/word [mem]` (a narrower-than-
+            // native-int Var/Slot's own load) or `movzx/movsx eax,al`
+            // / `...,ax` (re-extending a value already sitting in a
+            // register, e.g. narrowEaxTo()'s own re-truncation) - zero-
+            // or sign-extended up to a full 32-bit register in one
+            // real instruction (0F B6/B7 zero-extend, 0F BE/BF sign-
+            // extend, byte vs word respectively) - see
+            // I386Codegen.cpp's own loadOperand()/narrowEaxTo().
+            const Operand &dst = requireOperand(ops, 0, mnemonic);
+            const Operand &src = requireOperand(ops, 1, mnemonic);
+            if (dst.kind != Operand::Reg || dst.is8 || dst.is16) {
+                fail("'" + mnemonic + "': destination must be a full 32-bit register");
+            }
+            bool zx = mnemonic == "movzx";
+            if (src.kind == Operand::Reg && (src.is8 || src.is16)) {
+                emit8(0x0F);
+                emit8(src.is8 ? (zx ? 0xB6 : 0xBE) : (zx ? 0xB7 : 0xBF));
+                emit8(static_cast<uint8_t>(0xC0 | (dst.reg << 3) | src.reg));
+                return;
+            }
+            if (src.kind != Operand::Mem || src.memSize == Operand::None) {
+                fail("'" + mnemonic + "': source must be al/ax or a sized memory operand (byte/word [...])");
+            }
+            emit8(0x0F);
+            emit8(src.memSize == Operand::Byte ? (zx ? 0xB6 : 0xBE) : (zx ? 0xB7 : 0xBF));
+            emitModRMMem(src, static_cast<uint8_t>(dst.reg));
+            return;
         }
         if (mnemonic == "lea") {
             // `lea reg,[ebp+disp32]` - I386Codegen.cpp's own way to
@@ -633,6 +711,11 @@ class Assembler {
         }
         static const std::unordered_map<std::string, uint8_t> aluRegReg = {
             {"add", 0x01}, {"sub", 0x29}, {"cmp", 0x39}, {"and", 0x21}, {"or", 0x09}, {"xor", 0x31},
+            // adc/sbb (add/sub-with-carry/borrow) - the real r/m32,r32
+            // ALU forms, same shape as add/sub above - I386Codegen.cpp's
+            // own ripple-carry chain for a `long long` add/sub (2
+            // native 32-bit words).
+            {"adc", 0x11}, {"sbb", 0x19},
         };
         if (auto it = aluRegReg.find(mnemonic); it != aluRegReg.end()) {
             uint8_t dst = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
@@ -684,6 +767,10 @@ class Assembler {
         }
         static const std::unordered_map<std::string, uint8_t> jcc = {
             {"je", 0x84}, {"jne", 0x85}, {"jl", 0x8C}, {"jle", 0x8E}, {"jg", 0x8F}, {"jge", 0x8D},
+            // Unsigned counterparts - I386Codegen.cpp's own unsigned
+            // comparisons (real x86 jb/jae/jbe/ja, same two-byte 0F 8x
+            // family as the signed ones above).
+            {"jb", 0x82}, {"jae", 0x83}, {"jbe", 0x86}, {"ja", 0x87},
         };
         if (auto it = jcc.find(mnemonic); it != jcc.end()) {
             const Operand &target = requireOperand(ops, 0, mnemonic);

@@ -47,8 +47,8 @@ struct Operand {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Org, Dw, Instr } kind = None;
-    std::vector<std::vector<Syllable>> exprList;  // Org (1)/Dw (N)
+    enum Kind { None, Org, Dw, Db, Instr } kind = None;
+    std::vector<std::vector<Syllable>> exprList;  // Org (1)/Dw/Db (N)
     std::string mnemonic;                           // Instr
     std::vector<Operand> operands;                  // Instr
 };
@@ -207,6 +207,17 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         }
         return line;
     }
+    // `db` - a single byte per element, used for a `char` Global/array
+    // (width 1 - see M16cCodegen.cpp's own `declareArray()`/`generate()`),
+    // the byte-granular counterpart to `dw`'s own word-per-element layout.
+    if (mnemonic == "db") {
+        line.kind = Line::Db;
+        for (auto *op : instr->operand()) {
+            if (op->LBRACKET()) fail("'db' operand can't be bracketed");
+            line.exprList.push_back(exprToSyllables(op->expr()));
+        }
+        return line;
+    }
 
     line.kind = Line::Instr;
     line.mnemonic = stripSizeSuffix(mnemonic);
@@ -280,6 +291,9 @@ class Assembler {
                 return;
             case Line::Dw:
                 for (const auto &e : line.exprList) emit16(static_cast<uint16_t>(evalExpr(e)));
+                return;
+            case Line::Db:
+                for (const auto &e : line.exprList) emit8(static_cast<uint8_t>(evalExpr(e)));
                 return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
@@ -453,6 +467,23 @@ class Assembler {
     void encodeInstr(const std::string &mnemonic, const std::vector<Operand> &ops) {
         static const std::unordered_map<std::string, uint8_t> twoOpWrite = {
             {"mov", 0x01}, {"add", 0x02}, {"sub", 0x03}, {"and", 0x04}, {"or", 0x05}, {"xor", 0x06}, {"shl", 0x07},
+            // `sha` - real M16C `SHA.W`, the arithmetic (sign-
+            // preserving on a right shift) counterpart to `shl`'s own
+            // logical shift - same signed-count convention (negative
+            // = right - see M16cCodegen.h's own header comment), used
+            // for a signed `>>` (see M16cCodegen.cpp's own
+            // `genShift()`).
+            {"sha", 0x25},
+            // `adc`/`sbb` - real M16C add-with-carry/subtract-with-
+            // borrow, the multi-word ripple-carry idiom every
+            // `long`/`long long` `+`/`-` here chains through (see
+            // M16cCodegen.cpp's own `genWideAdd()`) - this dialect's
+            // own two-operand convention applies here exactly as it
+            // does to `add`/`sub`: `dst = dst +/- src +/- carry`,
+            // and sets the carry/borrow flag `rol`/`ror` below (and
+            // the next `adc`/`sbb`) read.
+            {"adc", 0x27},
+            {"sbb", 0x28},
         };
         if (auto it = twoOpWrite.find(mnemonic); it != twoOpWrite.end()) {
             encodeTwoOp(it->second, mnemonic, ops, /*writesDst=*/true);
@@ -462,9 +493,29 @@ class Assembler {
             encodeTwoOp(0x08, mnemonic, ops, /*writesDst=*/false);
             return;
         }
+        // `movb` - real M16C `MOV.B`, the byte-sized counterpart to
+        // `mov` - used for a `char` scalar's own storage (see
+        // M16cCodegen.cpp's own `loadOperand()`/`storeOperand()`). A
+        // register destination always sign-extends to the full 16
+        // bits (same hardware behavior this project's own pdp11
+        // backend relies on for `MOVB` - see Pdp11Codegen.cpp's own
+        // `loadOperand()`); an unsigned `char` load masks the high
+        // byte back off itself afterward, same as that backend.
+        if (mnemonic == "movb") {
+            encodeTwoOp(0x1E, mnemonic, ops, /*writesDst=*/true);
+            return;
+        }
         static const std::unordered_map<std::string, uint8_t> oneOp = {
             {"not", 0x09},
             {"neg", 0x0A},
+            // `rol`/`ror` - real M16C single-bit rotate-through-
+            // carry, the bit-serial primitive a multi-word `<<`/`>>`
+            // chains across words through (see M16cCodegen.cpp's own
+            // `genWideShift()`) - the carry bit rotated in is whatever
+            // the immediately preceding `clc`/`stc`/`adc`/`sbb`/`rol`/
+            // `ror` last left it as.
+            {"rol", 0x29},
+            {"ror", 0x2A},
         };
         if (auto it = oneOp.find(mnemonic); it != oneOp.end()) {
             encodeOneOp(it->second, mnemonic, ops);
@@ -509,6 +560,32 @@ class Assembler {
             uint8_t src = requireReg(ops[0], mnemonic);
             uint8_t addr = requireReg(ops[1], mnemonic);
             emit8(0x10);
+            emit8(src);
+            emit8(addr);
+            return;
+        }
+        // `ldb addrReg,dst` / `stb src,addrReg` - real M16C `MOV.B
+        // [A0],R0L`-style byte-sized register-indirect access, the
+        // byte-granular counterpart to `ld`/`st` - used for a `char`
+        // array element (see M16cCodegen.cpp's own `genIndex()`). A
+        // load always sign-extends into the full 16-bit destination
+        // register (see M16cCodegen.cpp's own `loadOperand()` for why
+        // that's always correct even for an unsigned `char`: the
+        // caller masks the high byte back off itself afterward).
+        if (mnemonic == "ldb") {
+            requireOperandCount(ops, 2, mnemonic);
+            uint8_t addr = requireReg(ops[0], mnemonic);
+            uint8_t dst = requireReg(ops[1], mnemonic);
+            emit8(0x1F);
+            emit8(addr);
+            emit8(dst);
+            return;
+        }
+        if (mnemonic == "stb") {
+            requireOperandCount(ops, 2, mnemonic);
+            uint8_t src = requireReg(ops[0], mnemonic);
+            uint8_t addr = requireReg(ops[1], mnemonic);
+            emit8(0x20);
             emit8(src);
             emit8(addr);
             return;
@@ -564,6 +641,14 @@ class Assembler {
             emit8(0x13);
             return;
         }
+        // `clc`/`stc` - clear/set the real M16C carry flag directly,
+        // the two ways a multi-word shift seeds the carry `rol`/`ror`
+        // then rotates in (see M16cCodegen.cpp's own `genWideShift()`).
+        if (mnemonic == "clc" || mnemonic == "stc") {
+            requireOperandCount(ops, 0, mnemonic);
+            emit8(mnemonic == "clc" ? 0x26 : 0x2B);
+            return;
+        }
         if (mnemonic == "jmp") {
             requireOperandCount(ops, 1, mnemonic);
             if (ops[0].kind != Operand::Mem) fail("'jmp': target must be a label");
@@ -573,6 +658,14 @@ class Assembler {
         }
         static const std::unordered_map<std::string, uint8_t> condJump = {
             {"jeq", 0x15}, {"jne", 0x16}, {"jlt", 0x17}, {"jle", 0x18}, {"jgt", 0x19}, {"jge", 0x1A},
+            // Real M16C unsigned conditional jumps (`JLTU`/`JLEU`/
+            // `JGTU`/`JGEU`), driven by the same `CMP.W`-set flags as
+            // the signed family above - see M16cCodegen.cpp's own
+            // `genCompare()`/`genWideAdd()` (the latter uses `jltu` to
+            // synthesize a software carry/borrow bit, since this
+            // dialect's own instruction set has no hardware carry flag
+            // a two-operand add/sub could chain through directly).
+            {"jltu", 0x21}, {"jleu", 0x22}, {"jgtu", 0x23}, {"jgeu", 0x24},
         };
         if (auto it = condJump.find(mnemonic); it != condJump.end()) {
             requireOperandCount(ops, 1, mnemonic);

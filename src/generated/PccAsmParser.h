@@ -158,11 +158,13 @@ public:
 
   class  OperandContext : public antlr4::ParserRuleContext {
   public:
+    antlr4::Token *size = nullptr;
     OperandContext(antlr4::ParserRuleContext *parent, size_t invokingState);
     virtual size_t getRuleIndex() const override;
     antlr4::tree::TerminalNode *LBRACKET();
     ExprContext *expr();
     antlr4::tree::TerminalNode *RBRACKET();
+    antlr4::tree::TerminalNode *IDENT();
 
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;

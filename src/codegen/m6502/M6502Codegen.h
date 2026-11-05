@@ -143,6 +143,7 @@ class M6502Codegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "6502"; }
+    TypeWidths typeWidths() const override { return {1, 2, 2, 4, 8}; }
     std::string sourceExtension() const override { return ".s65"; }
     std::vector<std::string> assembledFormats() const override {
         return {"raw", "coff", "elf", "macho", "aout", "objraw"};
@@ -162,6 +163,24 @@ class M6502Codegen : public Backend {
                                                   const std::string &format) const override;
 
    private:
+    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    // Native `int` here is one 2-byte zero-page cell (`ac`) - a type
+    // wider than that (`long`/`long long`) needs the `w*` wide-value
+    // machinery below instead.
+    bool isWide(Type t) const { return widthOfType(t) > 2; }
+    int wordCountOf(Type t) const { return widthOfType(t) / 2; }
+    // log2 of the element width (1/2/4/8 bytes -> 0/1/2/3) - how many
+    // single-bit left shifts scale an index by that many bytes (see
+    // genIndexAddr()).
+    int elemShift(Type t) const {
+        switch (widthOfType(t)) {
+            case 1: return 0;
+            case 2: return 1;
+            case 4: return 2;
+            default: return 3;
+        }
+    }
+
     void genFunction(const ir::FunctionBody &fn);
     // Tears down the current call's own frame (locals and the
     // params the caller reserved for it collapse back to this call's
@@ -187,22 +206,100 @@ class M6502Codegen : public Backend {
     // ac = slot's value / slot = ac - for a Global, a plain absolute
     // load/store (copy16() against its own fixed label); for a Local
     // or Param, through `ptr` via setPtrToFrameSlot() - see that
-    // method's own comment.
+    // method's own comment. Width-aware: a `char` slot only ever
+    // touches one byte, sign/zero-extending into `ac+1` on load (per
+    // its own signedness) so every narrower-than-int value in `ac`
+    // is always already a correctly-promoted plain int, the same
+    // convention every arithmetic/comparison helper below assumes.
+    // Never called for a `long`/`long long` slot - see isWide() and
+    // genWideLoad()/genWideStore() for that case instead.
     void loadSlotToAc(const ir::Slot *slot);
     void storeAcToSlot(const ir::Slot *slot);
 
     void genBinary(const ir::Expr &e);
-    void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
-    void emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert);
+    void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned);
+    void emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool isUnsigned, bool invert);
     void emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, bool wantEqual);
     void genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
+    // After genExpr(e) has just run, leaves `ac` holding 0 (false) or
+    // nonzero (true) - for a wide value (left in `wac` - see below),
+    // ORs every one of its bytes together into `ac` first, since a
+    // multi-byte value is true iff ANY byte is nonzero.
+    void testTruthy(const ir::Expr &e);
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
-    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
-    void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft);
+    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
+    void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot, &slot[idx], or &fn
+    void genConvert(const ir::Expr &e);
+
+    // --- `long`/`long long` ("wide") values -----------------------
+    //
+    // Every zero-page pseudo-register above is a fixed 2-byte cell -
+    // too narrow for a `long`/`long long` value outright, and there's
+    // no hardware stack-relative addressing mode on this target (see
+    // M6502Codegen.h's own header comment on why even a *Local*
+    // can't be reached that way) to park an arbitrary-width value on
+    // the real hardware stack and still address its individual bytes
+    // afterward, the way the pdp11/z80/8080 backends do. Every wide
+    // value instead lives in one of three more fixed zero-page
+    // buffers, each 8 bytes (wide enough for a `long long`, the
+    // widest type this language has) and byte-addressed little-
+    // endian, exactly like `ac` itself just longer: `wac` (genExpr()'s
+    // own wide result, `ac`'s wide counterpart), `wbc` ("the other
+    // operand" in a wide binary op, `bc`'s wide counterpart), and
+    // `wtmp`/`wtmp2` (extra scratch - a wide multiply's product, or a
+    // wide divide's remainder/quotient). Only `words*2` of each
+    // buffer's own 8 bytes are ever touched for a `long` (`words`=2);
+    // a `long long` (`words`=4) uses the whole thing.
+    //
+    // Reentrancy (an operand's own evaluation might itself be a wide
+    // binary op, which would otherwise clobber the very buffer an
+    // enclosing op is relying on to still hold its own lhs) is solved
+    // exactly the same way the narrow helpers above already solve it
+    // for `ac`/`bc`: genExpr(lhs) leaves its own result in `wac`,
+    // which is then pushed (one PHA per byte - see pushWide()) onto
+    // the real hardware stack before genExpr(rhs) runs and is free to
+    // overwrite `wac` with its own result; popping those bytes back
+    // (popWide()) into `wbc` afterward leaves wbc=lhs, wac=rhs, with
+    // nothing live on the real stack in between - the real stack is
+    // only ever used as this transient save slot, never as the
+    // operand's own long-term home.
+    void pushWide(const char *base, int nbytes);
+    void popWide(const char *base, int nbytes);
+    // Copies `nbytes` bytes from `src` to `dst` (both one of
+    // `ac`/`bc`/`wac`/`wbc`/`wtmp`/`wtmp2`'s own base name).
+    void copyWide(const char *dst, const char *src, int nbytes);
+    // Two's-complement negation of `buf`'s own `nbytes` bytes, in
+    // place: COM every byte, then ADC 1 into the least significant
+    // byte with the resulting carry chained up through the rest -
+    // the byte-level analogue of every other backend's own
+    // genWideNegate().
+    void negateWideBuffer(const char *buf, int nbytes);
+
+    void genWideLoad(const ir::Slot *slot, int words);        // wac = slot's own `words`-word value
+    void genWideLoadLiteral(long value, int words);           // wac = a compile-time-known wide literal
+    void genWideStore(const ir::Slot *slot, int words);        // slot = wac
+    // wac = the `words`-word value at `ptr`/`ptr+1` (a wide array
+    // element's own read) / the reverse (its own write).
+    void genWideLoadAtPtr(int words);
+    void genWideStoreAtPtr(int words);
+    // Word `wordIndex` (0 = least significant) of `slot`'s own multi-
+    // word storage, as a byte offset added to `extraByteOffset` -
+    // word `i` sits `2*i` bytes past `slot`'s own ordinary (word 0)
+    // address, same layout convention as every scalar's own storage.
+    std::string wideWordLabel(const ir::Slot *slot, int byteOffset) const;
+
+    void genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd, int words);
+    void genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int words);
+    void genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned, int words);
+    void genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned, int words);
+    void genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned, int words);
+    void emitWideLessCompare(const ir::Expr &a, const ir::Expr &b, bool isUnsigned, int words, bool invert);
+    void emitWideEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, int words, bool wantEqual);
+    void genWideBitwise(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &op, int words);
 
     // Leaves slot[idxExpr]'s own effective address in `ptr` - the
     // only thing in this whole backend that has to live in zero
@@ -244,7 +341,7 @@ class M6502Codegen : public Backend {
     // is) followed by an unconditional (always full-range) `JMP` -
     // see M6502Codegen.h's own header comment on branch range.
     // `branchMnemonic` is one of M6502Assembler.cpp's own branch
-    // mnemonics ("beq", "bne", "bcs", "bmi", "bpl", "bvc").
+    // mnemonics ("beq", "bne", "bcs", "bcc", "bmi", "bpl", "bvc").
     void safeBranch(const std::string &branchMnemonic, const std::string &targetIfTaken,
                      const std::string &targetIfNot);
 
@@ -270,7 +367,7 @@ class M6502Codegen : public Backend {
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
-    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
+    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 

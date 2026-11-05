@@ -16,20 +16,22 @@ ir::ExprPtr makeIntLit(long value, int line) {
     return lit;
 }
 
-ir::ExprPtr makeNegate(ir::ExprPtr operand, int line) {
+ir::ExprPtr makeNegate(ir::ExprPtr operand, int line, Type type) {
     auto neg = std::make_unique<ir::Expr>();
     neg->kind = ir::ExprKind::Unary;
     neg->op = "-";
     neg->line = line;
+    neg->type = type;
     neg->rhs = std::move(operand);
     return neg;
 }
 
-ir::ExprPtr makeShift(const std::string &op, ir::ExprPtr operand, long amount, int line) {
+ir::ExprPtr makeShift(const std::string &op, ir::ExprPtr operand, long amount, int line, Type type) {
     auto shift = std::make_unique<ir::Expr>();
     shift->kind = ir::ExprKind::Binary;
     shift->op = op;
     shift->line = line;
+    shift->type = type;
     shift->lhs = std::move(operand);
     shift->rhs = makeIntLit(amount, line);
     return shift;
@@ -75,13 +77,13 @@ bool hasIdentityRewrite(const std::string &op, long litVal, bool literalWasLhs) 
 // `literalWasLhs`) into its cheaper equivalent. Only called once
 // hasIdentityRewrite has already confirmed one applies, so every
 // branch here is a direct match.
-ir::ExprPtr applyIdentityRewrite(const std::string &op, ir::ExprPtr nonLit, long litVal, int line) {
+ir::ExprPtr applyIdentityRewrite(const std::string &op, ir::ExprPtr nonLit, long litVal, int line, Type type) {
     if (op == "*") {
         if (litVal == 1) return nonLit;
-        if (litVal == -1) return makeNegate(std::move(nonLit), line);
-        return makeShift("<<", std::move(nonLit), *log2OfPowerOfTwo(litVal), line);
+        if (litVal == -1) return makeNegate(std::move(nonLit), line, type);
+        return makeShift("<<", std::move(nonLit), *log2OfPowerOfTwo(litVal), line, type);
     }
-    if (op == "/" && litVal == -1) return makeNegate(std::move(nonLit), line);
+    if (op == "/" && litVal == -1) return makeNegate(std::move(nonLit), line, type);
     return nonLit;  // "/" by 1, "+"/"|"/"^"/"-" with 0, "<<"/">>" by 0
 }
 
@@ -107,7 +109,8 @@ void simplifyExpr(ir::ExprPtr &e, bool &changed) {
                << "`\n";
 
     ir::ExprPtr nonLit = std::move(rhsLit ? e->lhs : e->rhs);
-    e = applyIdentityRewrite(e->op, std::move(nonLit), litVal, e->line);
+    Type resultType = e->type;
+    e = applyIdentityRewrite(e->op, std::move(nonLit), litVal, e->line, resultType);
     changed = true;
 }
 

@@ -1,5 +1,6 @@
 #include "I8080Codegen.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 
@@ -46,13 +47,29 @@ std::string I8080Codegen::arrayElemText(const ir::ArrayInitElem &e) {
     return e.slot ? label(e.slot) : label(e.func);
 }
 
-void I8080Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values) {
+// `elemType` picks the data directive - see ../z80/Z80Codegen.cpp's
+// own declareArray() comment, which this mirrors exactly.
+void I8080Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType) {
     if (values.empty()) return;
+    int w = widthOfType(elemType);
+    const char *directive = w == 1 ? "db" : "dw";
     std::ostringstream line;
-    line << lbl << ": dw ";
-    for (size_t i = 0; i < values.size(); i++) {
-        if (i > 0) line << ", ";
-        line << arrayElemText(values[i]);
+    line << lbl << ": " << directive << " ";
+    bool first = true;
+    for (const auto &e : values) {
+        int words = w <= 2 ? 1 : w / 2;
+        if (words > 1 && !e.isSymbol) {
+            auto uv = static_cast<unsigned long>(e.value);
+            for (int i = 0; i < words; i++) {
+                if (!first) line << ", ";
+                line << static_cast<uint16_t>((uv >> (16 * i)) & 0xFFFF);
+                first = false;
+            }
+            continue;
+        }
+        if (!first) line << ", ";
+        line << arrayElemText(e);
+        first = false;
     }
     trailer_.push_back(line.str());
 }
@@ -103,6 +120,383 @@ void I8080Codegen::shiftOneBit(const std::string &lbl, bool isLeft) {
         code_ << "    mov a,l\n    rar\n    mov l,a\n";
     }
     code_ << "    shld " << lbl << "\n";
+}
+
+int I8080Codegen::widthOfType(Type t) const { return widthOf(t, typeWidths()); }
+bool I8080Codegen::isWide(Type t) const { return widthOfType(t) > 2; }
+int I8080Codegen::wordCountOf(Type t) const { return widthOfType(t) / 2; }
+int I8080Codegen::elemShift(Type t) const {
+    switch (widthOfType(t)) {
+        case 1: return 0;
+        case 2: return 1;
+        case 4: return 2;
+        default: return 3;  // 8
+    }
+}
+
+// HL already holds the operand's own address. The sign-extension
+// idiom - `mov a,l` / `ral` / `sbb a` - leaves the carry flag holding
+// exactly L's own original bit 7 after `ral` (RAL always rotates bit
+// 7 into the carry), and `SBB A` is always `A - A - CY`, which is
+// exactly 0x00 or 0xFF (CY clear or set) regardless of what `ral`
+// left in A - the sign-extension byte, in three real instructions
+// with no branch. An unsigned `char` just zero-fills H directly
+// instead.
+void I8080Codegen::loadOperand(Type type) {
+    if (widthOfType(type) == 1) {
+        code_ << "    mov a,m\n    mov l,a\n";
+        if (type.isUnsigned) {
+            code_ << "    mvi h, 0\n";
+        } else {
+            code_ << "    ral\n    sbb a\n    mov h,a\n";
+        }
+        code_ << "    shld ac\n";
+        return;
+    }
+    code_ << "    mov e,m\n    inx h\n    mov d,m\n";
+    storePair("ac", "d");
+}
+
+void I8080Codegen::storeOperand(Type type) {
+    if (widthOfType(type) == 1) {
+        code_ << "    lda ac\n    mov m,a\n";
+        return;
+    }
+    storeAcIndirect();
+}
+
+void I8080Codegen::popWideInto(const char *role, int words) {
+    for (int i = 0; i < words; i++) {
+        code_ << "    pop h\n    shld " << wideScratch(role, i) << "\n";
+    }
+}
+
+void I8080Codegen::pushWideFrom(const char *role, int words) {
+    for (int i = words - 1; i >= 0; i--) {
+        code_ << "    lhld " << wideScratch(role, i) << "\n    push h\n";
+    }
+}
+
+void I8080Codegen::genWideLoad(const ir::Slot *slot, int words) {
+    for (int i = words - 1; i >= 0; i--) {
+        if (slot->kind == ir::SlotKind::Global) {
+            code_ << "    lxi h, " << label(slot) << (i ? ("+" + std::to_string(2 * i)) : "") << "\n";
+        } else {
+            genFrameAddr(slot, 2 * i);
+        }
+        code_ << "    mov e,m\n    inx h\n    mov d,m\n";
+        code_ << "    push d\n";
+    }
+}
+
+void I8080Codegen::genWideLoadLiteral(long value, int words) {
+    auto uv = static_cast<unsigned long>(value);
+    for (int i = words - 1; i >= 0; i--) {
+        uint16_t w = static_cast<uint16_t>((uv >> (16 * i)) & 0xFFFF);
+        code_ << "    lxi h, " << w << "\n    push h\n";
+    }
+}
+
+void I8080Codegen::genWideStore(const ir::Slot *slot, int words) {
+    for (int i = 0; i < words; i++) {
+        // Popped into BC, not DE - genFrameAddr() below uses DE as its
+        // own scratch for a Local/Param's offset (lxi d/dad d), so
+        // popping the value-to-store into DE would have it clobbered
+        // before the mov m,*/mov m,* below ever reads it back out.
+        code_ << "    pop b\n";
+        if (slot->kind == ir::SlotKind::Global) {
+            code_ << "    lxi h, " << label(slot) << (i ? ("+" + std::to_string(2 * i)) : "") << "\n";
+        } else {
+            genFrameAddr(slot, 2 * i);
+        }
+        code_ << "    mov m,c\n    inx h\n    mov m,b\n";
+    }
+}
+
+// Multi-byte add/sub/negate/bitwise/compare all work byte-at-a-time
+// here, LSB first, chaining the real carry/borrow flag through ADC/
+// SBB (there's no 16-bit ADC/SBB on this chip the way the Z80's
+// `ADC HL,rr`/`SBC HL,rr` give ../z80/Z80Codegen.cpp's own version a
+// per-*word* chain instead) - every wide helper below first pops both
+// operands into the fixed "wa"/"wb" scratch cells (see
+// I8080Codegen.h's own header comment on wideScratch() - no SP-
+// relative addressing exists on this chip either), then walks every
+// byte of every word from least to most significant.
+namespace {
+// `role`'s own `words`-word value, as individual byte labels, least
+// significant byte first - `wideScratch(role,0)` is that byte,
+// `wideScratch(role,0)+"+1"` the next, `wideScratch(role,1)` the one
+// after that, and so on (see I8080Codegen.h's own wideScratch()
+// comment: each word is a real 2-byte "db lo, hi" cell).
+std::vector<std::string> wideByteLabelsLsbFirst(const char *role, int words) {
+    std::vector<std::string> out;
+    for (int i = 0; i < words; i++) {
+        out.push_back(I8080Codegen::wideScratch(role, i));
+        out.push_back(I8080Codegen::wideScratch(role, i) + "+1");
+    }
+    return out;
+}
+}  // namespace
+
+void I8080Codegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd, int words) {
+    genExpr(lhs);
+    genExpr(rhs);
+    popWideInto("b", words);
+    popWideInto("a", words);
+    auto aBytes = wideByteLabelsLsbFirst("a", words);
+    auto bBytes = wideByteLabelsLsbFirst("b", words);
+    for (size_t k = 0; k < aBytes.size(); k++) {
+        code_ << "    lda " << bBytes[k] << "\n    mov b,a\n";
+        code_ << "    lda " << aBytes[k] << "\n";
+        if (isAdd) {
+            code_ << "    " << (k == 0 ? "add b\n" : "adc b\n");
+        } else {
+            code_ << "    " << (k == 0 ? "sub b\n" : "sbb b\n");
+        }
+        code_ << "    sta " << aBytes[k] << "\n";
+    }
+    pushWideFrom("a", words);
+}
+
+void I8080Codegen::genWideNegate(int words) {
+    popWideInto("a", words);
+    auto aBytes = wideByteLabelsLsbFirst("a", words);
+    for (const auto &b : aBytes) {
+        code_ << "    lda " << b << "\n    cma\n    sta " << b << "\n";
+    }
+    for (size_t k = 0; k < aBytes.size(); k++) {
+        code_ << "    lda " << aBytes[k] << "\n";
+        code_ << "    " << (k == 0 ? "adi 1\n" : "aci 0\n");
+        code_ << "    sta " << aBytes[k] << "\n";
+    }
+    pushWideFrom("a", words);
+}
+
+void I8080Codegen::genWideBitwise(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &op, int words) {
+    genExpr(lhs);
+    genExpr(rhs);
+    popWideInto("b", words);
+    popWideInto("a", words);
+    const char *insn = op == "&" ? "ana" : op == "|" ? "ora" : "xra";
+    auto aBytes = wideByteLabelsLsbFirst("a", words);
+    auto bBytes = wideByteLabelsLsbFirst("b", words);
+    for (size_t k = 0; k < aBytes.size(); k++) {
+        code_ << "    lda " << bBytes[k] << "\n    mov b,a\n";
+        code_ << "    lda " << aBytes[k] << "\n    " << insn << " b\n";
+        code_ << "    sta " << aBytes[k] << "\n";
+    }
+    pushWideFrom("a", words);
+}
+
+void I8080Codegen::genWideEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, bool wantEqual, int words) {
+    genExpr(lhs);
+    genExpr(rhs);
+    popWideInto("b", words);
+    popWideInto("a", words);
+    auto aBytes = wideByteLabelsLsbFirst("a", words);
+    auto bBytes = wideByteLabelsLsbFirst("b", words);
+    code_ << "    mvi c, 0\n";
+    for (size_t k = 0; k < aBytes.size(); k++) {
+        code_ << "    lda " << bBytes[k] << "\n    mov d,a\n";
+        code_ << "    lda " << aBytes[k] << "\n    xra d\n";
+        code_ << "    ora c\n    mov c,a\n";
+    }
+    code_ << "    mov a,c\n    ora a\n";
+    std::string Ltrue = newLabel(), Ldone = newLabel();
+    code_ << "    j" << (wantEqual ? "z" : "nz") << " " << Ltrue << "\n";
+    code_ << "    lxi h, 0\n    shld ac\n    jmp " << Ldone << "\n";
+    code_ << Ltrue << ":\n    lxi h, 1\n    shld ac\n";
+    code_ << Ldone << ":\n";
+}
+
+// Compares most-significant byte first - only that byte's own
+// comparison ever needs the signed/unsigned bias (see
+// emitLessCompare()'s own comment); once a byte differs, every byte
+// after it is comparing a pure, already-unsigned magnitude.
+void I8080Codegen::genWideLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert, bool isUnsigned, int words) {
+    genExpr(a);
+    genExpr(b);
+    popWideInto("b", words);
+    popWideInto("a", words);
+    auto aBytes = wideByteLabelsLsbFirst("a", words);
+    auto bBytes = wideByteLabelsLsbFirst("b", words);
+    std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
+    for (size_t idx = aBytes.size(); idx-- > 0;) {
+        bool top = idx == aBytes.size() - 1;
+        code_ << "    lda " << aBytes[idx] << "\n";
+        if (top && !isUnsigned) code_ << "    xri 0x80\n";
+        code_ << "    mov d,a\n";
+        code_ << "    lda " << bBytes[idx] << "\n";
+        if (top && !isUnsigned) code_ << "    xri 0x80\n";
+        code_ << "    mov e,a\n";
+        code_ << "    mov a,d\n    sub e\n";
+        if (idx == 0) {
+            code_ << "    jc " << (invert ? Lfalse : Ltrue) << "\n";
+            code_ << "    jmp " << (invert ? Ltrue : Lfalse) << "\n";
+        } else {
+            std::string Lcontinue = newLabel();
+            code_ << "    jz " << Lcontinue << "\n";
+            code_ << "    jc " << (invert ? Lfalse : Ltrue) << "\n";
+            code_ << "    jmp " << (invert ? Ltrue : Lfalse) << "\n";
+            code_ << Lcontinue << ":\n";
+        }
+    }
+    code_ << Lfalse << ":\n    lxi h, 0\n    shld ac\n    jmp " << Ldone << "\n";
+    code_ << Ltrue << ":\n    lxi h, 1\n    shld ac\n";
+    code_ << Ldone << ":\n";
+}
+
+void I8080Codegen::genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned,
+                                     int words) {
+    if (op == "==") return genWideEqualityCompare(lhs, rhs, /*wantEqual=*/true, words);
+    if (op == "!=") return genWideEqualityCompare(lhs, rhs, /*wantEqual=*/false, words);
+    if (op == "<") return genWideLessCompare(lhs, rhs, /*invert=*/false, isUnsigned, words);
+    if (op == ">") return genWideLessCompare(rhs, lhs, /*invert=*/false, isUnsigned, words);
+    if (op == "<=") return genWideLessCompare(rhs, lhs, /*invert=*/true, isUnsigned, words);
+    if (op == ">=") return genWideLessCompare(lhs, rhs, /*invert=*/true, isUnsigned, words);
+    err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
+}
+
+// One bit at a time, most significant byte first (see genShift()'s
+// own header comment on why even the single-word case already does
+// this one bit at a time) - `ral`/`rar` always rotate the
+// accumulator, chaining the real carry flag from one byte into the
+// next exactly the way shiftOneBit() already chains it across the
+// two bytes of a plain `int`. The very first byte shifted right is
+// the whole value's own top byte; a signed shift needs that one bit
+// preserved (arithmetic), not always 0 (logical) - `mov b,a`/`ral`/
+// `mov a,b`/`rar` computes that top byte's own software SRA (there's
+// no hardware one on this chip): `ral` first copies the byte's own
+// sign bit into the carry (via its own top-bit rotation), then `rar`
+// on the *original* byte (restored from `b`) rotates that same bit
+// back in as the new top bit while shifting right - the sign
+// survives, and the carry `rar` shifts *out* (the original bit 0) is
+// exactly what the next, lower byte's own plain `rar` needs.
+void I8080Codegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned, int words) {
+    genExpr(lhs);
+    popWideInto("a", words);
+    genExpr(rhs);
+    code_ << "    lhld ac\n    mov c,l\n";
+    auto bytesMsbFirst = wideByteLabelsLsbFirst("a", words);
+    std::reverse(bytesMsbFirst.begin(), bytesMsbFirst.end());
+    std::string Lloop = newLabel(), Ldone = newLabel();
+    code_ << Lloop << ":\n";
+    code_ << "    mov a,c\n    ora a\n";
+    code_ << "    jz " << Ldone << "\n";
+    if (isLeft) {
+        code_ << "    ana a\n";  // clear carry - '<<' always shifts in a 0 bit
+        for (size_t idx = bytesMsbFirst.size(); idx-- > 0;) {
+            code_ << "    lda " << bytesMsbFirst[idx] << "\n    ral\n    sta " << bytesMsbFirst[idx] << "\n";
+        }
+    } else {
+        for (size_t idx = 0; idx < bytesMsbFirst.size(); idx++) {
+            if (idx == 0 && !isUnsigned) {
+                code_ << "    lda " << bytesMsbFirst[idx] << "\n    mov b,a\n";
+                code_ << "    ral\n    mov a,b\n    rar\n";
+            } else {
+                if (idx == 0) code_ << "    ana a\n";  // unsigned top byte: logical, zero-fill, clear carry first
+                code_ << "    lda " << bytesMsbFirst[idx] << "\n    rar\n";
+            }
+            code_ << "    sta " << bytesMsbFirst[idx] << "\n";
+        }
+    }
+    code_ << "    dcr c\n";
+    code_ << "    jmp " << Lloop << "\n";
+    code_ << Ldone << ":\n";
+    pushWideFrom("a", words);
+}
+
+// See ../pdp11/Pdp11Codegen.cpp's own genWideMul()/genWideDivMod()
+// comment (mirrored on ../z80/Z80Codegen.cpp too) for the reasoning
+// this repeats exactly: no simulator in this project's own test
+// harness to verify a hand-written multi-word multiply/divide
+// routine against, so failing loudly is safer than shipping an
+// unverifiable, possibly wrong one.
+void I8080Codegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int) {
+    err(lhs.line, "multiplying two 'long'/'long long' values isn't supported on this target yet - "
+                   "see I8080Codegen.cpp's own genWideMul() comment");
+    (void)rhs;
+}
+
+void I8080Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool, int) {
+    err(lhs.line, "dividing two 'long'/'long long' values isn't supported on this target yet - "
+                   "see I8080Codegen.cpp's own genWideDivMod() comment");
+    (void)rhs;
+}
+
+// An implicit or explicit conversion - see ../z80/Z80Codegen.cpp's
+// own genConvert(), which this mirrors exactly (just through this
+// backend's own mnemonics/sign-extension idiom).
+void I8080Codegen::genConvert(const ir::Expr &e) {
+    Type from = e.lhs->type;
+    Type to = e.type;
+    bool fromWide = isWide(from);
+    bool toWide = isWide(to);
+    if (!fromWide && !toWide) {
+        genExpr(*e.lhs);
+        if (widthOfType(to) == 1) {
+            code_ << "    lhld ac\n";
+            if (to.isUnsigned) {
+                code_ << "    mvi h, 0\n";
+            } else {
+                code_ << "    mov a,l\n    ral\n    sbb a\n    mov h,a\n";
+            }
+            code_ << "    shld ac\n";
+        }
+        return;
+    }
+    if (fromWide && !toWide) {
+        int words = wordCountOf(from);
+        genExpr(*e.lhs);
+        popWideInto("a", words);
+        code_ << "    lhld " << wideScratch("a", 0) << "\n    shld ac\n";
+        if (widthOfType(to) == 1) {
+            code_ << "    lhld ac\n";
+            if (to.isUnsigned) {
+                code_ << "    mvi h, 0\n";
+            } else {
+                code_ << "    mov a,l\n    ral\n    sbb a\n    mov h,a\n";
+            }
+            code_ << "    shld ac\n";
+        }
+        return;
+    }
+    if (!fromWide && toWide) {
+        // See ../z80/Z80Codegen.cpp's own version of this branch for
+        // why every word is written into the "wa" scratch cells and
+        // pushed via pushWideFrom() (LSW-on-top order, centrally)
+        // rather than pushing word 0 directly followed by the
+        // extension word(s) - the latter would leave an extension
+        // word on top instead of the native (least significant) one.
+        int toWords = wordCountOf(to);
+        genExpr(*e.lhs);  // ac already holds the native-width value, correctly sign/zero-extended to 16 bits
+        code_ << "    lhld ac\n    shld " << wideScratch("a", 0) << "\n";
+        for (int i = 1; i < toWords; i++) {
+            if (from.isUnsigned) {
+                code_ << "    lxi h, 0\n";
+            } else {
+                code_ << "    mov a,h\n    ral\n    sbb a\n    mov h,a\n    mov l,a\n";
+            }
+            code_ << "    shld " << wideScratch("a", i) << "\n";
+        }
+        pushWideFrom("a", toWords);
+        return;
+    }
+    // fromWide && toWide: pad/truncate word count, preserving sign.
+    int fromWords = wordCountOf(from);
+    int toWords = wordCountOf(to);
+    genExpr(*e.lhs);
+    popWideInto("a", fromWords);
+    if (toWords > fromWords) {
+        code_ << "    lhld " << wideScratch("a", fromWords - 1) << "\n";
+        if (from.isUnsigned) {
+            code_ << "    lxi h, 0\n";
+        } else {
+            code_ << "    mov a,h\n    ral\n    sbb a\n    mov h,a\n    mov l,a\n";
+        }
+        for (int i = fromWords; i < toWords; i++) code_ << "    shld " << wideScratch("a", i) << "\n";
+    }
+    pushWideFrom("a", toWords);
 }
 
 std::string I8080Codegen::generate(const ir::Program &prog, bool objectMode) {
@@ -161,6 +555,11 @@ std::string I8080Codegen::generate(const ir::Program &prog, bool objectMode) {
         // its caller both need to agree on the one real place it
         // lives, exactly like `ac` does for a return value.
         declareTemp("fp");
+        // Wide (`long`/`long long`) scratch cells - see
+        // I8080Codegen.h's own header comment on wideScratch().
+        for (int i = 0; i < 4; i++) declareTemp(wideScratch("a", i));
+        for (int i = 0; i < 4; i++) declareTemp(wideScratch("b", i));
+        for (int i = 0; i < 4; i++) declareTemp(wideScratch("ret", i));
     }
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
@@ -176,12 +575,28 @@ std::string I8080Codegen::generate(const ir::Program &prog, bool objectMode) {
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
-            declareArray(lbl, slot->arrayInit);
+            declareArray(lbl, slot->arrayInit, slot->type);
         } else {
             long v = slot->hasInit ? slot->initValue : 0;
-            uint16_t v16 = static_cast<uint16_t>(v);
-            trailer_.push_back(lbl + ": db " + std::to_string(v16 & 0xFF) + "  ; " + slot->sourceName);
-            trailer_.push_back("db " + std::to_string((v16 >> 8) & 0xFF));
+            int w = widthOfType(slot->type);
+            if (w == 1) {
+                trailer_.push_back(lbl + ": db " + std::to_string(static_cast<int>(static_cast<uint8_t>(v))) +
+                                    "  ; " + slot->sourceName);
+            } else if (w == 2) {
+                uint16_t v16 = static_cast<uint16_t>(v);
+                trailer_.push_back(lbl + ": db " + std::to_string(v16 & 0xFF) + "  ; " + slot->sourceName);
+                trailer_.push_back("db " + std::to_string((v16 >> 8) & 0xFF));
+            } else {
+                auto uv = static_cast<unsigned long>(v);
+                std::ostringstream line;
+                line << lbl << ": dw ";
+                for (int i = 0; i < w / 2; i++) {
+                    if (i > 0) line << ", ";
+                    line << static_cast<uint16_t>((uv >> (16 * i)) & 0xFFFF);
+                }
+                line << "  ; " << slot->sourceName;
+                trailer_.push_back(line.str());
+            }
         }
     }
 
@@ -215,8 +630,14 @@ void I8080Codegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
     code_ << "    lhld fp\n    push h\n";
     code_ << "    lxi h, 0\n    dad sp\n    shld fp\n";
-    if (fn.func->frameSize > 0) {
-        code_ << "    lxi d, " << (-2L * fn.func->frameSize) << "\n    dad d\n    sphl\n";
+    // See ../z80/Z80Codegen.cpp's own genFunction() comment for why
+    // `fn.func->frameSize` alone can fall up to `intUnits-1` bytes
+    // short of the deepest byte any individual Local slot actually
+    // needs below `fp` (same shared-IRBuilder quirk, same fix) -
+    // padding by that much here always covers the worst case.
+    long reserveBytes = static_cast<long>(fn.func->frameSize) + (typeWidths().intUnits - 1);
+    if (reserveBytes > 0) {
+        code_ << "    lxi d, " << (-reserveBytes) << "\n    dad d\n    sphl\n";
     }
     genStmt(*fn.body);
     emitEpilogue();
@@ -243,9 +664,9 @@ void I8080Codegen::emitEpilogue() {
 // comment for why this target has no addressing mode that could do
 // this as part of a single `mov`/`mvi`/etc. the way Z80's `(IX+d)` or
 // 8086's `[bp+d]` can.
-void I8080Codegen::genFrameAddr(const ir::Slot *slot) {
+void I8080Codegen::genFrameAddr(const ir::Slot *slot, long extraBytes) {
     code_ << "    lhld fp\n";
-    code_ << "    lxi d, " << frameByteOffset(slot) << "\n";
+    code_ << "    lxi d, " << frameByteOffset(slot, extraBytes) << "\n";
     code_ << "    dad d\n";
 }
 
@@ -257,7 +678,7 @@ void I8080Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::If: {
             genExpr(*s.cond);
-            code_ << "    lhld ac\n    mov a,l\n    ora h\n";
+            testTruthy(*s.cond);
             std::string Lelse = s.elseStmt ? newLabel() : "";
             std::string Ldone = newLabel();
             code_ << "    jz " << (s.elseStmt ? Lelse : Ldone) << "\n";
@@ -275,7 +696,7 @@ void I8080Codegen::genStmt(const ir::Stmt &s) {
             std::string Lcont = s.postStmt ? newLabel() : Lstart;
             code_ << Lstart << ":\n";
             genExpr(*s.cond);
-            code_ << "    lhld ac\n    mov a,l\n    ora h\n";
+            testTruthy(*s.cond);
             code_ << "    jz " << Lend << "\n";
             loopLabels_.push_back({Lcont, Lend});
             genStmt(*s.loopBody);
@@ -297,7 +718,24 @@ void I8080Codegen::genStmt(const ir::Stmt &s) {
             return;
         }
         case ir::StmtKind::Return: {
-            if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
+            if (s.initOrReturnOrExpr) {
+                genExpr(*s.initOrReturnOrExpr);
+                // A wide value sits on the real stack (LSW on top -
+                // see I8080Codegen.h's own header comment) after
+                // genExpr() - pop it into the fixed "wret" scratch
+                // cells first (plain memory, untouched by
+                // emitEpilogue()'s own `sphl`) rather than leaving it
+                // on the stack, since `sphl` is about to reset SP
+                // straight back to `fp`, abandoning (not reading)
+                // whatever still sits above it. genExpr()'s own Call
+                // case reads it back out of "wret" the same way.
+                if (isWide(s.initOrReturnOrExpr->type)) {
+                    int words = wordCountOf(s.initOrReturnOrExpr->type);
+                    for (int i = 0; i < words; i++) {
+                        code_ << "    pop h\n    shld " << wideScratch("ret", i) << "\n";
+                    }
+                }
+            }
             // An early return bypasses genFunction()'s own fall-
             // through epilogue entirely, so it needs this same frame
             // teardown inline - see emitEpilogue()'s own comment.
@@ -308,9 +746,14 @@ void I8080Codegen::genStmt(const ir::Stmt &s) {
             if (s.declSlot->arraySize > 0) {
                 genLocalArrayInit(s.declSlot);
             } else if (s.initOrReturnOrExpr) {
+                if (isWide(s.declSlot->type)) {
+                    genExpr(*s.initOrReturnOrExpr);  // pushes `wordCountOf()` words
+                    genWideStore(s.declSlot, wordCountOf(s.declSlot->type));
+                    return;
+                }
                 genExpr(*s.initOrReturnOrExpr);
                 genFrameAddr(s.declSlot);
-                storeAcIndirect();
+                storeOperand(s.declSlot->type);
             }
             // No "else" case for a bare, uninitialized scalar: its own
             // frame word already exists (genFunction()'s own prologue
@@ -336,18 +779,25 @@ void I8080Codegen::genStmt(const ir::Stmt &s) {
 void I8080Codegen::genExpr(const ir::Expr &e) {
     switch (e.kind) {
         case ir::ExprKind::IntLit: {
+            if (isWide(e.type)) {
+                genWideLoadLiteral(e.intValue, wordCountOf(e.type));
+                return;
+            }
             uint16_t v16 = static_cast<uint16_t>(e.intValue);
             code_ << "    lxi h, " << v16 << "\n    shld ac\n";
             return;
         }
         case ir::ExprKind::Var: {
+            if (isWide(e.slot->type)) {
+                genWideLoad(e.slot, wordCountOf(e.slot->type));
+                return;
+            }
             if (e.slot->kind == ir::SlotKind::Global) {
-                copy16("ac", label(e.slot));
+                code_ << "    lxi h, " << label(e.slot) << "\n";
             } else {
                 genFrameAddr(e.slot);
-                code_ << "    mov e,m\n    inx h\n    mov d,m\n";
-                storePair("ac", "d");
             }
+            loadOperand(e.slot->type);
             return;
         }
         case ir::ExprKind::Index: {
@@ -357,19 +807,41 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
         case ir::ExprKind::Assign: {
             if (e.lhs) {  // slot[idx] = rhs
                 genIndexAddr(e.slot, *e.lhs);  // ptr = target address
+                if (isWide(e.slot->type)) {
+                    int words = wordCountOf(e.slot->type);
+                    // `ptr` is a single shared scratch cell - evaluating
+                    // `rhs` might itself index another array (clobbering
+                    // it), so the element address is saved on the real
+                    // stack across that call, the same way the narrow
+                    // case below saves it in HL via push/pop; the rhs's
+                    // own `words` pushed words land on top of that saved
+                    // address, so they're popped into "wb" (safely out of
+                    // the way) before the address underneath is restored.
+                    code_ << "    lhld ptr\n    push h\n";
+                    genExpr(*e.rhs);
+                    popWideInto("b", words);
+                    code_ << "    pop h\n    shld ptr\n";
+                    genWideStoreAtPtr("b", words);
+                    return;
+                }
                 code_ << "    lhld ptr\n    push h\n";
                 genExpr(*e.rhs);
                 code_ << "    pop h\n";
-                storeAcIndirect();
+                storeOperand(e.slot->type);
+                return;
+            }
+            if (isWide(e.slot->type)) {
+                genExpr(*e.rhs);  // pushes `wordCountOf()` words
+                genWideStore(e.slot, wordCountOf(e.slot->type));
                 return;
             }
             genExpr(*e.rhs);
             if (e.slot->kind == ir::SlotKind::Global) {
-                copy16(label(e.slot), "ac");
+                code_ << "    lxi h, " << label(e.slot) << "\n";
             } else {
                 genFrameAddr(e.slot);
-                storeAcIndirect();
             }
+            storeOperand(e.slot->type);
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -382,8 +854,13 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Unary: {
+            bool wide = isWide(e.rhs->type);
             if (e.op == "-") {
                 genExpr(*e.rhs);
+                if (wide) {
+                    genWideNegate(wordCountOf(e.rhs->type));
+                    return;
+                }
                 code_ << "    lhld ac\n";
                 code_ << "    xra a\n    sub l\n    mov l,a\n";
                 code_ << "    mvi a, 0\n    sbb h\n    mov h,a\n";
@@ -391,12 +868,25 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                genExpr(*e.rhs);  // ac = pointer value
+                genExpr(*e.rhs);  // ac = pointer value - deref is always a plain native word (see Type.h)
                 copy16("ptr", "ac");
                 code_ << "    lhld ptr\n";
                 code_ << "    mov e,m\n    inx h\n    mov d,m\n";
                 storePair("ac", "d");
             } else if (e.op == "~") {
+                if (wide) {
+                    genExpr(*e.rhs);
+                    int words = wordCountOf(e.rhs->type);
+                    popWideInto("a", words);
+                    for (int i = 0; i < words; i++) {
+                        code_ << "    lhld " << wideScratch("a", i) << "\n";
+                        code_ << "    mov a,l\n    cma\n    mov l,a\n";
+                        code_ << "    mov a,h\n    cma\n    mov h,a\n";
+                        code_ << "    shld " << wideScratch("a", i) << "\n";
+                    }
+                    pushWideFrom("a", words);
+                    return;
+                }
                 genExpr(*e.rhs);
                 code_ << "    lhld ac\n";
                 code_ << "    mov a,l\n    cma\n    mov l,a\n";
@@ -421,9 +911,15 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
             // only way to get a memory value onto the real stack -
             // `PUSH` only ever takes a register pair, never a memory
             // operand).
+            int totalWords = 0;
             for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
-                code_ << "    lhld ac\n    push h\n";
+                if (isWide(e.args[i]->type)) {
+                    totalWords += wordCountOf(e.args[i]->type);
+                } else {
+                    code_ << "    lhld ac\n    push h\n";
+                    totalWords += 1;
+                }
             }
             code_ << "    call " << label(e.func) << "\n";
             // The caller cleans its own pushed arguments back off
@@ -433,8 +929,19 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
             // h,N`/`dad sp`/`sphl` moves SP by a compile-time-constant
             // amount in one step, the same idiom genFunction()'s own
             // prologue uses to reserve locals.
-            if (!e.args.empty()) {
-                code_ << "    lxi h, " << (e.args.size() * 2) << "\n    dad sp\n    sphl\n";
+            if (totalWords > 0) {
+                code_ << "    lxi h, " << (totalWords * 2) << "\n    dad sp\n    sphl\n";
+            }
+            if (isWide(e.type)) {
+                // The callee left its own wide return value in the
+                // "wret" scratch cells (see genStmt()'s own Return
+                // case) - push it back onto the stack as this
+                // expression's own result, most significant word
+                // first so the least significant ends up on top.
+                int words = wordCountOf(e.type);
+                for (int i = words - 1; i >= 0; i--) {
+                    code_ << "    lhld " << wideScratch("ret", i) << "\n    push h\n";
+                }
             }
             return;
         }
@@ -470,6 +977,12 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
             code_ << "    " << (e.op == "ion" ? "ei" : "di") << "\n";
             return;
         }
+        case ir::ExprKind::Convert: {
+            genConvert(e);
+            return;
+        }
+        case ir::ExprKind::Func:
+            err(e.line, "internal: Func reached genExpr - should only ever appear as '&'s operand");
     }
 }
 
@@ -504,15 +1017,25 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
 // base instead of adding it whenever the base came from a Local/Param
 // array.
 void I8080Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
+    // `elemShift()` already scales by the element's own full width
+    // (0/1/2/3 for a 1/2/4/8-byte element - see I8080Codegen.h's own
+    // header comment), so this address computation is exactly as
+    // valid for a wide (`long`/`long long`) element as for a plain
+    // one; only the callers that read/write through the resulting
+    // `ptr` need their own wide-aware path (see genIndex()/genExpr()'s
+    // own Assign case).
     genExpr(idxExpr);  // ac = index
-    // HL = index*2 (words are 2 bytes on this byte-addressed target,
-    // same reason every other backend's own indexing doubles the
-    // index first - `dad h` doubles HL in a single instruction, since
-    // adding a value to itself is exactly doubling it). Stashed in
-    // `ptr` immediately - loading the base below (particularly
+    // HL = index * widthOfType(slot->type) - `dad h` doubles HL in a
+    // single instruction (adding a value to itself is exactly
+    // doubling it), repeated `elemShift()` times (0 for a `char`
+    // element, 1 for `short`/`int`, 2/3 for `long`/`long long` - see
+    // I8080Codegen.h's own header comment). Stashed in `ptr`
+    // immediately - loading the base below (particularly
     // loadPair()/genFrameAddr(), which go through HL) would otherwise
     // clobber it.
-    code_ << "    lhld ac\n    dad h\n";
+    code_ << "    lhld ac\n";
+    int shift = elemShift(slot->type);
+    for (int i = 0; i < shift; i++) code_ << "    dad h\n";
     code_ << "    shld ptr\n";
     const bool isGlobal = slot->kind == ir::SlotKind::Global;
     if (isGlobal) {
@@ -546,11 +1069,49 @@ void I8080Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     }
 }
 
+// `ptr` already holds the element's own address (genIndexAddr()).
+// Reads its `words` 16-bit words, most significant first, pushing
+// each one onto the real stack as it goes - same least-significant-
+// word-on-top convention as every other wide load here (see
+// I8080Codegen.h's own header comment) - by recomputing `ptr+2*i`
+// fresh for each word via the otherwise-unused BC pair (DE already
+// held the popped value in the Assign-side equivalent of this; here
+// there's no popped value to protect, so this could use DE too, but
+// BC keeps this and genWideStoreAtPtr() symmetric).
+void I8080Codegen::genWideLoadAtPtr(int words) {
+    for (int i = words - 1; i >= 0; i--) {
+        code_ << "    lhld ptr\n";
+        if (i > 0) code_ << "    lxi b, " << (2 * i) << "\n    dad b\n";
+        code_ << "    mov e,m\n    inx h\n    mov d,m\n";
+        code_ << "    push d\n";
+    }
+}
+
+// The mirror image for a write: `wideScratch(role,i)` already holds
+// word `i` of the value to store (see this function's own caller -
+// genExpr()'s Assign case pops the evaluated rhs into "wb" first,
+// before the element's own address can be clobbered by evaluating
+// it), and `lda`/direct-`sta`-by-label addressing reaches that value
+// one byte at a time without ever needing it in a register pair that
+// `ptr+2*i`'s own address computation is also using.
+void I8080Codegen::genWideStoreAtPtr(const char *role, int words) {
+    for (int i = 0; i < words; i++) {
+        code_ << "    lhld ptr\n";
+        if (i > 0) code_ << "    lxi b, " << (2 * i) << "\n    dad b\n";
+        code_ << "    lda " << wideScratch(role, i) << "\n    mov m,a\n";
+        code_ << "    inx h\n";
+        code_ << "    lda " << wideScratch(role, i) << "+1\n    mov m,a\n";
+    }
+}
+
 void I8080Codegen::genIndex(const ir::Expr &e) {
-    genIndexAddr(e.slot, *e.lhs);
+    genIndexAddr(e.slot, *e.lhs);  // ptr = element address
+    if (isWide(e.slot->type)) {
+        genWideLoadAtPtr(wordCountOf(e.slot->type));
+        return;
+    }
     code_ << "    lhld ptr\n";
-    code_ << "    mov e,m\n    inx h\n    mov d,m\n";
-    storePair("ac", "d");
+    loadOperand(e.slot->type);
 }
 
 void I8080Codegen::genAddrOf(const ir::Expr &operand) {
@@ -587,11 +1148,32 @@ void I8080Codegen::genAddrOf(const ir::Expr &operand) {
 // as i increases) - computed directly here rather than through
 // genFrameAddr(), which only ever knows `slot`'s own single offset.
 void I8080Codegen::genLocalArrayInit(const ir::Slot *slot) {
+    int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
-        code_ << "    lxi h, " << arrayElemText(slot->arrayInit[i]) << "\n    shld ac\n";
-        long elemOffset = frameByteOffset(slot) - 2L * static_cast<long>(i);
-        code_ << "    lhld fp\n    lxi d, " << elemOffset << "\n    dad d\n";
-        storeAcIndirect();
+        const ir::ArrayInitElem &elem = slot->arrayInit[i];
+        long base = static_cast<long>(i) * w;
+        if (w == 1 && !elem.isSymbol) {
+            genFrameAddr(slot, base);
+            code_ << "    mvi a, " << static_cast<int>(static_cast<uint8_t>(elem.value)) << "\n    mov m,a\n";
+            continue;
+        }
+        if (elem.isSymbol || w <= 2) {
+            code_ << "    lxi h, " << arrayElemText(elem) << "\n    shld ac\n";
+            genFrameAddr(slot, base);
+            storeAcIndirect();
+            continue;
+        }
+        // A wide (`long`/`long long`) element - 2 or 4 words, least
+        // significant first, same layout as every other wide value's
+        // own in-memory representation elsewhere in this file.
+        auto uv = static_cast<unsigned long>(elem.value);
+        int words = w / 2;
+        for (int j = 0; j < words; j++) {
+            uint16_t wv = static_cast<uint16_t>((uv >> (16 * j)) & 0xFFFF);
+            code_ << "    lxi h, " << wv << "\n    shld ac\n";
+            genFrameAddr(slot, base + 2 * j);
+            storeAcIndirect();
+        }
     }
 }
 
@@ -607,40 +1189,56 @@ void I8080Codegen::genLocalArrayInit(const ir::Slot *slot) {
 // PHA/PLA sequences serve this exact role (see M6502Codegen.cpp).
 void I8080Codegen::genBinary(const ir::Expr &e) {
     const std::string &op = e.op;
-    if (op == "+") {
+    // Every arithmetic/bitwise/comparison operand here already shares
+    // one common type (IRBuilder's own usual-arithmetic-conversion
+    // pass - see Type.h), except shift (only the LHS's own type
+    // matters) and &&/|| (width-independent).
+    Type operandType = e.lhs->type;
+    bool wide = isWide(operandType);
+    bool isUnsigned = operandType.isUnsigned;
+    int words = wide ? wordCountOf(operandType) : 1;
+    if (op == "+" || op == "-") {
+        if (wide) {
+            genWideAdd(*e.lhs, *e.rhs, op == "+", words);
+            return;
+        }
         genExpr(*e.lhs);
         code_ << "    lhld ac\n    push h\n";  // save lhs on the real stack across evaluating rhs - see this
                                                 // function's own header comment on why a named memory cell can't
                                                 // be used for that instead
         genExpr(*e.rhs);                        // ac = rhs
         code_ << "    pop d\n";                  // DE = lhs (popped only now, after rhs is fully evaluated)
-        code_ << "    lhld ac\n    dad d\n    shld ac\n";
-        return;
-    }
-    if (op == "-") {
-        genExpr(*e.lhs);
-        code_ << "    lhld ac\n    push h\n";
-        genExpr(*e.rhs);
-        code_ << "    pop d\n";    // DE = lhs
-        code_ << "    lhld ac\n";  // HL = rhs
-        code_ << "    mov a,e\n    sub l\n    mov e,a\n";
-        code_ << "    mov a,d\n    sbb h\n    mov d,a\n";
-        storePair("ac", "d");
+        if (op == "+") {
+            code_ << "    lhld ac\n    dad d\n    shld ac\n";
+        } else {
+            code_ << "    lhld ac\n";  // HL = rhs
+            code_ << "    mov a,e\n    sub l\n    mov e,a\n";
+            code_ << "    mov a,d\n    sbb h\n    mov d,a\n";
+            storePair("ac", "d");
+        }
         return;
     }
     if (op == "*") {
-        genMul(*e.lhs, *e.rhs);
+        if (wide) {
+            genWideMul(*e.lhs, *e.rhs, words);
+        } else {
+            genMul(*e.lhs, *e.rhs);
+        }
         return;
     }
-    if (op == "/") {
-        genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/false);
-        return;
-    }
-    if (op == "%") {
-        genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/true);
+    if (op == "/" || op == "%") {
+        if (wide) {
+            genWideDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/op == "%", words);
+        } else {
+            genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/op == "%");
+        }
         return;
     }
     if (op == "&" || op == "|" || op == "^") {
+        if (wide) {
+            genWideBitwise(*e.lhs, *e.rhs, op, words);
+            return;
+        }
         genExpr(*e.lhs);
         code_ << "    lhld ac\n    push h\n";
         genExpr(*e.rhs);
@@ -653,7 +1251,11 @@ void I8080Codegen::genBinary(const ir::Expr &e) {
         return;
     }
     if (op == "<<" || op == ">>") {
-        genShift(*e.lhs, *e.rhs, op == "<<");
+        if (wide) {
+            genWideShift(*e.lhs, *e.rhs, op == "<<", isUnsigned, words);
+            return;
+        }
+        genShift(*e.lhs, *e.rhs, op == "<<", isUnsigned);
         return;
     }
     if (op == "&&") {
@@ -664,14 +1266,21 @@ void I8080Codegen::genBinary(const ir::Expr &e) {
         genLogicalOr(*e.lhs, *e.rhs);
         return;
     }
-    genCompare(op, *e.lhs, *e.rhs);
+    if (wide) {
+        genWideCompare(op, *e.lhs, *e.rhs, isUnsigned, words);
+        return;
+    }
+    genCompare(op, *e.lhs, *e.rhs, isUnsigned);
 }
 
 // No variable-count shift instruction - loop `rhs` times instead, one
 // bit at a time, via shiftOneBit() (see I8080Codegen.h's own header
 // comment, and the same fix every other software-shift backend here
-// already needs for the same reason).
-void I8080Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft) {
+// already needs for the same reason). `isUnsigned` only matters for
+// `>>` - see genWideShift()'s own comment on the same signed/
+// unsigned distinction, done here with the same `mov b,a`/`ral`/
+// `mov a,b`/`rar` software-SRA idiom for just the top byte.
+void I8080Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
     genExpr(lhs);                          // ac = value to shift
     code_ << "    lhld ac\n    push h\n";  // saved on the real stack across evaluating the count - see
                                             // genBinary()'s own header comment on why not a named cell
@@ -682,7 +1291,14 @@ void I8080Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLef
     code_ << Lloop << ":\n";
     code_ << "    mov a,c\n    ora a\n";
     code_ << "    jz " << Ldone << "\n";
-    shiftOneBit("bc", isLeft);
+    if (isLeft || isUnsigned) {
+        shiftOneBit("bc", isLeft);
+    } else {
+        code_ << "    lhld bc\n";
+        code_ << "    mov a,h\n    mov b,a\n    ral\n    mov a,b\n    rar\n    mov h,a\n";
+        code_ << "    mov a,l\n    rar\n    mov l,a\n";
+        code_ << "    shld bc\n";
+    }
     code_ << "    dcr c\n";
     code_ << "    jmp " << Lloop << "\n";
     code_ << Ldone << ":\n";
@@ -751,13 +1367,13 @@ void I8080Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool want
     if (wantRemainder) copy16("ac", "dx");
 }
 
-void I8080Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs) {
+void I8080Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned) {
     if (op == "==") return emitEqualityCompare(lhs, rhs, /*wantEqual=*/true);
     if (op == "!=") return emitEqualityCompare(lhs, rhs, /*wantEqual=*/false);
-    if (op == "<") return emitLessCompare(lhs, rhs, /*invert=*/false);
-    if (op == ">") return emitLessCompare(rhs, lhs, /*invert=*/false);
-    if (op == "<=") return emitLessCompare(rhs, lhs, /*invert=*/true);
-    if (op == ">=") return emitLessCompare(lhs, rhs, /*invert=*/true);
+    if (op == "<") return emitLessCompare(lhs, rhs, /*invert=*/false, isUnsigned);
+    if (op == ">") return emitLessCompare(rhs, lhs, /*invert=*/false, isUnsigned);
+    if (op == "<=") return emitLessCompare(rhs, lhs, /*invert=*/true, isUnsigned);
+    if (op == ">=") return emitLessCompare(lhs, rhs, /*invert=*/true, isUnsigned);
     err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
 }
 
@@ -788,14 +1404,16 @@ void I8080Codegen::emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs,
 // operand's high byte maps the signed range onto the unsigned one
 // while preserving order, so a plain unsigned compare (the final
 // borrow out of the high-byte subtraction) is all that's left to do.
-void I8080Codegen::emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert) {
+void I8080Codegen::emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert, bool isUnsigned) {
     genExpr(a);
     code_ << "    lhld ac\n    push h\n";  // saved on the real stack across evaluating b
     genExpr(b);
     code_ << "    pop d\n";    // DE = a
     code_ << "    lhld ac\n";  // HL = b
-    code_ << "    mov a,d\n    xri 0x80\n    mov d,a\n";  // D = a's high byte, sign flipped
-    code_ << "    mov a,h\n    xri 0x80\n    mov h,a\n";  // H = b's high byte, sign flipped
+    if (!isUnsigned) {
+        code_ << "    mov a,d\n    xri 0x80\n    mov d,a\n";  // D = a's high byte, sign flipped
+        code_ << "    mov a,h\n    xri 0x80\n    mov h,a\n";  // H = b's high byte, sign flipped
+    }
     code_ << "    mov a,e\n    sub l\n";                  // a'_lo - b'_lo, CY = borrow
     code_ << "    mov a,d\n    sbb h\n";                  // a'_hi - b'_hi - borrow; CY now = (a < b) unbiased
     std::string Ltrue = newLabel(), Ldone = newLabel();
@@ -808,10 +1426,10 @@ void I8080Codegen::emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool in
 void I8080Codegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
     std::string Lfalse = newLabel(), Ltrue = newLabel(), Ldone = newLabel();
     genExpr(lhs);
-    code_ << "    lhld ac\n    mov a,l\n    ora h\n";
+    testTruthy(lhs);
     code_ << "    jz " << Lfalse << "\n";
     genExpr(rhs);
-    code_ << "    lhld ac\n    mov a,l\n    ora h\n";
+    testTruthy(rhs);
     code_ << "    jz " << Lfalse << "\n";
     code_ << Ltrue << ":\n    lxi h, 1\n    shld ac\n    jmp " << Ldone << "\n";
     code_ << Lfalse << ":\n    lxi h, 0\n    shld ac\n";
@@ -821,10 +1439,10 @@ void I8080Codegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
 void I8080Codegen::genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs) {
     std::string Lfalse = newLabel(), Ltrue = newLabel(), Ldone = newLabel();
     genExpr(lhs);
-    code_ << "    lhld ac\n    mov a,l\n    ora h\n";
+    testTruthy(lhs);
     code_ << "    jnz " << Ltrue << "\n";
     genExpr(rhs);
-    code_ << "    lhld ac\n    mov a,l\n    ora h\n";
+    testTruthy(rhs);
     code_ << "    jnz " << Ltrue << "\n";
     code_ << Lfalse << ":\n    lxi h, 0\n    shld ac\n    jmp " << Ldone << "\n";
     code_ << Ltrue << ":\n    lxi h, 1\n    shld ac\n";
@@ -833,12 +1451,33 @@ void I8080Codegen::genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs) {
 
 void I8080Codegen::genLogicalNot(const ir::Expr &rhs) {
     genExpr(rhs);
-    code_ << "    lhld ac\n    mov a,l\n    ora h\n";
+    testTruthy(rhs);
     std::string Ltrue = newLabel(), Ldone = newLabel();
     code_ << "    jz " << Ltrue << "\n";
     code_ << "    lxi h, 0\n    shld ac\n    jmp " << Ldone << "\n";
     code_ << Ltrue << ":\n    lxi h, 1\n    shld ac\n";
     code_ << Ldone << ":\n";
+}
+
+// After genExpr(e) just left `e`'s own value - `ac`, if narrow, or
+// `wordCountOf(e.type)` words on the real stack (LSW on top) if wide
+// (see ../z80/Z80Codegen.h's own header comment on this convention) -
+// this leaves the real Z flag set exactly as a plain `ora h` would,
+// with any wide stack space already released, ready for an
+// immediate `jz`/`jnz`.
+void I8080Codegen::testTruthy(const ir::Expr &e) {
+    if (!isWide(e.type)) {
+        code_ << "    lhld ac\n    mov a,l\n    ora h\n";
+        return;
+    }
+    int words = wordCountOf(e.type);
+    popWideInto("a", words);
+    auto bytes = wideByteLabelsLsbFirst("a", words);
+    code_ << "    mvi c, 0\n";
+    for (const auto &b : bytes) {
+        code_ << "    lda " << b << "\n    ora c\n    mov c,a\n";
+    }
+    code_ << "    mov a,c\n    ora a\n";
 }
 
 std::string I8080Codegen::buildAssembleCommand(const std::string &, const std::string &format, const std::string &,

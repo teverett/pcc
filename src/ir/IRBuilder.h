@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../Type.h"
 #include "ast/AST.h"
 #include "IR.h"
 
@@ -23,7 +24,16 @@ namespace pcc {
 // object file never does). When false (the default - every other
 // format), behavior is unchanged: a missing name is always an error,
 // and `prog` must define a parameterless `main`.
-ir::Program buildIR(const Program &prog, bool allowExternal = false);
+//
+// `widths` is the selected backend's own TypeWidths (Backend::
+// typeWidths(), see codegen/Codegen.h) - used here only to fold
+// `sizeof` into a constant and to compute every Local/Param's own
+// Slot::frameOffset/Function::frameSize in real storage units (see
+// their own comments in IR.h); the promotion/usual-arithmetic-
+// conversion rules a type-checking pass needs are deliberately
+// target-independent and never consult this table - see Type.h's own
+// header comment.
+ir::Program buildIR(const Program &prog, const TypeWidths &widths, bool allowExternal = false);
 
 // Re-walks every function body's own `LocalDecl`s and reassigns each
 // one's `Slot::frameOffset` (and its `Function::frameSize`) from
@@ -33,7 +43,8 @@ ir::Program buildIR(const Program &prog, bool allowExternal = false);
 // new local (see `LocalCSE.cpp`) runs after that one-time assignment
 // already happened, so without a second pass here, the new local's
 // `frameOffset` would be left at its default (0), silently aliasing
-// whatever real local or parameter already sits there.
-void recomputeFrameLayout(ir::Program &prog);
+// whatever real local or parameter already sits there. Needs the same
+// `widths` buildIR itself was called with.
+void recomputeFrameLayout(ir::Program &prog, const TypeWidths &widths);
 
 }  // namespace pcc

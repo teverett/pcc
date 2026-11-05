@@ -607,10 +607,11 @@ class Assembler {
             emitImm8(op0);
             return;
         }
-        if (mnemonic == "rl" || mnemonic == "rr") {
+        if (mnemonic == "rl" || mnemonic == "rr" || mnemonic == "sra" || mnemonic == "srl") {
             uint8_t r = reg8Code(operandAt(ops, 0, mnemonic, 1), mnemonic);
+            uint8_t base = mnemonic == "rl" ? 0x10 : mnemonic == "rr" ? 0x18 : mnemonic == "sra" ? 0x28 : 0x38;
             emit8(0xCB);
-            emit8(static_cast<uint8_t>((mnemonic == "rl" ? 0x10 : 0x18) | r));
+            emit8(static_cast<uint8_t>(base | r));
             return;
         }
         if (mnemonic == "push" || mnemonic == "pop") {

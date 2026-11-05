@@ -45,7 +45,7 @@ struct Operand {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Equate, Org, Dw, Instr } kind = None;
+    enum Kind { None, Equate, Org, Dw, Db, Dh, Instr } kind = None;
     std::string equateName;
     std::vector<std::vector<Syllable>> exprList;  // Equate (1)/Org (1)/Dw (N)
     std::string mnemonic;                           // Instr
@@ -90,7 +90,14 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
 // Returns -1 if `name` isn't one of them.
 int regNumber(const std::string &lower) {
     static const std::unordered_map<std::string, int> names = {
-        {"r0", 0}, {"r1", 1}, {"r2", 2}, {"r3", 3}, {"fp", 11}, {"sp", 13}, {"lr", 14},
+        {"r0", 0}, {"r1", 1}, {"r2", 2}, {"r3", 3}, {"r4", 4}, {"r5", 5}, {"r6", 6}, {"r7", 7}, {"r8", 8},
+        {"r9", 9}, {"r10", 10}, {"fp", 11}, {"r12", 12}, {"sp", 13}, {"lr", 14},
+        // r4-r10/r12 are new scratch registers the `long long`
+        // multi-word arithmetic in ArmCodegen.cpp's own genWideAdd/
+        // genWideMul/genWideDivMod/genWideShift/genWideCompare needs
+        // (this backend never crosses a real call boundary within
+        // those self-contained routines, so no caller-saved/callee-
+        // saved convention applies to them).
     };
     auto it = names.find(lower);
     return it == names.end() ? -1 : it->second;
@@ -157,10 +164,10 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         line.exprList.push_back(exprToSyllables(instr->operand(0)->expr()));
         return line;
     }
-    if (mnemonic == "dw") {
-        line.kind = Line::Dw;
+    if (mnemonic == "dw" || mnemonic == "db" || mnemonic == "dh") {
+        line.kind = mnemonic == "dw" ? Line::Dw : mnemonic == "db" ? Line::Db : Line::Dh;
         for (auto *op : instr->operand()) {
-            if (op->LBRACKET()) fail("'dw' operand can't be bracketed");
+            if (op->LBRACKET()) fail("'" + mnemonic + "' operand can't be bracketed");
             line.exprList.push_back(exprToSyllables(op->expr()));
         }
         return line;
@@ -243,6 +250,12 @@ class Assembler {
             case Line::Dw:
                 for (const auto &e : line.exprList) emit32(evalExpr(e));
                 return;
+            case Line::Db:
+                for (const auto &e : line.exprList) emit8(static_cast<uint8_t>(evalExpr(e)));
+                return;
+            case Line::Dh:
+                for (const auto &e : line.exprList) emit16(static_cast<uint16_t>(evalExpr(e)));
+                return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
                 return;
@@ -302,6 +315,18 @@ class Assembler {
         bytes_.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
         offset_ += 4;
     }
+    // `db`/`dh` - byte/halfword data, the new type system's own
+    // narrower-than-`int` global storage (see ArmCodegen.cpp's own
+    // declareArray()/generate()).
+    void emit8(uint8_t v) {
+        bytes_.push_back(v);
+        offset_ += 1;
+    }
+    void emit16(uint16_t v) {
+        bytes_.push_back(static_cast<uint8_t>(v & 0xFF));
+        bytes_.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+        offset_ += 2;
+    }
 
     // `op`'s own exprList already carries a plain (optionally signed)
     // decimal/hex value (e.g. `mov r0,-4`) - this dialect's immediate
@@ -347,6 +372,10 @@ class Assembler {
     static uint8_t condOf(const std::string &suffix) {
         static const std::unordered_map<std::string, uint8_t> conds = {
             {"", 0xE}, {"eq", 0x0}, {"ne", 0x1}, {"lt", 0xB}, {"ge", 0xA}, {"le", 0xD}, {"gt", 0xC},
+            // Unsigned counterparts (real ARM condition codes HS/LO/
+            // HI/LS) - the new type system's unsigned compare/branch,
+            // see ArmCodegen.cpp's own genCompare().
+            {"hs", 0x2}, {"lo", 0x3}, {"hi", 0x8}, {"ls", 0x9},
         };
         auto it = conds.find(suffix);
         if (it == conds.end()) fail("unsupported condition suffix '" + suffix + "'");
@@ -378,13 +407,22 @@ class Assembler {
     // other depending on context, never needing both forms of the
     // same expression.
     void encodeAddSub(uint8_t cond, uint8_t opcode, const std::vector<Operand> &ops, const std::string &mnemonic) {
+        encodeAddSubS(cond, opcode, 0, ops, mnemonic);
+    }
+    // `s` sets the S bit (update flags, specifically carry) - needed
+    // on the low-word half of a `long long` add/sub chain so the
+    // high-word `adc`/`sbc` reads the real carry/borrow out of it
+    // (ArmCodegen.cpp's own genWideAdd()); plain `add`/`sub` never
+    // sets it, matching every existing call site's own behavior.
+    void encodeAddSubS(uint8_t cond, uint8_t opcode, uint8_t s, const std::vector<Operand> &ops,
+                        const std::string &mnemonic) {
         uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         uint8_t rn = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
         const Operand &op2 = requireOperand(ops, 2, mnemonic);
         if (op2.kind == Operand::Reg) {
-            emitDPReg(cond, opcode, 0, rn, rd, static_cast<uint8_t>(op2.reg));
+            emitDPReg(cond, opcode, s, rn, rd, static_cast<uint8_t>(op2.reg));
         } else {
-            emitDPImm(cond, opcode, 0, rn, rd, evalImm(op2));
+            emitDPImm(cond, opcode, s, rn, rd, evalImm(op2));
         }
     }
     // `mov`/`mov<cc>`: dialect order `mnemonic rd,op2`, Rn unused
@@ -446,15 +484,42 @@ class Assembler {
         emit32((0xEu << 28) | (static_cast<uint32_t>(rd) << 16) | (static_cast<uint32_t>(rn) << 8) | (0x9u << 4) |
                rm);
     }
+    // `umull rdLo,rdHi,rn,rm` (RdHi:RdLo = Rn*Rm, full unsigned 64-bit
+    // product) - dialect order matches ArmCodegen.cpp's own
+    // genWideMul(). Real ARMv7-A encoding: same multiply-instruction
+    // family as `mul` above (cond 000 opcode(4) S RdHi RdLo Rs 1001
+    // Rm), opcode=0100 for UMULL (`mul`'s own opcode is implicitly
+    // 0000) - the one widening multiply the new type system's `long
+    // long` needs (see genWideMul()'s own comment on why only the
+    // low-dword*low-dword cross term needs this, not the other two).
+    void encodeUmull(const std::vector<Operand> &ops, const std::string &mnemonic) {
+        uint8_t rdLo = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+        uint8_t rdHi = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+        uint8_t rn = requireReg(requireOperand(ops, 2, mnemonic), mnemonic);
+        uint8_t rm = requireReg(requireOperand(ops, 3, mnemonic), mnemonic);
+        emit32((0xEu << 28) | (0x4u << 21) | (static_cast<uint32_t>(rdHi) << 16) |
+               (static_cast<uint32_t>(rdLo) << 12) | (static_cast<uint32_t>(rn) << 8) | (0x9u << 4) | rm);
+    }
     // `sdiv rd,rn,rm` (`Rd = Rn / Rm`, signed): cond 0111 0001 Rd
     // 1111 Rm 0001 Rn - note the hardware field order (`Rm` sits
     // where `Rn` usually would, and vice versa) is the real ARMv7-A
     // SDIV encoding, not a dialect convention.
     void encodeSdiv(const std::vector<Operand> &ops, const std::string &mnemonic) {
+        encodeDiv(0x71u, ops, mnemonic);
+    }
+    // `udiv rd,rn,rm` (`Rd = Rn / Rm`, unsigned) - identical shape to
+    // `sdiv` except bit21 (0111 0011 vs 0111 0001), the real ARMv7-A
+    // UDIV/SDIV encoding difference - see ArmCodegen.cpp's own
+    // genDivMod() for the signed/unsigned choice the new type system
+    // now has to make.
+    void encodeUdiv(const std::vector<Operand> &ops, const std::string &mnemonic) {
+        encodeDiv(0x73u, ops, mnemonic);
+    }
+    void encodeDiv(uint32_t opBits, const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         uint8_t rn = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
         uint8_t rm = requireReg(requireOperand(ops, 2, mnemonic), mnemonic);
-        emit32((0xEu << 28) | (0x71u << 20) | (static_cast<uint32_t>(rd) << 16) | (0xFu << 12) |
+        emit32((0xEu << 28) | (opBits << 20) | (static_cast<uint32_t>(rd) << 16) | (0xFu << 12) |
                (static_cast<uint32_t>(rm) << 8) | (0x1u << 4) | rn);
     }
     // `mls rd,rn,rm,ra` (`Rd = Ra - Rn*Rm`): cond 0000 0110 Rd Ra Rm
@@ -526,6 +591,33 @@ class Assembler {
         if (isLoad) word |= (0x1u << 20);
         emit32(word);
     }
+    // `ldindb`/`stindb addrReg,destOrSrcReg` - LDRB/STRB, zero offset:
+    // the same word-transfer encoding above with the B bit (bit22)
+    // set - a narrower-than-native-int Var/Slot's own unsigned byte
+    // load/store (see ArmCodegen.cpp's loadOperand()/storeOperand()).
+    void encodeLdindStindB(bool isLoad, const std::vector<Operand> &ops, const std::string &mnemonic) {
+        uint8_t base = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+        uint8_t rt = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+        uint32_t word = (0xEu << 28) | (0x05u << 24) | (0x1u << 23) | (0x1u << 22) |
+                         (static_cast<uint32_t>(base) << 16) | (static_cast<uint32_t>(rt) << 12);
+        if (isLoad) word |= (0x1u << 20);
+        emit32(word);
+    }
+    // `ldindh`/`stindh`/`ldindsb`/`ldindsh addrReg,destReg` - the real
+    // ARM "extra load/store" instruction family (halfword, and signed
+    // byte/halfword load - there's no STRSB/STRSH, a store never
+    // needs a sign), zero offset, immediate form: cond 000 P(1) U(1)
+    // I(1) W(0) L Rn Rt imm4H(0) 1 S H 1 imm4L(0). `s`/`h` pick which
+    // of LDRH(0,1)/LDRSB(1,0)/LDRSH(1,1)/STRH(0,1 with L=0) this is.
+    void encodeExtraLdSt(bool isLoad, bool s, bool h, const std::vector<Operand> &ops, const std::string &mnemonic) {
+        uint8_t base = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+        uint8_t rt = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+        uint32_t word = (0xEu << 28) | (0x1u << 24) | (0x1u << 23) | (0x1u << 22) | (static_cast<uint32_t>(base) << 16) |
+                         (static_cast<uint32_t>(rt) << 12) | (0x1u << 7) | ((s ? 1u : 0u) << 6) | ((h ? 1u : 0u) << 5) |
+                         (0x1u << 4);
+        if (isLoad) word |= (0x1u << 20);
+        emit32(word);
+    }
     // `b`/`bl<cc> label`: cond 101 L offset24, offset24 = (target -
     // (thisInstrAddr+8)) / 4 - real A32 PC-relative branch semantics
     // (the "+8" is the real architectural "PC reads as the address of
@@ -590,6 +682,26 @@ class Assembler {
             encodeAddSub(0xE, 0x2, ops, mnemonic);
             return;
         }
+        // adds/subs (flag-setting, carry out for the next adc/sbc)
+        // and adc/sbc (carry/borrow in) - a `long long`'s own
+        // ripple-carry add/sub, one native word wider (see
+        // ArmCodegen.cpp's genWideAdd()).
+        if (mnemonic == "adds") {
+            encodeAddSubS(0xE, 0x4, 1, ops, mnemonic);
+            return;
+        }
+        if (mnemonic == "subs") {
+            encodeAddSubS(0xE, 0x2, 1, ops, mnemonic);
+            return;
+        }
+        if (mnemonic == "adc") {
+            encodeAddSub(0xE, 0x5, ops, mnemonic);
+            return;
+        }
+        if (mnemonic == "sbc") {
+            encodeAddSub(0xE, 0x6, ops, mnemonic);
+            return;
+        }
         if (mnemonic == "rsb") {
             encodeRsb(ops, mnemonic);
             return;
@@ -618,8 +730,16 @@ class Assembler {
             encodeMul(ops, mnemonic);
             return;
         }
+        if (mnemonic == "umull") {
+            encodeUmull(ops, mnemonic);
+            return;
+        }
         if (mnemonic == "sdiv") {
             encodeSdiv(ops, mnemonic);
+            return;
+        }
+        if (mnemonic == "udiv") {
+            encodeUdiv(ops, mnemonic);
             return;
         }
         if (mnemonic == "mls") {
@@ -632,6 +752,10 @@ class Assembler {
         }
         if (mnemonic == "lsr") {
             encodeShift(0x1, ops, mnemonic);
+            return;
+        }
+        if (mnemonic == "asr") {
+            encodeShift(0x2, ops, mnemonic);
             return;
         }
         if (mnemonic == "movw") {
@@ -648,6 +772,30 @@ class Assembler {
         }
         if (mnemonic == "stind") {
             encodeLdindStind(false, ops, mnemonic);
+            return;
+        }
+        if (mnemonic == "ldindb") {
+            encodeLdindStindB(true, ops, mnemonic);
+            return;
+        }
+        if (mnemonic == "stindb") {
+            encodeLdindStindB(false, ops, mnemonic);
+            return;
+        }
+        if (mnemonic == "ldindsb") {
+            encodeExtraLdSt(true, /*s=*/true, /*h=*/false, ops, mnemonic);
+            return;
+        }
+        if (mnemonic == "ldindh") {
+            encodeExtraLdSt(true, /*s=*/false, /*h=*/true, ops, mnemonic);
+            return;
+        }
+        if (mnemonic == "stindh") {
+            encodeExtraLdSt(false, /*s=*/false, /*h=*/true, ops, mnemonic);
+            return;
+        }
+        if (mnemonic == "ldindsh") {
+            encodeExtraLdSt(true, /*s=*/true, /*h=*/true, ops, mnemonic);
             return;
         }
         if (mnemonic == "bx") {

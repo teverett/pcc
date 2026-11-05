@@ -45,7 +45,7 @@ struct Operand {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Equate, Org, Dw, Instr } kind = None;
+    enum Kind { None, Equate, Org, Db, Dh, Dw, Instr } kind = None;
     std::string equateName;
     std::vector<std::vector<Syllable>> exprList;  // Equate (1)/Org (1)/Dw (N)
     std::string mnemonic;                           // Instr
@@ -91,7 +91,8 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
 // Returns -1 if `name` isn't one of them.
 int regNumber(const std::string &lower) {
     static const std::unordered_map<std::string, int> names = {
-        {"r0", 0}, {"sp", 1}, {"t0", 3}, {"t1", 4}, {"t2", 5}, {"fp", 31},
+        {"r0", 0}, {"sp", 1}, {"t0", 3}, {"t1", 4}, {"t2", 5}, {"t3", 6},
+        {"t4", 7}, {"t5", 8}, {"t6", 9}, {"fp", 31},
     };
     auto it = names.find(lower);
     return it == names.end() ? -1 : it->second;
@@ -158,10 +159,10 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         line.exprList.push_back(exprToSyllables(instr->operand(0)->expr()));
         return line;
     }
-    if (mnemonic == "dw") {
-        line.kind = Line::Dw;
+    if (mnemonic == "dw" || mnemonic == "db" || mnemonic == "dh") {
+        line.kind = mnemonic == "dw" ? Line::Dw : mnemonic == "dh" ? Line::Dh : Line::Db;
         for (auto *op : instr->operand()) {
-            if (op->LBRACKET()) fail("'dw' operand can't be bracketed");
+            if (op->LBRACKET()) fail("'" + mnemonic + "' operand can't be bracketed");
             line.exprList.push_back(exprToSyllables(op->expr()));
         }
         return line;
@@ -261,6 +262,12 @@ class Assembler {
                     emit32(v);
                 }
                 return;
+            case Line::Db:
+                for (const auto &e : line.exprList) emit8(static_cast<uint8_t>(evalExpr(e)));
+                return;
+            case Line::Dh:
+                for (const auto &e : line.exprList) emit16(static_cast<uint16_t>(evalExpr(e)));
+                return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
                 return;
@@ -317,6 +324,17 @@ class Assembler {
     }
 
     // --- word emission -------------------------------------------------
+    void emit8(uint8_t v) {
+        bytes_.push_back(v);
+        offset_ += 1;
+    }
+
+    void emit16(uint16_t v) {
+        bytes_.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+        bytes_.push_back(static_cast<uint8_t>(v & 0xFF));
+        offset_ += 2;
+    }
+
     void emit32(uint32_t v) {
         bytes_.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
         bytes_.push_back(static_cast<uint8_t>((v >> 16) & 0xFF));
@@ -510,6 +528,16 @@ class Assembler {
             emitDCompareImm(11, rA, imm);
             return;
         }
+        // cmplw - the unsigned counterpart to cmpw, same X-form shape
+        // (opcode 31, crfD/L both 0) with XO=32 instead of cmpw's own
+        // XO=0 - signed vs. unsigned `long long` comparison (see
+        // PowerPCCodegen.cpp's own genWideCompare()) needs both.
+        if (mnemonic == "cmplw") {
+            uint8_t rA = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            uint8_t rB = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+            emit32((31u << 26) | (static_cast<uint32_t>(rA) << 16) | (static_cast<uint32_t>(rB) << 11) | (32u << 1));
+            return;
+        }
         // --- shift-by-constant (slwi - a convenience alias for the
         // literal fixed-count left shift PowerPCCodegen.cpp's own
         // array-index scaling needs, encoded as the real `rlwinm`
@@ -528,9 +556,35 @@ class Assembler {
                    (static_cast<uint32_t>(me) << 1));
             return;
         }
+        // srwi rA,rS,n - logical right shift by an immediate count
+        // (the `rlwinm` special case for SH=32-n, MB=n, ME=31, the
+        // real GNU/standard assembler alias) - a narrower-than-
+        // native-int Var/Slot's own unsigned narrowing and the
+        // `long long` divide/shift algorithms both need this
+        // alongside slwi/srawi (see narrowT0To()/genWideDivMod()/
+        // genWideShift()).
+        if (mnemonic == "srwi") {
+            uint8_t rADest = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            uint8_t rSSrc = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+            uint8_t n = static_cast<uint8_t>(evalImm(requireOperand(ops, 2, mnemonic)) & 0x1F);
+            uint8_t sh = static_cast<uint8_t>(32 - n);
+            uint8_t mb = n;
+            uint8_t me = 31;
+            emit32((21u << 26) | (static_cast<uint32_t>(rSSrc) << 21) | (static_cast<uint32_t>(rADest) << 16) |
+                   (static_cast<uint32_t>(sh) << 11) | (static_cast<uint32_t>(mb) << 6) |
+                   (static_cast<uint32_t>(me) << 1));
+            return;
+        }
         // --- X-form arithmetic (direct field order) ---
         static const std::unordered_map<std::string, uint16_t> xArith = {
             {"add", 266}, {"mullw", 235}, {"divw", 491},
+            // mulhwu (XO=11) gives the HIGH 32 bits of an unsigned
+            // 32x32 product (mullw only ever gives the low 32) -
+            // PowerPCCodegen.cpp's own genWideMul() needs it for the
+            // cross-multiply carry term, the same role MIPS's
+            // `mult`+`mfhi` or i386's `mul`'s own `edx` plays.
+            // divwu (XO=459) is divw's unsigned counterpart.
+            {"mulhwu", 11}, {"divwu", 459},
         };
         if (auto it = xArith.find(mnemonic); it != xArith.end()) {
             uint8_t rT = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
@@ -559,7 +613,7 @@ class Assembler {
         }
         // --- X-form logical (swapped field order) ---
         static const std::unordered_map<std::string, uint16_t> xLogical = {
-            {"and", 28}, {"or", 444}, {"xor", 316}, {"nor", 124}, {"slw", 24}, {"srw", 536},
+            {"and", 28}, {"or", 444}, {"xor", 316}, {"nor", 124}, {"slw", 24}, {"srw", 536}, {"sraw", 792},
         };
         if (auto it = xLogical.find(mnemonic); it != xLogical.end()) {
             uint8_t rADest = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
@@ -643,6 +697,37 @@ class Assembler {
             uint8_t rS = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
             uint16_t imm = evalImm(requireOperand(ops, 2, mnemonic));
             emitDArith(36, rS, rA, imm);
+            return;
+        }
+        // Byte/halfword load (zero- or sign-extending into a full
+        // register)/store (writing only that many low bytes), same
+        // `addrReg,reg[,disp]` shape as ldindd/stindd above - real
+        // LBZ(34)/LHZ(40)/LHA(42, sign-extending)/STB(38)/STH(44) - a
+        // narrower-than-native-int Var/Slot's own load/store (see
+        // PowerPCCodegen.cpp's loadOperand()/storeOperand()). PowerPC
+        // has no sign-extending byte load at all (real ISA fact - no
+        // "LBA"), so a signed `char`'s own sign-extension happens via
+        // `srawi` after an ordinary LBZ instead (see narrowT0To()).
+        static const std::unordered_map<std::string, uint8_t> sized = {
+            {"ldindb", 34}, {"ldindh", 42}, {"ldindhu", 40}, {"stindb", 38}, {"stindh", 44},
+        };
+        if (auto it = sized.find(mnemonic); it != sized.end()) {
+            uint8_t rA = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            uint8_t rT = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+            uint16_t imm = ops.size() > 2 ? evalImm(requireOperand(ops, 2, mnemonic)) : 0;
+            emitDArith(it->second, rT, rA, imm);
+            return;
+        }
+        // srawi rA,rS,SH - arithmetic shift right by an immediate
+        // count (M-form special case, XO=824 - see narrowT0To()'s own
+        // use for sign-extending a byte/halfword already in a
+        // register).
+        if (mnemonic == "srawi") {
+            uint8_t rADest = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            uint8_t rSSrc = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+            uint8_t sh = static_cast<uint8_t>(evalImm(requireOperand(ops, 2, mnemonic)) & 0x1F);
+            emit32((31u << 26) | (static_cast<uint32_t>(rSSrc) << 21) | (static_cast<uint32_t>(rADest) << 16) |
+                   (static_cast<uint32_t>(sh) << 11) | (824u << 1));
             return;
         }
         // --- branches ---

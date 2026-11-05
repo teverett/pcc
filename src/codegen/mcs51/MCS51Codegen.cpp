@@ -161,9 +161,14 @@ void MCS51Codegen::subImm16(const std::string &reg, int value) {
 
 void MCS51Codegen::loadFrameAddress(const std::string &dstReg, const ir::Slot *slot) {
     copy16(dstReg, "fp");
-    int wordIndex = (slot->kind == ir::SlotKind::Param) ? slot->paramIndex
-                                                          : (curParamCount_ + slot->frameOffset - 1);
-    if (wordIndex != 0) addImm16(dstReg, wordIndex * 2);
+    // A Param's own position is still a plain word index (every
+    // param here is still exactly one 2-byte word) - a Local's
+    // `frameOffset` is now a real byte offset, 1-based from 2 (see
+    // IR.h's own comment on Slot::frameOffset), placed right after
+    // the params region.
+    int byteOffset = (slot->kind == ir::SlotKind::Param) ? slot->paramIndex * 2
+                                                           : (curParamCount_ * 2 + slot->frameOffset - 2);
+    if (byteOffset != 0) addImm16(dstReg, byteOffset);
 }
 
 void MCS51Codegen::pushFrameWord(const std::string &srcReg) {
@@ -181,7 +186,7 @@ void MCS51Codegen::genPrologue(const ir::Function *fn) {
     copy16("fp", "ssp");
     int nparams = static_cast<int>(fn->params.size());
     if (nparams > 0) subImm16("fp", nparams * 2);
-    if (fn->frameSize > 0) addImm16("ssp", fn->frameSize * 2);
+    if (fn->frameSize > 0) addImm16("ssp", fn->frameSize);
     curParamCount_ = nparams;
 }
 
@@ -458,7 +463,15 @@ void MCS51Codegen::genStmt(const ir::Stmt &s) {
     }
 }
 
+void MCS51Codegen::requireNarrow(const ir::Expr &e) const {
+    if (widthOfType(e.type) > 2) {
+        err(e.line, "'long'/'long long' arithmetic isn't supported on this target - "
+                     "see MCS51Codegen.h's own header comment on requireNarrow()");
+    }
+}
+
 void MCS51Codegen::genExpr(const ir::Expr &e) {
+    requireNarrow(e);
     switch (e.kind) {
         case ir::ExprKind::IntLit: {
             uint16_t v16 = static_cast<uint16_t>(e.intValue);
@@ -589,6 +602,10 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
             genBinary(e);
             return;
         }
+        case ir::ExprKind::Convert: {
+            genConvert(e);
+            return;
+        }
         case ir::ExprKind::Intrinsic: {
             // Real 8051 global interrupt enable/disable - `SETB EA`
             // (IE.7) turns every interrupt source on, `CLR EA` turns
@@ -700,7 +717,7 @@ void MCS51Codegen::genBinary(const ir::Expr &e) {
         return;
     }
     if (op == "<<" || op == ">>") {
-        genShift(*e.lhs, *e.rhs, op == "<<");
+        genShift(*e.lhs, *e.rhs, op == "<<", e.lhs->type.isUnsigned);
         return;
     }
     if (op == "&&") {
@@ -711,7 +728,7 @@ void MCS51Codegen::genBinary(const ir::Expr &e) {
         genLogicalOr(*e.lhs, *e.rhs);
         return;
     }
-    genCompare(op, *e.lhs, *e.rhs);
+    genCompare(op, *e.lhs, *e.rhs, e.lhs->type.isUnsigned);
 }
 
 // No variable-count shift instruction (`RLC A`/`RRC A` always rotate
@@ -720,7 +737,7 @@ void MCS51Codegen::genBinary(const ir::Expr &e) {
 // (unlike 6502's own plain decrement-then-test loop, `DJNZ`
 // decrements *before* testing, so a shift-by-zero has to be caught
 // before ever entering the loop body, not after).
-void MCS51Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft) {
+void MCS51Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push ac\n    push ac+1\n";
     genExpr(rhs);
@@ -734,15 +751,68 @@ void MCS51Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLef
     if (isLeft) {
         code_ << "    clrc\n    mova ac\n    rlca\n    movd ac\n";
         code_ << "    mova ac+1\n    rlca\n    movd ac+1\n";
-    } else {
-        // Logical (unsigned) shift - same convention, and the same
-        // reason (no unsigned type to make the distinction with), as
-        // every other backend's own `>>`.
+    } else if (isUnsigned) {
+        // Logical (unsigned) shift - carry always cleared first, so
+        // RRC's own top-bit fill is always 0.
         code_ << "    clrc\n    mova ac+1\n    rrca\n    movd ac+1\n";
+        code_ << "    mova ac\n    rrca\n    movd ac\n";
+    } else {
+        // Arithmetic (signed) shift - the sign bit (ACC.7 of the high
+        // byte) is carried into the carry flag first (via a left
+        // rotate, discarding its own own copy of that same bit back
+        // into bit 0, immediately overwritten by the right rotate
+        // right below it), so the real RRC that follows fills the
+        // vacated top bit with the operand's own sign instead of 0.
+        code_ << "    mova ac+1\n    rlca\n";
+        code_ << "    mova ac+1\n    rrca\n    movd ac+1\n";
         code_ << "    mova ac\n    rrca\n    movd ac\n";
     }
     safeDjnz("cx", Lloop, Ldone);
     code_ << Ldone << ":\n";
+}
+
+// An implicit or explicit type conversion (see IR.h's own ExprKind::
+// Convert comment). This backend's own `ac` pseudo-register is
+// always a plain 16-bit word - every C type (`char`/`short`/`int`,
+// signed or not) is stored and computed at that same 16-bit width
+// throughout the rest of this file (unlike, say, M6502Codegen.cpp's
+// own width-aware `wac` mechanism - this backend has no narrower- or
+// wider-than-16-bit storage at all, only ever a pointer's own real
+// `long`/`long long` IR-level width, which this still can't do
+// anything real with). A same-width conversion (signed <-> unsigned,
+// or `short` <-> `int`, already identical at this width) is already
+// a pure reinterpretation - the bits `e.lhs` leaves in `ac` are
+// already exactly `e.type`'s own representation, nothing left to do.
+//
+// `char` is the one narrower-than-native width this backend's own
+// `ac` cell can still honor correctly despite being 16 bits wide:
+// narrowing *to* `char` masks off the high byte and, for a signed
+// target, sign-extends bit 7 back across it, so `ac` ends up holding
+// exactly the same 16-bit value a real signed/unsigned `char`
+// variable's own promotion to `int` would - which in turn makes
+// narrowing *from* `char` (back to `int`, or none at all) a pure
+// pass-through, since every `char` value already arrives here
+// correctly sign/zero-extended by construction.
+void MCS51Codegen::genConvert(const ir::Expr &e) {
+    genExpr(*e.lhs);
+    if (widthOfType(e.type) != 1) return;  // not narrowing to `char` - already a 16-bit value, nothing to fix up
+    // `ac`'s own low byte is already exactly `char`'s own value
+    // (truncation needs no actual instruction - only the stale high
+    // byte above it, left over from `e.lhs`'s own wider width, still
+    // needs replacing below).
+    if (e.type.isUnsigned) {
+        code_ << "    movai 0\n    movd ac+1\n";
+    } else {
+        // The branch on `anli`'s own Z flag has to come immediately
+        // after it - any other instruction in between (even a plain
+        // `MOVAI`) can just as easily clobber PSW.Z first.
+        code_ << "    mova ac\n    anli 128\n";
+        std::string Lneg = newLabel(), Lnonneg = newLabel(), Ldone = newLabel();
+        safeBranch("jz", Lnonneg, Lneg);
+        code_ << Lneg << ":\n    movai 255\n    movd ac+1\n    ljmp " << Ldone << "\n";
+        code_ << Lnonneg << ":\n    movai 0\n    movd ac+1\n";
+        code_ << Ldone << ":\n";
+    }
 }
 
 // Textbook shift-and-add multiply (the real `MUL AB` is only 8x8 ->
@@ -808,17 +878,17 @@ void MCS51Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool want
     if (wantRemainder) copy16("ac", "dx");
 }
 
-void MCS51Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs) {
+void MCS51Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned) {
     if (op == "==") return emitEqualityCompare(lhs, rhs, /*wantEqual=*/true);
     if (op == "!=") return emitEqualityCompare(lhs, rhs, /*wantEqual=*/false);
     // Every ordering comparison reduces to one "is a < b?" primitive
     // (emitLessCompare) by choosing which operand goes first and
     // whether to invert the final sense: a>b is b<a; a<=b is !(b<a);
     // a>=b is !(a<b).
-    if (op == "<") return emitLessCompare(lhs, rhs, /*invert=*/false);
-    if (op == ">") return emitLessCompare(rhs, lhs, /*invert=*/false);
-    if (op == "<=") return emitLessCompare(rhs, lhs, /*invert=*/true);
-    if (op == ">=") return emitLessCompare(lhs, rhs, /*invert=*/true);
+    if (op == "<") return emitLessCompare(lhs, rhs, isUnsigned, /*invert=*/false);
+    if (op == ">") return emitLessCompare(rhs, lhs, isUnsigned, /*invert=*/false);
+    if (op == "<=") return emitLessCompare(rhs, lhs, isUnsigned, /*invert=*/true);
+    if (op == ">=") return emitLessCompare(lhs, rhs, isUnsigned, /*invert=*/true);
     err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
 }
 
@@ -842,28 +912,34 @@ void MCS51Codegen::emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs,
     code_ << Ldone << ":\n";
 }
 
-// Signed 16-bit "a < b" via subtraction, the same "N xor V" idiom the
-// 6502/8080 backends use (see M6502Codegen.cpp's own comment): after
-// `a - b`'s final (high) byte SUBB, the accumulator's own sign bit
-// (ACC.7) only reflects the *true* signed result once corrected for
-// overflow (the real PSW.OV, which SUBB does set for signed
-// over/underflow, exactly like 6502's V) - jumping over an `XRL
-// A,#0x80` (flipping just the sign bit) when OV is clear, applying it
-// when OV is set, fixes that up.
-void MCS51Codegen::emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert) {
+// "a < b" via subtraction. Unsigned needs no sign handling at all -
+// the carry flag after a full chained SUBB directly says "no borrow"
+// (a>=b) or "borrow" (a<b), which is exactly unsigned "<" already.
+// Signed uses the same "N xor V" idiom the 6502/8080 backends use
+// (see M6502Codegen.cpp's own comment): after `a - b`'s final (high)
+// byte SUBB, the accumulator's own sign bit (ACC.7) only reflects the
+// *true* signed result once corrected for overflow (the real PSW.OV,
+// which SUBB does set for signed over/underflow, exactly like 6502's
+// V) - jumping over an `XRL A,#0x80` (flipping just the sign bit)
+// when OV is clear, applying it when OV is set, fixes that up.
+void MCS51Codegen::emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool isUnsigned, bool invert) {
     genExpr(a);
     code_ << "    push ac\n    push ac+1\n";
     genExpr(b);
     code_ << "    pop bc+1\n    pop bc\n";  // bc = a
     code_ << "    mova bc\n    clrc\n    subb ac\n";
     code_ << "    mova bc+1\n    subb ac+1\n";
-    std::string Lfixskip = newLabel();
-    code_ << "    jnbov " << Lfixskip << "\n";
-    code_ << "    xrli 128\n";
-    code_ << Lfixskip << ":\n";
-    // ACC.7 now correctly reflects "a < b" (set) / "a >= b" (clear).
     std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
-    safeBranch(invert ? "jnbacc7" : "jbacc7", Ltrue, Lfalse);
+    if (isUnsigned) {
+        safeBranch(invert ? "jnc" : "jc", Ltrue, Lfalse);
+    } else {
+        std::string Lfixskip = newLabel();
+        code_ << "    jnbov " << Lfixskip << "\n";
+        code_ << "    xrli 128\n";
+        code_ << Lfixskip << ":\n";
+        // ACC.7 now correctly reflects "a < b" (set) / "a >= b" (clear).
+        safeBranch(invert ? "jnbacc7" : "jbacc7", Ltrue, Lfalse);
+    }
     code_ << Ltrue << ":\n    movai 1\n    movd ac\n    movai 0\n    movd ac+1\n    ljmp " << Ldone << "\n";
     code_ << Lfalse << ":\n    movai 0\n    movd ac\n    movai 0\n    movd ac+1\n";
     code_ << Ldone << ":\n";

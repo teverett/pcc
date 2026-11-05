@@ -65,6 +65,7 @@ class Z80Codegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "z80"; }
+    TypeWidths typeWidths() const override { return {1, 2, 2, 4, 8}; }
     std::string sourceExtension() const override { return ".sz80"; }
     std::vector<std::string> assembledFormats() const override {
         return {"raw", "coff", "elf", "macho", "aout", "objraw"};
@@ -90,18 +91,108 @@ class Z80Codegen : public Backend {
     void genExpr(const ir::Expr &e);  // leaves the result in the `ac` memory cell
 
     void genBinary(const ir::Expr &e);
-    void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
-    void emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert);
+    void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned);
+    void emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert, bool isUnsigned);
     void emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, bool wantEqual);
     void genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
-    void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft);
+    void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
+
+    // `widthOf(t, typeWidths())` - how many bytes `t` occupies on this
+    // target. `isWide(t)` is `widthOfType(t) > 2`: a `long`/`long
+    // long`, the only two types wider than this backend's own native
+    // 16-bit word, represented as `wordCountOf(t)` (2 or 4) 16-bit
+    // words pushed on the real hardware stack, least-significant word
+    // on top (pushed last) - same convention as ../pdp11/
+    // Pdp11Codegen.h's own header comment, generalized the same way
+    // here. `elemShift(t)` is log2(widthOfType(t)) - the left-shift
+    // count that scales a runtime array index into a byte offset in
+    // genIndexAddr(), replacing the old fixed "always *2" assumption.
+    int widthOfType(Type t) const;
+    bool isWide(Type t) const;
+    int wordCountOf(Type t) const;
+    int elemShift(Type t) const;
+
+    // Assumes HL already holds the operand's own address. A 1-byte
+    // operand (`char`) is sign- or zero-extended into `ac`'s own 16
+    // bits (the classic Z80 "rla; sbc a,a" idiom gives the sign-
+    // extension byte in one register move with no branch - see
+    // Z80Codegen.cpp's own loadOperand() comment); anything else is
+    // the plain 16-bit load this file already did everywhere before
+    // `char` existed.
+    void loadOperand(Type type);
+    // Assumes HL already holds the operand's own address and `ac`
+    // holds the (possibly sign-extended) value to store - only ever
+    // writes the one byte that matters for a `char`.
+    void storeOperand(Type type);
+
+    // An implicit or explicit conversion (`ir::ExprKind::Convert` -
+    // see IR.h's own comment). Every operand narrower than `int` is
+    // already promoted by IRBuilder before any Binary/Unary ever sees
+    // it, so the real work here is crossing the native-word/wide
+    // boundary (pushing/popping `wordCountOf()` extra words of
+    // sign/zero extension) and re-narrowing a `char` result.
+    void genConvert(const ir::Expr &e);
+
+    // One scratch 16-bit memory cell's own label - "wa0".."wa3" or
+    // "wb0".."wb3" (role is "a" or "b", `i` is 0 for the least-
+    // significant word) - every wide (`long`/`long long`) helper below
+    // pops its own operand(s) off the real stack into these fixed
+    // cells first (Z80 has no SP-relative addressing mode the way the
+    // PDP-11 backend's own `[sp+N]` operand has, so operating on the
+    // real stack in place the way Pdp11Codegen.cpp's own wide helpers
+    // do isn't available here), then writes the result back into "wa"
+    // and pushes it back onto the real stack, LSW on top, before
+    // returning - keeping the same "both operands' stack space is
+    // released, the result replaces them" contract every caller here
+    // already expects. Declared once, in generate(), the same way
+    // "ac"/"_bc"/"cx"/"dx"/"ptr" already are.
+    static std::string wideScratch(const char *role, int i) { return std::string("w") + role + std::to_string(i); }
+
+    // Pops `words` words off the top of the real stack (least-
+    // significant first) into the "wb0".."w(words-1)" scratch cells.
+    void popWideInto(const char *role, int words);
+    // Pushes "wa0".."wa(words-1)" back onto the real stack, most-
+    // significant word first, so the least-significant word ends up
+    // on top - the convention every wide value's own representation
+    // relies on.
+    void pushWideFrom(const char *role, int words);
+
+    void genWideLoad(const ir::Slot *slot, int words);
+    void genWideLoadLiteral(long value, int words);
+    void genWideStore(const ir::Slot *slot, int words);
+    // Same as genWideLoad()/genWideStore(), but the element's own
+    // address is already sitting in `ptr` (genIndexAddr()'s own
+    // output) instead of coming from a Slot - see Z80Codegen.cpp's
+    // own genIndex()/genExpr() (Assign case) for why an indexed wide
+    // array element needs its own version of each.
+    void genWideLoadAtPtr(int words);
+    void genWideStoreAtPtr(const char *role, int words);
+    void genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd, int words);
+    void genWideNegate(int words);
+    void genWideBitwise(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &op, int words);
+    void genWideEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, bool wantEqual, int words);
+    void genWideLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert, bool isUnsigned, int words);
+    void genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned, int words);
+    void genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned, int words);
+    // Deliberately unimplemented - see Z80Codegen.cpp's own
+    // genWideMul()/genWideDivMod() comment (same judgment call, and
+    // the same reason, as ../pdp11/Pdp11Codegen.cpp's own version of
+    // these two).
+    void genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int words);
+    void genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, int words);
+
+    // Leaves a plain 0/1 truth value in `ac` for whatever `e`'s own
+    // genExpr() just left behind - a wide value's own `wordCountOf()`
+    // words (already popped and OR'd together here) or a narrow one's
+    // plain 16-bit value in `ac` already.
+    void testTruthy(const ir::Expr &e);
 
     // Leaves slot[idxExpr]'s own effective address in the `ptr`
     // memory cell - see I8080Codegen.h's own genIndexAddr() comment
@@ -118,14 +209,17 @@ class Z80Codegen : public Backend {
     // - the one real, standard way to copy one 16-bit register into
     // another on this chip when no direct `ld` form between them
     // exists. Leaves `slot`'s own effective address in HL; a Local
-    // lives at `ix-2*(frameOffset+extraWords)` (frame storage grows
+    // lives at `ix-(frameOffset+extraBytes)` (frame storage grows
     // down from `ix` - see genFunction()'s own comment), a Param at
-    // `ix+4+2*paramIndex` (past the saved `ix` and the return
-    // address, both pushed before this call's own frame is
-    // established). `extraWords` lets a Local array's own element i
-    // reuse this same formula (frameOffset+i) without a caller
-    // needing to synthesize its own displacement arithmetic.
-    void loadFrameAddr(const ir::Slot *slot, long extraWords = 0);
+    // `ix+frameOffset+extraBytes` (`Slot::frameOffset` is already
+    // IRBuilder's own real byte offset for both - see IR.h's own
+    // comment on Slot::frameOffset, including its own two-native-
+    // int-width reservation past the saved `ix`/return address for a
+    // Param). `extraBytes` lets a Local/Param array's own element i
+    // (`i * widthOfType(slot->type)`), or a wide scalar's own word i
+    // (`2*i`), reuse this same formula without a caller needing to
+    // synthesize its own displacement arithmetic.
+    void loadFrameAddr(const ir::Slot *slot, long extraBytes = 0);
 
     // Reads the 16-bit value at [HL] into the (loReg, hiReg) pair,
     // low byte first - the same `(HL)`-via-"m" idiom genIndex()/
@@ -170,7 +264,7 @@ class Z80Codegen : public Backend {
 
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
     void declareTemp(const std::string &lbl);
-    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
+    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 

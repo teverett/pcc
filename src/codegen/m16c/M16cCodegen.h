@@ -107,6 +107,7 @@ class M16cCodegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "m16c"; }
+    TypeWidths typeWidths() const override { return {1, 2, 2, 4, 8}; }
     std::string sourceExtension() const override { return ".s16c"; }
     std::vector<std::string> assembledFormats() const override {
         return {"raw", "coff", "elf", "macho", "aout", "objraw"};
@@ -131,17 +132,93 @@ class M16cCodegen : public Backend {
     void genExpr(const ir::Expr &e);  // leaves the result in R0
 
     void genBinary(const ir::Expr &e);
-    void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
+    void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned);
     void emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &jumpIfTrue);
     void genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
+    // After genExpr(e) has just run, leaves r0 holding 0 (false) or
+    // nonzero (true) - for a wide value (left as `words` words on the
+    // stack), ORs them all together into r0 first and discards that
+    // stack space, since a multi-word value is true iff ANY of its
+    // words is nonzero.
+    void testTruthy(const ir::Expr &e);
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
-    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
-    void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft);
+    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
+    void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
+    void genConvert(const ir::Expr &e);
+
+    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
+    // How many native 16-bit words `t` occupies - 1 for every type up
+    // to `int`, 2 for `long`, 4 for `long long` (see typeWidths()).
+    int wordCountOf(Type t) const { return widthOfType(t) / 2; }
+    // log2 of the element width (1/2/4/8 bytes -> 0/1/2/3) - the shift
+    // amount genIndexAddr() scales an index by, instead of the old
+    // fixed "always 2 bytes".
+    int elemShift(Type t) const {
+        switch (widthOfType(t)) {
+            case 1: return 0;
+            case 2: return 1;
+            case 4: return 2;
+            default: return 3;
+        }
+    }
+
+    // Loads a value of `type` from the effective-address text `mem`
+    // into r0 - a `char` uses `movb`'s own real hardware auto-sign-
+    // extend-to-register behavior, masking the high byte back off
+    // afterward when unsigned (see M16cAssembler.cpp's own comment);
+    // every other width is a plain `mov.w`. A wide type's own N words
+    // sit on the stack after this instead - see genWideLoad().
+    void loadOperand(const std::string &mem, Type type);
+    // Stores r0 into `mem`, truncating to `type`'s own width (a
+    // `char` store writes only the low byte via `movb`, never
+    // touching whatever shares the other byte of that word).
+    void storeOperand(const std::string &mem, Type type);
+
+    // `long`/`long long` arithmetic - a value of word count N lives
+    // on the real stack as N consecutive words, word 0 (least
+    // significant) closest to `sp`, word N-1 (most significant)
+    // furthest - evaluated by genExpr() and left there; every wide
+    // helper below takes `words` (N) explicitly, so the identical
+    // shape serves both `long` (2) and `long long` (4) with no
+    // duplicated code.
+    //
+    // This dialect's own two-operand instruction set has no hardware
+    // carry flag an `add`/`sub` could chain through directly (unlike
+    // the pdp11/i386/m68k backends' own `ADC`/`ADDX` - see
+    // M16cCodegen.cpp's own `genWideAdd()`), so the carry/borrow out
+    // of each word is instead synthesized from an unsigned comparison
+    // (`jltu`) against the word's own pre-op value - see
+    // M16cCodegen.cpp's own `genCarryBool()`.
+    void genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd, int words);
+    void genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned, int words);
+    void genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int words);
+    void genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned, int words);
+    void genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned, int words);
+    void genWideBitwise(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &op, int words);
+    // Negates the `words`-word value already on top of the stack, in
+    // place (two's complement: NOT every word, then add 1 through the
+    // same software carry chain as genWideAdd()).
+    void genWideNegate(int words);
+    // Pushes `slot`'s own `words`-word value onto the stack, word 0
+    // (least significant) ending up on top.
+    void genWideLoad(const ir::Slot *slot, int words);
+    void genWideLoadLiteral(long value, int words);
+    // Pops `words` words off the stack into `slot`'s own storage.
+    void genWideStore(const ir::Slot *slot, int words);
+    // Word `wordIndex` (0 = least significant) of `slot`'s own
+    // multi-word storage - word 0 sits at `slot`'s own ordinary
+    // (scalar) address, each later word 2 bytes further from `fb`/the
+    // label.
+    std::string wideWordOperand(const ir::Slot *slot, int wordIndex) const;
+    // Leaves `r1` holding `0xFFFF` if `r0` (already loaded) is
+    // negative, else `0` - see M16cCodegen.cpp's own comment.
+    void genSignFillWord();
 
     // Leaves slot[idxExpr]'s own effective address in `A0` - see this
     // file's own header comment on why that never needs saving across
@@ -166,15 +243,16 @@ class M16cCodegen : public Backend {
     // saved old `FB`, with the return address one word above that and
     // the caller's pushed arguments above that in declaration order
     // (argument 0 closest to it) - so a Param's address is
-    // `FB+4+2*paramIndex`. Locals live below `FB`, reserved by the
-    // prologue's `SUB.W N,SP`; `Slot::frameOffset` is already a
-    // 1-based sequential word index in declaration order (see IR.h),
-    // so a Local's address is `FB-2*frameOffset`.
+    // `FB+frameOffset`. Locals live below `FB`, reserved by the
+    // prologue's `SUB.W N,SP`; `Slot::frameOffset` is already
+    // IRBuilder's own real byte offset for both a Param and a Local
+    // (see IR.h's own comment on Slot::frameOffset), so a Local's
+    // address is `FB-frameOffset`.
     static std::string frameOperand(const ir::Slot *slot) {
         if (slot->kind == ir::SlotKind::Param) {
-            return "[fb+" + std::to_string(4 + 2 * slot->paramIndex) + "]";
+            return "[fb+" + std::to_string(slot->frameOffset) + "]";
         }
-        return "[fb-" + std::to_string(2 * slot->frameOffset) + "]";
+        return "[fb-" + std::to_string(slot->frameOffset) + "]";
     }
 
     // The operand text for a plain read/write of `slot`'s own value -
@@ -190,7 +268,7 @@ class M16cCodegen : public Backend {
 
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
     void declareTemp(const std::string &lbl);
-    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
+    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 

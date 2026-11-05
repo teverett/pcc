@@ -109,6 +109,7 @@ class Pdp11Codegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "pdp11"; }
+    TypeWidths typeWidths() const override { return {1, 2, 2, 4, 8}; }
     std::string sourceExtension() const override { return ".s11"; }
     std::vector<std::string> assembledFormats() const override {
         return {"raw", "coff", "elf", "macho", "aout", "objraw"};
@@ -132,17 +133,88 @@ class Pdp11Codegen : public Backend {
     void genExpr(const ir::Expr &e);  // leaves the result in R0
 
     void genBinary(const ir::Expr &e);
-    void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
+    void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned);
     void emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &branchIfTrue);
     void genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
+    // After genExpr(e) has just run, leaves r0 holding 0 (false) or
+    // nonzero (true) and `TST r0`-ready for a branch - for a wide
+    // value (left as `words` words on the stack), ORs them all
+    // together into r0 first and discards that stack space, since a
+    // multi-word value is true iff ANY of its words is nonzero.
+    void testTruthy(const ir::Expr &e);
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
-    void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft);
+    void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
+    void genConvert(const ir::Expr &e);
+
+    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
+    // How many native 16-bit words `t` occupies - 1 for every type up
+    // to `int`, 2 for `long`, 4 for `long long` (see typeWidths()).
+    int wordCountOf(Type t) const { return widthOfType(t) / 2; }
+    // log2 of the element width (1/2/4/8 bytes -> 0/1/2/3) - the shift
+    // amount genIndexAddr() scales an index by, instead of the old
+    // fixed "always 2 bytes". Note: reading/writing a `long`/`long
+    // long` *array element* itself (as opposed to a scalar) still
+    // only moves one native word - see genIndexAddr()/genIndex()'s
+    // own comment on this known gap.
+    int elemShift(Type t) const {
+        switch (widthOfType(t)) {
+            case 1: return 0;
+            case 2: return 1;
+            case 4: return 2;
+            default: return 3;
+        }
+    }
+
+    // Loads a value of `type` from the effective-address text `mem`
+    // into r0 (a wide type's own N words sit on the stack after this
+    // - see genWideLoad()'s own comment), sign/zero-extending a
+    // narrower-than-int `char` per its own signedness via `movb`'s
+    // real hardware auto-sign-extend-to-register behavior (see
+    // Pdp11Assembler.cpp's own comment), masking the high byte
+    // afterward when unsigned.
+    void loadOperand(const std::string &mem, Type type);
+    // Stores r0 into `mem`, truncating to `type`'s own width (a
+    // `char` store writes only the low byte via `movb`, never
+    // touching whatever shares the other byte of that word).
+    void storeOperand(const std::string &mem, Type type);
+
+    // `long`/`long long` arithmetic - a value of word count N lives
+    // on the stack as N consecutive words, word 0 (least
+    // significant) closest to `sp`, word N-1 (most significant)
+    // furthest - evaluated by genExpr() and left there (see
+    // genWideLoad()/genWideStore()'s own comment); every wide helper
+    // below takes `words` (N) explicitly, so the identical ripple-
+    // carry/bit-serial shape serves both `long` (2) and `long long`
+    // (4) with no duplicated code.
+    void genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd, int words);
+    void genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int words);
+    void genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned, int words);
+    void genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned, int words);
+    void genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned, int words);
+    void genWideBitwise(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &op, int words);
+    // Negates the `words`-word value already on top of the stack, in
+    // place.
+    void genWideNegate(int words);
+    // Loads `slot`'s own `words`-word value onto the stack (word 0 at
+    // the new top), or pushes `words` words of 0/sign-extension when
+    // `fromNarrow` is set (widening a narrower already-in-r0 value).
+    void genWideLoad(const ir::Slot *slot, int words);
+    void genWideLoadLiteral(long value, int words);
+    // Pops `words` words off the stack into `slot`'s own storage.
+    void genWideStore(const ir::Slot *slot, int words);
+    // Word `wordIndex` (0 = least significant) of `slot`'s own
+    // multi-word storage - word 0 sits at `slot`'s own ordinary
+    // (scalar) address, each later word 2 bytes further from `r5`/the
+    // label (see IR.h's own comment on how a type wider than one word
+    // occupies consecutive storage units).
+    std::string wideWordOperand(const ir::Slot *slot, int wordIndex) const;
 
     // Leaves slot[idxExpr]'s own effective address in `R2`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
@@ -175,19 +247,20 @@ class Pdp11Codegen : public Backend {
     // above that (`jsr` already pushed it, before `push r5` ran), and
     // the caller's own pushed arguments above that, in declaration
     // order (param 0 closest to the return address) - so a Param's
-    // address is `r5+4+2*paramIndex`. Locals live below `r5`, reserved
-    // by the prologue's `sub N,sp`; Slot::frameOffset is already a
-    // 1-based sequential word index in declaration order, so a
-    // Local's address is `r5-2*frameOffset`. Every call gets its own
-    // `r5`/frame, so direct or indirect recursion never shares
-    // storage between overlapping activations - unlike a Global,
-    // which still gets the one real static cell a C global/static is
-    // supposed to have.
+    // address is `r5+frameOffset`. Locals live below `r5`, reserved
+    // by the prologue's `sub N,sp`; `Slot::frameOffset` is already
+    // IRBuilder's own real byte offset for both a Param and a Local
+    // (see IR.h's own comment on Slot::frameOffset), so a Local's
+    // address is `r5-frameOffset`. Every call gets its own `r5`/
+    // frame, so direct or indirect recursion never shares storage
+    // between overlapping activations - unlike a Global, which still
+    // gets the one real static cell a C global/static is supposed to
+    // have.
     static std::string addr(const ir::Slot *slot) {
         if (slot->kind == ir::SlotKind::Param) {
-            return "[r5+" + std::to_string(4 + 2 * slot->paramIndex) + "]";
+            return "[r5+" + std::to_string(slot->frameOffset) + "]";
         }
-        return "[r5-" + std::to_string(2 * slot->frameOffset) + "]";
+        return "[r5-" + std::to_string(slot->frameOffset) + "]";
     }
 
     // The operand text for a plain read/write of `slot`'s own value -
@@ -199,7 +272,7 @@ class Pdp11Codegen : public Backend {
     }
 
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
-    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
+    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 

@@ -51,7 +51,7 @@ struct Operand {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Equate, Org, Dl, Instr } kind = None;
+    enum Kind { None, Equate, Org, Db, Dw, Dl, Instr } kind = None;
     std::string equateName;
     std::vector<std::vector<Syllable>> exprList;  // Equate (1)/Org (1)/Dl (N)
     std::string mnemonic;                           // Instr
@@ -176,10 +176,10 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         line.exprList.push_back(exprToSyllables(instr->operand(0)->expr()));
         return line;
     }
-    if (mnemonic == "dl") {
-        line.kind = Line::Dl;
+    if (mnemonic == "dl" || mnemonic == "dw" || mnemonic == "db") {
+        line.kind = mnemonic == "dl" ? Line::Dl : mnemonic == "dw" ? Line::Dw : Line::Db;
         for (auto *op : instr->operand()) {
-            if (op->LBRACKET()) fail("'dl' operand can't be bracketed");
+            if (op->LBRACKET()) fail("'" + mnemonic + "' operand can't be bracketed");
             line.exprList.push_back(exprToSyllables(op->expr()));
         }
         return line;
@@ -275,6 +275,16 @@ class Assembler {
                     emit32(v);
                 }
                 return;
+            // `db`/`dw` - a `char`/`short` global or array element's
+            // own storage - always a plain literal value, never a
+            // relocatable symbol (a byte/word is too narrow to hold a
+            // real 32-bit address anyway).
+            case Line::Dw:
+                for (const auto &e : line.exprList) emit16(static_cast<uint16_t>(evalExpr(e)));
+                return;
+            case Line::Db:
+                for (const auto &e : line.exprList) emit8(static_cast<uint8_t>(evalExpr(e)));
+                return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
                 return;
@@ -329,6 +339,10 @@ class Assembler {
 
     // --- byte/word/long emission ------------------------------------
 
+    void emit8(uint8_t b) {
+        bytes_.push_back(b);
+        offset_ += 1;
+    }
     void emit16(uint16_t w) {
         bytes_.push_back(static_cast<uint8_t>((w >> 8) & 0xFF));
         bytes_.push_back(static_cast<uint8_t>(w & 0xFF));
@@ -417,11 +431,11 @@ class Assembler {
     // own extension word if they need one (source's own extension, if
     // any, comes first - matching real object code order, since the
     // source operand is evaluated before the destination for a MOVE).
-    void encodeMove(const Operand &src, const Operand &dst) {
-        if (dst.kind == Operand::Imm) fail("'movel': an immediate can't be a destination");
+    void encodeMove(const Operand &src, const Operand &dst, uint16_t base = 0x2000) {
+        if (dst.kind == Operand::Imm) fail("'move': an immediate can't be a destination");
         EA s = classifyEA(src);
         EA d = classifyEA(dst);
-        emit16(static_cast<uint16_t>(0x2000 | (d.reg << 9) | (d.mode << 6) | (s.mode << 3) | s.reg));
+        emit16(static_cast<uint16_t>(base | (d.reg << 9) | (d.mode << 6) | (s.mode << 3) | s.reg));
         emitEAExtension(src);
         emitEAExtension(dst);
     }
@@ -472,9 +486,9 @@ class Assembler {
     // LSL.L/LSR.L <countDn>,<dataDn> - the register (variable-count)
     // shift form: `dir` 1=left/0=right, `I`=1 (bit 5) means "count
     // comes from the register field", not a literal 1-8 count.
-    void encodeShift(uint8_t countReg, uint8_t dataReg, bool left) {
-        uint16_t word = 0xE000 | (countReg << 9) | (left ? 1 << 8 : 0) | (0b10 << 6) | (1 << 5) | (0b01 << 3) |
-                         dataReg;
+    void encodeShift(uint8_t countReg, uint8_t dataReg, bool left, uint8_t type = 0b01) {
+        uint16_t word = static_cast<uint16_t>(0xE000 | (countReg << 9) | (left ? 1 << 8 : 0) | (0b10 << 6) |
+                                               (1 << 5) | (type << 3) | dataReg);
         emit16(word);
     }
 
@@ -502,8 +516,9 @@ class Assembler {
             emit16(0x4E75);
             return;
         }
-        if (mnemonic == "movel") {
-            encodeMove(requireOperand(ops, 0, mnemonic), requireOperand(ops, 1, mnemonic));
+        if (mnemonic == "movel" || mnemonic == "movew" || mnemonic == "moveb") {
+            uint16_t base = mnemonic == "movel" ? 0x2000 : mnemonic == "movew" ? 0x3000 : 0x1000;
+            encodeMove(requireOperand(ops, 0, mnemonic), requireOperand(ops, 1, mnemonic), base);
             return;
         }
         if (mnemonic == "leal") {
@@ -538,17 +553,19 @@ class Assembler {
         }
         // (An) indirect, spelled as its own mnemonics rather than a
         // generic bracketed operand.
-        if (mnemonic == "ldind") {
+        if (mnemonic == "ldind" || mnemonic == "ldindw" || mnemonic == "ldindb") {
+            uint16_t base = mnemonic == "ldind" ? 0x2000 : mnemonic == "ldindw" ? 0x3000 : 0x1000;
             uint8_t an = requireAreg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t dn = requireDreg(requireOperand(ops, 1, mnemonic), mnemonic);
             // destination Dn (mode 000, reg dn), source (An) (mode 010, reg an)
-            emit16(static_cast<uint16_t>(0x2000 | (dn << 9) | (0b000 << 6) | (0b010 << 3) | an));
+            emit16(static_cast<uint16_t>(base | (dn << 9) | (0b000 << 6) | (0b010 << 3) | an));
             return;
         }
-        if (mnemonic == "stind") {
+        if (mnemonic == "stind" || mnemonic == "stindw" || mnemonic == "stindb") {
+            uint16_t base = mnemonic == "stind" ? 0x2000 : mnemonic == "stindw" ? 0x3000 : 0x1000;
             uint8_t dn = requireDreg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t an = requireAreg(requireOperand(ops, 1, mnemonic), mnemonic);
-            emit16(static_cast<uint16_t>(0x2000 | (an << 9) | (0b010 << 6) | (0b000 << 3) | dn));
+            emit16(static_cast<uint16_t>(base | (an << 9) | (0b010 << 6) | (0b000 << 3) | dn));
             return;
         }
 
@@ -577,11 +594,13 @@ class Assembler {
             encodeRegOpEA(0xB000, dn, 0b110, requireOperand(ops, 1, mnemonic));
             return;
         }
-        if (mnemonic == "mulsw" || mnemonic == "divsw") {
+        if (mnemonic == "mulsw" || mnemonic == "divsw" || mnemonic == "muluw" || mnemonic == "divuw") {
             const Operand &ea = requireOperand(ops, 0, mnemonic);
             if (ea.kind != Operand::Dreg) fail("'" + mnemonic + "': source must be a data register in this dialect");
             uint8_t dn = requireDreg(requireOperand(ops, 1, mnemonic), mnemonic);
-            encodeRegOpEA(mnemonic == "mulsw" ? 0xC000 : 0x8000, dn, 0b111, ea);
+            bool isSigned = mnemonic == "mulsw" || mnemonic == "divsw";
+            uint16_t base = (mnemonic == "mulsw" || mnemonic == "muluw") ? 0xC000 : 0x8000;
+            encodeRegOpEA(base, dn, isSigned ? 0b111 : 0b011, ea);
             return;
         }
         if (mnemonic == "swapl") {
@@ -592,6 +611,17 @@ class Assembler {
             emit16(static_cast<uint16_t>(0x48C0 | requireDreg(requireOperand(ops, 0, mnemonic), mnemonic)));
             return;
         }
+        if (mnemonic == "extw") {
+            emit16(static_cast<uint16_t>(0x4880 | requireDreg(requireOperand(ops, 0, mnemonic), mnemonic)));
+            return;
+        }
+        if (mnemonic == "addxl" || mnemonic == "subxl") {
+            uint8_t dy = requireDreg(requireOperand(ops, 0, mnemonic), mnemonic);
+            uint8_t dx = requireDreg(requireOperand(ops, 1, mnemonic), mnemonic);
+            uint16_t base = mnemonic == "addxl" ? 0xD180 : 0x9180;
+            emit16(static_cast<uint16_t>(base | (dx << 9) | dy));
+            return;
+        }
         if (mnemonic == "negl") {
             encodeUnary(0x4480, requireOperand(ops, 0, mnemonic));
             return;
@@ -600,10 +630,12 @@ class Assembler {
             encodeUnary(0x4680, requireOperand(ops, 0, mnemonic));
             return;
         }
-        if (mnemonic == "lsll" || mnemonic == "lsrl") {
+        if (mnemonic == "lsll" || mnemonic == "lsrl" || mnemonic == "asrl") {
             uint8_t countReg = requireDreg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t dataReg = requireDreg(requireOperand(ops, 1, mnemonic), mnemonic);
-            encodeShift(countReg, dataReg, mnemonic == "lsll");
+            bool left = mnemonic == "lsll";
+            uint8_t type = mnemonic == "asrl" ? 0b00 : 0b01;
+            encodeShift(countReg, dataReg, left, type);
             return;
         }
         // LINK An,#disp / UNLK An - this target's own dedicated
@@ -654,6 +686,7 @@ class Assembler {
         static const std::unordered_map<std::string, uint8_t> branchCond = {
             {"bra", 0b0000}, {"beq", 0b0111}, {"bne", 0b0110}, {"blt", 0b1101},
             {"ble", 0b1111}, {"bgt", 0b1110}, {"bge", 0b1100},
+            {"bhi", 0b0010}, {"bls", 0b0011}, {"bcc", 0b0100}, {"bcs", 0b0101},
         };
         if (auto it = branchCond.find(mnemonic); it != branchCond.end()) {
             encodeBranch(it->second, requireOperand(ops, 0, mnemonic));

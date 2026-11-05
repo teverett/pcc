@@ -182,6 +182,7 @@ class ArmMCodegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "cortex-m3"; }
+    TypeWidths typeWidths() const override { return {1, 2, 4, 4, 8}; }
     std::string sourceExtension() const override { return ".sarm"; }
     std::vector<std::string> assembledFormats() const override {
         return {"raw", "coff", "elf", "macho", "aout", "objraw"};
@@ -213,13 +214,85 @@ class ArmMCodegen : public Backend {
     // Software restoring-by-repeated-subtraction divide/remainder -
     // see this file's own header comment on why there's no hardware
     // fast path.
-    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
+    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
+    void genConvert(const ir::Expr &e);
 
     // Leaves slot[idxExpr]'s own effective address in `r2`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
+
+    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    // Only `long long` is wider than this target's native 32-bit int
+    // (`long`==`int` here - see typeWidths()) - the one type that
+    // ever needs the r0:r1 register-pair convention below.
+    bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
+    // log2 of an element type's own width (1/2/4/8 bytes -> 0/1/2/3) -
+    // the shift amount genIndexAddr() scales a runtime index by,
+    // instead of the old fixed "always 4 bytes" `lsli r0,r0,2`.
+    int elemShift(Type t) const {
+        switch (widthOfType(t)) {
+            case 1: return 0;
+            case 2: return 1;
+            case 4: return 2;
+            default: return 3;
+        }
+    }
+
+    // Loads a value of `type` from the address in `addrReg` into r0
+    // (or r0:r1, for a `long long`), sign- or zero-extending a
+    // narrower-than-native-int source per its own signedness.
+    // `addrReg` must not be r0/r1.
+    void loadOperand(const std::string &addrReg, Type type);
+    // Stores r0 (or r0:r1, for a `long long`) into the address in
+    // `addrReg`, truncating to `type`'s own width.
+    void storeOperand(const std::string &addrReg, Type type);
+    // Re-extends r0 from its own low widthOf(to) bytes, per `to`'s
+    // signedness, via the shift-left-then-shift-right-back idiom
+    // (`lsl`+`asr`/`lsr`) - this dialect has no dedicated sign/zero-
+    // extend instruction, same trick ArmCodegen.cpp's own
+    // `narrowR0To()` uses.
+    void narrowR0To(Type to);
+
+    // `long long` add/sub (lhs OP rhs), evaluated into r0:r1 (lhs)
+    // and r4:r5 (rhs, stashed there while lhs's own two words sit on
+    // the real stack) - ripples the carry/borrow across the word
+    // pair with `adc`/`sbc` (now part of this dialect - see
+    // ArmMAssembler.cpp), one native word wider than a plain 32-bit
+    // add/sub.
+    void genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd);
+    // `long long` multiply, keeping the low 64 bits of the true
+    // 128-bit product. This dialect has no widening 32x32->64
+    // multiply instruction (unlike A32's own `UMULL` - see
+    // ArmCodegen.cpp's own `genWideMul()`), so the low*low cross
+    // term is built from scratch via `genMul64()`'s own bit-serial
+    // shift-and-add loop; the other two cross terms only ever
+    // contribute to the result's own high word, so `muls`'s
+    // truncating 32x32->32 result is exactly right for them (same
+    // reasoning as ArmCodegen.cpp's own comment).
+    void genWideMul(const ir::Expr &lhs, const ir::Expr &rhs);
+    // 32x32->64 unsigned widening multiply: {r1:r0} = r6 * r4 (the
+    // caller must place `a` in r6 and `b` in r4 first - see the
+    // .cpp's own comment on why this isn't a by-name parameter).
+    // Bit-serial shift-and-add (32 iterations); clobbers r0-r6.
+    void genMul64();
+    // Software 64-bit divide/modulo (no instruction here is wide
+    // enough) - classic bit-serial shift/compare/subtract long
+    // division, 64 iterations, same shape as ArmCodegen.cpp's own
+    // `genWideDivMod()` just using single-register push/pop instead
+    // of sp-relative loads and this dialect's own `blo`/`bhs`
+    // unsigned-compare branches.
+    void genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
+    // A `long long` shifted by a runtime count - a counted loop of
+    // 1-bit shifts carrying the bit that crosses the word boundary by
+    // hand, same spirit as the divide routine above. `isUnsigned`
+    // only matters for `>>` (`asr` vs `lsr` on the high word each
+    // step); `<<` never cares about signedness.
+    void genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
+    void genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned);
+    // Negates the 64-bit value already in r0:r1, in place.
+    void genNegate64();
 
     // Emits the epilogue every `return` (and the fall-off-the-end
     // default at the bottom of genFunction()) needs: pops this call's
@@ -237,17 +310,19 @@ class ArmMCodegen : public Backend {
     // `MOVS` alone if it fits in 8 bits, MOVW+MOVT otherwise.
     void loadImm32(const std::string &reg, uint32_t value);
 
-    // Loads `r7 + 4*wordsFromFp` into `reg` (`wordsFromFp` may be
+    // Loads `r7 + bytesFromFp` into `reg` (`bytesFromFp` may be
     // negative - `subs` is used in that case, matching this file's
     // own header comment on which direction each of a Local's/Param's
     // own storage grows from `r7`). Uses `r3` as its own scratch
     // register, never as `reg` itself.
-    void loadFrameWordAddr(const std::string &reg, int wordsFromFp);
+    void loadFrameByteAddr(const std::string &reg, int bytesFromFp);
     // Loads a Local or Param Slot's own effective address into `reg`
-    // - a Param's is `r7 + 8 + 4*paramIndex` (past the saved `r7` and
-    // the return address, into the caller's own pushed-argument
-    // words); a Local's is `r7 - 4*frameOffset`. Never called for a
-    // Global Slot - see loadAddress()/label() for that case instead.
+    // - both directly from `slot->frameOffset`, already a real byte
+    // offset computed by IRBuilder (see IR.h's own comment on
+    // Slot::frameOffset): a Param's grows up from `r7` (past the
+    // saved `r7`/return address), a Local's grows down. Never called
+    // for a Global Slot - see loadAddress()/label() for that case
+    // instead.
     void loadFrameAddr(const std::string &reg, const ir::Slot *slot);
     // Loads a Slot's own effective address into `reg`, dispatching on
     // `slot->kind` between loadAddress() (Global) and loadFrameAddr()
@@ -270,8 +345,8 @@ class ArmMCodegen : public Backend {
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
     void declareTemp(const std::string &lbl);
-    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
-    std::string arrayElemText(const ir::ArrayInitElem &e);
+    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);
+    std::string arrayElemText(const ir::ArrayInitElem &e, Type elemType);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 
     std::ostringstream code_;

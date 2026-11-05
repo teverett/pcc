@@ -19,6 +19,30 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitCharType(CParser::CharTypeContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitShortType(CParser::ShortTypeContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitIntType(CParser::IntTypeContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitLongLongType(CParser::LongLongTypeContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitLongType(CParser::LongTypeContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitSignedOrUnsignedType(CParser::SignedOrUnsignedTypeContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitTopLevelDecl(CParser::TopLevelDeclContext *ctx) override {
     return visitChildren(ctx);
   }
@@ -127,7 +151,19 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitSizeofExprExpr(CParser::SizeofExprExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitCharExpr(CParser::CharExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitCastExpr(CParser::CastExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitSizeofTypeExpr(CParser::SizeofTypeExprContext *ctx) override {
     return visitChildren(ctx);
   }
 

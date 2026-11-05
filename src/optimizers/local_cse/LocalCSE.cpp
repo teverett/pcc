@@ -117,6 +117,7 @@ ir::ExprPtr makeVarRead(ir::Slot *slot, int line) {
     v->kind = ir::ExprKind::Var;
     v->line = line;
     v->slot = slot;
+    v->type = slot->type;
     return v;
 }
 
@@ -131,15 +132,20 @@ ir::ExprPtr makeAssignWrap(ir::ExprPtr original, ir::Slot *temp) {
     assign->kind = ir::ExprKind::Assign;
     assign->line = original->line;
     assign->slot = temp;
+    assign->type = temp->type;
     assign->rhs = std::move(original);
     return assign;
 }
 
-ir::Slot *makeTempSlot(ir::Program &prog, int &tempCounter) {
+// `type` is the cached subexpression's own resolved type (see IR.h's
+// ExprKind::Convert/Expr::type) - the temp has to store and reload it
+// at that same width/signedness, not always a plain int.
+ir::Slot *makeTempSlot(ir::Program &prog, int &tempCounter, Type type) {
     auto slot = std::make_unique<ir::Slot>();
     slot->id = static_cast<int>(prog.slots.size());  // every Slot id is unique; see IR.h's own comment
     slot->sourceName = "__cse" + std::to_string(tempCounter++);
     slot->kind = ir::SlotKind::Local;
+    slot->type = type;
     ir::Slot *raw = slot.get();
     prog.slots.push_back(std::move(slot));
     return raw;
@@ -233,7 +239,7 @@ void cseExpr(ir::ExprPtr &e, std::unordered_map<std::string, Avail> &avail, std:
     // the temp's own storage at the front of this scope.
     std::cerr << "local-cse: line " << line << ": hoisted repeated subexpression `"
                << describeExpr(e.get()) << "` into a temporary\n";
-    ir::Slot *temp = makeTempSlot(prog, tempCounter);
+    ir::Slot *temp = makeTempSlot(prog, tempCounter, e->type);
     *it->second.firstLoc = makeAssignWrap(std::move(*it->second.firstLoc), temp);
     e = makeVarRead(temp, line);
     body.insert(body.begin(), makeTempDecl(temp, line));

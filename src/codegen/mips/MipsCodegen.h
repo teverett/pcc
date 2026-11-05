@@ -133,6 +133,7 @@ class MipsCodegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "r10000"; }
+    TypeWidths typeWidths() const override { return {1, 2, 4, 4, 8}; }
     std::string sourceExtension() const override { return ".smips"; }
     std::vector<std::string> assembledFormats() const override {
         return {"raw", "coff", "elf", "macho", "aout", "objraw"};
@@ -161,10 +162,49 @@ class MipsCodegen : public Backend {
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
-    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
+    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
+
+    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
+    // log2 of an element type's own width (1/2/4/8 bytes -> 0/1/2/3) -
+    // the shift amount genIndexAddr()/genAddrOf()'s Index case scale
+    // an index by, instead of the old fixed "always 4 bytes".
+    int elemShift(Type t) const {
+        switch (widthOfType(t)) {
+            case 1: return 0;
+            case 2: return 1;
+            case 4: return 2;
+            default: return 3;
+        }
+    }
+    // Loads a value of `type` from the address already in `addrReg`
+    // into `t0` (or `t1:t0`, high:low, for a `long long`), sign- or
+    // zero-extending a narrower-than-native-int source per its own
+    // signedness.
+    void loadOperand(const std::string &addrReg, Type type);
+    // Stores `t0` (or `t1:t0`) into the address in `addrReg`,
+    // truncating to `type`'s own width.
+    void storeOperand(const std::string &addrReg, Type type);
+    // Re-extends `t0` from its own low widthOf(to) bytes, per `to`'s
+    // signedness - every Convert between two types no wider than a
+    // native int (see genConvert()).
+    void narrowT0To(Type to);
+    void genConvert(const ir::Expr &e);
+    void genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd);
+    void genWideMul(const ir::Expr &lhs, const ir::Expr &rhs);
+    // Software 64-bit divide/modulo (no 32-bit MIPS hardware
+    // instruction is wide enough) - a bit-serial shift/compare/
+    // subtract long division, the same algorithm as I386Codegen.cpp's
+    // own genWideDivMod(), ported to this backend's own register/
+    // addressing conventions. Leaves the result in t1:t0.
+    void genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
+    void genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
+    void genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned);
+    // Negates the 64-bit value already in t1:t0 (hi:lo), in place.
+    void genNegate64();
 
     // Leaves slot[idxExpr]'s own effective address in `$t2`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
@@ -204,7 +244,7 @@ class MipsCodegen : public Backend {
     static std::string label(const ir::Slot *slot) { return "g_" + slot->sourceName; }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
-    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
+    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 

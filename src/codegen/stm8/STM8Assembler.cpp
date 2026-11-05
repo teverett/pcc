@@ -344,6 +344,11 @@ class Assembler {
             {"nop", 0x00},    {"halt", 0x01},   {"ret", 0x02},    {"rim", 0x03},    {"sim", 0x04},
             {"addw_xy", 0x05}, {"subw_xy", 0x06}, {"cpw_xy", 0x07}, {"exg_xy", 0x08},
             {"ldxind", 0x09}, {"stxind", 0x0A}, {"inca", 0x0B},   {"deca", 0x0C},   {"tnza", 0x0D},
+            // Real STM8 `SCF`/`RCF` - set/clear the carry flag directly,
+            // the two ways a `long`/`long long` shift seeds the carry a
+            // chained `rlc`/`rrc` then rotates in (see STM8Codegen.cpp's
+            // own `genWideShift()`).
+            {"scf", 0x0E}, {"rcf", 0x0F},
         };
         if (mnemonic == "addw" || mnemonic == "subw" || mnemonic == "cpw" || mnemonic == "exg") {
             requireIdent(operandAt(ops, 0, mnemonic, 2), "x", mnemonic);
@@ -359,6 +364,20 @@ class Assembler {
             emit8(implied.at(mnemonic + "a"));
             return;
         }
+        // `cpl a`/`rlc a`/`rrc a`/`sla a`/`sra a`/`srl a` - real STM8
+        // byte-wide complement/rotate-through-carry/shift, all
+        // accumulator-only (`STM8Codegen.cpp` never emits any of these
+        // on a direct memory operand) - the byte-serial primitives a
+        // `long`/`long long`'s own negate/shift chain across bytes
+        // through (see `genWideNegate()`/`genWideShift()`).
+        static const std::unordered_map<std::string, uint8_t> aluA = {
+            {"cpl", 0x68}, {"rlc", 0x6A}, {"rrc", 0x6C}, {"sla", 0x6E}, {"sra", 0x70}, {"srl", 0x72},
+        };
+        if (auto it = aluA.find(mnemonic); it != aluA.end()) {
+            requireIdent(operandAt(ops, 0, mnemonic, 1), "a", mnemonic);
+            emit8(it->second);
+            return;
+        }
         if (auto it = implied.find(mnemonic); it != implied.end() && ops.empty()) {
             emit8(it->second);
             return;
@@ -370,10 +389,15 @@ class Assembler {
             return;
         }
         if (mnemonic == "incw" || mnemonic == "decw" || mnemonic == "negw" || mnemonic == "cplw" ||
-            mnemonic == "slaw" || mnemonic == "srlw" || mnemonic == "tnzw") {
+            mnemonic == "slaw" || mnemonic == "srlw" || mnemonic == "tnzw" || mnemonic == "sraw") {
             static const std::unordered_map<std::string, uint8_t> base = {
                 {"incw", 0x14}, {"decw", 0x16}, {"negw", 0x18}, {"cplw", 0x1A}, {"slaw", 0x1C},
                 {"srlw", 0x1E}, {"tnzw", 0x20},
+                // `sraw` - real STM8 word arithmetic (sign-preserving)
+                // right shift, the signed counterpart to `srlw`'s own
+                // logical shift - used for a signed, single-shift-
+                // amount `>>` (see STM8Codegen.cpp's own genShift()).
+                {"sraw", 0x22},
             };
             uint8_t r = wordRegCode(operandAt(ops, 0, mnemonic, 1), mnemonic);
             emit8(static_cast<uint8_t>(base.at(mnemonic) | r));
@@ -447,6 +471,45 @@ class Assembler {
             requireIdent(operandAt(ops, 0, mnemonic, 2), "a", mnemonic);
             emit8(it->second);
             emitImm8(operandAt(ops, 1, mnemonic, 2));
+            return;
+        }
+        // `add a, mem` / `sub a, mem` - real STM8 byte add/subtract
+        // (no carry in/out chained), the least-significant-byte step
+        // of a multi-byte `+`/`-` (see STM8Codegen.cpp's own
+        // `genWideAdd()`) - same direct-addressed shape as `and`/`or`/
+        // `xor` above.
+        static const std::unordered_map<std::string, uint8_t> aluMemArith = {
+            {"add", 0x74}, {"sub", 0x76},
+        };
+        if (auto it = aluMemArith.find(mnemonic); it != aluMemArith.end()) {
+            requireIdent(operandAt(ops, 0, mnemonic, 2), "a", mnemonic);
+            emit8(it->second);
+            emit16(operandAt(ops, 1, mnemonic, 2));
+            return;
+        }
+        // `addi a, imm` - real STM8 byte add-immediate, used only to
+        // add the literal `1` into a multi-byte negate's own least
+        // significant byte (see STM8Codegen.cpp's own
+        // `genWideNegate()`) - every later byte instead folds the
+        // carry in via `adc a, zero` (see that same comment).
+        if (mnemonic == "addi") {
+            requireIdent(operandAt(ops, 0, mnemonic, 2), "a", mnemonic);
+            emit8(0x78);
+            emitImm8(operandAt(ops, 1, mnemonic, 2));
+            return;
+        }
+        // `adc a, mem` / `sbc a, mem` - real STM8 add-with-carry/
+        // subtract-with-borrow, the byte-serial ripple-carry idiom a
+        // `long`/`long long` `+`/`-` chains across bytes through (see
+        // STM8Codegen.cpp's own `genWideAdd()`) - same direct-addressed
+        // shape as `and`/`or`/`xor` above.
+        static const std::unordered_map<std::string, uint8_t> aluMemCarry = {
+            {"adc", 0x5C}, {"sbc", 0x5E},
+        };
+        if (auto it = aluMemCarry.find(mnemonic); it != aluMemCarry.end()) {
+            requireIdent(operandAt(ops, 0, mnemonic, 2), "a", mnemonic);
+            emit8(it->second);
+            emit16(operandAt(ops, 1, mnemonic, 2));
             return;
         }
         if (mnemonic == "call" || mnemonic == "jp") {

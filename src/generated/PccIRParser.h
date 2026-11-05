@@ -12,20 +12,22 @@
 class  PccIRParser : public antlr4::Parser {
 public:
   enum {
-    GLOBALS_HEADER = 1, FUNCTIONS_HEADER = 2, INT_KW = 3, LOCAL_KW = 4, 
-    IF_KW = 5, ELSE_KW = 6, WHILE_KW = 7, RETURN_KW = 8, BREAK_KW = 9, CONTINUE_KW = 10, 
-    POST_KW = 11, LPAREN = 12, RPAREN = 13, LBRACK = 14, RBRACK = 15, LBRACE = 16, 
-    RBRACE = 17, SEMI = 18, COMMA = 19, ASSIGN = 20, HASH = 21, STAR = 22, 
-    AMP = 23, MINUS = 24, BANG = 25, TILDE = 26, SLASH = 27, PERCENT = 28, 
-    PLUS = 29, SHL = 30, SHR = 31, LE = 32, GE = 33, LT = 34, GT = 35, EQ = 36, 
-    NE = 37, CARET = 38, PIPE = 39, ANDAND = 40, OROR = 41, IDENT = 42, 
-    NUMBER = 43, WS = 44, ASM_BEGIN = 45, ASM_TEXT = 46, ASM_END = 47
+    GLOBALS_HEADER = 1, FUNCTIONS_HEADER = 2, INT_KW = 3, CHAR_KW = 4, SHORT_KW = 5, 
+    LONG_KW = 6, UNSIGNED_KW = 7, LOCAL_KW = 8, IF_KW = 9, ELSE_KW = 10, 
+    WHILE_KW = 11, RETURN_KW = 12, BREAK_KW = 13, CONTINUE_KW = 14, POST_KW = 15, 
+    LPAREN = 16, RPAREN = 17, LBRACK = 18, RBRACK = 19, LBRACE = 20, RBRACE = 21, 
+    SEMI = 22, COMMA = 23, ASSIGN = 24, HASH = 25, STAR = 26, AMP = 27, 
+    MINUS = 28, BANG = 29, TILDE = 30, SLASH = 31, PERCENT = 32, PLUS = 33, 
+    SHL = 34, SHR = 35, LE = 36, GE = 37, LT = 38, GT = 39, EQ = 40, NE = 41, 
+    CARET = 42, PIPE = 43, ANDAND = 44, OROR = 45, IDENT = 46, NUMBER = 47, 
+    WS = 48, ASM_BEGIN = 49, ASM_TEXT = 50, ASM_END = 51
   };
 
   enum {
-    RuleProgram = 0, RuleGlobalDecl = 1, RuleInitList = 2, RuleInitElem = 3, 
-    RuleFuncDecl = 4, RuleParamList = 5, RuleParam = 6, RuleBlock = 7, RuleStmt = 8, 
-    RuleRef = 9, RuleExpr = 10, RuleArgList = 11, RuleBinOp = 12
+    RuleProgram = 0, RuleTypeSpec = 1, RuleGlobalDecl = 2, RuleInitList = 3, 
+    RuleInitElem = 4, RuleFuncDecl = 5, RuleParamList = 6, RuleParam = 7, 
+    RuleBlock = 8, RuleStmt = 9, RuleRef = 10, RuleExpr = 11, RuleArgList = 12, 
+    RuleBinOp = 13
   };
 
   explicit PccIRParser(antlr4::TokenStream *input);
@@ -46,6 +48,7 @@ public:
 
 
   class ProgramContext;
+  class TypeSpecContext;
   class GlobalDeclContext;
   class InitListContext;
   class InitElemContext;
@@ -78,11 +81,29 @@ public:
 
   ProgramContext* program();
 
+  class  TypeSpecContext : public antlr4::ParserRuleContext {
+  public:
+    TypeSpecContext(antlr4::ParserRuleContext *parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    antlr4::tree::TerminalNode *CHAR_KW();
+    antlr4::tree::TerminalNode *UNSIGNED_KW();
+    antlr4::tree::TerminalNode *SHORT_KW();
+    antlr4::tree::TerminalNode *INT_KW();
+    std::vector<antlr4::tree::TerminalNode *> LONG_KW();
+    antlr4::tree::TerminalNode* LONG_KW(size_t i);
+
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+   
+  };
+
+  TypeSpecContext* typeSpec();
+
   class  GlobalDeclContext : public antlr4::ParserRuleContext {
   public:
     GlobalDeclContext(antlr4::ParserRuleContext *parent, size_t invokingState);
     virtual size_t getRuleIndex() const override;
-    antlr4::tree::TerminalNode *INT_KW();
+    TypeSpecContext *typeSpec();
     RefContext *ref();
     antlr4::tree::TerminalNode *SEMI();
     antlr4::tree::TerminalNode *LBRACK();
@@ -134,7 +155,7 @@ public:
   public:
     FuncDeclContext(antlr4::ParserRuleContext *parent, size_t invokingState);
     virtual size_t getRuleIndex() const override;
-    antlr4::tree::TerminalNode *INT_KW();
+    TypeSpecContext *typeSpec();
     RefContext *ref();
     antlr4::tree::TerminalNode *LPAREN();
     antlr4::tree::TerminalNode *RPAREN();
@@ -168,7 +189,7 @@ public:
   public:
     ParamContext(antlr4::ParserRuleContext *parent, size_t invokingState);
     virtual size_t getRuleIndex() const override;
-    antlr4::tree::TerminalNode *INT_KW();
+    TypeSpecContext *typeSpec();
     RefContext *ref();
 
 
@@ -212,6 +233,7 @@ public:
     LocalDeclStmtContext(StmtContext *ctx);
 
     antlr4::tree::TerminalNode *LOCAL_KW();
+    TypeSpecContext *typeSpec();
     RefContext *ref();
     antlr4::tree::TerminalNode *SEMI();
     antlr4::tree::TerminalNode *LBRACK();
@@ -422,6 +444,20 @@ public:
     IntLitExprContext(ExprContext *ctx);
 
     antlr4::tree::TerminalNode *NUMBER();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  ConvertExprContext : public ExprContext {
+  public:
+    ConvertExprContext(ExprContext *ctx);
+
+    std::vector<antlr4::tree::TerminalNode *> LPAREN();
+    antlr4::tree::TerminalNode* LPAREN(size_t i);
+    TypeSpecContext *typeSpec();
+    std::vector<antlr4::tree::TerminalNode *> RPAREN();
+    antlr4::tree::TerminalNode* RPAREN(size_t i);
+    ExprContext *expr();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };

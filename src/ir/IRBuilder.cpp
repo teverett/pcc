@@ -1,5 +1,6 @@
 #include "IRBuilder.h"
 
+#include <algorithm>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -11,27 +12,39 @@ namespace {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
-// Assigns every Local Slot reached from `s` a sequential 1-based
-// frameOffset, in declaration order, and returns the next unused
-// offset - a LocalDecl can only ever appear as a Stmt (never nested
-// inside an Expr, by this subset's own grammar), so walking Block/
-// If/While/LocalDecl's own sub-statements is exhaustive; nothing else
-// here can contain one.
-int assignFrameOffsets(ir::Stmt *s, int nextOffset) {
+int alignUp(int value, int align) {
+    if (align <= 1) return value;
+    return ((value + align - 1) / align) * align;
+}
+
+// Assigns every Local Slot reached from `s` its own frameOffset, in
+// real storage units (see IR.h's own comment on Slot::frameOffset),
+// in declaration order, and returns the next unused offset - a
+// LocalDecl can only ever appear as a Stmt (never nested inside an
+// Expr, by this subset's own grammar), so walking Block/If/While/
+// LocalDecl's own sub-statements is exhaustive; nothing else here can
+// contain one. The caller starts `nextOffset` at widthOf(Int, widths)
+// - one native int's worth of reserved space below the frame pointer,
+// the same reservation every backend's own prologue already expects.
+int assignFrameOffsets(ir::Stmt *s, int nextOffset, const TypeWidths &widths) {
     if (!s) return nextOffset;
     switch (s->kind) {
         case ir::StmtKind::Block:
-            for (auto &child : s->body) nextOffset = assignFrameOffsets(child.get(), nextOffset);
+            for (auto &child : s->body) nextOffset = assignFrameOffsets(child.get(), nextOffset, widths);
             return nextOffset;
         case ir::StmtKind::If:
-            nextOffset = assignFrameOffsets(s->thenStmt.get(), nextOffset);
-            return assignFrameOffsets(s->elseStmt.get(), nextOffset);
+            nextOffset = assignFrameOffsets(s->thenStmt.get(), nextOffset, widths);
+            return assignFrameOffsets(s->elseStmt.get(), nextOffset, widths);
         case ir::StmtKind::While:
-            nextOffset = assignFrameOffsets(s->loopBody.get(), nextOffset);
-            return assignFrameOffsets(s->postStmt.get(), nextOffset);
-        case ir::StmtKind::LocalDecl:
+            nextOffset = assignFrameOffsets(s->loopBody.get(), nextOffset, widths);
+            return assignFrameOffsets(s->postStmt.get(), nextOffset, widths);
+        case ir::StmtKind::LocalDecl: {
+            int elemWidth = widthOf(s->declSlot->type, widths);
+            nextOffset = alignUp(nextOffset, elemWidth);
             s->declSlot->frameOffset = nextOffset;
-            return nextOffset + (s->declSlot->arraySize > 0 ? s->declSlot->arraySize : 1);
+            int count = s->declSlot->arraySize > 0 ? s->declSlot->arraySize : 1;
+            return nextOffset + elemWidth * count;
+        }
         case ir::StmtKind::Return:
         case ir::StmtKind::Break:
         case ir::StmtKind::Continue:
@@ -43,9 +56,31 @@ int assignFrameOffsets(ir::Stmt *s, int nextOffset) {
     return nextOffset;
 }
 
+// Wraps `inner` in an ir::Convert to `target`, unless it's already
+// exactly that type - see IR.h's own comment on ExprKind::Convert.
+ir::ExprPtr wrapConvert(ir::ExprPtr inner, Type target, int line) {
+    if (inner->type == target) return inner;
+    auto conv = std::make_unique<ir::Expr>();
+    conv->kind = ir::ExprKind::Convert;
+    conv->line = line;
+    conv->type = target;
+    conv->lhs = std::move(inner);
+    return conv;
+}
+
+// Integer promotion: a sub-Int-rank operand becomes signed Int before
+// any unary/binary op - see Type.h's own header comment for why this
+// (deliberately simplified) rule never needs a target's real widths.
+ir::ExprPtr promote(ir::ExprPtr e, int line) {
+    if (rank(e->type.base) < rank(BaseType::Int)) {
+        return wrapConvert(std::move(e), Type{BaseType::Int, false}, line);
+    }
+    return e;
+}
+
 class Builder {
    public:
-    explicit Builder(bool allowExternal) : allowExternal_(allowExternal) {}
+    Builder(bool allowExternal, const TypeWidths &widths) : allowExternal_(allowExternal), widths_(widths) {}
 
     ir::Program build(const Program &prog) {
         registerGlobalsAndFunctions(prog);
@@ -55,9 +90,17 @@ class Builder {
 
             pushScope();
             for (ir::Slot *p : irFn->params) declareLocal(p->sourceName, p, fn.line);
+            currentReturnType_ = irFn->returnType;
             ir::StmtPtr body = buildStmt(*fn.body);
             popScope();
-            irFn->frameSize = assignFrameOffsets(body.get(), 1) - 1;
+            int reserved = widthOf(Type{BaseType::Int, false}, widths_);
+            // Rounded up to the native int width (even when the last
+            // local is itself narrower) so a backend's own `sub
+            // sp,sp,frameSize`-style reservation always leaves the
+            // stack pointer at the same alignment it started at -
+            // several targets (e.g. ARM) fault, or silently
+            // misbehave, on a misaligned word access otherwise.
+            irFn->frameSize = alignUp(assignFrameOffsets(body.get(), reserved, widths_), reserved) - reserved;
 
             ir::FunctionBody fb;
             fb.func = irFn;
@@ -73,6 +116,7 @@ class Builder {
         for (const auto &g : prog.globals) {
             if (globalByName_.count(g.name)) err(g.line, "redeclaration of global '" + g.name + "'");
             ir::Slot *slot = allocSlot(ir::SlotKind::Global, g.name, g.arraySize);
+            slot->type = g.type;
             slot->hasInit = g.hasInit;
             slot->initValue = g.initValue;
             // arrayInit is resolved in a second pass below, once
@@ -90,13 +134,40 @@ class Builder {
             auto irFn = std::make_unique<ir::Function>();
             irFn->id = nextFuncId_++;
             irFn->sourceName = fn.name;
+            irFn->returnType = fn.returnType;
             irFn->hasAddress = fn.hasAddress;
             irFn->address = fn.address;
             irFn->sourceFile = fn.sourceFile;
+            // Each param's own frameOffset, in real storage units,
+            // past a fixed two-native-`int`-widths reservation for
+            // whatever a backend's own call sequence keeps there
+            // (saved frame pointer/return address) - see IR.h's own
+            // comment on Slot::frameOffset. Unlike a Local (packed by
+            // its own real width - see assignFrameOffsets), every
+            // param reserves AT LEAST one native `int`'s width: the
+            // caller can only ever push/pass a whole native word per
+            // argument (there's no narrower "push a byte" on a target
+            // whose calling convention pushes arguments at all), so a
+            // narrower-than-int param still occupies a full slot,
+            // same as C's own default-argument-promotion convention.
+            // Only a WIDER type (`long`/`long long`, when wider than
+            // the native int) takes more than one slot's worth.
+            int intWidth = widthOf(Type{BaseType::Int, false}, widths_);
+            int paramOffset = 2 * intWidth;
             for (size_t i = 0; i < fn.params.size(); i++) {
                 ir::Slot *p = allocSlot(ir::SlotKind::Param, fn.params[i].name);
+                p->type = fn.params[i].type;
                 p->ownerFunctionName = fn.name;
                 p->paramIndex = static_cast<int>(i);
+                // No alignUp here, unlike a Local's own packing below:
+                // a caller's own push sequence lays params back-to-
+                // back with no gap at all (there's no hardware
+                // alignment requirement on any of these stack-passed
+                // calling conventions), so rounding up here would
+                // claim space the caller never actually reserved.
+                int w = std::max(widthOf(p->type, widths_), intWidth);
+                p->frameOffset = paramOffset;
+                paramOffset += w;
                 irFn->params.push_back(p);
             }
             funcByName_[fn.name] = irFn.get();
@@ -287,6 +358,7 @@ class Builder {
             if (ir::Slot *slot = resolveVarOrNull(e.name)) {
                 out->kind = ir::ExprKind::Var;
                 out->slot = slot;
+                out->type = slot->type;
                 return out;
             }
             auto fit = funcByName_.find(e.name);
@@ -298,6 +370,7 @@ class Builder {
             if (ir::Slot *ext = resolveExternalVar(e.name)) {
                 out->kind = ir::ExprKind::Var;
                 out->slot = ext;
+                out->type = ext->type;
                 return out;
             }
             err(e.line, "undefined variable or function '" + e.name + "'");
@@ -305,6 +378,7 @@ class Builder {
         if (e.kind == ExprKind::Index) {
             out->kind = ir::ExprKind::Index;
             out->slot = resolveVar(e.name, e.line);
+            out->type = out->slot->type;
             markIndexedIfExternal(out->slot);
             out->lhs = buildExpr(*e.lhs);
             return out;
@@ -319,6 +393,7 @@ class Builder {
             case ExprKind::IntLit:
                 out->kind = ir::ExprKind::IntLit;
                 out->intValue = e.intValue;
+                out->type = e.type;
                 return out;
             case ExprKind::Var: {
                 ir::Slot *slot = resolveVar(e.name, e.line);
@@ -328,57 +403,135 @@ class Builder {
                 }
                 out->kind = ir::ExprKind::Var;
                 out->slot = slot;
+                out->type = slot->type;
                 return out;
             }
             case ExprKind::Index:
                 out->kind = ir::ExprKind::Index;
                 out->slot = resolveVar(e.name, e.line);
+                out->type = out->slot->type;
                 markIndexedIfExternal(out->slot);
                 out->lhs = buildExpr(*e.lhs);
                 return out;
-            case ExprKind::Assign:
+            case ExprKind::Assign: {
                 out->kind = ir::ExprKind::Assign;
                 out->slot = resolveVar(e.name, e.line);
                 if (e.lhs) {
                     markIndexedIfExternal(out->slot);  // arr[i] = ... - e.lhs is the index
                     out->lhs = buildExpr(*e.lhs);
                 }
-                out->rhs = buildExpr(*e.rhs);
+                out->type = out->slot->type;
+                out->rhs = wrapConvert(buildExpr(*e.rhs), out->type, e.line);
                 return out;
+            }
             case ExprKind::DerefAssign:
+                // '*' has no pointee type to track (pointers are
+                // plain, untyped ints - see Type.h's own header
+                // comment) - the stored-through value stays at native
+                // pointer-word width, same as today.
                 out->kind = ir::ExprKind::DerefAssign;
+                out->type = Type{BaseType::Int, false};
                 out->lhs = buildExpr(*e.lhs);
                 out->rhs = buildExpr(*e.rhs);
                 return out;
-            case ExprKind::Unary:
+            case ExprKind::Unary: {
                 out->kind = ir::ExprKind::Unary;
                 out->op = e.op;
-                out->rhs = (e.op == "&") ? buildAddressableOperand(*e.rhs) : buildExpr(*e.rhs);
+                if (e.op == "&") {
+                    // An address is native pointer-word width,
+                    // unaffected by the operand's own type.
+                    out->type = Type{BaseType::Int, false};
+                    out->rhs = buildAddressableOperand(*e.rhs);
+                    return out;
+                }
+                ir::ExprPtr operand = buildExpr(*e.rhs);
+                if (e.op == "*" || e.op == "!") {
+                    out->type = Type{BaseType::Int, false};
+                    out->rhs = std::move(operand);
+                    return out;
+                }
+                // '-' or '~': ordinary integer promotion.
+                operand = promote(std::move(operand), e.line);
+                out->type = operand->type;
+                out->rhs = std::move(operand);
                 return out;
-            case ExprKind::Binary:
+            }
+            case ExprKind::Binary: {
                 out->kind = ir::ExprKind::Binary;
                 out->op = e.op;
-                out->lhs = buildExpr(*e.lhs);
-                out->rhs = buildExpr(*e.rhs);
+                ir::ExprPtr lhs = buildExpr(*e.lhs);
+                ir::ExprPtr rhs = buildExpr(*e.rhs);
+                if (e.op == "&&" || e.op == "||") {
+                    // Truth-testing is width-independent - no
+                    // conversion needed on either operand.
+                    out->type = Type{BaseType::Int, false};
+                    out->lhs = std::move(lhs);
+                    out->rhs = std::move(rhs);
+                    return out;
+                }
+                if (e.op == "<<" || e.op == ">>") {
+                    // The RHS promotes on its own for its own
+                    // evaluation but never affects the result type -
+                    // see Type.h's own header comment.
+                    lhs = promote(std::move(lhs), e.line);
+                    rhs = promote(std::move(rhs), e.line);
+                    out->type = lhs->type;
+                    out->lhs = std::move(lhs);
+                    out->rhs = std::move(rhs);
+                    return out;
+                }
+                lhs = promote(std::move(lhs), e.line);
+                rhs = promote(std::move(rhs), e.line);
+                Type common = commonType(lhs->type, rhs->type);
+                lhs = wrapConvert(std::move(lhs), common, e.line);
+                rhs = wrapConvert(std::move(rhs), common, e.line);
+                out->lhs = std::move(lhs);
+                out->rhs = std::move(rhs);
+                if (e.op == "==" || e.op == "!=" || e.op == "<" || e.op == "<=" || e.op == ">" || e.op == ">=") {
+                    // The comparison itself happens at `common`
+                    // (both operands now share it, so codegen reads
+                    // either side's .type.isUnsigned to pick a signed
+                    // or unsigned compare) but the result is always a
+                    // plain int 0/1, same as real C.
+                    out->type = Type{BaseType::Int, false};
+                } else {
+                    out->type = common;
+                }
                 return out;
-            case ExprKind::Call:
+            }
+            case ExprKind::Call: {
                 if (e.name == "_ion" || e.name == "_iof") {
                     if (!e.args.empty()) err(e.line, e.name + "() takes no arguments");
                     out->kind = ir::ExprKind::Intrinsic;
                     out->op = e.name.substr(1);  // "ion" or "iof"
+                    out->type = Type{BaseType::Int, false};
                     return out;
                 }
                 out->kind = ir::ExprKind::Call;
                 out->func = resolveFunc(e.name, e.args.size(), e.line);
-                for (const auto &a : e.args) out->args.push_back(buildExpr(*a));
+                for (size_t i = 0; i < e.args.size(); i++) {
+                    ir::ExprPtr arg = buildExpr(*e.args[i]);
+                    // An external function has no real parameter
+                    // list in this file to convert against - see
+                    // resolveFunc's own comment; its argument's
+                    // built-in type passes through unchanged.
+                    if (!out->func->isExternal) {
+                        arg = wrapConvert(std::move(arg), out->func->params[i]->type, e.line);
+                    }
+                    out->args.push_back(std::move(arg));
+                }
+                out->type = out->func->isExternal ? Type{BaseType::Int, false} : out->func->returnType;
                 return out;
+            }
             case ExprKind::CallPtr:
                 // No per-callee ABI slot to put an argument in until
                 // the callee is known - which, by definition, this
                 // kind never is at compile time (see IR.h's
                 // ExprKind::CallPtr) - so, unlike Call above, this
                 // subset only supports a bare (expr)() with no
-                // arguments at all.
+                // arguments at all. There's likewise no callee
+                // signature to learn a real return type from here;
+                // the result stays plain int, same as today.
                 if (!e.args.empty()) {
                     err(e.line, "a call through a computed function address ((expr)(...)) can't take "
                                  "arguments - there's no per-callee calling-convention slot to put one in "
@@ -386,8 +539,26 @@ class Builder {
                                  "0-argument (expr)() is supported");
                 }
                 out->kind = ir::ExprKind::CallPtr;
+                out->type = Type{BaseType::Int, false};
                 out->lhs = buildExpr(*e.lhs);
                 return out;
+            case ExprKind::Cast:
+                return wrapConvert(buildExpr(*e.rhs), e.type, e.line);
+            case ExprKind::Sizeof: {
+                // sizeof(expr) never evaluates expr - it's built here
+                // purely to learn its static type (still raising any
+                // unrelated semantic error, e.g. an undefined
+                // variable, exactly as real C requires even though it
+                // never runs) and then discarded; only its `.type` is
+                // kept. See Type.h's own header comment on why no
+                // width table is needed anywhere else in this pass -
+                // this is the one place it is.
+                Type measured = e.sizeofIsType ? e.type : buildExpr(*e.rhs)->type;
+                out->kind = ir::ExprKind::IntLit;
+                out->type = Type{BaseType::Long, true};
+                out->intValue = widthOf(measured, widths_);
+                return out;
+            }
         }
         err(e.line, "internal: unhandled expr kind");
     }
@@ -420,7 +591,9 @@ class Builder {
             }
             case StmtKind::Return:
                 out->kind = ir::StmtKind::Return;
-                if (s.initOrReturnOrExpr) out->initOrReturnOrExpr = buildExpr(*s.initOrReturnOrExpr);
+                if (s.initOrReturnOrExpr) {
+                    out->initOrReturnOrExpr = wrapConvert(buildExpr(*s.initOrReturnOrExpr), currentReturnType_, s.line);
+                }
                 return out;
             case StmtKind::Break:
                 if (loopDepth_ == 0) err(s.line, "'break' statement not inside a loop");
@@ -433,10 +606,13 @@ class Builder {
             case StmtKind::LocalDecl: {
                 out->kind = ir::StmtKind::LocalDecl;
                 ir::Slot *slot = allocSlot(ir::SlotKind::Local, s.declName, s.arraySize);
+                slot->type = s.type;
                 slot->arrayInit = resolveArrayInit(s.arrayInit, s.line);
                 declareLocal(s.declName, slot, s.line);
                 out->declSlot = slot;
-                if (s.arraySize == 0 && s.initOrReturnOrExpr) out->initOrReturnOrExpr = buildExpr(*s.initOrReturnOrExpr);
+                if (s.arraySize == 0 && s.initOrReturnOrExpr) {
+                    out->initOrReturnOrExpr = wrapConvert(buildExpr(*s.initOrReturnOrExpr), slot->type, s.line);
+                }
                 return out;
             }
             case StmtKind::ExprStmt:
@@ -462,18 +638,21 @@ class Builder {
     int nextFuncId_ = 0;
     bool allowExternal_ = false;
     int loopDepth_ = 0;  // >0 while building a While's own loopBody/postStmt - see Break/Continue
+    TypeWidths widths_{};
+    Type currentReturnType_;  // the function currently being built - see StmtKind::Return
 };
 
 }  // namespace
 
-ir::Program buildIR(const Program &prog, bool allowExternal) {
-    Builder b(allowExternal);
+ir::Program buildIR(const Program &prog, const TypeWidths &widths, bool allowExternal) {
+    Builder b(allowExternal, widths);
     return b.build(prog);
 }
 
-void recomputeFrameLayout(ir::Program &prog) {
+void recomputeFrameLayout(ir::Program &prog, const TypeWidths &widths) {
+    int reserved = widthOf(Type{BaseType::Int, false}, widths);
     for (auto &fb : prog.functionBodies) {
-        fb.func->frameSize = assignFrameOffsets(fb.body.get(), 1) - 1;
+        fb.func->frameSize = alignUp(assignFrameOffsets(fb.body.get(), reserved, widths), reserved) - reserved;
     }
 }
 

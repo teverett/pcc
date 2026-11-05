@@ -45,7 +45,7 @@ struct Operand {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Equate, Org, Dw, Instr } kind = None;
+    enum Kind { None, Equate, Org, Dw, Db, Dh, Instr } kind = None;
     std::string equateName;
     std::vector<std::vector<Syllable>> exprList;  // Equate (1)/Org (1)/Dw (N)
     std::string mnemonic;                           // Instr
@@ -169,10 +169,10 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         line.exprList.push_back(exprToSyllables(instr->operand(0)->expr()));
         return line;
     }
-    if (mnemonic == "dw") {
-        line.kind = Line::Dw;
+    if (mnemonic == "dw" || mnemonic == "db" || mnemonic == "dh") {
+        line.kind = mnemonic == "dw" ? Line::Dw : mnemonic == "db" ? Line::Db : Line::Dh;
         for (auto *op : instr->operand()) {
-            if (op->LBRACKET()) fail("'dw' operand can't be bracketed");
+            if (op->LBRACKET()) fail("'" + mnemonic + "' operand can't be bracketed");
             line.exprList.push_back(exprToSyllables(op->expr()));
         }
         return line;
@@ -255,6 +255,12 @@ class Assembler {
             case Line::Dw:
                 for (const auto &e : line.exprList) emit32(static_cast<uint32_t>(evalExpr(e)));
                 return;
+            case Line::Db:
+                for (const auto &e : line.exprList) emit8(static_cast<uint8_t>(evalExpr(e)));
+                return;
+            case Line::Dh:
+                for (const auto &e : line.exprList) emit16(static_cast<uint16_t>(evalExpr(e)));
+                return;
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
                 return;
@@ -319,6 +325,18 @@ class Assembler {
         bytes_.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
         offset_ += 4;
     }
+    // `db`/`dh` - byte/halfword data, the new type system's own
+    // narrower-than-`int` global storage (see Arm64Codegen.cpp's own
+    // declareArray()/generate()).
+    void emit8(uint8_t v) {
+        bytes_.push_back(v);
+        offset_ += 1;
+    }
+    void emit16(uint16_t v) {
+        bytes_.push_back(static_cast<uint8_t>(v & 0xFF));
+        bytes_.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+        offset_ += 2;
+    }
 
     static uint8_t requireReg(const Operand &op, const std::string &mnemonic) {
         if (op.kind != Operand::Reg) fail("'" + mnemonic + "' needs a register operand");
@@ -369,6 +387,18 @@ class Assembler {
                (static_cast<uint32_t>(n) << 21) | (static_cast<uint32_t>(rm) << 16) | (0u << 10) |
                (static_cast<uint32_t>(rn) << 5) | rd);
     }
+    // Immediate bitfield move (UBFM/SBFM) - `lsl`/`lsr`/`asr
+    // rd,rn,#shift`'s own real encoding underneath: sf opc(2) 100110
+    // N(=sf) immr(6) imms(6) Rn Rd. The new type system's own
+    // narrowW0To()-style re-truncate+re-extend idiom (ArmCodegen.cpp's
+    // own comment) needs these as genuine immediate-shift
+    // instructions, distinct from `lslv`/`lsrv`/`asrv`'s register-
+    // count form above.
+    void emitBitfield(uint32_t opc, int sf, uint32_t immr, uint32_t imms, uint8_t rn, uint8_t rd) {
+        emit32((static_cast<uint32_t>(sf) << 31) | (opc << 29) | (0b100110u << 23) |
+               (static_cast<uint32_t>(sf) << 22) | (immr << 16) | (imms << 10) | (static_cast<uint32_t>(rn) << 5) |
+               rd);
+    }
     void emitDp2Src(uint32_t opcode, int sf, uint8_t rd, uint8_t rn, uint8_t rm) {
         emit32((static_cast<uint32_t>(sf) << 31) | (0u << 30) | (0u << 29) | (0b11010110u << 21) |
                (static_cast<uint32_t>(rm) << 16) | (opcode << 10) | (static_cast<uint32_t>(rn) << 5) | rd);
@@ -391,8 +421,20 @@ class Assembler {
     // zero displacement - see Arm64Codegen.h's own header comment on
     // why every load/store here is always through a freshly computed
     // address.
-    void emitLdStImm32(uint32_t opc, uint8_t rn, uint8_t rt) {
-        emit32((0b10u << 30) | (0b111u << 27) | (0u << 26) | (0b01u << 24) | (opc << 22) | (0u << 10) |
+    // `size` (bits31-30): 00=byte,01=halfword,10=word("w"),11=
+    // doubleword("x") - the new type system's own narrower/wider-
+    // than-native-int loads/stores (see Arm64Codegen.cpp's
+    // loadOperand()/storeOperand()); `opc` (bits23-22): 00=store,
+    // 01=load (zero/no sign-extension beyond the loaded width), 11=
+    // load with sign-extension up to the *destination* register's
+    // own width (only valid for size 00/01 - LDRSB/LDRSH with a
+    // 32-bit, i.e. "w", destination; the upper 32 bits of that
+    // destination are then architecturally zeroed, exactly this
+    // backend's header comment on every W-form write - so this is
+    // the one instruction a narrower-than-int Var/Slot's own signed
+    // load needs, no separate extension step).
+    void emitLdStImm(uint32_t size, uint32_t opc, uint8_t rn, uint8_t rt) {
+        emit32((size << 30) | (0b111u << 27) | (0u << 26) | (0b01u << 24) | (opc << 22) | (0u << 10) |
                (static_cast<uint32_t>(rn) << 5) | rt);
     }
     // Unconditional branch (immediate) - real A64 has no delay slot
@@ -467,6 +509,22 @@ class Assembler {
             emitMovWide(mnemonic == "movz" ? 0b10u : 0b11u, sf, rd, imm16, hi ? 1u : 0u);
             return;
         }
+        if (mnemonic == "movk2" || mnemonic == "movk3") {
+            // `movk2`/`movk3 xd,<imm16>` - the bits32-47/bits48-63
+            // chunks of a genuine 64-bit immediate (hw=2/3 - `movz`/
+            // `movk` above only ever cover hw=0/1, since every label
+            // this backend resolves fits in 32 bits; a `long long`
+            // literal doesn't - see Arm64Codegen.cpp's own
+            // loadImm64()). Always a plain already-shifted-down
+            // number, never a label, so no relocation bookkeeping is
+            // needed here the way movz/movk's own label case has.
+            uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            const Operand &immOp = requireOperand(ops, 1, mnemonic);
+            if (immOp.kind == Operand::Mem) fail("'" + mnemonic + "': operand must be a plain number");
+            uint32_t imm16 = static_cast<uint32_t>(evalExpr(immOp.expr) & 0xFFFFu);
+            emitMovWide(0b11u, /*sf=*/1, rd, imm16, mnemonic == "movk2" ? 2u : 3u);
+            return;
+        }
         if (mnemonic == "mov") {  // alias: orr rd,<zr matching rd's width>,rn
             uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             int sf = requireOperand(ops, 0, mnemonic).width;
@@ -525,13 +583,38 @@ class Assembler {
             emitDp3Src(/*o0=*/1, sf, rd, rn, rm, ra);
             return;
         }
-        if (mnemonic == "sdiv" || mnemonic == "lslv" || mnemonic == "lsrv") {
+        if (mnemonic == "lsl" || mnemonic == "lsr" || mnemonic == "asr") {
+            uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            int sf = requireOperand(ops, 0, mnemonic).width;
+            uint8_t rn = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+            const Operand &shiftOp = requireOperand(ops, 2, mnemonic);
+            if (shiftOp.kind == Operand::Reg) fail("'" + mnemonic + "': shift amount must be a plain number");
+            uint32_t shift = static_cast<uint32_t>(evalExpr(shiftOp.expr));
+            uint32_t datasize = sf ? 64u : 32u;
+            if (shift >= datasize) fail("'" + mnemonic + "': shift amount out of range");
+            if (mnemonic == "lsl") {
+                emitBitfield(/*opc=UBFM*/ 0b10u, sf, (datasize - shift) % datasize, datasize - 1 - shift, rn, rd);
+            } else if (mnemonic == "lsr") {
+                emitBitfield(/*opc=UBFM*/ 0b10u, sf, shift, datasize - 1, rn, rd);
+            } else {
+                emitBitfield(/*opc=SBFM*/ 0b00u, sf, shift, datasize - 1, rn, rd);
+            }
+            return;
+        }
+        if (mnemonic == "sdiv" || mnemonic == "udiv" || mnemonic == "lslv" || mnemonic == "lsrv" ||
+            mnemonic == "asrv") {
             uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             int sf = requireOperand(ops, 0, mnemonic).width;
             uint8_t rn = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
             uint8_t rm = requireReg(requireOperand(ops, 2, mnemonic), mnemonic);
-            uint32_t opcode = mnemonic == "sdiv" ? 0b000011u : (mnemonic == "lslv" ? 0b001000u : 0b001001u);
-            emitDp2Src(opcode, sf, rd, rn, rm);
+            // DP(2-source) opcode field: UDIV=000010, SDIV=000011,
+            // LSLV=001000, LSRV=001001, ASRV=001010 - the real A64
+            // sequential assignment within this instruction group.
+            static const std::unordered_map<std::string, uint32_t> opcodes = {
+                {"udiv", 0b000010u}, {"sdiv", 0b000011u}, {"lslv", 0b001000u}, {"lsrv", 0b001001u},
+                {"asrv", 0b001010u},
+            };
+            emitDp2Src(opcodes.at(mnemonic), sf, rd, rn, rm);
             return;
         }
         if (mnemonic == "cmp") {
@@ -544,6 +627,10 @@ class Assembler {
         static const std::unordered_map<std::string, uint32_t> csets = {
             {"cseteq", 0b0000}, {"csetne", 0b0001}, {"csetge", 0b1010},
             {"csetlt", 0b1011}, {"csetgt", 0b1100}, {"csetle", 0b1101},
+            // Unsigned counterparts (real A64 condition codes HS/LO/
+            // HI/LS) - the new type system's unsigned compare, see
+            // Arm64Codegen.cpp's own genCompare().
+            {"cseths", 0b0010}, {"csetlo", 0b0011}, {"csethi", 0b1000}, {"csetls", 0b1001},
         };
         if (auto it = csets.find(mnemonic); it != csets.end()) {
             uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
@@ -553,17 +640,41 @@ class Assembler {
         }
         // Dedicated zero-displacement load/store - see Arm64Codegen.h's
         // own header comment: `ldind baseReg,destReg` / `stind
-        // baseReg,srcReg`, real LDR/STR underneath with imm12=0.
+        // baseReg,srcReg`, real LDR/STR underneath with imm12=0. The
+        // size (word vs doubleword) comes from `destReg`/`srcReg`'s
+        // own width ("w" vs "x") - a plain `int`/`long` load/store
+        // stays 32-bit exactly as before; a `long long` Var/Slot (see
+        // Arm64Codegen.cpp's own isWide()) just names an `x` register
+        // instead, getting a real 64-bit LDR/STR in one instruction -
+        // no multi-word emulation needed at all on this target.
         if (mnemonic == "ldind") {
             uint8_t base = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
-            uint8_t rt = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
-            emitLdStImm32(0b01, base, rt);
+            const Operand &rtOp = requireOperand(ops, 1, mnemonic);
+            uint8_t rt = requireReg(rtOp, mnemonic);
+            emitLdStImm(rtOp.width ? 0b11u : 0b10u, 0b01, base, rt);
             return;
         }
         if (mnemonic == "stind") {
             uint8_t base = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            const Operand &rtOp = requireOperand(ops, 1, mnemonic);
+            uint8_t rt = requireReg(rtOp, mnemonic);
+            emitLdStImm(rtOp.width ? 0b11u : 0b10u, 0b00, base, rt);
+            return;
+        }
+        // `ldindb`/`ldindh` (zero-extending unsigned byte/halfword
+        // load), `ldindsb`/`ldindsh` (sign-extending, to the "w"
+        // destination's own 32 bits - see emitLdStImm()'s own
+        // comment), `stindb`/`stindh` (store, truncating to that
+        // width) - a narrower-than-native-int Var/Slot's own load/
+        // store (see Arm64Codegen.cpp's loadOperand()/storeOperand()).
+        static const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> sizedLdSt = {
+            {"ldindb", {0b00u, 0b01u}}, {"ldindsb", {0b00u, 0b11u}}, {"stindb", {0b00u, 0b00u}},
+            {"ldindh", {0b01u, 0b01u}}, {"ldindsh", {0b01u, 0b11u}}, {"stindh", {0b01u, 0b00u}},
+        };
+        if (auto it = sizedLdSt.find(mnemonic); it != sizedLdSt.end()) {
+            uint8_t base = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rt = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
-            emitLdStImm32(0b00, base, rt);
+            emitLdStImm(it->second.first, it->second.second, base, rt);
             return;
         }
         if (mnemonic == "b" || mnemonic == "bl") {

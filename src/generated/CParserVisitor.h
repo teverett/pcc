@@ -21,6 +21,18 @@ public:
    */
     virtual std::any visitProgram(CParser::ProgramContext *context) = 0;
 
+    virtual std::any visitCharType(CParser::CharTypeContext *context) = 0;
+
+    virtual std::any visitShortType(CParser::ShortTypeContext *context) = 0;
+
+    virtual std::any visitIntType(CParser::IntTypeContext *context) = 0;
+
+    virtual std::any visitLongLongType(CParser::LongLongTypeContext *context) = 0;
+
+    virtual std::any visitLongType(CParser::LongTypeContext *context) = 0;
+
+    virtual std::any visitSignedOrUnsignedType(CParser::SignedOrUnsignedTypeContext *context) = 0;
+
     virtual std::any visitTopLevelDecl(CParser::TopLevelDeclContext *context) = 0;
 
     virtual std::any visitFunctionDecl(CParser::FunctionDeclContext *context) = 0;
@@ -75,7 +87,13 @@ public:
 
     virtual std::any visitExprCond(CParser::ExprCondContext *context) = 0;
 
+    virtual std::any visitSizeofExprExpr(CParser::SizeofExprExprContext *context) = 0;
+
     virtual std::any visitCharExpr(CParser::CharExprContext *context) = 0;
+
+    virtual std::any visitCastExpr(CParser::CastExprContext *context) = 0;
+
+    virtual std::any visitSizeofTypeExpr(CParser::SizeofTypeExprContext *context) = 0;
 
     virtual std::any visitAddrOfExpr(CParser::AddrOfExprContext *context) = 0;
 

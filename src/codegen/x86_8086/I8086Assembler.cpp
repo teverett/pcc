@@ -67,7 +67,7 @@ struct Operand {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Bits, Org, Dw, Times, Instr } kind = None;
+    enum Kind { None, Bits, Org, Dw, Db, Times, Instr } kind = None;
     std::vector<Syllable> timesCount;    // Times
     std::string innerMnemonic;            // Times: the inner mnemonic (always "db")
     std::vector<std::vector<Syllable>> exprList;  // Org (1 entry) / Dw (N) / Times' inner db (1)
@@ -232,6 +232,17 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         }
         return line;
     }
+    // A `char` array's own byte-packed storage (I8086Codegen.cpp's
+    // declareArray()) - top-level, not just as 'times''s own inner
+    // mnemonic (see Line::Times above).
+    if (mnemonic == "db") {
+        line.kind = Line::Db;
+        for (auto *op : instr->operand()) {
+            if (op->LBRACKET()) fail("'db' operand can't be a memory operand here");
+            line.exprList.push_back(exprToSyllables(op->expr()));
+        }
+        return line;
+    }
 
     line.kind = Line::Instr;
     line.mnemonic = mnemonic;
@@ -324,9 +335,21 @@ class Assembler {
             case Line::Dw:
                 for (const auto &e : line.exprList) emitExprAsWord(e);
                 return;
+            case Line::Db:
+                for (const auto &e : line.exprList) emit8(static_cast<uint8_t>(evalExpr(e)));
+                return;
             case Line::Times: {
                 if (line.innerMnemonic != "db") fail("'times' only supports a 'db' body in this dialect");
                 uint32_t count = evalExpr(line.timesCount);
+                // I8086Codegen.cpp's own boot-sector padding is
+                // "times (510-($-$$)) db 0" - if the real code+data
+                // already runs past 510 bytes, that subtraction is
+                // negative and wraps around to a huge uint32_t here,
+                // which would otherwise silently try to emit
+                // gigabytes of padding instead of failing - a boot
+                // sector genuinely has no room left, which is exactly
+                // what should be reported.
+                if (count > 0x10000) fail("program too large for a 512-byte boot sector (--format=raw) - use --format=coff instead");
                 uint32_t v = line.exprList.empty() ? 0 : evalExpr(line.exprList.at(0));
                 for (uint32_t i = 0; i < count; i++) emit8(static_cast<uint8_t>(v));
                 return;
@@ -532,6 +555,10 @@ class Assembler {
         if (mnemonic == "hlt") { emit8(0xF4); return; }
         if (mnemonic == "ret") { emit8(0xC3); return; }
         if (mnemonic == "cwd") { emit8(0x99); return; }
+        // Sign-extends AL into AX (AH:AL) - this dialect's own
+        // narrower-than-word (`char`) load, when signed - see
+        // I8086Codegen.cpp's loadOperand().
+        if (mnemonic == "cbw") { emit8(0x98); return; }
         // `int imm8` - a real BIOS/DOS software interrupt (e.g. `int
         // 0x13`, the real disk-I/O call every boot-sector program
         // uses - see ../../tests/disk.c) - no portable C expression
@@ -551,6 +578,10 @@ class Assembler {
         if (mnemonic == "not")  { requireReg(ops, 1); emitModRegRM(0xF7, 0b11, 0b010, static_cast<uint8_t>(ops[0].reg)); return; }
         if (mnemonic == "imul") { requireReg(ops, 1); emitModRegRM(0xF7, 0b11, 0b101, static_cast<uint8_t>(ops[0].reg)); return; }
         if (mnemonic == "idiv") { requireReg(ops, 1); emitModRegRM(0xF7, 0b11, 0b111, static_cast<uint8_t>(ops[0].reg)); return; }
+        // Unsigned counterparts (F7 /4, /6) - I8086Codegen.cpp picks
+        // between these and imul/idiv per operand signedness.
+        if (mnemonic == "mul")  { requireReg(ops, 1); emitModRegRM(0xF7, 0b11, 0b100, static_cast<uint8_t>(ops[0].reg)); return; }
+        if (mnemonic == "div")  { requireReg(ops, 1); emitModRegRM(0xF7, 0b11, 0b110, static_cast<uint8_t>(ops[0].reg)); return; }
 
         if (mnemonic == "jmp")  { if (ops.size()!=1) fail("'jmp' needs one operand"); emitRel16(0xE9, ops[0]); return; }
         // A direct `call label` (the only form used before indirect
@@ -576,6 +607,18 @@ class Assembler {
         if (mnemonic == "jle")  { emitRel8(0x7E, ops.at(0)); return; }
         if (mnemonic == "jg")   { emitRel8(0x7F, ops.at(0)); return; }
         if (mnemonic == "jge")  { emitRel8(0x7D, ops.at(0)); return; }
+        // Unsigned counterparts - I8086Codegen.cpp's own unsigned
+        // comparisons (real 8086 jb/jae/jbe/ja, same short-jump
+        // family as the signed ones above).
+        if (mnemonic == "jb")   { emitRel8(0x72, ops.at(0)); return; }
+        if (mnemonic == "jae")  { emitRel8(0x73, ops.at(0)); return; }
+        if (mnemonic == "jbe")  { emitRel8(0x76, ops.at(0)); return; }
+        if (mnemonic == "ja")   { emitRel8(0x77, ops.at(0)); return; }
+        // jc/jnc - the carry flag directly, same encoding as jb/jae
+        // (I8086Codegen.cpp's own bit-serial division: testing the
+        // carry a shift/rotate just produced, not a cmp result).
+        if (mnemonic == "jc")   { emitRel8(0x72, ops.at(0)); return; }
+        if (mnemonic == "jnc")  { emitRel8(0x73, ops.at(0)); return; }
 
         if (mnemonic == "mov") {
             if (ops.size() != 2) fail("'mov' needs two operands");
@@ -597,6 +640,30 @@ class Assembler {
             if (dst.kind == Operand::Reg && src.kind == Operand::Mem) { emitMemInstr(0x8B, dst.reg, src); return; }
             if (dst.kind == Operand::Mem && src.kind == Operand::Reg) { emitMemInstr(0x89, src.reg, dst); return; }
             fail("unsupported 'mov' operand combination");
+        }
+        // "movb ax,[mem]" / "movb [mem],ax" - a narrower-than-word
+        // (`char`) Var/Slot's own load/store (see I8086Codegen.cpp's
+        // loadOperand()/storeOperand()): real opcode 0x8A/0x88 (MOV
+        // r8,r/m8 / MOV r/m8,r8), reusing the "ax" Operand's own reg
+        // field (0), which is numerically identical to AL's - the
+        // byte-sized opcode is what makes this a one-byte transfer,
+        // not anything in the operand encoding itself. Only ever
+        // valid with `ax` specifically in this dialect (AH is never
+        // used), matching every other codegen call site's own "ac"
+        // register convention.
+        if (mnemonic == "movb") {
+            if (ops.size() != 2) fail("'movb' needs two operands");
+            const Operand &dst = ops[0];
+            const Operand &src = ops[1];
+            if (dst.kind == Operand::Reg && dst.reg == 0 && src.kind == Operand::Mem) {
+                emitMemInstr(0x8A, dst.reg, src);
+                return;
+            }
+            if (dst.kind == Operand::Mem && src.kind == Operand::Reg && src.reg == 0) {
+                emitMemInstr(0x88, src.reg, dst);
+                return;
+            }
+            fail("'movb' only supports ax<->mem in this dialect");
         }
 
         // "lea reg,[bp-4]" - loads the EFFECTIVE ADDRESS itself (here,
@@ -652,8 +719,33 @@ class Assembler {
             emitExprAsWord(ops[1].expr);
             return;
         }
+        // "and ax, 0x00FF" - zero-extending AX's own low byte in place
+        // (I8086Codegen.cpp's narrowAxTo(), for an unsigned char) - the
+        // same 0x81 group AND's reg,reg form below can't use, since
+        // this dialect has no "ah" register to mask with a plain
+        // reg,reg AND.
+        if (mnemonic == "and" && ops.size() == 2 && ops[0].kind == Operand::Reg && ops[1].kind == Operand::Imm) {
+            emitModRegRM(0x81, 0b11, 0b100, static_cast<uint8_t>(ops[0].reg));
+            emitExprAsWord(ops[1].expr);
+            return;
+        }
+        // "adc ax, 0" / "sbb ax, 0" - propagating a carry/borrow into
+        // a word whose other operand is the literal 0 (I8086Codegen.cpp's
+        // ripple-carry chains, e.g. sign/zero-extending a wide value's
+        // extra words) - same 0x81 group adc/sbb's own reg,reg form
+        // below can't use.
+        if ((mnemonic == "adc" || mnemonic == "sbb") && ops.size() == 2 && ops[0].kind == Operand::Reg &&
+            ops[1].kind == Operand::Imm) {
+            emitModRegRM(0x81, 0b11, mnemonic == "adc" ? 0b010 : 0b011, static_cast<uint8_t>(ops[0].reg));
+            emitExprAsWord(ops[1].expr);
+            return;
+        }
         static const std::unordered_map<std::string, uint8_t> aluOpcode = {
             {"add", 0x03}, {"sub", 0x2B}, {"and", 0x23}, {"or", 0x0B}, {"cmp", 0x3B},
+            // adc/sbb (add/sub-with-carry/borrow) - I8086Codegen.cpp's
+            // own ripple-carry chain for a `long`/`long long` add/sub
+            // (more than one native 16-bit word).
+            {"adc", 0x13}, {"sbb", 0x1B},
         };
         if (auto it = aluOpcode.find(mnemonic); it != aluOpcode.end()) {
             if (ops.size() != 2 || ops[0].kind != Operand::Reg || ops[1].kind != Operand::Reg) {
@@ -663,9 +755,22 @@ class Assembler {
             return;
         }
 
-        if (mnemonic == "shl" || mnemonic == "shr") {
+        if (mnemonic == "shl" || mnemonic == "shr" || mnemonic == "sar" || mnemonic == "rcl" || mnemonic == "rcr") {
             if (ops.size() != 2 || ops[0].kind != Operand::Reg) fail("'" + mnemonic + "' needs a register destination");
-            uint8_t regField = (mnemonic == "shl") ? 0b100 : 0b101;
+            // sar (arithmetic/signed right shift, ext=7) alongside
+            // shr (logical/unsigned, ext=5) - I8086Codegen.cpp picks
+            // between them per the shifted value's own signedness.
+            // rcl/rcr (rotate-through-carry, ext=2/3) chain a single-
+            // bit shift across a `long`/`long long`'s own several
+            // native words - see I8086Codegen.cpp's genWideShift():
+            // shifting the least (or most) significant word first
+            // with a plain shl/shr leaves the real CARRY flag holding
+            // the bit that crossed a word boundary, and `mov` never
+            // touches FLAGS on this target, so a following rcl/rcr on
+            // the next word picks that bit back up correctly even
+            // with memory loads/stores in between.
+            uint8_t regField = (mnemonic == "shl") ? 0b100 : (mnemonic == "shr") ? 0b101
+                                : (mnemonic == "sar") ? 0b111 : (mnemonic == "rcl") ? 0b010 : 0b011;
             if (isLiteralNumber(ops[1], "1")) {
                 emitModRegRM(0xD1, 0b11, regField, static_cast<uint8_t>(ops[0].reg));
                 return;

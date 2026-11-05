@@ -70,8 +70,16 @@ statement
     | mnemonic=(IDENT | NUMBER) (operand (COMMA operand)*)?                           # instrStmt
     ;
 
+// `size` is an optional leading bare word ("byte"/"word", whatever a
+// given backend's own semantic layer chooses to recognize) right
+// before a bracketed memory operand - e.g. x86's `mov byte [ebp-4],al`
+// - distinguishing how many bytes of memory that operand addresses
+// from the register operand's own width. Every backend that never
+// emits one (every backend before I386Codegen.cpp's own narrower-
+// than-native-int loads/stores) simply never has `size` set; this is
+// purely additive syntax.
 operand
-    : LBRACKET expr RBRACKET
+    : size=IDENT? LBRACKET expr RBRACKET
     | expr
     ;
 

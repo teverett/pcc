@@ -19,6 +19,10 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitTypeSpec(PccIRParser::TypeSpecContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitGlobalDecl(PccIRParser::GlobalDeclContext *ctx) override {
     return visitChildren(ctx);
   }
@@ -112,6 +116,10 @@ public:
   }
 
   virtual std::any visitBinaryExpr(PccIRParser::BinaryExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitConvertExpr(PccIRParser::ConvertExprContext *ctx) override {
     return visitChildren(ctx);
   }
 

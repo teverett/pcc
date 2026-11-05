@@ -201,6 +201,7 @@ class MCS51Codegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "8051"; }
+    TypeWidths typeWidths() const override { return {1, 2, 2, 4, 8}; }
     std::string sourceExtension() const override { return ".s51"; }
     std::vector<std::string> assembledFormats() const override {
         return {"raw", "coff", "elf", "macho", "aout", "objraw"};
@@ -220,6 +221,15 @@ class MCS51Codegen : public Backend {
                                                   const std::string &format) const override;
 
    private:
+    // This backend's own `ac`/`bc`/`cx`/`ptr` pseudo-registers are
+    // always a plain 16-bit word regardless of the C type a value
+    // actually came from - this is only ever used by genConvert() to
+    // tell a `char`-width conversion (the one case that still needs
+    // real masking/sign-extension within that same 16-bit cell) apart
+    // from every other, same-width one (signed <-> unsigned, or
+    // `short`/`int`, already identical at this width).
+    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+
     void genFunction(const ir::FunctionBody &fn);
 
     // Establishes this call's own real frame - see this file's own
@@ -239,17 +249,27 @@ class MCS51Codegen : public Backend {
 
     void genStmt(const ir::Stmt &s);
     void genExpr(const ir::Expr &e);  // leaves the result in the `ac` pseudo-register
+    // This backend's `ac` pseudo-register (see genExpr()'s own
+    // comment) is a fixed 2-byte cell - there's no general "N bytes"
+    // form the way i386/ARM's own wide helpers have, so a `long`/
+    // `long long` value has nowhere to go. Called once at the top of
+    // genExpr() so every attempt to materialize one fails loudly at
+    // compile time instead of silently computing a truncated, wrong
+    // 16-bit answer - the same judgment call PIC16Codegen.cpp's own
+    // requireNarrow() documents for the identical reason.
+    void requireNarrow(const ir::Expr &e) const;
 
     void genBinary(const ir::Expr &e);
-    void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
-    void emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert);
+    void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned);
+    void emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool isUnsigned, bool invert);
     void emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, bool wantEqual);
     void genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
+    void genConvert(const ir::Expr &e);
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
-    void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft);
+    void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
 

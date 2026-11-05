@@ -110,6 +110,7 @@ class PowerPCCodegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "powerpc"; }
+    TypeWidths typeWidths() const override { return {1, 2, 4, 4, 8}; }
     std::string sourceExtension() const override { return ".sppc"; }
     std::vector<std::string> assembledFormats() const override {
         return {"raw", "coff", "elf", "macho", "aout", "objraw"};
@@ -146,10 +147,51 @@ class PowerPCCodegen : public Backend {
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
-    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
+    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
+
+    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
+    int elemShift(Type t) const {
+        switch (widthOfType(t)) {
+            case 1: return 0;
+            case 2: return 1;
+            case 4: return 2;
+            default: return 3;
+        }
+    }
+    // Loads a value of `type` from the address already in `addrReg`
+    // into `reg` (or `t1:reg`, high:low, for a `long long` - only
+    // ever called with `reg`="t0" in that case), sign- or zero-
+    // extending a narrower-than-native-int source per its own
+    // signedness.
+    void loadOperand(const std::string &addrReg, const std::string &reg, Type type);
+    // Stores `reg` (or `t1:reg`) into the address in `addrReg`,
+    // truncating to `type`'s own width.
+    void storeOperand(const std::string &addrReg, const std::string &reg, Type type);
+    // Loads a value of `type` from `fp+disp` directly (the Local/Param
+    // fast path - see loadSlotValue()), without a separate address
+    // computation.
+    void loadOperandDisp(int disp, const std::string &reg, Type type);
+    void storeOperandDisp(int disp, const std::string &reg, Type type);
+    // Re-extends `t0` from its own low widthOf(to) bytes, per `to`'s
+    // signedness.
+    void narrowT0To(Type to);
+    void genConvert(const ir::Expr &e);
+    void genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd);
+    void genWideMul(const ir::Expr &lhs, const ir::Expr &rhs);
+    // Software 64-bit divide/modulo (no 32-bit PowerPC hardware
+    // instruction is wide enough) - the same bit-serial algorithm as
+    // I386Codegen.cpp's/MipsCodegen.cpp's own genWideDivMod(), ported
+    // to this backend's own register/addressing conventions. Leaves
+    // the result in t1:t0.
+    void genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
+    void genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
+    void genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned);
+    // Negates the 64-bit value already in t1:t0 (hi:lo), in place.
+    void genNegate64();
 
     // Leaves slot[idxExpr]'s own effective address in `t2`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
@@ -182,25 +224,27 @@ class PowerPCCodegen : public Backend {
     static std::string label(const ir::Slot *slot) { return "g_" + slot->sourceName; }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
-    // A Local or Param's own signed word displacement from `fp`. Every
-    // call's prologue (see genFunction()) leaves `fp` pointing at that
-    // call's own saved-old-`fp` word, with the saved return address
-    // one word above it and the caller's own pushed arguments (in
-    // declaration order, param 0 closest) above that - so a Param's
-    // displacement is `+8+4*paramIndex`. Locals live below `fp`,
-    // reserved by the prologue's own `addi sp,sp,-4*frameSize`;
-    // Slot::frameOffset is already a 1-based sequential word index in
-    // declaration order, so a Local's displacement is
-    // `-4*frameOffset`. A Local array's element i therefore sits at
-    // `-4*(frameOffset+i)` - storage address *decreases* as the
-    // element index increases, the mirror image of a Global array's
-    // increasing-address layout (see genIndexAddr()'s own comment).
+    // A Local or Param's own signed byte displacement from `fp`.
+    // Every call's prologue (see genFunction()) leaves `fp` pointing
+    // at that call's own saved-old-`fp` word, with the saved return
+    // address one word above it and the caller's own pushed
+    // arguments (in declaration order, param 0 closest) above that.
+    // `Slot::frameOffset` is already IRBuilder's own real byte offset
+    // from that point for both a Param and a Local (see IR.h's own
+    // comment on Slot::frameOffset) - a Param's displacement is
+    // `+frameOffset`, a Local's (reserved by the prologue's own
+    // `addi sp,sp,-frameSize`) is `-frameOffset`. A Local array's
+    // element i therefore sits at `-(frameOffset+4*i)` (still always
+    // a 4-byte int element on this backend) - storage address
+    // *decreases* as the element index increases, the mirror image
+    // of a Global array's increasing-address layout (see
+    // genIndexAddr()'s own comment).
     static int slotDisp(const ir::Slot *slot) {
-        if (slot->kind == ir::SlotKind::Param) return 8 + 4 * slot->paramIndex;
-        return -4 * slot->frameOffset;
+        if (slot->kind == ir::SlotKind::Param) return slot->frameOffset;
+        return -slot->frameOffset;
     }
 
-    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
+    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 

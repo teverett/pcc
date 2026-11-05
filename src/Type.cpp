@@ -1,0 +1,53 @@
+#include "Type.h"
+
+namespace pcc {
+
+// Rank is the fixed ISO C conversion-rank order (char < short < int <
+// long < long long) - the standard defines it this way regardless of
+// what widths an implementation actually picks, which is what lets
+// commonType() below stay target-independent (see Type.h's own comment
+// and ../docs/ir.md's type-system note for the simplifications this
+// buys pcc: no width table is needed just to rank two types against
+// each other).
+int rank(BaseType base) {
+    switch (base) {
+        case BaseType::Char:
+            return 0;
+        case BaseType::Short:
+            return 1;
+        case BaseType::Int:
+            return 2;
+        case BaseType::Long:
+            return 3;
+        case BaseType::LongLong:
+            return 4;
+    }
+    return 2;
+}
+
+int widthOf(Type t, const TypeWidths &widths) {
+    switch (t.base) {
+        case BaseType::Char:
+            return widths.charUnits;
+        case BaseType::Short:
+            return widths.shortUnits;
+        case BaseType::Int:
+            return widths.intUnits;
+        case BaseType::Long:
+            return widths.longUnits;
+        case BaseType::LongLong:
+            return widths.longLongUnits;
+    }
+    return widths.intUnits;
+}
+
+Type commonType(Type a, Type b) {
+    if (rank(a.base) == rank(b.base)) {
+        Type result = a;
+        result.isUnsigned = a.isUnsigned || b.isUnsigned;
+        return result;
+    }
+    return rank(a.base) > rank(b.base) ? a : b;
+}
+
+}  // namespace pcc

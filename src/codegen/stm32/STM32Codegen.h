@@ -113,6 +113,7 @@ class STM32Codegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "stm32"; }
+    TypeWidths typeWidths() const override { return {1, 2, 4, 4, 8}; }
     std::string sourceExtension() const override { return ".s32"; }
     std::vector<std::string> assembledFormats() const override {
         return {"raw", "coff", "elf", "macho", "aout", "objraw"};
@@ -137,25 +138,89 @@ class STM32Codegen : public Backend {
 
     void genBinary(const ir::Expr &e);
     void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
-    void emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &branchIfTrue);
+    void emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &branchIfTrue, bool isUnsigned);
     void genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
-    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
+    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
+    void genConvert(const ir::Expr &e);
 
     // Leaves slot[idxExpr]'s own effective address in `r2`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
+
+    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    // Only `long long` is wider than this target's native 32-bit int
+    // (`long`==`int` here - see typeWidths()) - the one type that
+    // ever needs the r0:r1 register-pair convention below.
+    bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
+    // log2 of an element type's own width (1/2/4/8 bytes -> 0/1/2/3) -
+    // the shift amount genIndexAddr() scales a runtime index by,
+    // instead of the old fixed "always 4 bytes" double-doubling.
+    int elemShift(Type t) const {
+        switch (widthOfType(t)) {
+            case 1: return 0;
+            case 2: return 1;
+            case 4: return 2;
+            default: return 3;
+        }
+    }
+
+    // Loads a value of `type` from the address in `addrReg` ([Rn])
+    // into r0 (or r0:r1, for a `long long`), sign- or zero-extending
+    // a narrower-than-native-int source per its own signedness.
+    // `addrReg` must not be r0/r1.
+    void loadOperand(const std::string &addrReg, Type type);
+    // Stores r0 (or r0:r1, for a `long long`) into the address in
+    // `addrReg`, truncating to `type`'s own width.
+    void storeOperand(const std::string &addrReg, Type type);
+    // Re-extends r0 from its own low widthOf(to) bytes, per `to`'s
+    // signedness, via `lsl`+`asr`/`lsr` (no dedicated sign/zero-
+    // extend instruction in this dialect either).
+    void narrowR0To(Type to);
+
+    // `long long` add/sub (lhs OP rhs) - ripples the carry/borrow
+    // across the word pair with `adc`/`sbc`, same shape as
+    // ../armm/ArmMCodegen.cpp's own identical routine (this dialect's
+    // own richer register file doesn't change the algorithm, only
+    // the mnemonics: `add`/`sub` here are already real 3-operand,
+    // always flag-setting forms).
+    void genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd);
+    // `long long` multiply, keeping the low 64 bits of the true
+    // 128-bit product - this dialect has no widening 32x32->64
+    // multiply instruction either, so the low*low cross term is
+    // built from scratch via genMul64()'s own bit-serial shift-and-
+    // add loop, same reasoning as ../armm/ArmMCodegen.cpp's own
+    // `genWideMul()`.
+    void genWideMul(const ir::Expr &lhs, const ir::Expr &rhs);
+    // 32x32->64 unsigned widening multiply: {r1:r0} = r6(a) * r4(b),
+    // both consumed (see the .cpp's own comment on why this isn't a
+    // by-name parameter). Clobbers r0-r6.
+    void genMul64();
+    // Software 64-bit divide/modulo (no instruction here is wide
+    // enough) - classic bit-serial shift/compare/subtract long
+    // division, same shape as ../armm/ArmMCodegen.cpp's own
+    // `genWideDivMod()`.
+    void genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
+    // A `long long` shifted by a runtime count - a counted loop of
+    // 1-bit shifts, same shape as ../armm/ArmMCodegen.cpp's own
+    // `genWideShift()` (this dialect's own real variable-count
+    // `lsl`/`lsr`/`asr` only ever shift within one 32-bit register,
+    // not across the r0/r1 pair, so the loop is still needed here).
+    void genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
+    void genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned);
+    // Negates the 64-bit value already in r0:r1, in place.
+    void genNegate64();
 
     // Emits flash-resident startup code that copies `value` into the
     // RAM address `label(slot)` resolves to - see this file's own
     // header comment on why a global with a real initial value can't
     // just sit there the way every other backend's own flat-blob data
     // does.
-    void genGlobalInit(const std::string &ramLabel, long value);
+    void genGlobalInit(const std::string &ramLabel, Type type, long value);
 
     // Emits the epilogue every `return` (and the fall-off-the-end
     // default at the bottom of genFunction()) needs: pops this call's
@@ -165,12 +230,12 @@ class STM32Codegen : public Backend {
     // comment for the matching prologue.
     void emitEpilogue();
 
-    // Loads `r7 + 4*wordsFromFp` into `reg` (`wordsFromFp` may be
-    // negative, using `sub` in that case - see genFunction()'s own
+    // Loads `r7 + byteOffsetFromFp` into `reg` (`byteOffsetFromFp` may
+    // be negative, using `sub` in that case - see genFunction()'s own
     // comment on which direction each of a Local's/Param's own
     // storage grows from `r7`). Uses `r3` as its own scratch register,
     // never as `reg` itself.
-    void loadFrameWordAddr(const std::string &reg, int wordsFromFp);
+    void loadFrameWordAddr(const std::string &reg, int byteOffsetFromFp);
     // Loads a Local or Param Slot's own effective address into `reg` -
     // a Param's is `r7 + 8 + 4*paramIndex` (past the saved `r7` and
     // the return address, into the caller's own pushed-argument
@@ -202,20 +267,24 @@ class STM32Codegen : public Backend {
     // STM32Assembler.h's own `ds`). A Local/Param never calls this -
     // its own storage lives in this call's own stack frame instead
     // (see genFunction()'s own comment).
-    void declareTemp(const std::string &lbl);
-    // Reserves `values.size()` RAM words for a Global array slot, and
-    // emits a startup copy (see genGlobalInit()) for every nonzero
-    // element. A Local array never calls this - see genLocalArrayInit().
-    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values);
+    void declareTemp(const std::string &lbl, Type type);
+    // Reserves `widthOfType(elemType)*values.size()` RAM bytes (see
+    // `dsb` - STM32Assembler.cpp's own byte-granular reservation,
+    // added alongside the original word-only `ds` for this) for a
+    // Global array slot, and emits a startup copy (see
+    // genGlobalInit()) for every nonzero element. A Local array never
+    // calls this - see genLocalArrayInit().
+    void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     // Flash-resident code that writes one array element into the RAM
-    // word at `lbl+offset` - a literal's own value loaded via `movl`
-    // (skipped when it's 0, since RAM already starts zeroed), or a
-    // symbol element's address loaded the same way genAddrOf() loads
-    // &slot/&fn, including that function case's own thumb-bit
+    // cell at `lbl+offset` (`offset` already in bytes, scaled by
+    // `elemType`'s own width) - a literal's own value loaded via
+    // `movl` (skipped when it's 0, since RAM already starts zeroed),
+    // or a symbol element's address loaded the same way genAddrOf()
+    // loads &slot/&fn, including that function case's own thumb-bit
     // adjustment. Only ever used for a Global array's own static
     // RAM-resident initializer - see genLocalArrayInit() for a Local
     // array's own per-call equivalent.
-    void genArrayElemInit(const std::string &lbl, size_t offset, const ir::ArrayInitElem &e);
+    void genArrayElemInit(const std::string &lbl, size_t offset, Type elemType, const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 
     std::ostringstream code_;       // flash: vector table + _start + every function body
