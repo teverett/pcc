@@ -419,6 +419,34 @@ class Builder {
         if (slot->isExternal && slot->arraySize == 0) slot->arraySize = 1;
     }
 
+    // `slot[idx]` on a plain pointer VARIABLE (arraySize==0, a real
+    // pointer type - see Type.h's own header comment on
+    // Type::ptrDepth) means exactly `*(slot+idx)`, never a real
+    // array's own Index codegen: a backend's Index/genIndexAddr-style
+    // code scales/widths its access by `slot->type` directly (not by
+    // this expression's own `.type`), which already correctly means
+    // "this array's own element type" for a real array - but for a
+    // pointer variable `slot->type` instead names the POINTER's own
+    // type, so reusing that same Index codegen would scale/width by
+    // the pointer's own size instead of its pointee's. Lowering to a
+    // real `*(slot+idx)` shape here - exactly the already-correct,
+    // zero-backend-changes-needed pointer-arithmetic/dereference
+    // machinery buildPointerBinary()/the Unary "*"/DerefAssign cases
+    // below already provide - sidesteps that entirely, rather than
+    // teaching every backend's own Index codegen a second, pointer-
+    // variable-shaped way to compute the same thing. Returns the
+    // scaled `slot+idx` pointer value itself (type: same as `slot`'s
+    // own) - callers wrap it in a deref themselves, same as `&p[i]`
+    // (which IS exactly `p+i`, nothing more) doesn't need to.
+    ir::ExprPtr buildPointerIndexAddr(ir::Slot *slot, const Expr &idxExpr, int line) {
+        auto ptrVar = std::make_unique<ir::Expr>();
+        ptrVar->kind = ir::ExprKind::Var;
+        ptrVar->line = line;
+        ptrVar->slot = slot;
+        ptrVar->type = slot->type;
+        return buildPointerBinary("+", std::move(ptrVar), buildExpr(idxExpr), line);
+    }
+
     // Resolves a Var/Index/function-name operand without the "bare
     // array" check below - used only for `&`, where a bare array
     // name is exactly the point (&arr means the array's own address),
@@ -457,6 +485,11 @@ class Builder {
                             e.name + "(...);' or 'extern <type> " + e.name + "[N];'");
         }
         if (e.kind == ExprKind::Index) {
+            // Only ever reached for a REAL array (`&arr[i]`) - `&p[i]`
+            // on a plain pointer variable is intercepted one level up,
+            // in the Unary "&" case below, before this is ever called
+            // (see its own comment on why: `&p[i]` is exactly `p+i`
+            // itself, not a further address-of).
             out->kind = ir::ExprKind::Index;
             out->slot = resolveVar(e.name, e.line);
             out->type = out->slot->type;
@@ -589,16 +622,42 @@ class Builder {
                 out->type = slot->type;
                 return out;
             }
-            case ExprKind::Index:
+            case ExprKind::Index: {
+                ir::Slot *slot = resolveVar(e.name, e.line);
+                if (slot->arraySize == 0 && isPointer(slot->type)) {
+                    // `p[i]` is exactly `*(p+i)` for a plain pointer
+                    // VARIABLE - see buildPointerIndexAddr()'s own
+                    // comment on why this goes through the dereference
+                    // machinery instead of a real array's own Index.
+                    ir::ExprPtr sum = buildPointerIndexAddr(slot, *e.lhs, e.line);
+                    out->kind = ir::ExprKind::Unary;
+                    out->op = "*";
+                    out->type = pointeeOf(sum->type);
+                    out->rhs = std::move(sum);
+                    return out;
+                }
                 out->kind = ir::ExprKind::Index;
-                out->slot = resolveVar(e.name, e.line);
-                out->type = out->slot->type;
+                out->slot = slot;
+                out->type = slot->type;
                 markIndexedIfExternal(out->slot);
                 out->lhs = buildExpr(*e.lhs);
                 return out;
+            }
             case ExprKind::Assign: {
+                ir::Slot *slot = resolveVar(e.name, e.line);
+                if (e.lhs && slot->arraySize == 0 && isPointer(slot->type)) {
+                    // `p[i] = rhs` is exactly `*(p+i) = rhs` - see
+                    // buildPointerIndexAddr()'s own comment.
+                    ir::ExprPtr sum = buildPointerIndexAddr(slot, *e.lhs, e.line);
+                    out->kind = ir::ExprKind::DerefAssign;
+                    Type pointee = pointeeOf(sum->type);
+                    out->type = pointee;
+                    out->lhs = std::move(sum);
+                    out->rhs = wrapConvert(buildExpr(*e.rhs), pointee, e.line);
+                    return out;
+                }
                 out->kind = ir::ExprKind::Assign;
-                out->slot = resolveVar(e.name, e.line);
+                out->slot = slot;
                 if (e.lhs) {
                     markIndexedIfExternal(out->slot);  // arr[i] = ... - e.lhs is the index
                     out->lhs = buildExpr(*e.lhs);
@@ -634,6 +693,17 @@ class Builder {
                 out->kind = ir::ExprKind::Unary;
                 out->op = e.op;
                 if (e.op == "&") {
+                    // `&p[i]` on a plain pointer VARIABLE is exactly
+                    // `p+i` - already a complete pointer VALUE, not
+                    // something to take a further address of (unlike
+                    // `&arr[i]`, a real array's own element address) -
+                    // see buildPointerIndexAddr()'s own comment.
+                    if (e.rhs->kind == ExprKind::Index) {
+                        if (ir::Slot *slot = resolveVar(e.rhs->name, e.rhs->line);
+                            slot->arraySize == 0 && isPointer(slot->type)) {
+                            return buildPointerIndexAddr(slot, *e.rhs->lhs, e.line);
+                        }
+                    }
                     out->rhs = buildAddressableOperand(*e.rhs);
                     out->type = pointerTo(out->rhs->type);
                     return out;
