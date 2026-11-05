@@ -545,27 +545,52 @@ Program buildProgram(CParser::ProgramContext *ctx) {
     Program prog;
     for (auto *top : ctx->topLevelDecl()) {
         if (auto *fd = top->functionDecl()) {
-            if (!fd->block()) continue;  // prototype only, nothing to generate
+            if (auto *ext = dynamic_cast<CParser::ExternFunctionDeclContext *>(fd)) {
+                FunctionDecl fn;
+                fn.name = ext->IDENT()->getText();
+                fn.line = ext->getStart()->getLine();
+                fn.returnType = buildType(ext->typeSpec());
+                if (auto *pl = ext->paramList()) {
+                    for (auto *p : pl->param()) {
+                        fn.params.push_back(Param{p->IDENT()->getText(), buildType(p->typeSpec())});
+                    }
+                }
+                fn.isExternDecl = true;
+                prog.functions.push_back(std::move(fn));
+                continue;
+            }
+            auto *local = dynamic_cast<CParser::LocalFunctionDeclContext *>(fd);
+            if (!local->block()) continue;  // same-file forward declaration only, nothing to generate
 
             FunctionDecl fn;
-            fn.name = fd->IDENT()->getText();
-            fn.line = fd->getStart()->getLine();
-            fn.returnType = buildType(fd->typeSpec());
-            if (auto *pl = fd->paramList()) {
+            fn.name = local->IDENT()->getText();
+            fn.line = local->getStart()->getLine();
+            fn.returnType = buildType(local->typeSpec());
+            if (auto *pl = local->paramList()) {
                 for (auto *p : pl->param()) {
                     fn.params.push_back(Param{p->IDENT()->getText(), buildType(p->typeSpec())});
                 }
             }
-            if (fd->addr) {
+            if (local->addr) {
                 fn.hasAddress = true;
-                fn.address = parsePlainNumber(fd->addr, fd, "a '@' address");
+                fn.address = parsePlainNumber(local->addr, local, "a '@' address");
             }
-            fn.body = buildBlock(fd->block());
+            fn.body = buildBlock(local->block());
             prog.functions.push_back(std::move(fn));
         } else if (auto *gd = top->globalDecl()) {
             GlobalVar g;
             g.line = gd->getStart()->getLine();
-            if (auto *arr = dynamic_cast<CParser::GlobalArrayDeclContext *>(gd)) {
+            if (auto *extArr = dynamic_cast<CParser::ExternArrayDeclContext *>(gd)) {
+                g.name = extArr->IDENT()->getText();
+                g.type = buildType(extArr->typeSpec());
+                g.arraySize = static_cast<int>(parsePlainNumber(extArr->size, extArr, "an array size"));
+                if (g.arraySize <= 0) err(extArr, "array size must be a positive integer");
+                g.isExternDecl = true;
+            } else if (auto *extSc = dynamic_cast<CParser::ExternScalarDeclContext *>(gd)) {
+                g.name = extSc->IDENT()->getText();
+                g.type = buildType(extSc->typeSpec());
+                g.isExternDecl = true;
+            } else if (auto *arr = dynamic_cast<CParser::GlobalArrayDeclContext *>(gd)) {
                 g.name = arr->IDENT()->getText();
                 g.type = buildType(arr->typeSpec());
                 g.arraySize = static_cast<int>(parsePlainNumber(arr->size, arr, "an array size"));

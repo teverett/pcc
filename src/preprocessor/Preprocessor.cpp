@@ -39,14 +39,10 @@
 //   which is enough for any non-pathological use without the extra
 //   bookkeeping real recursion-proof expansion needs.
 // - `__FILE__`/`__DATE__`/`__TIME__` substitute as a double-quoted
-//   string, matching real C's own `__FILE__` shape - but this
-//   language has no string-literal syntax at all (see
-//   ../docs/pdp-c-compiler.md's "The language subset"), so using one
-//   of these anywhere a real expression is expected is a parse
-//   error, same as writing a string literal directly. They're only
-//   meaningfully usable inside an `asm { ... }` block (raw,
-//   unparsed text) or a comment - e.g. `asm { ; built from __FILE__ }`.
-//   `__LINE__` has no such problem: it substitutes as a plain
+//   string, matching real C's own `__FILE__` shape - a real string
+//   literal (see grammar/CLexer.g4's own STRINGLIT), so each is valid
+//   anywhere a string literal is, same as writing one directly
+//   (`int p; p = __FILE__;`). `__LINE__` substitutes as a plain
 //   integer literal, valid wherever a `NUMBER` is.
 // - Each `#include`d file's own `#if`/`#ifdef`/.../`#endif` nesting
 //   must balance *within that file* - an `#ifdef` can't open in one
@@ -81,18 +77,34 @@ std::string trim(const std::string &s) {
 // macro is later used on (that line's own rest, past the pasted-in
 // `//`, reads as "still inside a comment" once ANTLR's lexer sees
 // it - confirmed directly: this previously sent `pcc` into a long,
-// seemingly-infinite stall on `#define NAME value // note`). Safe to
-// search plainly for `//`/`/*` with no quoting awareness: this
-// language has no string-literal syntax at all (see
-// ../../docs/pdp-c-compiler.md's "Scope and limitations"), so neither
-// sequence can ever legitimately appear outside of a real comment in
-// the first place.
+// seemingly-infinite stall on `#define NAME value // note`). A
+// string literal's own contents (e.g. `#define S "a//b"`) are
+// skipped over rather than scanned for `//`/`/*` - this language's
+// own STRINGLIT escape set (`\\` `\"` `\n` `\t` `\r` `\0` - see
+// grammar/CLexer.g4's own STRINGLIT_ESC) is enough to track whether a
+// given double-quote is the closing one or an escaped one inside the
+// string, so a `//`/`/*` genuinely inside a string literal's own text
+// is left alone.
 std::string stripTrailingComment(const std::string &s) {
-    size_t cut = s.find("//");
-    size_t blockCut = s.find("/*");
-    if (blockCut != std::string::npos && (cut == std::string::npos || blockCut < cut)) cut = blockCut;
-    if (cut == std::string::npos) return s;
-    return trim(s.substr(0, cut));
+    bool inString = false;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (inString) {
+            if (s[i] == '\\' && i + 1 < s.size()) {
+                i++;  // skip the escaped character - never ends the string early
+            } else if (s[i] == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (s[i] == '"') {
+            inString = true;
+            continue;
+        }
+        if (s[i] == '/' && i + 1 < s.size() && (s[i + 1] == '/' || s[i + 1] == '*')) {
+            return trim(s.substr(0, i));
+        }
+    }
+    return s;
 }
 
 std::string dirOf(const std::string &path) {

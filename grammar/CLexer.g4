@@ -26,6 +26,7 @@ FOR_KW   : 'for' ;
 RETURN_KW: 'return' ;
 BREAK_KW : 'break' ;
 CONTINUE_KW: 'continue' ;
+EXTERN_KW: 'extern' ;
 LPAREN   : '(' ;
 RPAREN   : ')' ;
 LBRACK   : '[' ;

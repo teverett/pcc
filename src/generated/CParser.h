@@ -14,13 +14,14 @@ public:
   enum {
     INT_KW = 1, CHAR_KW = 2, SHORT_KW = 3, LONG_KW = 4, SIGNED_KW = 5, UNSIGNED_KW = 6, 
     SIZEOF_KW = 7, IF_KW = 8, ELSE_KW = 9, WHILE_KW = 10, FOR_KW = 11, RETURN_KW = 12, 
-    BREAK_KW = 13, CONTINUE_KW = 14, LPAREN = 15, RPAREN = 16, LBRACK = 17, 
-    RBRACK = 18, LBRACE = 19, RBRACE = 20, AT = 21, SEMI = 22, COMMA = 23, 
-    ASSIGN = 24, STAR = 25, AMP = 26, MINUS = 27, BANG = 28, TILDE = 29, 
-    SLASH = 30, PERCENT = 31, PLUS = 32, SHL = 33, SHR = 34, LE = 35, GE = 36, 
-    LT = 37, GT = 38, EQ = 39, NE = 40, CARET = 41, PIPE = 42, ANDAND = 43, 
-    OROR = 44, IDENT = 45, NUMBER = 46, CHARLIT = 47, STRINGLIT = 48, LINE_COMMENT = 49, 
-    BLOCK_COMMENT = 50, WS = 51, ASM_BEGIN = 52, ASM_TEXT = 53, ASM_END = 54
+    BREAK_KW = 13, CONTINUE_KW = 14, EXTERN_KW = 15, LPAREN = 16, RPAREN = 17, 
+    LBRACK = 18, RBRACK = 19, LBRACE = 20, RBRACE = 21, AT = 22, SEMI = 23, 
+    COMMA = 24, ASSIGN = 25, STAR = 26, AMP = 27, MINUS = 28, BANG = 29, 
+    TILDE = 30, SLASH = 31, PERCENT = 32, PLUS = 33, SHL = 34, SHR = 35, 
+    LE = 36, GE = 37, LT = 38, GT = 39, EQ = 40, NE = 41, CARET = 42, PIPE = 43, 
+    ANDAND = 44, OROR = 45, IDENT = 46, NUMBER = 47, CHARLIT = 48, STRINGLIT = 49, 
+    LINE_COMMENT = 50, BLOCK_COMMENT = 51, WS = 52, ASM_BEGIN = 53, ASM_TEXT = 54, 
+    ASM_END = 55
   };
 
   enum {
@@ -194,9 +195,37 @@ public:
 
   class  FunctionDeclContext : public antlr4::ParserRuleContext {
   public:
-    antlr4::Token *addr = nullptr;
     FunctionDeclContext(antlr4::ParserRuleContext *parent, size_t invokingState);
+   
+    FunctionDeclContext() = default;
+    void copyFrom(FunctionDeclContext *context);
+    using antlr4::ParserRuleContext::copyFrom;
+
     virtual size_t getRuleIndex() const override;
+
+   
+  };
+
+  class  ExternFunctionDeclContext : public FunctionDeclContext {
+  public:
+    ExternFunctionDeclContext(FunctionDeclContext *ctx);
+
+    antlr4::tree::TerminalNode *EXTERN_KW();
+    TypeSpecContext *typeSpec();
+    antlr4::tree::TerminalNode *IDENT();
+    antlr4::tree::TerminalNode *LPAREN();
+    antlr4::tree::TerminalNode *RPAREN();
+    antlr4::tree::TerminalNode *SEMI();
+    ParamListContext *paramList();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  LocalFunctionDeclContext : public FunctionDeclContext {
+  public:
+    LocalFunctionDeclContext(FunctionDeclContext *ctx);
+
+    antlr4::Token *addr = nullptr;
     TypeSpecContext *typeSpec();
     antlr4::tree::TerminalNode *IDENT();
     antlr4::tree::TerminalNode *LPAREN();
@@ -207,9 +236,7 @@ public:
     antlr4::tree::TerminalNode *AT();
     antlr4::tree::TerminalNode *NUMBER();
 
-
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
-   
   };
 
   FunctionDeclContext* functionDecl();
@@ -257,6 +284,18 @@ public:
    
   };
 
+  class  ExternScalarDeclContext : public GlobalDeclContext {
+  public:
+    ExternScalarDeclContext(GlobalDeclContext *ctx);
+
+    antlr4::tree::TerminalNode *EXTERN_KW();
+    TypeSpecContext *typeSpec();
+    antlr4::tree::TerminalNode *IDENT();
+    antlr4::tree::TerminalNode *SEMI();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
   class  GlobalArrayDeclContext : public GlobalDeclContext {
   public:
     GlobalArrayDeclContext(GlobalDeclContext *ctx);
@@ -273,6 +312,22 @@ public:
     antlr4::tree::TerminalNode *ASSIGN();
     ArrayInitContext *arrayInit();
     antlr4::tree::TerminalNode *AT();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  ExternArrayDeclContext : public GlobalDeclContext {
+  public:
+    ExternArrayDeclContext(GlobalDeclContext *ctx);
+
+    antlr4::Token *size = nullptr;
+    antlr4::tree::TerminalNode *EXTERN_KW();
+    TypeSpecContext *typeSpec();
+    antlr4::tree::TerminalNode *IDENT();
+    antlr4::tree::TerminalNode *LBRACK();
+    antlr4::tree::TerminalNode *RBRACK();
+    antlr4::tree::TerminalNode *SEMI();
+    antlr4::tree::TerminalNode *NUMBER();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };

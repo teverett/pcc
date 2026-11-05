@@ -45,18 +45,22 @@ void MCS51Codegen::declareGlobalTemp(const std::string &lbl, long initValue) {
 }
 
 // Writes array element `e`'s own value into the already-allocated
-// XDATA cell at `elemExpr`. A literal element is written byte-by-byte
-// through a plain immediate (`movai`), same as declareGlobalTemp()'s
-// own scalar case. A symbol element (a dispatch-table address-of-
-// function/global, see IR.h's ArrayInitElem) has no compile-time byte
-// value at all - its own address is loaded into `bc` first, through
-// the same `dpl`/`dph` split loadCodeAddress()/loadXdataAddress()
-// already use (a Function's address against the CODE label table via
-// `movdptrc`, a Slot's against the XDATA one via `movdptr` - the two
-// address spaces this target keeps genuinely separate), then written
-// out through `bc` exactly like storeXdata() writes any other
-// runtime-computed value.
-void MCS51Codegen::genArrayElementInit(const std::string &elemExpr, const ir::ArrayInitElem &e) {
+// XDATA cell at `elemExpr`, exactly `elemWidth` bytes (1 for a `char`
+// element, 2 otherwise - `requireNarrow()` already rejects anything
+// wider). A literal element is written byte-by-byte through a plain
+// immediate (`movai`), same as declareGlobalTemp()'s own scalar case.
+// A symbol element (a dispatch-table address-of-function/global, see
+// IR.h's ArrayInitElem) has no compile-time byte value at all - its
+// own address is loaded into `bc` first, through the same `dpl`/`dph`
+// split loadCodeAddress()/loadXdataAddress() already use (a
+// Function's address against the CODE label table via `movdptrc`, a
+// Slot's against the XDATA one via `movdptr` - the two address spaces
+// this target keeps genuinely separate), then written out through
+// `bc` exactly like storeXdata() writes any other runtime-computed
+// value - always a full 2-byte address regardless of `elemWidth`
+// (an array of symbol addresses is necessarily an array of pointers,
+// never `char`-element-sized - see IR.h's own ArrayInitElem comment).
+void MCS51Codegen::genArrayElementInit(const std::string &elemExpr, int elemWidth, const ir::ArrayInitElem &e) {
     if (e.isSymbol) {
         if (e.func) {
             initCode_ << "    movdptrc " << label(e.func) << "\n";
@@ -74,13 +78,14 @@ void MCS51Codegen::genArrayElementInit(const std::string &elemExpr, const ir::Ar
     uint16_t v16 = static_cast<uint16_t>(e.value);
     initCode_ << "    movdptr " << elemExpr << "\n";
     initCode_ << "    movai " << (v16 & 0xFF) << "\n    movxw\n";
+    if (elemWidth == 1) return;
     initCode_ << "    incdptr\n";
     initCode_ << "    movai " << ((v16 >> 8) & 0xFF) << "\n    movxw\n";
 }
 
-void MCS51Codegen::declareGlobalArray(const std::string &lbl, int arraySize,
+void MCS51Codegen::declareGlobalArray(const std::string &lbl, int arraySize, int elemWidth,
                                        const std::vector<ir::ArrayInitElem> &values) {
-    allocXdata(lbl, arraySize * 2);
+    allocXdata(lbl, arraySize * elemWidth);
     for (int i = 0; i < arraySize; i++) {
         // Element `i`'s own `movdptr` operand - `lbl` itself for the
         // first element, `lbl+<byte offset>` otherwise: this
@@ -90,10 +95,10 @@ void MCS51Codegen::declareGlobalArray(const std::string &lbl, int arraySize,
         // relocatable expression (see MCS51Assembler.h's own header
         // comment) rather than something this function has to resolve
         // to a number itself.
-        std::string elemExpr = (i == 0) ? lbl : lbl + "+" + std::to_string(i * 2);
+        std::string elemExpr = (i == 0) ? lbl : lbl + "+" + std::to_string(i * elemWidth);
         static const ir::ArrayInitElem kZero{};
         const ir::ArrayInitElem &e = (static_cast<size_t>(i) < values.size()) ? values[i] : kZero;
-        genArrayElementInit(elemExpr, e);
+        genArrayElementInit(elemExpr, elemWidth, e);
     }
 }
 
@@ -131,18 +136,37 @@ void MCS51Codegen::loadCodeAddress(const std::string &dstReg, const std::string 
 // Loads DPTR from `ptr` (the only pseudo-register this ever needs to
 // happen for - every other XDATA access already knows its own
 // address at compile time, via loadXdata()/storeXdata()'s own plain
-// numeric operand) and writes `ac`'s two bytes there, one MOVX at a
-// time - doesn't disturb `ptr` itself.
-void MCS51Codegen::storeAcIndirect() {
+// numeric operand) and writes `srcReg`'s own low `width` bytes there,
+// one MOVX at a time - doesn't disturb `ptr` itself. See this
+// function's own header comment on why `width` matters.
+void MCS51Codegen::storeIndirect(const std::string &srcReg, int width) {
     code_ << "    movdpl ptr\n    movdph ptr+1\n";
-    code_ << "    mova ac\n    movxw\n";
+    code_ << "    mova " << srcReg << "\n    movxw\n";
+    if (width == 1) return;
     code_ << "    incdptr\n";
-    code_ << "    mova ac+1\n    movxw\n";
+    code_ << "    mova " << srcReg << "+1\n    movxw\n";
 }
 
-void MCS51Codegen::loadIndirect(const std::string &dstReg) {
+void MCS51Codegen::loadIndirect(const std::string &dstReg, int width, bool isUnsigned) {
     code_ << "    movdpl ptr\n    movdph ptr+1\n";
     code_ << "    movxr\n    movd " << dstReg << "\n";
+    if (width == 1) {
+        if (isUnsigned) {
+            code_ << "    movai 0\n    movd " << dstReg << "+1\n";
+        } else {
+            // Same sign-test idiom as genConvert()'s own identical
+            // narrow-to-wide fixup: the `anli`/Z-flag branch has to
+            // come immediately after `mova` - anything else in
+            // between can just as easily clobber PSW.Z first.
+            code_ << "    mova " << dstReg << "\n    anli 128\n";
+            std::string Lneg = newLabel(), Lnonneg = newLabel(), Ldone = newLabel();
+            safeBranch("jz", Lnonneg, Lneg);
+            code_ << Lneg << ":\n    movai 255\n    movd " << dstReg << "+1\n    ljmp " << Ldone << "\n";
+            code_ << Lnonneg << ":\n    movai 0\n    movd " << dstReg << "+1\n";
+            code_ << Ldone << ":\n";
+        }
+        return;
+    }
     code_ << "    incdptr\n";
     code_ << "    movxr\n    movd " << dstReg << "+1\n";
 }
@@ -210,12 +234,13 @@ void MCS51Codegen::loadArrayElemValue(const ir::ArrayInitElem &e) {
 }
 
 void MCS51Codegen::genLocalArrayInit(const ir::Slot *slot) {
+    int elemWidth = widthOfType(slot->type);
     loadFrameAddress("bc", slot);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
         copy16("ptr", "bc");
-        if (i != 0) addImm16("ptr", static_cast<int>(i) * 2);
+        if (i != 0) addImm16("ptr", static_cast<int>(i) * elemWidth);
         loadArrayElemValue(slot->arrayInit[i]);
-        storeAcIndirect();
+        storeIndirect("ac", elemWidth);
     }
 }
 
@@ -273,7 +298,7 @@ std::string MCS51Codegen::generate(const ir::Program &prog, bool objectMode) {
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
-            declareGlobalArray(lbl, slot->arraySize, slot->arrayInit);
+            declareGlobalArray(lbl, slot->arraySize, widthOfType(slot->type), slot->arrayInit);
         } else {
             declareGlobalTemp(lbl, slot->hasInit ? slot->initValue : 0);
         }
@@ -439,7 +464,7 @@ void MCS51Codegen::genStmt(const ir::Stmt &s) {
             } else if (s.initOrReturnOrExpr) {
                 genExpr(*s.initOrReturnOrExpr);
                 loadFrameAddress("ptr", s.declSlot);
-                storeAcIndirect();
+                storeIndirect("ac", widthOfType(s.declSlot->type));
             }
             // No "else" case for a bare, uninitialized scalar: its
             // own frame word already exists (genPrologue()'s own
@@ -488,7 +513,7 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
                 loadXdata("ac", label(e.slot));
             } else {
                 loadFrameAddress("ptr", e.slot);
-                loadIndirect("ac");
+                loadIndirect("ac", widthOfType(e.slot->type), e.slot->type.isUnsigned);
             }
             return;
         }
@@ -508,7 +533,7 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
                 code_ << "    push ptr\n    push ptr+1\n";
                 genExpr(*e.rhs);
                 code_ << "    pop ptr+1\n    pop ptr\n";
-                storeAcIndirect();
+                storeIndirect("ac", widthOfType(e.slot->type));
                 return;
             }
             if (e.slot->kind == ir::SlotKind::Global) {
@@ -523,7 +548,7 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
             code_ << "    push ptr\n    push ptr+1\n";
             genExpr(*e.rhs);
             code_ << "    pop ptr+1\n    pop ptr\n";
-            storeAcIndirect();
+            storeIndirect("ac", widthOfType(e.slot->type));
             return;
         }
         case ir::ExprKind::DerefAssign: {
@@ -532,7 +557,7 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
             code_ << "    push ptr\n    push ptr+1\n";
             genExpr(*e.rhs);
             code_ << "    pop ptr+1\n    pop ptr\n";
-            storeAcIndirect();
+            storeIndirect("ac", widthOfType(e.type));
             return;
         }
         case ir::ExprKind::Unary: {
@@ -545,7 +570,7 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "*") {
                 genExpr(*e.rhs);  // ac = pointer value
                 copy16("ptr", "ac");
-                loadIndirect("ac");
+                loadIndirect("ac", widthOfType(e.type), e.type.isUnsigned);
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "    mova ac\n    xrli 255\n    movd ac\n";
@@ -628,13 +653,23 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
 // (loadFrameAddress()); otherwise `slot` is a plain pointer variable,
 // so the base instead comes from *reading* that variable's own stored
 // value (loadXdata() for a Global, loadFrameAddress()+loadIndirect()
-// for a Local/Param). Either way the base ends up in `bc`, and the
-// same 16-bit add then folds the (already-doubled) index into it.
+// for a Local/Param - always a plain 2-byte native-word read there,
+// since `slot->type` in that branch is the POINTER's own type, not
+// its pointee - see Type.h's own header comment on Type::ptrDepth).
+// Either way the base ends up in `bc`, and the same 16-bit add then
+// folds the (already-scaled) index into it.
 void MCS51Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
+    // For a real array, `slot->type` is this array's own ELEMENT type
+    // (see IR.h's own comment on Slot::type) - 1 byte for `char`, 2
+    // otherwise (`requireNarrow()` already rejects anything wider).
+    int elemWidth = widthOfType(slot->type);
     genExpr(idxExpr);  // ac = index
-    // ac *= 2 (words are 2 bytes on this byte-addressed target).
-    code_ << "    clrc\n    mova ac\n    rlca\n    movd ac\n";
-    code_ << "    mova ac+1\n    rlca\n    movd ac+1\n";
+    if (elemWidth != 1) {
+        // ac *= 2 - every element here is 2 bytes wide, so the index
+        // itself has to become a byte offset first.
+        code_ << "    clrc\n    mova ac\n    rlca\n    movd ac\n";
+        code_ << "    mova ac+1\n    rlca\n    movd ac+1\n";
+    }
     bool isGlobal = slot->kind == ir::SlotKind::Global;
     if (slot->arraySize > 0) {
         if (isGlobal) {
@@ -646,7 +681,7 @@ void MCS51Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
         loadXdata("bc", label(slot));
     } else {
         loadFrameAddress("ptr", slot);
-        loadIndirect("bc");
+        loadIndirect("bc", 2, /*isUnsigned=*/true);
     }
     code_ << "    clrc\n    mova bc\n    add ac\n    movd ptr\n";
     code_ << "    mova bc+1\n    addc ac+1\n    movd ptr+1\n";
@@ -654,7 +689,7 @@ void MCS51Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
 
 void MCS51Codegen::genIndex(const ir::Expr &e) {
     genIndexAddr(e.slot, *e.lhs);
-    loadIndirect("ac");
+    loadIndirect("ac", widthOfType(e.slot->type), e.slot->type.isUnsigned);
 }
 
 void MCS51Codegen::genAddrOf(const ir::Expr &operand) {

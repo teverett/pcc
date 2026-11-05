@@ -108,11 +108,17 @@ struct FunctionDecl {
     std::string name;
     Type returnType;
     std::vector<Param> params;
-    std::unique_ptr<Stmt> body;  // null for a prototype-only declaration
+    std::unique_ptr<Stmt> body;  // null for a prototype-only declaration, or an 'extern' one
     int line = 0;
     bool hasAddress = false;  // '@' addr given - see IR.h's Function::hasAddress
     long address = 0;
     std::string sourceFile;  // which .c file this came from - see IR.h's Function::sourceFile
+
+    // True for an 'extern' declaration (always bodyless): this name
+    // is a function defined in another file - see IR.h's
+    // Function::isExternal and IRBuilder.cpp's own header comment on
+    // why this now has to be stated explicitly rather than guessed.
+    bool isExternDecl = false;
 };
 
 struct GlobalVar {
@@ -126,6 +132,12 @@ struct GlobalVar {
     bool hasAddress = false;       // '@' addr given - see IR.h's Slot::hasAddress
     long address = 0;
     std::string sourceFile;        // which .c file this came from - see IR.h's Slot::sourceFile
+
+    // True for an 'extern' declaration (always uninitialized): this
+    // name is data defined in another file - see Slot::isExternal
+    // and IRBuilder.cpp's own header comment on why this now has to
+    // be stated explicitly rather than guessed.
+    bool isExternDecl = false;
 };
 
 struct Program {

@@ -116,6 +116,30 @@ expr : NUMBER                                    // int literal
   unparsed — this is the only place a backend's own assembly syntax
   (see `docs/asm.md`) appears inside IR text.
 
+## Fixed absolute placement
+
+A function or global declared with a trailing `@ addr` (e.g.
+`int vector() @ 020 { ... }`) carries `hasAddress=true`/`address=addr`
+on its `IR.h` `Function`/`Slot` (the grammar's own `'@' addr=NUMBER`,
+on `functionDecl`/`globalDecl` — see `grammar/CParser.g4`). This pins
+that function's entry point, or that global's storage, to an exact
+spot instead of wherever the backend would otherwise lay it out —
+meant for things a real machine's own hardware fixes in place
+regardless of what the compiler would pick, like a PDP-7 kernel's
+interrupt/trap vector cells.
+
+`addr` is always an *offset from that backend's own relocation base*,
+never a true absolute address counted from machine address 0 — each
+backend's own codegen comment at its placement call site documents
+exactly what its own base is (e.g. pdp7's is `pdp7as`'s own `..`
+symbol, matching the real kernel's historical `. = orig+N`
+convention). A placed function/global is still emitted in the
+program's normal declaration order; placing it only changes where its
+storage/entry point ends up, wrapped in a save/jump-to-address/restore
+of the assembler's own location counter around that one item, so
+whatever comes right after it in program order resumes exactly where
+it would have without the placement at all.
+
 ## Where it's used
 
 - `src/ir/IR.h` defines the real in-memory `Program`/`Slot`/

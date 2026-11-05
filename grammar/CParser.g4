@@ -53,18 +53,30 @@ topLevelDecl
     | globalDecl
     ;
 
-// A trailing ';' instead of a block is a prototype: allowed so a
-// function can be declared before its real definition, but it emits
-// nothing - BuildAst/CodeGen resolve calls by name against every
-// function that has a body, regardless of textual order.
+// A trailing ';' instead of a block, with no leading 'extern', is a
+// same-file forward declaration: allowed so a function can be
+// declared before its real definition textually, but it emits
+// nothing and has no effect on resolution - BuildAst discards it
+// outright (see BuildAst.cpp's buildProgram); every function in this
+// file is already registered by name, regardless of textual order,
+// before any body is built. An 'extern' declaration (always
+// bodyless) is different: it's the only way to tell IRBuilder a
+// name used only via '&'/an array-initializer element in this file
+// (never called, so resolveFunc's own call-site fallback never
+// fires) is a FUNCTION defined in another file, not data - see
+// IRBuilder.cpp's own header comment on why this is needed at all now
+// (neither direction can be silently guessed any more).
 //
 // An optional '@' addr pins the function's entry point to an exact
 // address - see ../docs/ir.md's "Fixed absolute placement" and
 // ../docs/pdp-c-compiler.md's "Placement" section for what that
 // address means on each backend, and the real motivation (kernel
-// interrupt/trap vectors).
+// interrupt/trap vectors). Not meaningful on an 'extern' declaration
+// (that address lives in whichever file really defines it), so not
+// offered on that alternative.
 functionDecl
-    : typeSpec IDENT '(' paramList? ')' ('@' addr=NUMBER)? (block | ';')
+    : 'extern' typeSpec IDENT '(' paramList? ')' ';'                         # externFunctionDecl
+    | typeSpec IDENT '(' paramList? ')' ('@' addr=NUMBER)? (block | ';')     # localFunctionDecl
     ;
 
 paramList
@@ -75,10 +87,17 @@ param
     : typeSpec IDENT
     ;
 
-// The optional '@' addr on each alternative is the same fixed-address
-// placement functionDecl takes - see its comment above.
+// The optional '@' addr on each local alternative is the same fixed-
+// address placement functionDecl takes - see its comment above. An
+// 'extern' global declaration (always no initializer, no '@') is the
+// data-side counterpart of an 'extern' function declaration above:
+// the only way to tell IRBuilder a name used only via '&'/an array-
+// initializer element in this file is DATA defined in another file,
+// not a function.
 globalDecl
-    : typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)? ('@' addr=NUMBER)? ';'   # globalArrayDecl
+    : 'extern' typeSpec IDENT '[' size=NUMBER ']' ';'                            # externArrayDecl
+    | 'extern' typeSpec IDENT ';'                                                 # externScalarDecl
+    | typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)? ('@' addr=NUMBER)? ';'   # globalArrayDecl
     | typeSpec IDENT ('=' sign='-'? val=NUMBER)? ('@' addr=NUMBER)? ';'              # globalScalarDecl
     ;
 

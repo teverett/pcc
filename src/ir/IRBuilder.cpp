@@ -165,6 +165,21 @@ class Builder {
             if (globalByName_.count(g.name)) err(g.line, "redeclaration of global '" + g.name + "'");
             ir::Slot *slot = allocSlot(ir::SlotKind::Global, g.name, g.arraySize);
             slot->type = g.type;
+            // An 'extern' declaration registers the name's kind (data)
+            // right here, in this same first pass, before any '&name'/
+            // array-initializer element in this file gets resolved
+            // below - see this function's own header comment on why
+            // that ordering is exactly what makes '&name'/array-init
+            // resolution sound again. It has no initializer of its
+            // own (the grammar doesn't allow one) and isn't really
+            // this file's own storage, same as the lazily-created kind
+            // resolveExternalVar makes on a first unannounced use.
+            if (g.isExternDecl) {
+                slot->isExternal = true;
+                slot->sourceFile = g.sourceFile;
+                globalByName_[g.name] = slot;
+                continue;
+            }
             slot->hasInit = g.hasInit;
             slot->initValue = g.initValue;
             // arrayInit is resolved in a second pass below, once
@@ -183,9 +198,22 @@ class Builder {
             irFn->id = nextFuncId_++;
             irFn->sourceName = fn.name;
             irFn->returnType = fn.returnType;
+            irFn->sourceFile = fn.sourceFile;
+            // Same reasoning as an 'extern' global above, for the
+            // function side: registers this name as a FUNCTION, not
+            // data, before any '&name'/array-init element referring
+            // to it is resolved - no param slots to allocate (there's
+            // no body to call it against here, and resolveFunc never
+            // checks an external function's own argument count
+            // anyway - see resolveFunc's own comment).
+            if (fn.isExternDecl) {
+                irFn->isExternal = true;
+                funcByName_[fn.name] = irFn.get();
+                prog_.functions.push_back(std::move(irFn));
+                continue;
+            }
             irFn->hasAddress = fn.hasAddress;
             irFn->address = fn.address;
-            irFn->sourceFile = fn.sourceFile;
             // Each param's own frameOffset, in real storage units,
             // past a fixed two-native-`int`-widths reservation for
             // whatever a backend's own call sequence keeps there
@@ -242,12 +270,19 @@ class Builder {
     // literal passes through unchanged; a symbol element is resolved
     // exactly the same way buildAddressableOperand resolves a bare
     // "&name" expression - try a variable first (this scope's locals,
-    // if any are active, then this file's globals), then a function,
-    // then fall back to treating it as an external global (the same
-    // default a plain, non-'&' reference to an unknown name under
-    // separate compilation has always gotten). Shared between a
-    // global's own initializer (no active scope) and a LocalDecl's
-    // (scopes_ may have locals in it).
+    // if any are active, then this file's globals, including any
+    // 'extern' global declared in this same file), then a function
+    // (same: including any 'extern' function declared here). A name
+    // that's neither is a hard error, NOT a guess: resolveExternalFunc/
+    // resolveExternalVar used to be tried here as a silent fallback,
+    // but there is genuinely no way to tell a function address from a
+    // data address apart for a name this file has no other
+    // information about at all (no call site, no local definition) -
+    // see this file's own header comment, and docs/using.md's
+    // "extern declarations", for why the real fix is requiring the
+    // file to say which one it means, not guessing either way. Shared
+    // between a global's own initializer (no active scope) and a
+    // LocalDecl's (scopes_ may have locals in it).
     std::vector<ir::ArrayInitElem> resolveArrayInit(const std::vector<ArrayInitElem> &elems, int line) {
         std::vector<ir::ArrayInitElem> out;
         out.reserve(elems.size());
@@ -263,12 +298,11 @@ class Builder {
                 ie.slot = slot;
             } else if (auto fit = funcByName_.find(e.symbolName); fit != funcByName_.end()) {
                 ie.func = fit->second;
-            } else if (ir::Function *ext = resolveExternalFunc(e.symbolName)) {
-                ie.func = ext;
-            } else if (ir::Slot *ext = resolveExternalVar(e.symbolName)) {
-                ie.slot = ext;
             } else {
-                err(line, "undefined variable or function '" + e.symbolName + "' in array initializer");
+                err(line, "'" + e.symbolName +
+                              "' in array initializer is neither defined nor declared in this file - say "
+                              "whether it's a function or data defined elsewhere with 'extern <type> " +
+                              e.symbolName + "(...);' or 'extern <type> " + e.symbolName + "[N];'");
             }
             out.push_back(ie);
         }
@@ -363,11 +397,12 @@ class Builder {
         return fn;
     }
 
-    // An external global (real separate compilation - see
-    // resolveExternalVar) starts out shaped like a plain scalar
-    // (arraySize == 0): there's no declaration in this file to learn
-    // its real shape from - this C subset has no `extern int
-    // arr[9];` syntax to close that gap. Indexing it anywhere in this
+    // An external global lazily auto-created by resolveVar/resolveExternalVar
+    // (a plain, unambiguous, non-'&' reference - never one explicitly
+    // declared 'extern' in this file, which already states its real
+    // arraySize up front, see registerGlobalsAndFunctions) starts out
+    // shaped like a plain scalar (arraySize == 0): there's no
+    // declaration in this file to learn its real shape from. Indexing it anywhere in this
     // file is conclusive proof it's actually array-shaped (only an
     // array can be indexed) - mark it so retroactively, since the
     // first reference might come before or after any particular
@@ -390,17 +425,16 @@ class Builder {
     // and where a bare function name is also valid (&f means f's own
     // entry address, never a call - see IR.h's ExprKind::Func).
     //
-    // A bare IDENT that isn't a variable in this file is tried as a
-    // function name next (this file's own, or - under real separate
-    // compilation - one already seen at a call site elsewhere in it)
-    // before falling back to creating it as an external global, the
-    // same default a plain, non-'&' reference to an unknown name
-    // under separate compilation has always gotten; a name genuinely
-    // declared as an external function but never called anywhere in
-    // this file still resolves correctly once something does call it
-    // first, same as resolveFunc's own lazy external-function
-    // creation - this only has to pick a default for a name this file
-    // has no information about at all.
+    // A bare IDENT that isn't a variable in this file (its own
+    // globals, or an 'extern' global declared here) is tried as a
+    // function name next (this file's own, a call site elsewhere in
+    // it that already registered it, or an 'extern' function declared
+    // here). A name that's none of those is a hard error, NOT a
+    // guess: see resolveArrayInit's own comment (this resolves a bare
+    // "&name" the exact same way) for why falling back to
+    // resolveExternalFunc/resolveExternalVar here used to silently
+    // guess the wrong kind half the time, and why the real fix is
+    // requiring an explicit 'extern' declaration instead.
     ir::ExprPtr buildAddressableOperand(const Expr &e) {
         auto out = std::make_unique<ir::Expr>();
         out->line = e.line;
@@ -417,18 +451,10 @@ class Builder {
                 out->func = fit->second;
                 return out;
             }
-            if (ir::Function *ext = resolveExternalFunc(e.name)) {
-                out->kind = ir::ExprKind::Func;
-                out->func = ext;
-                return out;
-            }
-            if (ir::Slot *ext = resolveExternalVar(e.name)) {
-                out->kind = ir::ExprKind::Var;
-                out->slot = ext;
-                out->type = ext->type;
-                return out;
-            }
-            err(e.line, "undefined variable or function '" + e.name + "'");
+            err(e.line, "'" + e.name +
+                            "' is neither defined nor declared in this file - say whether it's a function or "
+                            "data defined elsewhere with 'extern <type> " +
+                            e.name + "(...);' or 'extern <type> " + e.name + "[N];'");
         }
         if (e.kind == ExprKind::Index) {
             out->kind = ir::ExprKind::Index;

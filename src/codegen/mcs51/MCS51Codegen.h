@@ -282,17 +282,34 @@ class MCS51Codegen : public Backend {
 
     // Assumes `ptr` already holds a target XDATA address
     // (genIndexAddr()'s own result, or DerefAssign's own pointer
-    // value) and writes `ac`'s two bytes there via DPTR+MOVX -
-    // doesn't touch `ptr` itself, so the caller's address survives.
-    void storeAcIndirect();
+    // value) and writes `ac`'s own low `width` bytes there via
+    // DPTR+MOVX - doesn't touch `ptr` itself, so the caller's address
+    // survives. `width` is the VALUE actually stored there's own real
+    // width (a slot's/array element's/pointer's pointee's own
+    // `widthOfType()`, never always 2) - writing a full native word
+    // through a narrower (`char`) element/slot would silently stomp
+    // whatever's packed right after it (the next array element, or
+    // the next local in this activation's own frame - every other
+    // storage location here is dense-packed by its own real width,
+    // see `Slot::frameOffset`'s own comment in `IR.h`). `requireNarrow()`
+    // already rejects anything wider than 2, so this only ever needs
+    // to handle 1 or 2.
+    void storeIndirect(const std::string &srcReg, int width);
 
-    // The read-side counterpart of storeAcIndirect() - assumes `ptr`
-    // already holds a target XDATA address and reads the two bytes
-    // stored there into `dstReg`, via DPTR+MOVX. Used for a plain
-    // Local/Param Var read, an Index read, and `*p`'s own Unary "*"
-    // handling - every place that already has a runtime XDATA address
-    // in `ptr` rather than a compile-time label.
-    void loadIndirect(const std::string &dstReg);
+    // The read-side counterpart of storeIndirect() - assumes `ptr`
+    // already holds a target XDATA address and reads its own low
+    // `width` bytes into `dstReg`, via DPTR+MOVX, sign/zero-extending
+    // into `dstReg`'s own high byte when `width==1` (per `isUnsigned`)
+    // so every other place that reads `dstReg` as a full 16-bit value
+    // keeps seeing a correctly-extended one. Used for a plain Local/
+    // Param Var read, an Index read, and `*p`'s own Unary "*" handling
+    // - every place that already has a runtime XDATA address in `ptr`
+    // rather than a compile-time label - except where `ptr` itself
+    // holds a POINTER VARIABLE's own stored value (always exactly 2
+    // bytes, a pointer's own native width, regardless of what it
+    // points to - see `Type.h`'s own header comment on
+    // `Type::ptrDepth`), which stays a plain, explicit `width=2` call.
+    void loadIndirect(const std::string &dstReg, int width, bool isUnsigned);
 
     // Copies one pseudo-register to another (both already internal-
     // RAM direct addresses) via this dialect's own real direct-to-
@@ -353,11 +370,14 @@ class MCS51Codegen : public Backend {
     // Loads one array-initializer element's own value into `ac` - a
     // literal's own bytes directly, or (the dispatch-table idiom, see
     // IR.h's own ArrayInitElem comment) a referenced Slot's/Function's
-    // own address, via loadXdataAddress()/loadCodeAddress(). Shared by
-    // genLocalArrayInit() above and declareGlobalArray()'s own
-    // genArrayElementInit(), which differ only in how they write `ac`
-    // back out (a runtime `ptr`-indirect store here, a compile-time
-    // `movdptr` label there).
+    // own address, via loadXdataAddress()/loadCodeAddress(). Always
+    // loads a full 16-bit value into `ac` regardless of the element's
+    // own real width - the caller's own storeIndirect(width)/
+    // genArrayElementInit() decides how many of `ac`'s bytes actually
+    // get written out. Shared by genLocalArrayInit() above and
+    // declareGlobalArray()'s own genArrayElementInit(), which differ
+    // only in how they write `ac` back out (a runtime `ptr`-indirect
+    // store here, a compile-time `movdptr` label there).
     void loadArrayElemValue(const ir::ArrayInitElem &e);
 
     // Reads/writes the two bytes stored at `xdataExpr`'s own XDATA
@@ -454,8 +474,9 @@ class MCS51Codegen : public Backend {
     // prologue inside it (see generate()'s own `objectMode` comment
     // above for why).
     void declareGlobalTemp(const std::string &lbl, long initValue);
-    void declareGlobalArray(const std::string &lbl, int arraySize, const std::vector<ir::ArrayInitElem> &values);
-    void genArrayElementInit(const std::string &elemExpr, const ir::ArrayInitElem &e);
+    void declareGlobalArray(const std::string &lbl, int arraySize, int elemWidth,
+                             const std::vector<ir::ArrayInitElem> &values);
+    void genArrayElementInit(const std::string &elemExpr, int elemWidth, const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
 
     std::ostringstream code_;

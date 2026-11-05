@@ -51,7 +51,11 @@ public:
     return visitChildren(ctx);
   }
 
-  virtual std::any visitFunctionDecl(CParser::FunctionDeclContext *ctx) override {
+  virtual std::any visitExternFunctionDecl(CParser::ExternFunctionDeclContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitLocalFunctionDecl(CParser::LocalFunctionDeclContext *ctx) override {
     return visitChildren(ctx);
   }
 
@@ -60,6 +64,14 @@ public:
   }
 
   virtual std::any visitParam(CParser::ParamContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitExternArrayDecl(CParser::ExternArrayDeclContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitExternScalarDecl(CParser::ExternScalarDeclContext *ctx) override {
     return visitChildren(ctx);
   }
 

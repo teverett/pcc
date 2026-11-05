@@ -1,0 +1,221 @@
+# The pdp-c-compiler language and object model
+
+This is the language-level reference for pcc's own C subset, plus the
+handful of project-specific choices (its own COFF variant, its
+`asm { ... }` escape hatch, its text preprocessor) that don't belong in
+`docs/building.md`/`docs/using.md` (the CLI) or `docs/platforms.md`
+(what each backend's own hardware is).
+
+## The language subset
+
+Types: `char`, `short`, `int`, `long`, `long long`, each `signed`
+(the default) or `unsigned`; a pointer to any of those, at any depth
+(`T*`, `T**`, ...); a fixed-size array of any of those or of a
+pointer. A function always declares an explicit return type (there is
+no `void`) and may be declared with a trailing `;` instead of a body
+as a prototype, resolved by name against whichever file actually
+defines it regardless of textual order.
+
+Expressions: the usual arithmetic/comparison/logical/bitwise operators
+(see "Bitwise operators" below for that group specifically), `=`
+assignment, `&`/`*` (address-of/dereference), `arr[i]` indexing,
+`f(...)` calls (including a call through a computed address,
+`(expr)()` — see `IR.h`'s `ExprKind::CallPtr`), an explicit
+`(type)expr` cast, `sizeof(type)`/`sizeof(expr)`, and the three
+literal forms: a `NUMBER` (with an optional `u`/`U`/`l`/`L`/`ll`/`LL`
+integer suffix picking its type, same spelling as ISO C), a `CHARLIT`
+(`'x'`), and a `STRINGLIT` (`"..."`) — see "Scope and limitations"
+below for what each literal form does and doesn't support.
+
+Statements: `{ }` blocks, `if`/`else`, `while`, `for` (desugared into
+a block containing a `while`, with the post-statement kept separate so
+`continue` still runs it — see `IR.h`'s own `Stmt::postStmt`),
+`return`, `break`, `continue`, a local declaration (scalar or array,
+optionally initialized), a bare expression statement, and
+`asm { ... }` (see "Inline asm" below).
+
+Not in this subset: `struct`/`union`/`enum`/`typedef`, floating point,
+variadic functions, function-like macros with parameters, `switch`/
+`goto`, the ternary operator, compound-assignment operators (`+=` and
+friends), `++`/`--`, and designated initializers.
+
+## Scope and limitations
+
+Deliberate simplifications, not bugs:
+
+- Integer promotion always promotes a sub-`int`-rank operand to
+  **signed** `int`, even in the rare case where real C would promote
+  `unsigned short` to `unsigned int` because `short`/`int` happen to
+  be the same width on a given target.
+- The "usual arithmetic conversions" pick the operand of strictly
+  greater rank (`char` < `short` < `int` < `long` < `long long`, the
+  fixed order ISO C itself specifies) independent of a target's actual
+  per-type widths; on equal rank, unsigned wins. The classic edge case
+  where a same-width higher-rank signed type can't represent a
+  lower-rank unsigned type's full range (forcing both to an unsigned
+  version of the higher-rank type) isn't implemented — this keeps
+  promotion entirely target-independent, with no width table needed to
+  rank two types against each other (see `src/Type.h`/`src/Type.cpp`).
+- An unsuffixed numeric literal is always `int`; it does not
+  auto-widen to `long`/`long long` on overflow — use a suffix (`10L`,
+  `4000000000UL`) for anything that needs to be wider.
+- A real pointer (`T*`) has scaled arithmetic (`p + 1` moves by
+  `sizeof(T)`) and a typed dereference (`*p` reads/writes exactly
+  `sizeof(T)`, correctly sign/zero-extended); a plain `int` used as an
+  untyped address (the language's original, still-fully-supported
+  style, from before `T*` existed) keeps unscaled, native-word-
+  granular arithmetic and a full-native-word dereference regardless of
+  what it conceptually points to. Pick a real `T*` for anything that
+  needs correct, portable scaling.
+- An array never implicitly decays to a pointer — indexing (`arr[i]`)
+  or an explicit `&arr[0]`/`&arr` is required to get its address; a
+  bare array name used anywhere else is a compile error.
+- An array's initializer is always a literal list (`{1, 2, 3}`), or a
+  bare symbol name standing for that symbol's own address — the
+  dispatch-table idiom a jump table needs (`int t[] = {f, g};`) — never
+  a general expression. Under real separate compilation, a bare name
+  here (or after `&`) that isn't defined, called, or declared `extern`
+  somewhere earlier in *this* file is a compile error, not a silent
+  guess — see "Extern declarations" below for why and what to add.
+- `CHARLIT` (`'x'`) has no escape sequences at all: exactly one raw
+  character between the quotes (enough for ASCII-arithmetic use like
+  `'0' + digit`).
+- `STRINGLIT` (`"..."`) has a small, fixed escape set — `\\ \" \n \t
+  \r \0` — no octal/hex escapes, and no line continuation (a string
+  literal can't span a physical line). It lowers to the address of an
+  anonymous, NUL-terminated `char` array holding its decoded bytes —
+  exactly what `&someCharArray` already means for a hand-declared one
+  (see `IRBuilder.cpp`'s own `buildExpr` case for `ExprKind::
+  StringLit`), so no backend needs its own string-literal codegen at
+  all.
+
+## Bitwise operators
+
+`&`, `^`, `|`, `<<`, `>>`, `~` sit at the same relative precedence real
+C puts them: shifts bind tighter than relational comparisons but
+looser than `+`/`-`; `&`/`^`/`|` bind looser than equality but tighter
+than `&&` (see `grammar/CParser.g4`'s own `condExpr`). Every backend
+implements all of them, but not always with a single matching native
+instruction — a backend missing some piece of hardware synthesizes it
+from what it does have (e.g. PDP-7 has no hardware `or` and no
+variable-count shift instruction, so `|` and `<<`/`>>` are built from
+instructions it does have — see `Pdp7Codegen.cpp`'s own comments at
+each one).
+
+## Placement
+
+A function or global declared with a trailing `@ addr` (e.g.
+`int vector() @ 020 { ... }`) pins its entry point/storage to an exact
+spot instead of wherever the backend would otherwise lay it out —
+meant for things a real machine's own hardware fixes in place
+regardless of what the compiler would pick, like a kernel's interrupt/
+trap vector cells. See `docs/ir.md`'s own "Fixed absolute placement"
+for exactly what `addr` means and how each backend applies it.
+
+## Inline asm
+
+`asm { ... }` is an escape hatch, not a parsed sub-language: the raw
+text between the braces is emitted into the generated assembly exactly
+as written, with no attempt by pcc to understand it — meant for real
+hardware instructions this C subset has no portable expression for at
+all (e.g. the PDP-7 disk controller's raw IOT instructions). It's
+target-specific by construction (the text has to already be valid
+assembly for whichever `--target` is compiling it), has no return
+value, and it's the caller's own job to leave registers/the
+accumulator in a sane state around it — pcc doesn't track what an
+`asm` block does to them.
+
+## Preprocessor
+
+A small, from-scratch text-level preprocessor runs line-by-line over
+the raw source, entirely before the ANTLR lexer/parser ever see it:
+`#include "file"` / `#include <file>`, `#define NAME` / `#define NAME
+value` (object-like only — no function-like macros with parameters,
+no token-pasting/stringizing), `#undef`, `#ifdef`/`#ifndef`/`#if`/
+`#elif`/`#else`/`#endif` (`#if`/`#elif` evaluate a small integer-
+constant-expression language: `defined`, integer literals, `! - + * /
+% == != < <= > >= && ||`, parens, real C precedence — an undefined
+identifier evaluates to `0`, same as real cpp). `__LINE__`/`__FILE__`/
+`__DATE__`/`__TIME__` are predefined, alongside a target macro for
+whichever backend is active (`__PDP7__`, `__8086__`, etc. — see
+`main.cpp`'s own table). `__LINE__` substitutes as a plain integer
+literal; `__FILE__`/`__DATE__`/`__TIME__` substitute as a real string
+literal, valid anywhere one is (`int p; p = __FILE__;`).
+
+See `src/preprocessor/Preprocessor.cpp`'s own header comment for the
+exact deliberate limitations this implementation accepts (a 32-round
+cap on self-referential macro rescanning, `#if`/`#ifdef` nesting that
+must balance within a single included file, and approximate downstream
+line numbers after an `#include`).
+
+## COFF object files
+
+pcc's own `--format=coff` is a real relocatable object (one `.text`
+section, one `.bss` size reservation, a symbol table, a relocation
+table), but it's a **deliberate, non-standard** choice: COFF has no
+historical tie to any target this project supports (PDP-7 predates it
+entirely; real 16-bit 8086/DOS tooling used OMF, not COFF). Every
+object this project writes uses its own custom, unregistered `Machine`
+value, which existing tooling's COFF readers (`objdump` included)
+reject outright as "not a valid object file" purely because of that
+one unrecognized field — this is expected, not a bug: pcc's COFF is
+one of several interchangeable object-container formats it defines
+purely for its own `--link` step (alongside ELF/Mach-O/a.out), never
+meant for interop with a real, independent COFF toolchain. See
+`src/fileformat/coff/CoffFormat.h`'s own header comment for the full
+reasoning.
+
+## Extern declarations
+
+Under real separate compilation (`--format=coff`/`elf`/`macho`/`aout`,
+each file its own, genuinely independent compile — see
+[`docs/using.md`](using.md)'s "Link mode"), a plain, **unambiguous**
+reference to a name this file doesn't itself define still just works
+with no declaration at all: a call (`f(...)`) can only mean a function,
+a plain variable read/write (`x`, `x = 1`) can only mean data, so the
+first one of either seen in the file silently creates the right kind
+of external placeholder (resolved for real later, at `--link` time).
+
+Taking a bare name's own *address* — `&name`, or naming it directly as
+an array-initializer element (`int t[] = {name};`, the dispatch-table
+idiom) — is different: there's no way to tell a function address from
+a data address apart from the syntax alone, and guessing silently (an
+earlier version of this compiler tried defaulting to one kind or the
+other) is simply wrong exactly half the time, producing a confusing
+`undefined symbol 'FN_x'`/`'G_x'` from `--link`, not from the compile
+that actually made the wrong call. So `&name`/an array-initializer
+element require the name to already be known by the time they're
+reached — defined in this file, already called/read earlier in it, or
+explicitly declared with `extern`:
+
+```c
+extern int iget(int inum);   // a function defined elsewhere
+extern int inode[16];        // an array defined elsewhere
+extern int nextId;           // a scalar defined elsewhere
+
+int dispatch[2] = {iget, inode};  // now unambiguous - no guessing
+
+int main() {
+    return &nextId;
+}
+```
+
+An `extern` function declaration is always bodyless (`;`, never a
+block) and takes no `@addr` (that's meaningful only for a real
+definition, which lives in whichever file actually has one). An
+`extern` global (scalar or array) likewise takes no initializer and no
+`@addr`, and an array one states its real size directly (`[16]` above)
+since there's no initializer here to infer it from. Declaring the same
+name both `extern` and for-real-in-this-file, or `extern` twice, is a
+compile error, same as any other redeclaration.
+
+This has no effect at all outside real separate compilation (a plain
+`--format=asm`/`raw`/... whole-program compile already sees every name
+in the one file it's given, so there's never anything ambiguous to
+declare).
+
+## Building / Usage
+
+Building pcc from source, and every compile-mode/link-mode
+command-line switch, are documented separately — see
+[`docs/building.md`](building.md) and [`docs/using.md`](using.md).

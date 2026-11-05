@@ -37,11 +37,17 @@ public:
 
     virtual std::any visitTopLevelDecl(CParser::TopLevelDeclContext *context) = 0;
 
-    virtual std::any visitFunctionDecl(CParser::FunctionDeclContext *context) = 0;
+    virtual std::any visitExternFunctionDecl(CParser::ExternFunctionDeclContext *context) = 0;
+
+    virtual std::any visitLocalFunctionDecl(CParser::LocalFunctionDeclContext *context) = 0;
 
     virtual std::any visitParamList(CParser::ParamListContext *context) = 0;
 
     virtual std::any visitParam(CParser::ParamContext *context) = 0;
+
+    virtual std::any visitExternArrayDecl(CParser::ExternArrayDeclContext *context) = 0;
+
+    virtual std::any visitExternScalarDecl(CParser::ExternScalarDeclContext *context) = 0;
 
     virtual std::any visitGlobalArrayDecl(CParser::GlobalArrayDeclContext *context) = 0;
 

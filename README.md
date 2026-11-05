@@ -19,6 +19,11 @@ preprocessor.
 
 ## Documentation
 
+- The language subset itself (types, pointers, casts, `sizeof`,
+  string/char literals), its deliberate scope/limitations, bitwise
+  operators, `@addr` placement, `asm { ... }`, the preprocessor, and
+  pcc's own COFF object format: see
+  [`docs/pdp-c-compiler.md`](docs/pdp-c-compiler.md).
 - Supported platforms/backends: see
   [`docs/platforms.md`](docs/platforms.md).
 - Building pcc from source: see
