@@ -215,6 +215,8 @@ class Builder {
                 ie.slot = slot;
             } else if (auto fit = funcByName_.find(e.symbolName); fit != funcByName_.end()) {
                 ie.func = fit->second;
+            } else if (ir::Function *ext = resolveExternalFunc(e.symbolName)) {
+                ie.func = ext;
             } else if (ir::Slot *ext = resolveExternalVar(e.symbolName)) {
                 ie.slot = ext;
             } else {
@@ -365,6 +367,11 @@ class Builder {
             if (fit != funcByName_.end()) {
                 out->kind = ir::ExprKind::Func;
                 out->func = fit->second;
+                return out;
+            }
+            if (ir::Function *ext = resolveExternalFunc(e.name)) {
+                out->kind = ir::ExprKind::Func;
+                out->func = ext;
                 return out;
             }
             if (ir::Slot *ext = resolveExternalVar(e.name)) {
