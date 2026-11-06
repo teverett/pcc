@@ -238,7 +238,7 @@ condExpr
     // unparenthesized, same as real C's own grammar), 'else' recurses
     // back into condExpr to pick up another ternary (or anything
     // tighter) without needing its own parens.
-    | cond=condExpr '?' then=expr ':' els=condExpr      # ternaryExpr
+    | <assoc=right> cond=condExpr '?' then=expr ':' els=condExpr      # ternaryExpr
     ;
 
 argList

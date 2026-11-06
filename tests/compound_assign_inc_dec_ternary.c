@@ -65,6 +65,13 @@ int main() {
     if (r != 42) return 118;
     r = x > 100 ? 1 : x > 0 ? 2 : 3;
     if (r != 2) return 119;
+    // Right-associativity check: `a?b:c?d:e` must mean `a?b:(c?d:e)`,
+    // not `(a?b:c)?d:e` - the two give different results exactly when
+    // the first condition is true and 'then' is 0: left-associative
+    // would wrongly re-test that 0 as the next condition (picking
+    // 'e') instead of short-circuiting straight to 'b'.
+    r = 1 ? 0 : 1 ? 10 : 20;
+    if (r != 0) return 120;
 
     return 1;
 }
