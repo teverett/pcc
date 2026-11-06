@@ -1619,6 +1619,8 @@ is_known_unsupported() {
         pdp7:types_longlong_divmod.c) return 0 ;;          # no verified wide multiply/divide routine
         8086:types_longlong_divmod.c) return 0 ;;          # routine doesn't fit the 512-byte boot sector
         8088:types_longlong_divmod.c) return 0 ;;
+        8086:compound_assign_inc_dec_ternary.c) return 0 ;;  # this file's own compiled program doesn't fit the 512-byte boot sector either
+        8088:compound_assign_inc_dec_ternary.c) return 0 ;;
         8080:types_longlong_divmod.c) return 0 ;;          # no verified wide multiply/divide routine
         z80:types_longlong_divmod.c) return 0 ;;
         8051:types_arrays.c) return 0 ;;                   # wide (long/long long) values unsupported at all
