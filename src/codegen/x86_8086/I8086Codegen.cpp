@@ -443,6 +443,46 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
             storeOperand(operandOf(e.slot), e.slot->type);
             return;
         }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--)
+                computeElementAddr(e.slot, *e.lhs);  // bx = address
+                genCompoundThroughBx(e);
+                return;
+            }
+            // Plain scalar target - operandOf(slot) is a stable
+            // memory operand (a label or a bp-relative offset), never
+            // a clobberable register, so no address needs to be held
+            // across rhs's own evaluation at all.
+            std::string mem = operandOf(e.slot);
+            genExpr(*e.rhs);  // ax = rhs
+            code_ << "    mov bx, ax\n";
+            loadOperand(mem, e.type);  // ax = old
+            if (e.yieldOld) code_ << "    push ax\n";
+            genCompoundOp(e.op, e.type);
+            narrowAxTo(e.type);
+            storeOperand(mem, e.type);
+            if (e.yieldOld) code_ << "    pop ax\n";
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);  // ax = pointer value
+            code_ << "    mov bx, ax\n";  // bx = address
+            genCompoundThroughBx(e);
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            genExpr(*e.lhs);
+            if (isWide(e.lhs->type)) genWideTruthify(e.lhs->type);
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            code_ << "    cmp ax, 0\n    je " << Lelse << "\n";
+            genExpr(*e.rhs);
+            code_ << "    jmp " << Ldone << "\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
+            return;
+        }
         case ir::ExprKind::DerefAssign: {
             // Stores through at e.type's own width - the pointee type
             // of a real typed pointer, or a plain native int word for
@@ -653,6 +693,72 @@ std::string I8086Codegen::computeElementAddr(const ir::Slot *slot, const ir::Exp
         code_ << "    add bx, " << operandOf(slot) << "\n";
     }
     return "[bx]";
+}
+
+void I8086Codegen::genCompoundOp(const std::string &op, Type type) {
+    bool isUnsigned = type.isUnsigned;
+    if (op == "+") { code_ << "    add ax, bx\n"; return; }
+    // `ax -= bx` directly (old - rhs, ax already the destination this
+    // entry convention needs) - the same register-register SUB shape
+    // genBinary() already uses as `sub bx, ax` for its own ax=rhs/
+    // bx=lhs roles, just the other way round (this dialect's assembler
+    // encodes SUB generically for any register pair, not per-register
+    // - see I8086Assembler.cpp's own encodeTwoOp()).
+    if (op == "-") { code_ << "    sub ax, bx\n"; return; }
+    // "imul bx"/"mul bx" (one operand, same real-hardware shape
+    // genMul() already relies on): dx:ax = ax*bx, keep ax - this
+    // assembler only ever supports that one-operand multiply form
+    // (see I8086Assembler.h's own header comment on its own fixed
+    // instruction vocabulary), not a two-operand "imul ax,bx".
+    if (op == "*") { code_ << "    " << (isUnsigned ? "mul" : "imul") << " bx\n"; return; }
+    if (op == "&" || op == "|" || op == "^") {
+        const char *insn = (op == "&") ? "and" : (op == "|") ? "or" : "xor";
+        code_ << "    " << insn << " ax, bx\n";
+        return;
+    }
+    if (op == "<<" || op == ">>") {
+        code_ << "    mov cx, bx\n";
+        code_ << "    " << (op == "<<" ? "shl" : (isUnsigned ? "shr" : "sar")) << " ax, cl\n";
+        return;
+    }
+    // "/" or "%" - bx is a valid divisor operand directly (div/idiv
+    // only forbid ax/dx, which already hold the dividend).
+    code_ << "    " << (isUnsigned ? "xor dx, dx\n" : "cwd\n");
+    code_ << "    " << (isUnsigned ? "div" : "idiv") << " bx\n";
+    if (op == "%") code_ << "    mov ax, dx\n";
+}
+
+// bx must already hold the resolved address on entry. This dialect's
+// own assembler only ever supports `[bx]` as a memory base (see
+// I8086Assembler.h's own header comment) - so the address is always
+// shuttled back into bx right before each of the two real memory
+// accesses here (never held in some other register across rhs's own
+// evaluation/the op computation in between, since that evaluation may
+// recurse into arbitrarily complex codegen that can use any register).
+void I8086Codegen::genCompoundThroughBx(const ir::Expr &e) {
+    code_ << "    push bx\n";  // stash address
+    genExpr(*e.rhs);            // ax = rhs
+    code_ << "    push ax\n";    // stash rhs
+    code_ << "    pop cx\n";      // cx = rhs
+    code_ << "    pop bx\n";       // bx = address
+    loadOperand("[bx]", e.type);    // ax = old
+    code_ << "    push bx\n";        // re-stash address for the store below
+    if (e.yieldOld) code_ << "    push ax\n";  // stash old too
+    code_ << "    mov bx, cx\n";                // bx = rhs
+    genCompoundOp(e.op, e.type);                  // ax = new (raw)
+    narrowAxTo(e.type);
+    if (e.yieldOld) {
+        code_ << "    mov cx, ax\n";  // cx = new
+        code_ << "    pop ax\n";       // ax = old
+        code_ << "    pop bx\n";        // bx = address
+        code_ << "    mov dx, ax\n";     // dx = old (preserved across the store below)
+        code_ << "    mov ax, cx\n";      // ax = new (storeOperand always stores from ax)
+        storeOperand("[bx]", e.type);
+        code_ << "    mov ax, dx\n";        // ax = old (final result)
+    } else {
+        code_ << "    pop bx\n";  // bx = address
+        storeOperand("[bx]", e.type);  // ax already = new
+    }
 }
 
 void I8086Codegen::genIndex(const ir::Expr &e) {

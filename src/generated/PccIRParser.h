@@ -15,19 +15,22 @@ public:
     GLOBALS_HEADER = 1, FUNCTIONS_HEADER = 2, INT_KW = 3, CHAR_KW = 4, SHORT_KW = 5, 
     LONG_KW = 6, UNSIGNED_KW = 7, LOCAL_KW = 8, IF_KW = 9, ELSE_KW = 10, 
     WHILE_KW = 11, RETURN_KW = 12, BREAK_KW = 13, CONTINUE_KW = 14, POST_KW = 15, 
-    LPAREN = 16, RPAREN = 17, LBRACK = 18, RBRACK = 19, LBRACE = 20, RBRACE = 21, 
-    SEMI = 22, COMMA = 23, ASSIGN = 24, HASH = 25, STAR = 26, AMP = 27, 
-    MINUS = 28, BANG = 29, TILDE = 30, SLASH = 31, PERCENT = 32, PLUS = 33, 
-    SHL = 34, SHR = 35, LE = 36, GE = 37, LT = 38, GT = 39, EQ = 40, NE = 41, 
-    CARET = 42, PIPE = 43, ANDAND = 44, OROR = 45, IDENT = 46, NUMBER = 47, 
-    WS = 48, ASM_BEGIN = 49, ASM_TEXT = 50, ASM_END = 51
+    OLDVAL_KW = 16, LPAREN = 17, RPAREN = 18, LBRACK = 19, RBRACK = 20, 
+    LBRACE = 21, RBRACE = 22, SEMI = 23, COMMA = 24, ASSIGN = 25, HASH = 26, 
+    STAR = 27, AMP = 28, MINUS = 29, BANG = 30, TILDE = 31, SLASH = 32, 
+    PERCENT = 33, PLUS = 34, SHL = 35, SHR = 36, LE = 37, GE = 38, LT = 39, 
+    GT = 40, EQ = 41, NE = 42, CARET = 43, PIPE = 44, ANDAND = 45, OROR = 46, 
+    PLUSEQ = 47, MINUSEQ = 48, STAREQ = 49, SLASHEQ = 50, PERCENTEQ = 51, 
+    AMPEQ = 52, CARETEQ = 53, PIPEEQ = 54, SHLEQ = 55, SHREQ = 56, QUESTION = 57, 
+    COLON = 58, IDENT = 59, NUMBER = 60, WS = 61, ASM_BEGIN = 62, ASM_TEXT = 63, 
+    ASM_END = 64
   };
 
   enum {
     RuleProgram = 0, RuleTypeSpec = 1, RuleGlobalDecl = 2, RuleInitList = 3, 
     RuleInitElem = 4, RuleFuncDecl = 5, RuleParamList = 6, RuleParam = 7, 
-    RuleBlock = 8, RuleStmt = 9, RuleRef = 10, RuleExpr = 11, RuleArgList = 12, 
-    RuleBinOp = 13
+    RuleBlock = 8, RuleStmt = 9, RuleRef = 10, RuleCompoundOp = 11, RuleExpr = 12, 
+    RuleArgList = 13, RuleBinOp = 14
   };
 
   explicit PccIRParser(antlr4::TokenStream *input);
@@ -58,6 +61,7 @@ public:
   class BlockContext;
   class StmtContext;
   class RefContext;
+  class CompoundOpContext;
   class ExprContext;
   class ArgListContext;
   class BinOpContext; 
@@ -365,6 +369,28 @@ public:
 
   RefContext* ref();
 
+  class  CompoundOpContext : public antlr4::ParserRuleContext {
+  public:
+    CompoundOpContext(antlr4::ParserRuleContext *parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    antlr4::tree::TerminalNode *PLUSEQ();
+    antlr4::tree::TerminalNode *MINUSEQ();
+    antlr4::tree::TerminalNode *STAREQ();
+    antlr4::tree::TerminalNode *SLASHEQ();
+    antlr4::tree::TerminalNode *PERCENTEQ();
+    antlr4::tree::TerminalNode *AMPEQ();
+    antlr4::tree::TerminalNode *CARETEQ();
+    antlr4::tree::TerminalNode *PIPEEQ();
+    antlr4::tree::TerminalNode *SHLEQ();
+    antlr4::tree::TerminalNode *SHREQ();
+
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+   
+  };
+
+  CompoundOpContext* compoundOp();
+
   class  ExprContext : public antlr4::ParserRuleContext {
   public:
     ExprContext(antlr4::ParserRuleContext *parent, size_t invokingState);
@@ -378,16 +404,17 @@ public:
    
   };
 
-  class  IndexExprContext : public ExprContext {
+  class  CompoundDerefExprContext : public ExprContext {
   public:
-    IndexExprContext(ExprContext *ctx);
+    CompoundDerefExprContext(ExprContext *ctx);
 
-    RefContext *ref();
-    antlr4::tree::TerminalNode *LBRACK();
+    antlr4::tree::TerminalNode *STAR();
+    antlr4::tree::TerminalNode *LPAREN();
     std::vector<ExprContext *> expr();
     ExprContext* expr(size_t i);
-    antlr4::tree::TerminalNode *RBRACK();
-    antlr4::tree::TerminalNode *ASSIGN();
+    antlr4::tree::TerminalNode *RPAREN();
+    CompoundOpContext *compoundOp();
+    antlr4::tree::TerminalNode *OLDVAL_KW();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
@@ -401,6 +428,67 @@ public:
     std::vector<ExprContext *> expr();
     ExprContext* expr(size_t i);
     antlr4::tree::TerminalNode *RPAREN();
+    antlr4::tree::TerminalNode *ASSIGN();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  CompoundAssignExprContext : public ExprContext {
+  public:
+    CompoundAssignExprContext(ExprContext *ctx);
+
+    RefContext *ref();
+    CompoundOpContext *compoundOp();
+    ExprContext *expr();
+    antlr4::tree::TerminalNode *OLDVAL_KW();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  IntLitExprContext : public ExprContext {
+  public:
+    IntLitExprContext(ExprContext *ctx);
+
+    antlr4::tree::TerminalNode *NUMBER();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  BinaryExprContext : public ExprContext {
+  public:
+    BinaryExprContext(ExprContext *ctx);
+
+    antlr4::tree::TerminalNode *LPAREN();
+    std::vector<ExprContext *> expr();
+    ExprContext* expr(size_t i);
+    BinOpContext *binOp();
+    antlr4::tree::TerminalNode *RPAREN();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  CallPtrExprContext : public ExprContext {
+  public:
+    CallPtrExprContext(ExprContext *ctx);
+
+    std::vector<antlr4::tree::TerminalNode *> LPAREN();
+    antlr4::tree::TerminalNode* LPAREN(size_t i);
+    ExprContext *expr();
+    std::vector<antlr4::tree::TerminalNode *> RPAREN();
+    antlr4::tree::TerminalNode* RPAREN(size_t i);
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  IndexExprContext : public ExprContext {
+  public:
+    IndexExprContext(ExprContext *ctx);
+
+    RefContext *ref();
+    antlr4::tree::TerminalNode *LBRACK();
+    std::vector<ExprContext *> expr();
+    ExprContext* expr(size_t i);
+    antlr4::tree::TerminalNode *RBRACK();
     antlr4::tree::TerminalNode *ASSIGN();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
@@ -441,11 +529,16 @@ public:
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
 
-  class  IntLitExprContext : public ExprContext {
+  class  TernaryExprContext : public ExprContext {
   public:
-    IntLitExprContext(ExprContext *ctx);
+    TernaryExprContext(ExprContext *ctx);
 
-    antlr4::tree::TerminalNode *NUMBER();
+    antlr4::tree::TerminalNode *LPAREN();
+    std::vector<ExprContext *> expr();
+    ExprContext* expr(size_t i);
+    antlr4::tree::TerminalNode *QUESTION();
+    antlr4::tree::TerminalNode *COLON();
+    antlr4::tree::TerminalNode *RPAREN();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
@@ -460,32 +553,6 @@ public:
     std::vector<antlr4::tree::TerminalNode *> RPAREN();
     antlr4::tree::TerminalNode* RPAREN(size_t i);
     ExprContext *expr();
-
-    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
-  };
-
-  class  BinaryExprContext : public ExprContext {
-  public:
-    BinaryExprContext(ExprContext *ctx);
-
-    antlr4::tree::TerminalNode *LPAREN();
-    std::vector<ExprContext *> expr();
-    ExprContext* expr(size_t i);
-    BinOpContext *binOp();
-    antlr4::tree::TerminalNode *RPAREN();
-
-    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
-  };
-
-  class  CallPtrExprContext : public ExprContext {
-  public:
-    CallPtrExprContext(ExprContext *ctx);
-
-    std::vector<antlr4::tree::TerminalNode *> LPAREN();
-    antlr4::tree::TerminalNode* LPAREN(size_t i);
-    ExprContext *expr();
-    std::vector<antlr4::tree::TerminalNode *> RPAREN();
-    antlr4::tree::TerminalNode* RPAREN(size_t i);
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
@@ -509,6 +576,21 @@ public:
     RefContext *ref();
     antlr4::tree::TerminalNode *ASSIGN();
     ExprContext *expr();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  CompoundIndexExprContext : public ExprContext {
+  public:
+    CompoundIndexExprContext(ExprContext *ctx);
+
+    RefContext *ref();
+    antlr4::tree::TerminalNode *LBRACK();
+    std::vector<ExprContext *> expr();
+    ExprContext* expr(size_t i);
+    antlr4::tree::TerminalNode *RBRACK();
+    CompoundOpContext *compoundOp();
+    antlr4::tree::TerminalNode *OLDVAL_KW();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };

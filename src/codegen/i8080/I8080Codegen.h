@@ -193,6 +193,36 @@ class I8080Codegen : public Backend {
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
+    // CompoundAssign/CompoundDerefAssign's "new = old <op> rhs" step -
+    // `old` already in HL, `rhs` already in DE (both already at
+    // `type`'s own width/signedness), leaves the raw (not yet
+    // re-narrowed - see narrowAcTo()) new value in `ac`. `type` is
+    // never wide here - IRBuilder.cpp's own rejectIfWide() guarantees
+    // it. `+`/`-`/`&`/`|`/`^` reuse genBinary()'s own HL/DE instruction
+    // shapes (register-generic, same mnemonic/operand-shape family -
+    // see I8080Assembler.cpp's own reg8Code()); `*`/`/`/`%`/`<<`/`>>`
+    // seed `bc`/`dx` from HL/DE and reuse genMul()'s/genDivMod()'s/
+    // genShift()'s own loop bodies unchanged.
+    void genCompoundOp(const std::string &op, Type type);
+    // CompoundAssign's plain (unindexed) target - `e.slot` is a
+    // Global or a Local/Param. The target's own address is a pure
+    // function of `e.slot` (a label, or `fp`-relative arithmetic that
+    // never touches `ac`/`bc`/`cx`/`dx`), so unlike the indexed/deref
+    // case below it's simply recomputed a second time after `rhs` is
+    // evaluated, rather than held across that evaluation at all - only
+    // the loaded `old` value itself needs the real stack to survive
+    // `rhs`'s own evaluation (which may use any cell as scratch).
+    void genCompoundScalar(const ir::Expr &e);
+    // Shared tail for CompoundAssign's indexed form and
+    // CompoundDerefAssign - the `ptr` cell must already hold the
+    // resolved address on entry. See the .cpp's own comment.
+    void genCompoundThroughPtr(const ir::Expr &e);
+    // Re-narrows `ac` from its own low byte, per `to`'s signedness,
+    // when `to` is a `char` - the same instruction shapes
+    // genConvert()'s own narrow-to-narrow case already uses, needed
+    // here because a compound op computed at full 16-bit width can
+    // leave garbage above a `char` target's own 8 bits.
+    void narrowAcTo(Type to);
 
     // Leaves slot[idxExpr]'s own effective address in the `ptr`
     // memory cell - the only thing in this backend that ever needs a

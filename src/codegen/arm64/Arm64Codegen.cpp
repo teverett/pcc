@@ -501,6 +501,38 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
             storeOperand("x2", e.slot->type);
             return;
         }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--)
+                genIndexAddr(e.slot, *e.lhs);  // x2 = target address
+                genCompoundThroughX2(e);
+                return;
+            }
+            // A plain scalar target still needs its address computed
+            // (A64 has no absolute-addressing memory operand - see
+            // this file's own header comment), so it goes through the
+            // exact same held-address tail as the indexed form above.
+            loadSlotAddr("x2", e.slot);
+            genCompoundThroughX2(e);
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);  // w0 = pointer value
+            code_ << "    mov x2,x0\n";  // x2 = address
+            genCompoundThroughX2(e);
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            genExpr(*e.lhs);
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            code_ << "    cbz " << reg(0, isWide(e.lhs->type)) << "," << Lelse << "\n";
+            genExpr(*e.rhs);
+            code_ << "    b " << Ldone << "\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
+            return;
+        }
         case ir::ExprKind::DerefAssign: {
             // Stores at e.type's own width/signedness - the pointee
             // type of a real typed pointer, or plain native-int-width
@@ -709,6 +741,71 @@ void Arm64Codegen::genAddrOf(const ir::Expr &operand) {
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");
+}
+
+// Entry: w0 = old, w1 = rhs (both already at `type`'s own width/
+// signedness, never wide - see this file's own header on genCompoundOp()).
+// Every instruction shape here is exactly the one genBinary()/genMul()/
+// genDivMod() already use for that same operator at native (32-bit)
+// width, just with w0/w1 as the two operands instead of whichever
+// registers a Binary node happens to leave them in - this assembler's
+// own data-processing/multiply/divide encoders take their register
+// operands as plain bitfields (see Arm64Assembler.cpp's own
+// encodeAddSub()/encodeLogical() and friends), so which actual
+// register holds which operand is free to pick.
+void Arm64Codegen::genCompoundOp(const std::string &op, Type type) {
+    bool isUnsigned = type.isUnsigned;
+    if (op == "+") { code_ << "    add w0,w0,w1\n"; return; }
+    if (op == "-") { code_ << "    sub w0,w0,w1\n"; return; }
+    if (op == "*") { code_ << "    mul w0,w0,w1\n"; return; }
+    if (op == "&") { code_ << "    and w0,w0,w1\n"; return; }
+    if (op == "|") { code_ << "    orr w0,w0,w1\n"; return; }
+    if (op == "^") { code_ << "    eor w0,w0,w1\n"; return; }
+    if (op == "<<" || op == ">>") {
+        const char *insn = op == "<<" ? "lslv" : (isUnsigned ? "lsrv" : "asrv");
+        code_ << "    " << insn << " w0,w0,w1\n";
+        return;
+    }
+    // "/" or "%" - w3 (unused by this helper's own caller, which holds
+    // the live target address in x2 across this whole computation - see
+    // genCompoundThroughX2()) is the quotient scratch the remainder
+    // form needs, since old and rhs both have to stay live in w0/w1 for
+    // msub.
+    const char *divInsn = isUnsigned ? "udiv" : "sdiv";
+    if (op == "%") {
+        code_ << "    " << divInsn << " w3,w0,w1\n";
+        code_ << "    msub w0,w3,w1,w0\n";  // w0 = w0 - w3*w1 = old - quotient*rhs
+    } else {
+        code_ << "    " << divInsn << " w0,w0,w1\n";
+    }
+}
+
+// x2 must already hold the resolved address on entry. The address is
+// stashed on the real hardware stack across evaluating e.rhs (the
+// same mechanism Assign's own indexed case and DerefAssign already
+// use for the identical problem - genExpr(*e.rhs) can reach arbitrary
+// nested codegen that may use w0/w1/w2/w3), never recomputed
+// afterward, so an indexed/pointer target's own address sub-
+// expression is evaluated exactly once.
+void Arm64Codegen::genCompoundThroughX2(const ir::Expr &e) {
+    code_ << "    sub sp,sp,16\n    stind sp,x2\n";  // stash address
+    genExpr(*e.rhs);                                   // w0 = rhs
+    code_ << "    mov w1,w0\n";                          // w1 = rhs
+    code_ << "    ldind sp,x2\n    add sp,sp,16\n";       // x2 = address (restored)
+    loadOperand("x2", e.type);                              // w0 = old
+    if (e.yieldOld) code_ << "    sub sp,sp,16\n    stind sp,w0\n";  // stash old
+    genCompoundOp(e.op, e.type);                              // w0 = new (raw)
+    narrowW0To(e.type);
+    if (e.yieldOld) {
+        code_ << "    mov w3,w0\n";                             // w3 = new
+        code_ << "    ldind sp,w0\n    add sp,sp,16\n";           // w0 = old
+        code_ << "    mov w1,w0\n";                                // w1 = old, preserved across the store below
+        code_ << "    mov w0,w3\n";                                 // w0 = new - storeOperand always stores from w0
+        storeOperand("x2", e.type);
+        code_ << "    mov w0,w1\n";                                  // w0 = old (final result)
+    } else {
+        storeOperand("x2", e.type);  // w0 already = new
+    }
 }
 
 void Arm64Codegen::genBinary(const ir::Expr &e) {

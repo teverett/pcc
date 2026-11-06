@@ -647,6 +647,59 @@ void PIC16Codegen::genExpr(const ir::Expr &e) {
             storeAcIndirect(widthOfType(e.type));
             return;
         }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--)
+                genIndexAddr(e.slot, *e.lhs);  // ptr = target address
+                genCompoundThroughPtr(e);
+                return;
+            }
+            // Plain scalar target - computing the target address (a
+            // Global's own label, or a Local/Param's loadFrameAddr())
+            // never touches `ac` (see Assign's own identical comment
+            // above), so nothing needs to survive evaluating `rhs` at
+            // all - it's simply recomputed (or, for a Global, just
+            // named again) afterward.
+            genExpr(*e.rhs);  // ac = rhs
+            copy2("dx", "ac");  // dx = rhs, held (nothing else evaluates a genExpr() before it's consumed)
+            if (e.slot->kind == ir::SlotKind::Global) {
+                loadAcFromLabel(label(e.slot), widthOfType(e.slot->type), e.slot->type.isUnsigned);  // ac = old
+            } else {
+                loadFrameAddr(e.slot);
+                loadAcIndirect(widthOfType(e.slot->type), e.slot->type.isUnsigned);  // ac = old
+            }
+            copy2("bc", "ac");  // bc = old - genCompoundOp()'s own precondition
+            if (e.yieldOld) pushCell2("bc");  // old, on SSTACK, surviving genCompoundOp()'s own pseudo-register use
+            copy2("ac", "dx");  // ac = rhs - genCompoundOp()'s own other precondition
+            genCompoundOp(e.op, e.type);
+            narrowAcTo(e.type);
+            if (e.slot->kind == ir::SlotKind::Global) {
+                storeAcToLabel(label(e.slot), widthOfType(e.slot->type));
+            } else {
+                loadFrameAddr(e.slot);
+                storeAcIndirect(widthOfType(e.slot->type));
+            }
+            if (e.yieldOld) popCell2("ac");  // ac = old (final result)
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);  // ac = pointer value
+            code_ << "    movf ac,w\n    movwf ptr\n";  // ptr = address - the same line DerefAssign's own case above uses
+            genCompoundThroughPtr(e);
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            genExpr(*e.lhs);
+            testAcZero();
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            gotoIfZero(Lelse);
+            genExpr(*e.rhs);
+            code_ << "    goto " << Ldone << "\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
+            return;
+        }
         case ir::ExprKind::Unary: {
             if (e.op == "-") {
                 genExpr(*e.rhs);
@@ -976,6 +1029,115 @@ void PIC16Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool want
     code_ << "    goto " << Lloop << "\n";
     code_ << Ldone << ":\n";
     if (wantRemainder) copy2("ac", "dx");
+}
+
+// Precondition: `bc` holds `old`, `ac` holds `rhs` - exactly the
+// register roles genBinary()'s own inline "&"/"|"/"^" code, and
+// genMul()/genDivMod()/genShift()'s own equivalent roles (`bc`/`dx`,
+// `dx`/`bc`, implicit `ac`/`cx` respectively), already settle into
+// right after evaluating their own lhs/rhs, reached here by one extra
+// copy2()/movf instead of their own nested genExpr(rhs). Every
+// instruction below is copied verbatim from that operator's own
+// post-setup body (or calls the same shared add16()/sub16() helper
+// those bodies call). Leaves the raw new value in `ac`.
+void PIC16Codegen::genCompoundOp(const std::string &op, Type) {
+    if (op == "+") {
+        add16("ac", "bc", "ac");
+        return;
+    }
+    if (op == "-") {
+        sub16("ac", "bc", "ac");
+        return;
+    }
+    if (op == "*") {
+        copy2("dx", "ac");  // dx = multiplier (rhs) - bc already holds the multiplicand (old)
+        clear2("ac");
+        code_ << "    movlw 16\n    movwf cx\n";
+        std::string Lloop = newLabel(), Ldone = newLabel(), Lskipadd = newLabel();
+        code_ << Lloop << ":\n";
+        code_ << "    movf cx,w\n";
+        code_ << "    btfsc STATUS,2\n    goto " << Ldone << "\n";
+        code_ << "    movf dx,w\n    andlw 1\n";
+        code_ << "    btfsc STATUS,2\n    goto " << Lskipadd << "\n";
+        add16("ac", "ac", "bc");
+        code_ << Lskipadd << ":\n";
+        shiftOneBit("bc", /*isLeft=*/true);
+        shiftOneBit("dx", /*isLeft=*/false);
+        code_ << "    decf cx,f\n";
+        code_ << "    goto " << Lloop << "\n";
+        code_ << Ldone << ":\n";
+        return;
+    }
+    if (op == "/" || op == "%") {
+        copy2("dx", "bc");  // dx = dividend (old) - copied before bc is overwritten below
+        copy2("bc", "ac");   // bc = divisor (rhs)
+        clear2("ac");
+        std::string Lloop = newLabel(), Ldone = newLabel();
+        code_ << Lloop << ":\n";
+        sub16("cx", "dx", "bc");
+        code_ << "    btfss STATUS,0\n    goto " << Ldone << "\n";
+        copy2("dx", "cx");
+        inc16("ac");
+        code_ << "    goto " << Lloop << "\n";
+        code_ << Ldone << ":\n";
+        if (op == "%") copy2("ac", "dx");
+        return;
+    }
+    if (op == "&" || op == "|" || op == "^") {
+        const char *insn = (op == "&") ? "andwf" : (op == "|") ? "iorwf" : "xorwf";
+        code_ << "    movf bc,w\n    " << insn << " ac,w\n    movwf ac\n";
+        code_ << "    movf bc+1,w\n    " << insn << " ac+1,w\n    movwf ac+1\n";
+        return;
+    }
+    // "<<" or ">>"
+    code_ << "    movf ac,w\n    movwf cx\n";  // cx = shift count (rhs's own low byte)
+    copy2("ac", "bc");                           // ac = value to shift (old)
+    std::string Lloop = newLabel(), Ldone = newLabel();
+    code_ << Lloop << ":\n";
+    code_ << "    movf cx,w\n";
+    code_ << "    btfsc STATUS,2\n    goto " << Ldone << "\n";
+    shiftOneBit("ac", op == "<<");
+    code_ << "    decf cx,f\n";
+    code_ << "    goto " << Lloop << "\n";
+    code_ << Ldone << ":\n";
+}
+
+// `ptr` holds the resolved (one-byte) address on entry. Stashed via
+// pushPtrCell() while `rhs` is evaluated - `rhs` may itself be, or
+// contain, an arbitrarily deep expression (a call, another indexed/
+// dereferenced compound assignment of its own) free to reuse every
+// pseudo-register this function touches, the same reasoning as
+// genIndexAddr()'s own header comment. Once `rhs` is fully evaluated,
+// nothing further here ever recurses back into genExpr(), so `bc`/
+// `cx`/`dx` are plain, non-reentrant scratch from here on, the way
+// genMul()/genDivMod()/etc. already use them after their own setup;
+// `yieldOld`'s own `old` value instead survives on the real `SSTACK`
+// software stack (pushCell2()/popCell2()) across genCompoundOp()'s
+// own use of every one of those, exactly the same reason a Call's own
+// arguments do.
+void PIC16Codegen::genCompoundThroughPtr(const ir::Expr &e) {
+    pushPtrCell();        // stash address
+    genExpr(*e.rhs);        // ac = rhs
+    copy2("dx", "ac");         // dx = rhs, held safely until genCompoundOp() consumes it
+    popPtrCell();                // ptr = address, restored only now
+    loadAcIndirect(widthOfType(e.type), e.type.isUnsigned);  // ac = old
+    copy2("bc", "ac");                                         // bc = old - genCompoundOp()'s own precondition
+    if (e.yieldOld) pushCell2("bc");  // old, on SSTACK, surviving genCompoundOp()'s own pseudo-register use
+    copy2("ac", "dx");                  // ac = rhs - genCompoundOp()'s own other precondition
+    genCompoundOp(e.op, e.type);          // ac = new (raw)
+    narrowAcTo(e.type);
+    storeAcIndirect(widthOfType(e.type));  // stores ac (= new) - ptr is still untouched since popPtrCell() above
+    if (e.yieldOld) popCell2("ac");          // ac = old (final result)
+}
+
+// Same truncate-then-sign/zero-extend step genConvert()'s own int-to-
+// char narrowing case uses - the only width this ever narrows to,
+// since requireNarrow() keeps `to` no wider than this backend's own
+// native int, and 2 bytes (the only other width reachable here) needs
+// no narrowing at all.
+void PIC16Codegen::narrowAcTo(Type to) {
+    if (widthOfType(to) != 1) return;
+    signExtendAcHighByte(to.isUnsigned);
 }
 
 void PIC16Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs) {

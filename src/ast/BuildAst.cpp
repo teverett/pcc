@@ -210,8 +210,10 @@ void padArrayInit(std::vector<ArrayInitElem> &values, int size, antlr4::ParserRu
 }
 
 ExprPtr buildCondExpr(CParser::CondExprContext *ctx);
+ExprPtr buildExpr(CParser::ExprContext *ctx);
 StmtPtr buildStmt(CParser::StatementContext *ctx);
 StmtPtr buildSimpleStmt(CParser::SimpleStmtContext *ctx);
+ExprPtr makeIncDec(antlr4::ParserRuleContext *ctx, const std::string &opToken, bool yieldOld);
 
 ExprPtr makeBinary(antlr4::ParserRuleContext *ctx, const std::string &op, ExprPtr lhs, ExprPtr rhs) {
     auto e = std::make_unique<Expr>();
@@ -224,6 +226,53 @@ ExprPtr makeBinary(antlr4::ParserRuleContext *ctx, const std::string &op, ExprPt
 }
 
 ExprPtr buildCondExpr(CParser::CondExprContext *ctx) {
+    if (auto *c = dynamic_cast<CParser::PostIncDecVarExprContext *>(ctx)) {
+        auto e = makeIncDec(c, c->op->getText(), /*yieldOld=*/true);
+        e->kind = ExprKind::CompoundAssign;
+        e->name = c->IDENT()->getText();
+        return e;
+    }
+    if (auto *c = dynamic_cast<CParser::PostIncDecIndexExprContext *>(ctx)) {
+        auto e = makeIncDec(c, c->op->getText(), /*yieldOld=*/true);
+        e->kind = ExprKind::CompoundAssign;
+        e->name = c->IDENT()->getText();
+        e->lhs = buildExpr(c->idx);
+        return e;
+    }
+    if (auto *c = dynamic_cast<CParser::PostIncDecDerefExprContext *>(ctx)) {
+        auto e = makeIncDec(c, c->op->getText(), /*yieldOld=*/true);
+        e->kind = ExprKind::CompoundDerefAssign;
+        e->lhs = buildCondExpr(c->ptr);
+        return e;
+    }
+    if (auto *c = dynamic_cast<CParser::PreIncDecVarExprContext *>(ctx)) {
+        auto e = makeIncDec(c, c->op->getText(), /*yieldOld=*/false);
+        e->kind = ExprKind::CompoundAssign;
+        e->name = c->IDENT()->getText();
+        return e;
+    }
+    if (auto *c = dynamic_cast<CParser::PreIncDecIndexExprContext *>(ctx)) {
+        auto e = makeIncDec(c, c->op->getText(), /*yieldOld=*/false);
+        e->kind = ExprKind::CompoundAssign;
+        e->name = c->IDENT()->getText();
+        e->lhs = buildExpr(c->idx);
+        return e;
+    }
+    if (auto *c = dynamic_cast<CParser::PreIncDecDerefExprContext *>(ctx)) {
+        auto e = makeIncDec(c, c->op->getText(), /*yieldOld=*/false);
+        e->kind = ExprKind::CompoundDerefAssign;
+        e->lhs = buildCondExpr(c->ptr);
+        return e;
+    }
+    if (auto *c = dynamic_cast<CParser::TernaryExprContext *>(ctx)) {
+        auto e = std::make_unique<Expr>();
+        e->kind = ExprKind::Ternary;
+        e->line = c->getStart()->getLine();
+        e->lhs = buildCondExpr(c->cond);
+        e->rhs = buildExpr(c->then);
+        e->elseExpr = buildCondExpr(c->els);
+        return e;
+    }
     if (auto *c = dynamic_cast<CParser::CallExprContext *>(ctx)) {
         auto e = std::make_unique<Expr>();
         e->kind = ExprKind::Call;
@@ -367,36 +416,69 @@ ExprPtr buildCondExpr(CParser::CondExprContext *ctx) {
     err(ctx, "internal: unhandled condExpr alternative");
 }
 
+// A compound-assignment token's text with its trailing '=' stripped
+// ("+=" -> "+"), or "" for a bare '=' (a plain, non-compound
+// assignment) - the one spot that turns the grammar's assignOp token
+// into "which AST node, and which underlying binary op" for all three
+// assignment lhs shapes below.
+std::string stripAssignEq(const std::string &opText) {
+    if (opText == "=") return "";
+    return opText.substr(0, opText.size() - 1);
+}
+
 ExprPtr buildExpr(CParser::ExprContext *ctx) {
     if (auto *c = dynamic_cast<CParser::AssignDerefExprContext *>(ctx)) {
+        std::string op = stripAssignEq(c->op->getText());
         auto e = std::make_unique<Expr>();
-        e->kind = ExprKind::DerefAssign;
+        e->kind = op.empty() ? ExprKind::DerefAssign : ExprKind::CompoundDerefAssign;
         e->line = c->getStart()->getLine();
+        e->op = op;
         e->lhs = buildCondExpr(c->ptr);
         e->rhs = buildExpr(c->val);
         return e;
     }
     if (auto *c = dynamic_cast<CParser::AssignIndexExprContext *>(ctx)) {
+        std::string op = stripAssignEq(c->op->getText());
         auto e = std::make_unique<Expr>();
-        e->kind = ExprKind::Assign;
+        e->kind = op.empty() ? ExprKind::Assign : ExprKind::CompoundAssign;
         e->line = c->getStart()->getLine();
+        e->op = op;
         e->name = c->IDENT()->getText();
         e->lhs = buildExpr(c->idx);
         e->rhs = buildExpr(c->val);
         return e;
     }
     if (auto *c = dynamic_cast<CParser::AssignExprContext *>(ctx)) {
+        std::string op = stripAssignEq(c->op->getText());
         auto e = std::make_unique<Expr>();
-        e->kind = ExprKind::Assign;
+        e->kind = op.empty() ? ExprKind::Assign : ExprKind::CompoundAssign;
         e->line = c->getStart()->getLine();
+        e->op = op;
         e->name = c->IDENT()->getText();
-        e->rhs = buildExpr(c->expr());
+        e->rhs = buildExpr(c->val);
         return e;
     }
     if (auto *c = dynamic_cast<CParser::ExprCondContext *>(ctx)) {
         return buildCondExpr(c->condExpr());
     }
     err(ctx, "internal: unhandled expr alternative");
+}
+
+// Shared by every pre/postIncDec*Expr alternative in buildCondExpr
+// below: builds the common CompoundAssign/CompoundDerefAssign shape
+// for '++'/'--' (op="+"/"-" per the operator token, rhs=IntLit(1),
+// yieldOld set by the caller - true only for postfix).
+ExprPtr makeIncDec(antlr4::ParserRuleContext *ctx, const std::string &opToken, bool yieldOld) {
+    auto one = std::make_unique<Expr>();
+    one->kind = ExprKind::IntLit;
+    one->line = ctx->getStart()->getLine();
+    one->intValue = 1;
+    auto e = std::make_unique<Expr>();
+    e->line = ctx->getStart()->getLine();
+    e->op = (opToken == "++") ? "+" : "-";
+    e->yieldOld = yieldOld;
+    e->rhs = std::move(one);
+    return e;
 }
 
 StmtPtr buildSimpleStmt(CParser::SimpleStmtContext *ctx) {

@@ -279,6 +279,51 @@ void I386Codegen::genExpr(const ir::Expr &e) {
             storeOperand(operandOf(e.slot), operandOf(e.slot, 4), e.slot->type);
             return;
         }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--)
+                computeElementAddr(e.slot, *e.lhs);  // ebx = address
+                genCompoundThroughEbx(e);
+                return;
+            }
+            // Plain scalar target - operandOf(slot) is a stable
+            // memory operand (a label or an ebp-relative offset),
+            // never a clobberable register, so no address needs to be
+            // held across rhs's own evaluation at all.
+            std::string mem = operandOf(e.slot);
+            genExpr(*e.rhs);  // eax = rhs
+            code_ << "    mov ebx,eax\n";
+            loadOperand(mem, "", e.type);  // eax = old
+            if (e.yieldOld) code_ << "    push eax\n";
+            genCompoundOp(e.op, e.type);
+            narrowEaxTo(e.type);
+            storeOperand(mem, "", e.type);
+            if (e.yieldOld) code_ << "    pop eax\n";
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);  // eax = pointer value
+            code_ << "    mov ebx,eax\n";  // ebx = address
+            genCompoundThroughEbx(e);
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            genExpr(*e.lhs);
+            // The condition itself (unlike this node's own result type,
+            // which IRBuilder.cpp's rejectIfWide() guarantees is never
+            // wide) can still be a wide expression - same "or the two
+            // halves together before testing" idiom If/While already
+            // use.
+            if (isWide(e.lhs->type)) code_ << "    or eax,edx\n";
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            code_ << "    cmp eax,0\n    je " << Lelse << "\n";
+            genExpr(*e.rhs);
+            code_ << "    jmp " << Ldone << "\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
+            return;
+        }
         case ir::ExprKind::DerefAssign: {
             // Stores through at e.type's own width/signedness - the
             // pointee type of a real typed pointer (char*/short*/
@@ -413,6 +458,64 @@ std::string I386Codegen::computeElementAddr(const ir::Slot *slot, const ir::Expr
         code_ << "    add ebx," << operandOf(slot) << "\n";
     }
     return "[ebx]";
+}
+
+void I386Codegen::genCompoundOp(const std::string &op, Type type) {
+    bool isUnsigned = type.isUnsigned;
+    if (op == "+") { code_ << "    add eax,ebx\n"; return; }
+    if (op == "-") { code_ << "    sub eax,ebx\n"; return; }
+    // "imul ebx"/"mul ebx" (one operand, same real-hardware shape
+    // genMul() already relies on): edx:eax = eax*ebx, keep eax - this
+    // assembler only ever supports that one-operand multiply form
+    // (see I386Assembler.cpp's own Operand comment), not a two-
+    // operand "imul eax,ebx".
+    if (op == "*") { code_ << "    " << (isUnsigned ? "mul" : "imul") << " ebx\n"; return; }
+    if (op == "&") { code_ << "    and eax,ebx\n"; return; }
+    if (op == "|") { code_ << "    or eax,ebx\n"; return; }
+    if (op == "^") { code_ << "    xor eax,ebx\n"; return; }
+    if (op == "<<" || op == ">>") {
+        code_ << "    mov ecx,ebx\n";
+        code_ << "    " << (op == "<<" ? "shl" : (isUnsigned ? "shr" : "sar")) << " eax,cl\n";
+        return;
+    }
+    // "/" or "%" - ebx is a valid divisor operand directly (div/idiv
+    // only forbid eax/edx, which already hold the dividend).
+    code_ << "    " << (isUnsigned ? "xor edx,edx\n" : "cdq\n");
+    code_ << "    " << (isUnsigned ? "div" : "idiv") << " ebx\n";
+    if (op == "%") code_ << "    mov eax,edx\n";
+}
+
+// ebx must already hold the resolved address on entry. This dialect's
+// own assembler only ever supports `[ebx]` as a memory base (see
+// I386Assembler.cpp's own Operand comment) - so the address is always
+// shuttled back into ebx right before each of the two real memory
+// accesses here (never held in some other register across rhs's own
+// evaluation/the op computation in between, the way a real i386
+// toolchain's assembler would let this use esi/edi instead).
+void I386Codegen::genCompoundThroughEbx(const ir::Expr &e) {
+    code_ << "    push ebx\n";  // stash address
+    genExpr(*e.rhs);             // eax = rhs
+    code_ << "    push eax\n";    // stash rhs
+    code_ << "    pop ecx\n";      // ecx = rhs
+    code_ << "    pop ebx\n";       // ebx = address
+    loadOperand("[ebx]", "", e.type);  // eax = old
+    code_ << "    push ebx\n";           // re-stash address for the store below
+    if (e.yieldOld) code_ << "    push eax\n";  // stash old too
+    code_ << "    mov ebx,ecx\n";                // ebx = rhs
+    genCompoundOp(e.op, e.type);                   // eax = new (raw)
+    narrowEaxTo(e.type);
+    if (e.yieldOld) {
+        code_ << "    mov ecx,eax\n";  // ecx = new
+        code_ << "    pop eax\n";       // eax = old
+        code_ << "    pop ebx\n";        // ebx = address
+        code_ << "    mov edx,eax\n";     // edx = old (preserved across the store below)
+        code_ << "    mov eax,ecx\n";      // eax = new (storeOperand always stores from eax)
+        storeOperand("[ebx]", "", e.type);
+        code_ << "    mov eax,edx\n";        // eax = old (final result)
+    } else {
+        code_ << "    pop ebx\n";  // ebx = address
+        storeOperand("[ebx]", "", e.type);  // eax already = new
+    }
 }
 
 void I386Codegen::narrowEaxTo(Type to) {

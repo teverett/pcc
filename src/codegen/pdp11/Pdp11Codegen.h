@@ -151,6 +151,29 @@ class Pdp11Codegen : public Backend {
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
     void genConvert(const ir::Expr &e);
+    // CompoundAssign/CompoundDerefAssign's "new = old <op> rhs" step -
+    // `old` already in r0, `rhs` already in r1 (both already at
+    // `type`'s own width/signedness), leaves the raw (not yet
+    // re-narrowed - see narrowR0To()) new value in r0. `type` is never
+    // wide here - IRBuilder.cpp's own rejectIfWide() guarantees it.
+    // Every per-operator instruction form below is the exact same one
+    // genBinary()/genShift()/genMul()/genDivMod() already use at this
+    // same native width, just with both operands already sitting in
+    // registers instead of freshly evaluated - `<<`/`>>` in particular
+    // reuses genShift()'s own r0=value/r1=count loop body unchanged,
+    // since that's already this entry convention with no swap needed.
+    void genCompoundOp(const std::string &op, Type type);
+    // Shared tail for CompoundAssign's indexed form and
+    // CompoundDerefAssign - r2 must already hold the resolved address
+    // on entry (and nothing else live). See the .cpp's own comment.
+    void genCompoundThroughR2(const ir::Expr &e);
+    // Re-narrows r0 from its own low byte, per `to`'s signedness, when
+    // `to` is a `char` - the same two instruction shapes genConvert()
+    // already uses for a narrow-to-narrow conversion, needed here
+    // because a compound op computed at full register width can leave
+    // garbage above a `char` target's own 8 bits (e.g. overflow past
+    // bit 7). A no-op for every wider-than-`char` type.
+    void narrowR0To(Type to);
 
     int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }

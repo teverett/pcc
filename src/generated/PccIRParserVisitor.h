@@ -59,7 +59,15 @@ public:
 
     virtual std::any visitRef(PccIRParser::RefContext *context) = 0;
 
+    virtual std::any visitCompoundOp(PccIRParser::CompoundOpContext *context) = 0;
+
     virtual std::any visitIntLitExpr(PccIRParser::IntLitExprContext *context) = 0;
+
+    virtual std::any visitCompoundIndexExpr(PccIRParser::CompoundIndexExprContext *context) = 0;
+
+    virtual std::any visitCompoundAssignExpr(PccIRParser::CompoundAssignExprContext *context) = 0;
+
+    virtual std::any visitCompoundDerefExpr(PccIRParser::CompoundDerefExprContext *context) = 0;
 
     virtual std::any visitIndexExpr(PccIRParser::IndexExprContext *context) = 0;
 
@@ -70,6 +78,8 @@ public:
     virtual std::any visitUnaryExpr(PccIRParser::UnaryExprContext *context) = 0;
 
     virtual std::any visitBinaryExpr(PccIRParser::BinaryExprContext *context) = 0;
+
+    virtual std::any visitTernaryExpr(PccIRParser::TernaryExprContext *context) = 0;
 
     virtual std::any visitConvertExpr(PccIRParser::ConvertExprContext *context) = 0;
 

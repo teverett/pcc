@@ -129,6 +129,19 @@ class M68kCodegen : public Backend {
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
     void genConvert(const ir::Expr &e);
+    // CompoundAssign/CompoundDerefAssign's "new = old <op> rhs" step -
+    // `old` already in D0, `rhs` already in D1 (both already at
+    // `type`'s own width/signedness), leaves the raw (not yet
+    // re-narrowed - see narrowD0To()) new value in D0. `type` is never
+    // wide here - IRBuilder.cpp's own rejectIfWide() guarantees it.
+    void genCompoundOp(const std::string &op, Type type);
+    // Shared tail for CompoundAssign's indexed form and
+    // CompoundDerefAssign - A0 must already hold the resolved address
+    // on entry. A0 survives `e.rhs`'s own evaluation on the real
+    // hardware stack (A7) the same way the indexed-Assign case in
+    // genExpr() already preserves it there, so a recursive/complex
+    // `e.rhs` (calls included) can safely clobber every data register.
+    void genCompoundThroughA0(const ir::Expr &e);
 
     // A `long long` result always lives in D0(lo):D1(hi) - the same
     // "D0 is genExpr()'s own result register" convention this

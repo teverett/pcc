@@ -148,6 +148,19 @@ class STM32Codegen : public Backend {
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
     void genConvert(const ir::Expr &e);
+    // CompoundAssign/CompoundDerefAssign's "new = old <op> rhs" step -
+    // `old` already in r0, `rhs` already in r1 (both already at
+    // `type`'s own width/signedness), leaves the raw (not yet
+    // re-narrowed - see narrowR0To()) new value in r0. `type` is never
+    // wide here - IRBuilder.cpp's own rejectIfWide() guarantees it.
+    void genCompoundOp(const std::string &op, Type type);
+    // Shared tail for CompoundAssign's indexed form and
+    // CompoundDerefAssign - r2 must already hold the resolved address
+    // on entry. r2 survives `e.rhs`'s own evaluation on the real
+    // hardware stack the same way genExpr()'s own indexed-Assign case
+    // already preserves it there, so a recursive/complex `e.rhs`
+    // (calls included) can safely clobber every other register.
+    void genCompoundThroughR2(const ir::Expr &e);
 
     // Leaves slot[idxExpr]'s own effective address in `r2`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);

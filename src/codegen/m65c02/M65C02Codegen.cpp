@@ -299,6 +299,89 @@ void M65C02Codegen::storeOperandAtPtr(Type type) {
     if (w == 2) code_ << "    ldyi 1\n    lda ac+1\n    staind ptr\n";
 }
 
+void M65C02Codegen::narrowAcTo(Type to) {
+    if (widthOfType(to) != 1) return;  // a native word: ac already holds the full value
+    if (to.isUnsigned) {
+        code_ << "    stzp ac+1\n";
+        return;
+    }
+    code_ << "    lda ac\n    sta cx\n    asl cx\n";
+    std::string Lneg = newLabel(), Ldone = newLabel();
+    code_ << "    stzp ac+1\n";
+    safeBranch("bcs", Lneg, Ldone);
+    code_ << Lneg << ":\n    ldai 255\n    sta ac+1\n";
+    code_ << Ldone << ":\n";
+}
+
+// `op` applied to ac=old, bc=rhs, leaving the raw new value in ac -
+// every instruction here is the exact same mnemonic/operand shape
+// genBinary()'s own per-operator case already emits (see that
+// method), with only ac/bc's own roles swapped where the operator
+// isn't commutative (old plays genBinary()'s own "first/lhs operand"
+// role here, rhs its "second/rhs operand" role - see this method's
+// own header comment in M65C02Codegen.h).
+void M65C02Codegen::genCompoundOp(const std::string &op, Type type) {
+    bool isUnsigned = type.isUnsigned;
+    if (op == "+") {
+        code_ << "    clc\n    lda ac\n    adc bc\n    sta ac\n";
+        code_ << "    lda ac+1\n    adc bc+1\n    sta ac+1\n";
+        return;
+    }
+    if (op == "-") {
+        code_ << "    sec\n    lda ac\n    sbc bc\n    sta ac\n";
+        code_ << "    lda ac+1\n    sbc bc+1\n    sta ac+1\n";
+        return;
+    }
+    if (op == "*") {
+        copy16("dx", "ac");  // dx = multiplier = old (bc already = rhs = multiplicand)
+        genMulCore();
+        return;
+    }
+    if (op == "/" || op == "%") {
+        copy16("dx", "ac");  // dx = dividend = old (bc already = rhs = divisor)
+        genDivModCore(op == "%", isUnsigned);
+        return;
+    }
+    if (op == "&" || op == "|" || op == "^") {
+        const char *insn = (op == "&") ? "and" : (op == "|") ? "ora" : "eor";
+        code_ << "    lda ac\n    " << insn << " bc\n    sta ac\n";
+        code_ << "    lda ac+1\n    " << insn << " bc+1\n    sta ac+1\n";
+        return;
+    }
+    // "<<" or ">>" - bc's own low byte is the shift count; bc is dead
+    // from here on (free as the loop's own scratch), the same "dead
+    // afterward" property genShift()'s own copy16("ac","bc") leaves it
+    // in once its own count has been pulled out of it.
+    code_ << "    lda bc\n    sta cx\n";
+    genShiftCore(op == "<<", isUnsigned);
+}
+
+// `ptr` must already hold the resolved address on entry (see
+// genIndexAddr()/the Assign indexed case, or copy16("ptr","ac") off a
+// dereferenced pointer value, for the two ways a caller gets there).
+// `e.rhs`'s own evaluation can recursively reach arbitrarily complex
+// codegen (calls, nested expressions) that's free to clobber every
+// one of ptr/ac/bc/cx/dx - exactly the reason Assign's own indexed
+// case and DerefAssign already stash `ptr` on the real hardware stack
+// across it rather than trusting it to survive in place; genCompoundOp()'s
+// own "/"/"%" case reaches back into `ptr` too (see its own header
+// comment), so the address is re-stashed a second time around that
+// call as well.
+void M65C02Codegen::genCompoundThroughPtr(const ir::Expr &e) {
+    code_ << "    lda ptr\n    pha\n    lda ptr+1\n    pha\n";  // stash address across rhs's own evaluation
+    genExpr(*e.rhs);                                            // ac = rhs
+    copy16("bc", "ac");                                         // bc = rhs
+    code_ << "    pla\n    sta ptr+1\n    pla\n    sta ptr\n";  // ptr restored
+    loadOperandAtPtr(e.type);                                   // ac = old
+    if (e.yieldOld) code_ << "    lda ac\n    pha\n    lda ac+1\n    pha\n";  // stash old - this expr's own result
+    code_ << "    lda ptr\n    pha\n    lda ptr+1\n    pha\n";  // re-stash address around genCompoundOp()
+    genCompoundOp(e.op, e.type);                                // ac = new (raw), using ac=old, bc=rhs
+    narrowAcTo(e.type);
+    code_ << "    pla\n    sta ptr+1\n    pla\n    sta ptr\n";  // ptr restored (ac, holding `new`, is untouched)
+    storeOperandAtPtr(e.type);
+    if (e.yieldOld) code_ << "    pla\n    sta ac+1\n    pla\n    sta ac\n";  // ac = old (final result)
+}
+
 void M65C02Codegen::loadArrayElemToAc(const ir::ArrayInitElem &e) {
     if (!e.isSymbol) {
         uint16_t v16 = static_cast<uint16_t>(e.value);
@@ -637,6 +720,51 @@ void M65C02Codegen::genExpr(const ir::Expr &e) {
             genExpr(*e.rhs);
             code_ << "    pla\n    sta ptr+1\n    pla\n    sta ptr\n";
             storeOperandAtPtr(e.type);
+            return;
+        }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--)
+                genIndexAddr(e.slot, *e.lhs);  // ptr = target address
+                genCompoundThroughPtr(e);
+                return;
+            }
+            // Plain scalar target - its own storage (a Global's fixed
+            // label, or fp-relative for a Local/Param, via
+            // slotAddrToPtr()) is reconstructible at zero cost after
+            // rhs evaluates: unlike ptr/ac/bc/cx/dx, `fp` itself is
+            // restored by any nested call's own epilogue before that
+            // call ever returns (see emitEpilogue()), so there's
+            // nothing that needs holding across rhs's own evaluation
+            // here at all.
+            genExpr(*e.rhs);     // ac = rhs
+            copy16("bc", "ac");  // bc = rhs
+            loadSlotToAc(e.slot);  // ac = old
+            if (e.yieldOld) code_ << "    lda ac\n    pha\n    lda ac+1\n    pha\n";
+            genCompoundOp(e.op, e.type);
+            narrowAcTo(e.type);
+            storeAcToSlot(e.slot);
+            if (e.yieldOld) code_ << "    pla\n    sta ac+1\n    pla\n    sta ac\n";
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);     // ac = pointer value
+            copy16("ptr", "ac");  // ptr = address
+            genCompoundThroughPtr(e);
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            genExpr(*e.lhs);
+            testTruthy(*e.lhs);
+            std::string Lthen = newLabel();
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            safeBranch("beq", Lelse, Lthen);
+            code_ << Lthen << ":\n";
+            genExpr(*e.rhs);
+            code_ << "    jmp " << Ldone << "\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
             return;
         }
         case ir::ExprKind::Unary: {
@@ -1240,13 +1368,7 @@ void M65C02Codegen::genBinary(const ir::Expr &e) {
 // one bit) - loop `rhs` times instead, the same fix
 // ../pdp7/Pdp7Codegen.cpp's own `<<`/`>>` already needed for the
 // same reason (see M65C02Codegen.h's own header comment).
-void M65C02Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
-    genExpr(lhs);
-    code_ << "    lda ac\n    pha\n    lda ac+1\n    pha\n";
-    genExpr(rhs);
-    code_ << "    lda ac\n    sta cx\n";  // cx = shift count (always small; low byte is enough)
-    code_ << "    pla\n    sta bc+1\n    pla\n    sta bc\n";
-    copy16("ac", "bc");  // ac = value to shift; bc is dead from here on (free as scratch)
+void M65C02Codegen::genShiftCore(bool isLeft, bool isUnsigned) {
     std::string Lloop = newLabel(), Lbody = newLabel(), Ldone = newLabel();
     code_ << Lloop << ":\n    lda cx\n";
     safeBranch("beq", Ldone, Lbody);
@@ -1269,17 +1391,22 @@ void M65C02Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLe
     code_ << Ldone << ":\n";
 }
 
+void M65C02Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
+    genExpr(lhs);
+    code_ << "    lda ac\n    pha\n    lda ac+1\n    pha\n";
+    genExpr(rhs);
+    code_ << "    lda ac\n    sta cx\n";  // cx = shift count (always small; low byte is enough)
+    code_ << "    pla\n    sta bc+1\n    pla\n    sta bc\n";
+    copy16("ac", "bc");  // ac = value to shift; bc is dead from here on (free as scratch)
+    genShiftCore(isLeft, isUnsigned);
+}
+
 // Textbook shift-and-add multiply (no hardware multiply - see
 // M65C02Codegen.h's own header comment): `bc` is the multiplicand
 // (shifted left each iteration), `dx` the multiplier (shifted right,
 // consumed one bit at a time into `cx`'s own loop), `ac` the
 // accumulating product. Only verified against non-negative operands.
-void M65C02Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
-    genExpr(lhs);
-    code_ << "    lda ac\n    pha\n    lda ac+1\n    pha\n";
-    genExpr(rhs);
-    copy16("dx", "ac");  // dx = multiplier
-    code_ << "    pla\n    sta bc+1\n    pla\n    sta bc\n";  // bc = multiplicand
+void M65C02Codegen::genMulCore() {
     zeroZp("ac");  // ac = product = 0
     code_ << "    ldai 16\n    sta cx\n";
     std::string Lloop = newLabel(), Lbody = newLabel(), Ldone = newLabel();
@@ -1300,6 +1427,15 @@ void M65C02Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << Ldone << ":\n";
 }
 
+void M65C02Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
+    genExpr(lhs);
+    code_ << "    lda ac\n    pha\n    lda ac+1\n    pha\n";
+    genExpr(rhs);
+    copy16("dx", "ac");  // dx = multiplier
+    code_ << "    pla\n    sta bc+1\n    pla\n    sta bc\n";  // bc = multiplicand
+    genMulCore();
+}
+
 // Repeated subtraction (no hardware divide - see M65C02Codegen.h's own
 // header comment) - the same algorithm, for the same reason,
 // ../pdp7/Pdp7Codegen.cpp's own ensureDivModRoutine() already uses:
@@ -1307,7 +1443,7 @@ void M65C02Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
 // fixed divisor), `ac` the quotient, counting how many times `bc`
 // was subtracted out of `dx` before it would've gone negative. Only
 // verified against non-negative operands.
-void M65C02Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
+void M65C02Codegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
     auto negate16 = [&](const char *lbl) {
         code_ << "    ldai 0\n    sec\n    sbc " << lbl << "\n    sta " << lbl << "\n";
         code_ << "    ldai 0\n    sbc " << lbl << "+1\n    sta " << lbl << "+1\n";
@@ -1328,11 +1464,6 @@ void M65C02Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wan
         negate16(lbl);
         code_ << Lskip << ":\n";
     };
-    genExpr(lhs);
-    code_ << "    lda ac\n    pha\n    lda ac+1\n    pha\n";
-    genExpr(rhs);
-    copy16("bc", "ac");  // bc = divisor
-    code_ << "    pla\n    sta dx+1\n    pla\n    sta dx\n";  // dx = dividend (running remainder)
     // `ptr`'s own low/high byte double as this operation's two 0/1
     // sign flags (dividend/divisor) - `ptr` itself is otherwise never
     // touched by this routine.
@@ -1370,6 +1501,15 @@ void M65C02Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wan
         negateIf("ptr", "dx");
     }
     if (wantRemainder) copy16("ac", "dx");
+}
+
+void M65C02Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
+    genExpr(lhs);
+    code_ << "    lda ac\n    pha\n    lda ac+1\n    pha\n";
+    genExpr(rhs);
+    copy16("bc", "ac");  // bc = divisor
+    code_ << "    pla\n    sta dx+1\n    pla\n    sta dx\n";  // dx = dividend (running remainder)
+    genDivModCore(wantRemainder, isUnsigned);
 }
 
 void M65C02Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned) {

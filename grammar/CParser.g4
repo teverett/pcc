@@ -142,11 +142,23 @@ simpleStmt
     | expr                                                  # exprStmt
     ;
 
+// op defaults to plain '=' (an ordinary assignment); any of the ten
+// compound-assignment operators instead means "combine with the
+// current value first" - see BuildAst.cpp's own handling of this
+// token for exactly which AST node each one builds (a bare '=' keeps
+// building today's plain Assign/DerefAssign, unchanged; a compound
+// operator builds CompoundAssign/CompoundDerefAssign instead, so the
+// target's own index/pointer sub-expression is only ever evaluated
+// once - see ../docs/ir.md's own note on this).
+assignOp
+    : '=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '^=' | '|=' | '<<=' | '>>='
+    ;
+
 expr
-    : '*' ptr=condExpr '=' val=expr         # assignDerefExpr
-    | IDENT '[' idx=expr ']' '=' val=expr   # assignIndexExpr
-    | IDENT '=' expr                         # assignExpr
-    | condExpr                                # exprCond
+    : '*' ptr=condExpr op=assignOp val=expr         # assignDerefExpr
+    | IDENT '[' idx=expr ']' op=assignOp val=expr   # assignIndexExpr
+    | IDENT op=assignOp val=expr                     # assignExpr
+    | condExpr                                        # exprCond
     ;
 
 // Left-recursive precedence chain: the topmost alternative binds
@@ -161,7 +173,18 @@ expr
 // or variable-count shift, so `|` and `<<`/`>>` are synthesized from
 // instructions it does have).
 condExpr
-    : IDENT '(' argList? ')'                          # callExpr
+    // Postfix '++'/'--': same three assignable-target shapes as
+    // assignExpr/assignIndexExpr/assignDerefExpr above (BuildAst
+    // enforces this - plain IDENT, IDENT[idx], or *condExpr - there's
+    // no grammar rule for "any arbitrary assignable condExpr", same
+    // reasoning as assignment's own three explicit shapes). Placed at
+    // the same tightest tier as the primaries below, matching real C's
+    // own postfix-expression precedence (binds tighter than the
+    // prefix form a few lines down).
+    : IDENT op=('++'|'--')                            # postIncDecVarExpr
+    | IDENT '[' idx=expr ']' op=('++'|'--')           # postIncDecIndexExpr
+    | '*' ptr=condExpr op=('++'|'--')                 # postIncDecDerefExpr
+    | IDENT '(' argList? ')'                          # callExpr
     // Calling through a computed function address (e.g.
     // (table[i])(), (fp)()) rather than a literal function name -
     // the dispatch-table idiom's other half, alongside '&' on a
@@ -190,6 +213,12 @@ condExpr
     | '*' condExpr                                    # derefExpr
     | '&' condExpr                                    # addrOfExpr
     | op=('-'|'!'|'~') condExpr                        # unaryExpr
+    // Prefix '++'/'--' - same three assignable-target shapes as the
+    // postfix form above, operator first; sits at this same tier as
+    // the other prefix unary operators, matching real C.
+    | op=('++'|'--') IDENT                            # preIncDecVarExpr
+    | op=('++'|'--') IDENT '[' idx=expr ']'           # preIncDecIndexExpr
+    | op=('++'|'--') '*' ptr=condExpr                 # preIncDecDerefExpr
     | condExpr op=('*'|'/'|'%') condExpr               # mulExpr
     | condExpr op=('+'|'-') condExpr                   # addExpr
     | condExpr op=('<<'|'>>') condExpr                 # shiftExpr
@@ -200,6 +229,16 @@ condExpr
     | condExpr '|' condExpr                            # bitOrExpr
     | condExpr '&&' condExpr                           # andExpr
     | condExpr '||' condExpr                           # orExpr
+    // Loosest of all (same placement real C uses: looser than '||',
+    // but above assignment - reached only through expr's exprCond
+    // alternative or one of the `expr`-typed primaries above, e.g.
+    // inside a call argument or an array index). Right-associative for
+    // the chained `a ? b : c ? d : e` case (meaning `a ? b : (c ? d :
+    // e)`): 'then' is a full expr (so an assignment is allowed there
+    // unparenthesized, same as real C's own grammar), 'else' recurses
+    // back into condExpr to pick up another ternary (or anything
+    // tighter) without needing its own parens.
+    | cond=condExpr '?' then=expr ':' els=condExpr      # ternaryExpr
     ;
 
 argList

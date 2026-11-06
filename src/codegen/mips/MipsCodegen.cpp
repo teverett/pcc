@@ -323,6 +323,44 @@ void MipsCodegen::genExpr(const ir::Expr &e) {
             storeOperand("t2", e.slot->type);
             return;
         }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--)
+                genIndexAddr(e.slot, *e.lhs);  // t2 = target address
+                genCompoundThroughT2(e);
+                return;
+            }
+            // A plain scalar target still needs its address computed
+            // (MIPS has no absolute-addressing memory operand - see
+            // this file's own header comment), so it goes through the
+            // exact same held-address tail as the indexed form above.
+            loadSlotAddr("t2", e.slot);
+            genCompoundThroughT2(e);
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);  // t0 = pointer value
+            code_ << "    addu t2,t0,zero\n";  // t2 = address
+            genCompoundThroughT2(e);
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            genExpr(*e.lhs);
+            // The condition's own type (unlike the ternary's result
+            // type, which is already capped to the native width - see
+            // IRBuilder.cpp's own rejectIfWide()) can still be wide, so
+            // this reuses If/While's own wide-OR-then-test idiom, not
+            // just a bare t0 test.
+            if (isWide(e.lhs->type)) code_ << "    or t0,t0,t1\n";
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            code_ << "    beq t0,zero," << Lelse << "\n    nop\n";
+            genExpr(*e.rhs);
+            code_ << "    j " << Ldone << "\n    nop\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
+            return;
+        }
         case ir::ExprKind::DerefAssign: {
             // Stores at e.type's own width/signedness - the pointee
             // type of a real typed pointer, or plain native-int-width
@@ -827,6 +865,66 @@ void MipsCodegen::genWideCompare(const std::string &op, const ir::Expr &lhs, con
         code_ << "    " << hiInsn << " t0,t4,t6\n    addiu t1,zero,1\n    xor t0,t1,t0\n";
     }
     code_ << Ldone << ":\n";
+}
+
+// Entry: t0 = old, t1 = rhs (both already at `type`'s own width/
+// signedness). Every instruction shape here is exactly the one
+// genBinary()/genMul()/genDivMod() already use for that same operator
+// at native width - this assembler's own R-type encoders take their
+// register operands as plain bitfields (see MipsAssembler.cpp's own
+// encodeR3()-style helpers), so which actual register holds which
+// operand is free to pick; neither MULT/MFLO nor DIV/MFHI/MFLO ever
+// touch t2, so the address genCompoundThroughT2() holds there survives
+// this call unconditionally, unlike a target whose own software
+// divide/modulo routine needs more registers than this one does.
+void MipsCodegen::genCompoundOp(const std::string &op, Type type) {
+    bool isUnsigned = type.isUnsigned;
+    if (op == "+") { code_ << "    addu t0,t0,t1\n"; return; }
+    if (op == "-") { code_ << "    subu t0,t0,t1\n"; return; }
+    if (op == "*") {
+        code_ << "    " << (isUnsigned ? "multu" : "mult") << " t0,t1\n";
+        code_ << "    mflo t0\n";
+        return;
+    }
+    if (op == "&") { code_ << "    and t0,t0,t1\n"; return; }
+    if (op == "|") { code_ << "    or t0,t0,t1\n"; return; }
+    if (op == "^") { code_ << "    xor t0,t0,t1\n"; return; }
+    if (op == "<<" || op == ">>") {
+        const char *insn = op == "<<" ? "sllv" : (isUnsigned ? "srlv" : "srav");
+        code_ << "    " << insn << " t0,t0,t1\n";
+        return;
+    }
+    // "/" or "%"
+    code_ << "    " << (isUnsigned ? "divu" : "div") << " t0,t1\n";
+    code_ << "    " << (op == "%" ? "mfhi" : "mflo") << " t0\n";
+}
+
+// t2 must already hold the resolved address on entry. The address is
+// stashed on the real hardware stack across evaluating e.rhs (the
+// same mechanism Assign's own indexed case and DerefAssign already
+// use for the identical problem - genExpr(*e.rhs) can reach arbitrary
+// nested codegen that may use t0 through t4), never recomputed
+// afterward, so an indexed/pointer target's own address sub-
+// expression is evaluated exactly once.
+void MipsCodegen::genCompoundThroughT2(const ir::Expr &e) {
+    code_ << "    addiu sp,sp,-4\n    stind sp,t2\n";  // stash address
+    genExpr(*e.rhs);                                     // t0 = rhs
+    code_ << "    addu t1,t0,zero\n";                      // t1 = rhs
+    code_ << "    ldind sp,t2\n    addiu sp,sp,4\n";         // t2 = address (restored)
+    loadOperand("t2", e.type);                                 // t0 = old
+    if (e.yieldOld) code_ << "    addiu sp,sp,-4\n    stind sp,t0\n";  // stash old
+    genCompoundOp(e.op, e.type);                                 // t0 = new (raw)
+    narrowT0To(e.type);
+    if (e.yieldOld) {
+        code_ << "    addu t1,t0,zero\n";                          // t1 = new
+        code_ << "    ldind sp,t0\n    addiu sp,sp,4\n";             // t0 = old
+        code_ << "    addu t3,t0,zero\n";                              // t3 = old, preserved across the store below
+        code_ << "    addu t0,t1,zero\n";                                // t0 = new - storeOperand always stores from t0
+        storeOperand("t2", e.type);
+        code_ << "    addu t0,t3,zero\n";                                  // t0 = old (final result)
+    } else {
+        storeOperand("t2", e.type);  // t0 already = new
+    }
 }
 
 void MipsCodegen::genBinary(const ir::Expr &e) {

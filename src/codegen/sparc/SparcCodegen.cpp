@@ -428,6 +428,49 @@ void SparcCodegen::genExpr(const ir::Expr &e) {
             storeOperand("t2", e.type);
             return;
         }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--)
+                genIndexAddr(e.slot, *e.lhs);  // t2 = address
+                genCompoundThroughT2(e);
+                return;
+            }
+            // Plain scalar target - loadSlotValue()/storeSlotValue()
+            // address it afresh every call with no side effect (a
+            // Global's own fixed-label address load, or just a
+            // compile-time `fp`-relative displacement), so there's no
+            // address to hold across `e.rhs`'s own evaluation at all -
+            // same order as the existing non-indexed Assign case above
+            // (rhs first, then the slot access).
+            genExpr(*e.rhs);  // t0 = rhs
+            movReg("t1", "t0");  // t1 = rhs
+            loadSlotValue(e.slot);  // t0 = old
+            if (e.yieldOld) code_ << "    sub sp,4,sp\n    stind sp,t0\n";
+            genCompoundOp(e.op, e.type);
+            narrowT0To(e.type);
+            storeSlotValue(e.slot);
+            if (e.yieldOld) code_ << "    ldind sp,t0\n    add sp,4,sp\n";
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);  // t0 = pointer value
+            movReg("t2", "t0");  // t2 = address
+            genCompoundThroughT2(e);
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            genExpr(*e.lhs);
+            if (isWide(e.lhs->type)) code_ << "    or t0,t0,t1\n";
+            code_ << "    cmp t0,0\n";
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            code_ << "    beq " << Lelse << "\n";
+            genExpr(*e.rhs);
+            code_ << "    ba " << Ldone << "\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
+            return;
+        }
         case ir::ExprKind::Unary: {
             if (e.op == "-") {
                 genExpr(*e.rhs);
@@ -578,6 +621,81 @@ void SparcCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
 void SparcCodegen::genIndex(const ir::Expr &e) {
     genIndexAddr(e.slot, *e.lhs);
     loadOperand("t2", e.slot->type);
+}
+
+void SparcCodegen::genCompoundOp(const std::string &op, Type type) {
+    bool isUnsigned = type.isUnsigned;
+    if (op == "+") { code_ << "    add t0,t1,t0\n"; return; }
+    if (op == "-") { code_ << "    sub t0,t1,t0\n"; return; }
+    // Real hardware `smul` (see genMul()'s own identical form) - a
+    // full 32x32->32 product, commutative, so this is the same value
+    // as old*rhs regardless of operand order.
+    if (op == "*") { code_ << "    smul t0,t1,t0\n"; return; }
+    if (op == "&") { code_ << "    and t0,t1,t0\n"; return; }
+    if (op == "|") { code_ << "    or t0,t1,t0\n"; return; }
+    if (op == "^") { code_ << "    xor t0,t1,t0\n"; return; }
+    if (op == "<<" || op == ">>") {
+        const char *insn = op == "<<" ? "sll" : (isUnsigned ? "srl" : "sra");
+        code_ << "    " << insn << " t0,t1,t0\n";
+        return;
+    }
+    // "/" or "%" - SPARC's divide always treats its first register
+    // operand as the dividend whose own sign bits the Y register must
+    // be seeded from first (see genDivMod()'s own comment) - t5 is a
+    // free scratch register here (only ever needed by the wide
+    // helpers elsewhere), used to swap old/rhs into t1/t0 so the exact
+    // same divide sequence genDivMod() already uses applies unchanged.
+    // This clobbers t2 (the sign-seed/quotient scratch, same as
+    // genDivMod()) - callers that still need t2's own address
+    // afterward preserve it themselves around this call.
+    movReg("t5", "t0");  // t5 = old
+    movReg("t0", "t1");  // t0 = rhs (divisor)
+    movReg("t1", "t5");  // t1 = old (dividend)
+    if (isUnsigned) {
+        code_ << "    wry g0,g0\n";
+    } else {
+        code_ << "    sra t1,31,t2\n    wry t2,g0\n";
+    }
+    const char *divInsn = isUnsigned ? "udiv" : "sdiv";
+    const char *mulInsn = isUnsigned ? "umul" : "smul";
+    if (op == "%") {
+        code_ << "    " << divInsn << " t1,t0,t2\n";  // t2 = quotient (old/rhs)
+        code_ << "    " << mulInsn << " t2,t0,t2\n";   // t2 = quotient * rhs
+        code_ << "    sub t1,t2,t0\n";                  // t0 = old - quotient*rhs = remainder
+    } else {
+        code_ << "    " << divInsn << " t1,t0,t0\n";
+    }
+}
+
+// t2 must already hold the resolved address on entry, and nothing
+// else live - mirrors genExpr()'s own indexed-Assign case, which
+// already stashes t2 on the real hardware stack across `e.rhs`'s own
+// evaluation for the identical reason: that evaluation can
+// recursively reach arbitrary codegen (calls included), which may
+// freely use every other register. t2 is stashed a second time around
+// genCompoundOp() itself, since its own "/"/"%" case needs t2 as
+// scratch (see that function's own comment).
+void SparcCodegen::genCompoundThroughT2(const ir::Expr &e) {
+    code_ << "    sub sp,4,sp\n    stind sp,t2\n";
+    genExpr(*e.rhs);                 // t0 = rhs
+    movReg("t1", "t0");                // t1 = rhs, held across the t2 reload below
+    code_ << "    ldind sp,t2\n    add sp,4,sp\n";  // t2 = address
+    loadOperand("t2", e.type);            // t0 = old
+    if (e.yieldOld) code_ << "    sub sp,4,sp\n    stind sp,t0\n";
+    code_ << "    sub sp,4,sp\n    stind sp,t2\n";    // re-stash the address around genCompoundOp()
+    genCompoundOp(e.op, e.type);              // t0 = new (raw)
+    narrowT0To(e.type);
+    code_ << "    ldind sp,t2\n    add sp,4,sp\n";       // t2 = address restored
+    if (e.yieldOld) {
+        movReg("t3", "t0");                       // t3 = new
+        code_ << "    ldind sp,t0\n    add sp,4,sp\n";  // t0 = old
+        movReg("t4", "t0");                           // t4 = old, preserved across the store below
+        movReg("t0", "t3");                            // t0 = new (storeOperand always stores from t0)
+        storeOperand("t2", e.type);                       // t2 still addresses the target (loadOperand never moves it - e.type is never wide)
+        movReg("t0", "t4");                                // t0 = old (final result)
+    } else {
+        storeOperand("t2", e.type);  // t0 already = new; t2 still addresses the target
+    }
 }
 
 void SparcCodegen::genAddrOf(const ir::Expr &operand) {

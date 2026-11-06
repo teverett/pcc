@@ -809,28 +809,12 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
         }
         case ir::ExprKind::Assign: {
             if (e.lhs) {  // slot[idx] = rhs
-                int w = widthOfType(e.slot->type);
                 genIndexAddr(e.slot, *e.lhs);  // ptr = target address
                 copy16("ac", "ptr");
                 pushAc();  // push ptr's own value, carried via ac
                 genExpr(*e.rhs);
                 popInto("ptr");  // ac is untouched by popInto() - it still holds rhs's value
-                if (w > 2) {
-                    genWideStoreAtPtr(wordCountOf(e.slot->type));
-                } else if (w == 1) {
-                    // `loadHLFromCell` clobbers A internally (it reads
-                    // `ptr`'s own two stored bytes through it) - the
-                    // value to store has to survive in B across that
-                    // call, the same reason copy16()/storeAcIndirect()
-                    // never read a value straight into A right before
-                    // repointing H,L.
-                    loadByte("ac");
-                    code_ << "    mov b, a\n";
-                    loadHLFromCell("ptr");
-                    code_ << "    mov a, b\n    mov m, a\n";
-                } else {
-                    storeAcIndirect("ptr");
-                }
+                storeOperandAtPtr(e.slot->type);
                 return;
             }
             genExpr(*e.rhs);
@@ -862,17 +846,64 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
             pushAc();  // ac already equals the pointer value - push it directly
             genExpr(*e.rhs);
             popInto("ptr");  // ac/wac is untouched by popInto() - it still holds rhs's value
-            int w = widthOfType(e.type);
-            if (w > 2) {
-                genWideStoreAtPtr(wordCountOf(e.type));
-            } else if (w == 1) {
+            storeOperandAtPtr(e.type);
+            return;
+        }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--)
+                genIndexAddr(e.slot, *e.lhs);  // ptr = target address
+                genCompoundThroughPtr(e);
+                return;
+            }
+            // Plain scalar target - its own storage (a Global's fixed
+            // label, or fp-relative for a Local/Param, via
+            // pointAtSlot()) is reconstructible at zero cost after rhs
+            // evaluates: unlike ptr/ac/bc/cx/dx, `fp` itself is
+            // restored by any nested call's own epilogue before that
+            // call ever returns (see emitEpilogue()), so there's
+            // nothing that needs holding across rhs's own evaluation
+            // here at all.
+            genExpr(*e.rhs);     // ac = rhs
+            copy16("bc", "ac");  // bc = rhs
+            if (widthOfType(e.slot->type) == 1) {
+                pointAtSlot(e.slot, 0);
+                code_ << "    mov a, m\n";
+                storeByte("ac");
+                emitSignExtendByte("ac", "ac+1", e.slot->type.isUnsigned);
+            } else {
+                copy16FromSlot("ac", e.slot);  // ac = old
+            }
+            if (e.yieldOld) pushAc();
+            genCompoundOp(e.op, e.type);
+            narrowAcTo(e.type);
+            if (widthOfType(e.slot->type) == 1) {
                 loadByte("ac");
                 code_ << "    mov b, a\n";
-                loadHLFromCell("ptr");
+                pointAtSlot(e.slot, 0);
                 code_ << "    mov a, b\n    mov m, a\n";
             } else {
-                storeAcIndirect("ptr");
+                copy16ToSlot(e.slot, "ac");
             }
+            if (e.yieldOld) popInto("ac");
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);     // ac = pointer value
+            copy16("ptr", "ac");  // ptr = address
+            genCompoundThroughPtr(e);
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            genExpr(*e.lhs);
+            testTruthy(*e.lhs);
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            code_ << "    jtz " << Lelse << "\n";
+            genExpr(*e.rhs);
+            code_ << "    jmp " << Ldone << "\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
             return;
         }
         case ir::ExprKind::Unary: {
@@ -900,26 +931,7 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
                 // from the pointer value instead of genIndexAddr().
                 genExpr(*e.rhs);  // ac = pointer value
                 copy16("ptr", "ac");
-                int w = widthOfType(e.type);
-                if (w > 2) {
-                    genWideLoadAtPtr(wordCountOf(e.type));
-                    return;
-                }
-                if (w == 1) {
-                    loadHLFromCell("ptr");
-                    code_ << "    mov a, m\n";
-                    storeByte("ac");
-                    emitSignExtendByte("ac", "ac+1", e.type.isUnsigned);
-                    return;
-                }
-                loadHLFromCell("ptr");  // HL = the pointer's own value (the target address)
-                code_ << "    mov a, m\n    mov b, a\n";
-                incHL();
-                code_ << "    mov a, m\n    mov c, a\n";
-                pointAt("ac");
-                code_ << "    mov a, b\n    mov m, a\n";
-                pointAt("ac+1");
-                code_ << "    mov a, c\n    mov m, a\n";
+                loadOperandAtPtr(e.type);
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 if (wide) {
@@ -1107,16 +1119,20 @@ void I8008Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
 
 void I8008Codegen::genIndex(const ir::Expr &e) {
     genIndexAddr(e.slot, *e.lhs);
-    int w = widthOfType(e.slot->type);
+    loadOperandAtPtr(e.slot->type);
+}
+
+void I8008Codegen::loadOperandAtPtr(Type type) {
+    int w = widthOfType(type);
     if (w > 2) {
-        genWideLoadAtPtr(wordCountOf(e.slot->type));
+        genWideLoadAtPtr(wordCountOf(type));
         return;
     }
     if (w == 1) {
         loadHLFromCell("ptr");
         code_ << "    mov a, m\n";
         storeByte("ac");
-        emitSignExtendByte("ac", "ac+1", e.slot->type.isUnsigned);
+        emitSignExtendByte("ac", "ac+1", type.isUnsigned);
         return;
     }
     loadHLFromCell("ptr");  // HL = the computed address itself
@@ -1127,6 +1143,122 @@ void I8008Codegen::genIndex(const ir::Expr &e) {
     code_ << "    mov a, b\n    mov m, a\n";
     pointAt("ac+1");
     code_ << "    mov a, c\n    mov m, a\n";
+}
+
+void I8008Codegen::storeOperandAtPtr(Type type) {
+    int w = widthOfType(type);
+    if (w > 2) {
+        genWideStoreAtPtr(wordCountOf(type));
+        return;
+    }
+    if (w == 1) {
+        // `loadHLFromCell` clobbers A internally (it reads `ptr`'s own
+        // two stored bytes through it) - the value to store has to
+        // survive in B across that call, the same reason copy16()/
+        // storeAcIndirect() never read a value straight into A right
+        // before repointing H,L.
+        loadByte("ac");
+        code_ << "    mov b, a\n";
+        loadHLFromCell("ptr");
+        code_ << "    mov a, b\n    mov m, a\n";
+        return;
+    }
+    storeAcIndirect("ptr");
+}
+
+void I8008Codegen::narrowAcTo(Type to) {
+    if (widthOfType(to) != 1) return;  // a native word: ac already holds the full value
+    emitSignExtendByte("ac", "ac+1", to.isUnsigned);
+}
+
+// `op` applied to ac=old, bc=rhs, leaving the raw new value in ac -
+// every instruction here is the exact same mnemonic/operand shape
+// genBinary()'s own per-operator case already emits (see that
+// method), with only ac/bc's own roles swapped where the operator
+// isn't commutative (old plays genBinary()'s own "first/lhs operand"
+// role here, rhs its "second/rhs operand" role - see this method's
+// own header comment in I8008Codegen.h).
+void I8008Codegen::genCompoundOp(const std::string &op, Type type) {
+    bool isUnsigned = type.isUnsigned;
+    if (op == "+" || op == "-") {
+        const char *lo = op == "+" ? "add" : "sub";
+        const char *hi = op == "+" ? "adc" : "sbb";
+        pointAt("ac");
+        code_ << "    mov a, m\n";  // a = old_lo
+        pointAt("bc");
+        code_ << "    " << lo << " m\n";  // a = old_lo (+/-) rhs_lo, CY set accordingly
+        code_ << "    mov b, a\n";
+        pointAt("ac+1");
+        code_ << "    mov a, m\n";  // a = old_hi
+        pointAt("bc+1");
+        code_ << "    " << hi << " m\n";  // a = old_hi (+/-) rhs_hi (+/-) carry
+        code_ << "    mov c, a\n";
+        pointAt("ac");
+        code_ << "    mov a, b\n    mov m, a\n";
+        pointAt("ac+1");
+        code_ << "    mov a, c\n    mov m, a\n";
+        return;
+    }
+    if (op == "*") {
+        copy16("dx", "ac");  // dx = multiplier = old (bc already = rhs = multiplicand)
+        genMulCore();
+        return;
+    }
+    if (op == "/" || op == "%") {
+        copy16("dx", "ac");  // dx = dividend = old (bc already = rhs = divisor)
+        genDivModCore(op == "%", isUnsigned);
+        return;
+    }
+    if (op == "&" || op == "|" || op == "^") {
+        const char *insn = (op == "&") ? "and" : (op == "|") ? "or" : "xor";
+        pointAt("ac");
+        code_ << "    mov a, m\n";
+        pointAt("bc");
+        code_ << "    " << insn << " m\n";
+        code_ << "    mov b, a\n";
+        pointAt("ac+1");
+        code_ << "    mov a, m\n";
+        pointAt("bc+1");
+        code_ << "    " << insn << " m\n";
+        code_ << "    mov c, a\n";
+        pointAt("ac");
+        code_ << "    mov a, b\n    mov m, a\n";
+        pointAt("ac+1");
+        code_ << "    mov a, c\n    mov m, a\n";
+        return;
+    }
+    // "<<" or ">>" - genShiftCore() operates on bc=value/cx=count, the
+    // opposite of this method's own ac=old/bc=rhs(count) convention,
+    // so the two are swapped into place first.
+    copy16("cx", "bc");  // cx = shift count (rhs)
+    copy16("bc", "ac");  // bc = value to shift (old)
+    genShiftCore(op == "<<", isUnsigned);
+}
+
+// `ptr` must already hold the resolved address on entry (see
+// genIndexAddr()/the Assign indexed case, or copy16("ptr","ac") off a
+// dereferenced pointer value, for the two ways a caller gets there).
+// `e.rhs`'s own evaluation can recursively reach arbitrarily complex
+// codegen (calls, nested expressions) that's free to clobber every
+// one of ptr/ac/bc/cx/dx - exactly the reason Assign's own indexed
+// case and DerefAssign already stash `ptr` on the real `sp` stack
+// across it rather than trusting it to survive in place;
+// genCompoundOp()'s own "/"/"%" case reaches back into `ptr` too (see
+// its own header comment), so the address is re-stashed a second time
+// around that call as well.
+void I8008Codegen::genCompoundThroughPtr(const ir::Expr &e) {
+    pushCell("ptr", "sp");  // stash address across rhs's own evaluation
+    genExpr(*e.rhs);        // ac = rhs
+    copy16("bc", "ac");     // bc = rhs
+    popCell("ptr", "sp");   // ptr restored
+    loadOperandAtPtr(e.type);  // ac = old
+    if (e.yieldOld) pushAc();  // stash old - this expr's own result
+    pushCell("ptr", "sp");     // re-stash address around genCompoundOp()
+    genCompoundOp(e.op, e.type);  // ac = new (raw), using ac=old, bc=rhs
+    narrowAcTo(e.type);
+    popCell("ptr", "sp");   // ptr restored (ac, holding `new`, is untouched)
+    storeOperandAtPtr(e.type);
+    if (e.yieldOld) popInto("ac");  // ac = old (final result)
 }
 
 void I8008Codegen::genAddrOf(const ir::Expr &operand) {
@@ -1654,13 +1786,7 @@ void I8008Codegen::genBinary(const ir::Expr &e) {
 // shiftOneBit(). A signed right shift re-derives the current sign
 // bit into the carry before each 1-bit rotate, instead of
 // shiftOneBit()'s own fixed 0-fill.
-void I8008Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
-    genExpr(lhs);  // ac = value to shift
-    pushAc();
-    genExpr(rhs);         // ac = shift count
-    copy16("cx", "ac");  // stash the count in a memory cell, not a register - popInto() below
-                          // uses every one of A/B/C/D/E/H/L as its own scratch internally
-    popInto("bc");         // bc = value (restored only now)
+void I8008Codegen::genShiftCore(bool isLeft, bool isUnsigned) {
     pointAt("cx");
     code_ << "    mov a, m\n    mov b, a\n";  // b = shift count (always small; low byte is enough)
     std::string Lloop = newLabel(), Ldone = newLabel();
@@ -1682,16 +1808,21 @@ void I8008Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLef
     copy16("ac", "bc");
 }
 
+void I8008Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
+    genExpr(lhs);  // ac = value to shift
+    pushAc();
+    genExpr(rhs);         // ac = shift count
+    copy16("cx", "ac");  // stash the count in a memory cell, not a register - popInto() below
+                          // uses every one of A/B/C/D/E/H/L as its own scratch internally
+    popInto("bc");         // bc = value (restored only now)
+    genShiftCore(isLeft, isUnsigned);
+}
+
 // Textbook shift-and-add multiply (no hardware multiply): `bc` is
 // the multiplicand (doubled each iteration), `dx` the multiplier
 // (halved each iteration), `ac` the accumulating product. Only
 // verified against non-negative operands.
-void I8008Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
-    genExpr(lhs);  // ac = multiplicand
-    pushAc();
-    genExpr(rhs);
-    popInto("bc");       // bc = multiplicand (restored only now)
-    copy16("dx", "ac");    // dx = multiplier
+void I8008Codegen::genMulCore() {
     storeImmediate16("ac", "0");
     code_ << "    mvi d, 16\n";  // loop counter, in the real register D
     std::string Lloop = newLabel(), Ldone = newLabel(), Lskipadd = newLabel();
@@ -1717,12 +1848,21 @@ void I8008Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << Ldone << ":\n";
 }
 
+void I8008Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
+    genExpr(lhs);  // ac = multiplicand
+    pushAc();
+    genExpr(rhs);
+    popInto("bc");       // bc = multiplicand (restored only now)
+    copy16("dx", "ac");    // dx = multiplier
+    genMulCore();
+}
+
 // Repeated subtraction (no hardware divide): `dx` is the running
 // remainder (starts as the dividend), `bc` the fixed divisor, `ac`
 // the quotient, counting how many times `bc` was subtracted out of
 // `dx` before it would've gone negative. Only verified against
 // non-negative operands.
-void I8008Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
+void I8008Codegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
     auto negate16 = [&](const std::string &cell) {
         pointAt(cell);
         code_ << "    mov a, m\n    xri 0xff\n    mov m, a\n";
@@ -1753,11 +1893,6 @@ void I8008Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool want
         negate16(cell);
         code_ << Lskip << ":\n";
     };
-    genExpr(lhs);  // ac = dividend
-    pushAc();
-    genExpr(rhs);
-    popInto("dx");        // dx = dividend (running remainder, restored only now)
-    copy16("bc", "ac");     // bc = divisor
     // `ptr`'s own low/high byte double as this operation's two 0/1
     // sign flags (dividend/divisor) - `ptr` itself is otherwise never
     // touched by this routine.
@@ -1809,6 +1944,15 @@ void I8008Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool want
         negateIf("ptr", "dx");
     }
     if (wantRemainder) copy16("ac", "dx");
+}
+
+void I8008Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
+    genExpr(lhs);  // ac = dividend
+    pushAc();
+    genExpr(rhs);
+    popInto("dx");        // dx = dividend (running remainder, restored only now)
+    copy16("bc", "ac");     // bc = divisor
+    genDivModCore(wantRemainder, isUnsigned);
 }
 
 void I8008Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned) {

@@ -199,9 +199,46 @@ class M65C02Codegen : public Backend {
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
     void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
+    // Shared tail of genMul()/genDivMod()/genShift() - the loop that
+    // does the actual bit-serial work once their own operands are
+    // already staged in the fixed pseudo-registers each expects (see
+    // each one's own call site), factored out so CompoundAssign/
+    // CompoundDerefAssign's own genCompoundOp() below can drive the
+    // identical loop from operands it has already staged itself,
+    // rather than retyping it (see M65C02Codegen.cpp's own header
+    // comment on why every instruction here has to stay an exact copy
+    // of one this assembler already assembles correctly elsewhere).
+    void genMulCore();                                  // bc = multiplicand, dx = multiplier -> ac = product
+    void genDivModCore(bool wantRemainder, bool isUnsigned);  // bc = divisor, dx = dividend -> ac = quotient/remainder
+    void genShiftCore(bool isLeft, bool isUnsigned);     // ac = value, cx = count (low byte) -> ac = result
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot, &slot[idx], or &fn
     void genConvert(const ir::Expr &e);
+    // CompoundAssign/CompoundDerefAssign's "new = old <op> rhs" step -
+    // `old` already in `ac`, `rhs` already in `bc` (both already
+    // promoted to this backend's native 16-bit word, per `type`'s own
+    // signedness), leaves the raw (not yet re-truncated - see
+    // narrowAcTo()) new value in `ac`. `type` is never wider than a
+    // native word here - IRBuilder.cpp's own rejectIfWide() guarantees
+    // it, so this never needs the `w*`/wide-value machinery above.
+    // Its own "/"/"%" case (genDivModCore()) uses `ptr` itself as
+    // scratch (this backend's divide routine has no spare register
+    // that doesn't - see genDivMod()'s own comment), so a caller
+    // holding an address in `ptr` across this call (genCompoundThroughPtr()
+    // below) has to re-stash it first, the same as across any other
+    // nested codegen that's free to clobber it.
+    void genCompoundOp(const std::string &op, Type type);
+    // Shared tail for CompoundAssign's indexed form and
+    // CompoundDerefAssign - `ptr` must already hold the resolved
+    // address on entry (and nothing else live). See the .cpp's own
+    // comment.
+    void genCompoundThroughPtr(const ir::Expr &e);
+    // Re-truncates `ac` to `to`'s own width, re-extending per its own
+    // signedness if narrower than a native word - the same "copy the
+    // low byte, sign/zero-extend into ac+1" idiom loadOperandAtPtr()'s
+    // own width-1 branch already uses, pulled out here since
+    // genCompoundOp()'s own result needs the identical re-truncation.
+    void narrowAcTo(Type to);
 
     // --- `long`/`long long` ("wide") values - see
     // ../m6502/M6502Codegen.h's own header comment on this whole

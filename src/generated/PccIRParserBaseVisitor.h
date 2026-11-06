@@ -95,7 +95,23 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitCompoundOp(PccIRParser::CompoundOpContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitIntLitExpr(PccIRParser::IntLitExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitCompoundIndexExpr(PccIRParser::CompoundIndexExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitCompoundAssignExpr(PccIRParser::CompoundAssignExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitCompoundDerefExpr(PccIRParser::CompoundDerefExprContext *ctx) override {
     return visitChildren(ctx);
   }
 
@@ -116,6 +132,10 @@ public:
   }
 
   virtual std::any visitBinaryExpr(PccIRParser::BinaryExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitTernaryExpr(PccIRParser::TernaryExprContext *ctx) override {
     return visitChildren(ctx);
   }
 

@@ -575,23 +575,8 @@ class Builder {
             std::swap(lhs, rhs);  // normalize: lhs is always the pointer from here on
         }
         Type ptrType = lhs->type;
-        int elemWidth = widthOf(pointeeOf(ptrType), widths_);
         rhs = promote(std::move(rhs), line);
-        if (elemWidth != 1) {
-            auto factor = std::make_unique<ir::Expr>();
-            factor->kind = ir::ExprKind::IntLit;
-            factor->line = line;
-            factor->type = rhs->type;
-            factor->intValue = elemWidth;
-            auto scaled = std::make_unique<ir::Expr>();
-            scaled->kind = ir::ExprKind::Binary;
-            scaled->line = line;
-            scaled->op = "*";
-            scaled->type = rhs->type;
-            scaled->lhs = std::move(rhs);
-            scaled->rhs = std::move(factor);
-            rhs = std::move(scaled);
-        }
+        rhs = scaleStepForPointer(ptrType, std::move(rhs), line);
         auto out = std::make_unique<ir::Expr>();
         out->kind = ir::ExprKind::Binary;
         out->line = line;
@@ -600,6 +585,80 @@ class Builder {
         out->lhs = std::move(lhs);
         out->rhs = std::move(rhs);
         return out;
+    }
+
+    // A wide (`long`/`long long`) type here means wider than this
+    // target's own native int - see Type.h's widthOf(). Used to reject
+    // CompoundAssign/CompoundDerefAssign/Ternary on a wide target (see
+    // their own call sites below): these three compute their "new
+    // value" directly in a backend's normal native-width register the
+    // same way an ordinary narrow Var/Index read/store already does
+    // (sign/zero-extend on load, truncate on store - no per-operator
+    // codegen beyond what already exists for that), but a wide target
+    // would need a second, genuinely new multi-word instruction
+    // sequence per operator per backend that compound assignment/
+    // `++`/`--`/ternary on a `long long` doesn't currently justify -
+    // see docs/pdp-c-compiler.md's own note on this.
+    bool isWideType(Type t) const {
+        return widthOf(t, widths_) > widthOf(Type{BaseType::Int, false}, widths_);
+    }
+
+    void rejectIfWide(Type t, int line, const char *what) {
+        if (isWideType(t)) {
+            err(line, std::string(what) +
+                          " on a 'long'/'long long' target isn't supported yet - only char/short/int/"
+                          "pointer (see docs/pdp-c-compiler.md's own note on this)");
+        }
+    }
+
+    // Scales an already-promoted int-typed step by `ptrType`'s own
+    // pointee width - the one-liner multiply ptr+int above needs, and
+    // the exact same one CompoundAssign/CompoundDerefAssign's own
+    // `p += n`/`p++`/`p--` lowering (further below) needs too, so it's
+    // factored out rather than duplicated.
+    ir::ExprPtr scaleStepForPointer(Type ptrType, ir::ExprPtr step, int line) {
+        int elemWidth = widthOf(pointeeOf(ptrType), widths_);
+        if (elemWidth == 1) return step;
+        auto factor = std::make_unique<ir::Expr>();
+        factor->kind = ir::ExprKind::IntLit;
+        factor->line = line;
+        factor->type = step->type;
+        factor->intValue = elemWidth;
+        auto scaled = std::make_unique<ir::Expr>();
+        scaled->kind = ir::ExprKind::Binary;
+        scaled->line = line;
+        scaled->op = "*";
+        scaled->type = step->type;
+        scaled->lhs = std::move(step);
+        scaled->rhs = std::move(factor);
+        return scaled;
+    }
+
+    // Shared by CompoundAssign/CompoundDerefAssign below: builds the
+    // already-ready-to-combine `rhs` operand for `target <op>= e.rhs`
+    // (or, for '++'/'--', e.rhs is already IntLit(1) - see BuildAst.cpp's
+    // own makeIncDec). For a pointer target with '+'/'-', this is the
+    // step scaled by the pointee's width (stays plain native-int typed,
+    // exactly like ptr+int's own rhs above - the backend does a single
+    // native-word add/sub, same as it already does for Binary ptr+int).
+    // Otherwise it's converted straight to `targetType` (NOT promoted
+    // first): computing +,-,*,&,^,|,<<,>> directly at a sub-int target's
+    // own width is bit-for-bit identical to promoting first and
+    // truncating the result back afterward (both are closed under
+    // truncation - shifts' low bits never depend on bits above the
+    // original width either direction, and +/-/* are ordinary modular
+    // arithmetic); only '/','%' can differ, and only when `targetType`
+    // is narrower than the backend's native int - see each backend's own
+    // CompoundAssign codegen comment for how that one case widens/
+    // narrows around the divide using the same extend/truncate it
+    // already has for ExprKind::Convert, rather than needing a genuine
+    // narrow-width divide instruction.
+    ir::ExprPtr buildCompoundRhs(Type targetType, const std::string &op, const Expr &rhsAst, int line) {
+        if (isPointer(targetType) && (op == "+" || op == "-")) {
+            ir::ExprPtr rhs = promote(buildExpr(rhsAst), line);
+            return scaleStepForPointer(targetType, std::move(rhs), line);
+        }
+        return wrapConvert(buildExpr(rhsAst), targetType, line);
     }
 
     ir::ExprPtr buildExpr(const Expr &e) {
@@ -664,6 +723,49 @@ class Builder {
                 }
                 out->type = out->slot->type;
                 out->rhs = wrapConvert(buildExpr(*e.rhs), out->type, e.line);
+                return out;
+            }
+            case ExprKind::CompoundAssign: {
+                ir::Slot *slot = resolveVar(e.name, e.line);
+                if (e.lhs && slot->arraySize == 0 && isPointer(slot->type)) {
+                    // `p[i] op= rhs` (including `p[i]++`/`p[i]--`,
+                    // built with op="+"/"-") is exactly
+                    // `*(p+i) op= rhs` - see buildPointerIndexAddr()'s
+                    // own comment.
+                    ir::ExprPtr sum = buildPointerIndexAddr(slot, *e.lhs, e.line);
+                    out->kind = ir::ExprKind::CompoundDerefAssign;
+                    Type pointee = pointeeOf(sum->type);
+                    out->type = pointee;
+                    out->op = e.op;
+                    out->yieldOld = e.yieldOld;
+                    out->lhs = std::move(sum);
+                    rejectIfWide(out->type, e.line, "compound assignment/'++'/'--'");
+                    out->rhs = buildCompoundRhs(pointee, e.op, *e.rhs, e.line);
+                    return out;
+                }
+                out->kind = ir::ExprKind::CompoundAssign;
+                out->slot = slot;
+                out->op = e.op;
+                out->yieldOld = e.yieldOld;
+                if (e.lhs) {
+                    markIndexedIfExternal(out->slot);  // arr[i] op= ... - e.lhs is the index
+                    out->lhs = buildExpr(*e.lhs);
+                }
+                out->type = out->slot->type;
+                rejectIfWide(out->type, e.line, "compound assignment/'++'/'--'");
+                out->rhs = buildCompoundRhs(out->type, e.op, *e.rhs, e.line);
+                return out;
+            }
+            case ExprKind::CompoundDerefAssign: {
+                out->kind = ir::ExprKind::CompoundDerefAssign;
+                out->op = e.op;
+                out->yieldOld = e.yieldOld;
+                out->lhs = buildExpr(*e.lhs);
+                Type pointee =
+                    isPointer(out->lhs->type) ? pointeeOf(out->lhs->type) : Type{BaseType::Int, false};
+                out->type = pointee;
+                rejectIfWide(out->type, e.line, "compound assignment/'++'/'--'");
+                out->rhs = buildCompoundRhs(pointee, e.op, *e.rhs, e.line);
                 return out;
             }
             case ExprKind::DerefAssign: {
@@ -778,6 +880,36 @@ class Builder {
                 } else {
                     out->type = common;
                 }
+                return out;
+            }
+            case ExprKind::Ternary: {
+                out->kind = ir::ExprKind::Ternary;
+                out->lhs = buildExpr(*e.lhs);  // condition - width-independent, no conversion needed
+                ir::ExprPtr thenE = buildExpr(*e.rhs);
+                ir::ExprPtr elseE = buildExpr(*e.elseExpr);
+                bool thenPtr = isPointer(thenE->type);
+                bool elsePtr = isPointer(elseE->type);
+                if (thenPtr || elsePtr) {
+                    // Permissive, no-cross-checking pointer typing -
+                    // same style as this file's existing pointer/
+                    // untyped-int interop elsewhere (see Type.h's own
+                    // header comment): the branch that IS a pointer
+                    // decides the result type; the other branch is only
+                    // converted if it's also a pointer (matching depth),
+                    // otherwise left as-is.
+                    out->type = thenPtr ? thenE->type : elseE->type;
+                    if (thenPtr && elsePtr) elseE = wrapConvert(std::move(elseE), out->type, e.line);
+                    else if (!thenPtr && elsePtr) thenE = wrapConvert(std::move(thenE), out->type, e.line);
+                } else {
+                    thenE = promote(std::move(thenE), e.line);
+                    elseE = promote(std::move(elseE), e.line);
+                    out->type = commonType(thenE->type, elseE->type);
+                    thenE = wrapConvert(std::move(thenE), out->type, e.line);
+                    elseE = wrapConvert(std::move(elseE), out->type, e.line);
+                }
+                rejectIfWide(out->type, e.line, "the ternary operator");
+                out->rhs = std::move(thenE);
+                out->elseExpr = std::move(elseE);
                 return out;
             }
             case ExprKind::Call: {

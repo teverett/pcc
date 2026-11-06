@@ -87,6 +87,8 @@ public:
 
     virtual std::any visitExprStmt(CParser::ExprStmtContext *context) = 0;
 
+    virtual std::any visitAssignOp(CParser::AssignOpContext *context) = 0;
+
     virtual std::any visitAssignDerefExpr(CParser::AssignDerefExprContext *context) = 0;
 
     virtual std::any visitAssignIndexExpr(CParser::AssignIndexExprContext *context) = 0;
@@ -97,41 +99,27 @@ public:
 
     virtual std::any visitSizeofExprExpr(CParser::SizeofExprExprContext *context) = 0;
 
-    virtual std::any visitCharExpr(CParser::CharExprContext *context) = 0;
+    virtual std::any visitPreIncDecDerefExpr(CParser::PreIncDecDerefExprContext *context) = 0;
 
     virtual std::any visitCastExpr(CParser::CastExprContext *context) = 0;
 
-    virtual std::any visitSizeofTypeExpr(CParser::SizeofTypeExprContext *context) = 0;
-
-    virtual std::any visitAddrOfExpr(CParser::AddrOfExprContext *context) = 0;
+    virtual std::any visitPostIncDecVarExpr(CParser::PostIncDecVarExprContext *context) = 0;
 
     virtual std::any visitStringLitExpr(CParser::StringLitExprContext *context) = 0;
 
-    virtual std::any visitOrExpr(CParser::OrExprContext *context) = 0;
-
-    virtual std::any visitCallPtrExpr(CParser::CallPtrExprContext *context) = 0;
-
-    virtual std::any visitNumExpr(CParser::NumExprContext *context) = 0;
+    virtual std::any visitPreIncDecIndexExpr(CParser::PreIncDecIndexExprContext *context) = 0;
 
     virtual std::any visitParenExpr(CParser::ParenExprContext *context) = 0;
 
     virtual std::any visitBitXorExpr(CParser::BitXorExprContext *context) = 0;
 
-    virtual std::any visitShiftExpr(CParser::ShiftExprContext *context) = 0;
-
-    virtual std::any visitIndexExpr(CParser::IndexExprContext *context) = 0;
-
-    virtual std::any visitVarExpr(CParser::VarExprContext *context) = 0;
-
-    virtual std::any visitEqExpr(CParser::EqExprContext *context) = 0;
-
-    virtual std::any visitBitOrExpr(CParser::BitOrExprContext *context) = 0;
+    virtual std::any visitPostIncDecDerefExpr(CParser::PostIncDecDerefExprContext *context) = 0;
 
     virtual std::any visitUnaryExpr(CParser::UnaryExprContext *context) = 0;
 
-    virtual std::any visitAddExpr(CParser::AddExprContext *context) = 0;
+    virtual std::any visitPostIncDecIndexExpr(CParser::PostIncDecIndexExprContext *context) = 0;
 
-    virtual std::any visitDerefExpr(CParser::DerefExprContext *context) = 0;
+    virtual std::any visitTernaryExpr(CParser::TernaryExprContext *context) = 0;
 
     virtual std::any visitMulExpr(CParser::MulExprContext *context) = 0;
 
@@ -140,6 +128,34 @@ public:
     virtual std::any visitRelExpr(CParser::RelExprContext *context) = 0;
 
     virtual std::any visitBitAndExpr(CParser::BitAndExprContext *context) = 0;
+
+    virtual std::any visitCharExpr(CParser::CharExprContext *context) = 0;
+
+    virtual std::any visitSizeofTypeExpr(CParser::SizeofTypeExprContext *context) = 0;
+
+    virtual std::any visitAddrOfExpr(CParser::AddrOfExprContext *context) = 0;
+
+    virtual std::any visitOrExpr(CParser::OrExprContext *context) = 0;
+
+    virtual std::any visitCallPtrExpr(CParser::CallPtrExprContext *context) = 0;
+
+    virtual std::any visitNumExpr(CParser::NumExprContext *context) = 0;
+
+    virtual std::any visitShiftExpr(CParser::ShiftExprContext *context) = 0;
+
+    virtual std::any visitIndexExpr(CParser::IndexExprContext *context) = 0;
+
+    virtual std::any visitPreIncDecVarExpr(CParser::PreIncDecVarExprContext *context) = 0;
+
+    virtual std::any visitVarExpr(CParser::VarExprContext *context) = 0;
+
+    virtual std::any visitEqExpr(CParser::EqExprContext *context) = 0;
+
+    virtual std::any visitBitOrExpr(CParser::BitOrExprContext *context) = 0;
+
+    virtual std::any visitAddExpr(CParser::AddExprContext *context) = 0;
+
+    virtual std::any visitDerefExpr(CParser::DerefExprContext *context) = 0;
 
     virtual std::any visitAndExpr(CParser::AndExprContext *context) = 0;
 

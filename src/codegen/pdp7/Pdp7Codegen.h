@@ -223,6 +223,55 @@ class Pdp7Codegen : public Backend {
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genConvert(const ir::Expr &e);
 
+    // --- Compound assignment ('+=' etc., prefix/postfix '++'/'--') and
+    // ternary -------------------------------------------------------------
+    //
+    // `CompoundAssign`/`CompoundDerefAssign` (see IR.h) can never be
+    // wide here - IRBuilder.cpp's own rejectIfWide() rejects a wide
+    // target before this backend ever sees one - so these only ever
+    // need to produce a single AC-full result, the same narrow
+    // contract every other case in genExpr()'s own switch already has.
+    //
+    // Consumes e.rhs's own value, already evaluated into AC by the
+    // caller, and leaves it wherever this file's own existing narrow
+    // Binary codegen for e.op (genBinary/genBitwise/genShift/genMul/
+    // genDivMod) already stashes its own second operand before
+    // combining it with the first - the exact same per-operator cell
+    // each of those already uses (`__stmp2` for `+`/`-`/`&`/`^`/`|`, a
+    // fresh cell doubling as the `mul` instruction's own inline
+    // operand word for `*` - see genMul()'s own comment on that
+    // convention, `__dm_b` for `/`/`%`, a fresh cell for `<<`/`>>`'s
+    // own shift count) - `+`/`-`/`|` pre-apply their own negation/
+    // complement here, exactly where genBinary()/genBitwise() already
+    // do it, so finishCompoundOp() below never needs to know which
+    // operator it's finishing beyond its own final combining step.
+    // Returns that cell's own label, for finishCompoundOp() to read
+    // back once the target's own old value is available in AC.
+    std::string prepareCompoundRhs(const ir::Expr &e);
+    // AC must already hold the target's own OLD value on entry; leaves
+    // AC holding `old <e.op> rhs` afterward, using the exact same per-
+    // operator instruction sequence this file's own narrow Binary
+    // codegen already emits for that operator (see prepareCompoundRhs()'s
+    // own comment for which cell each operator reads `rhsCell` as).
+    void finishCompoundOp(const ir::Expr &e, const std::string &rhsCell);
+    // Shared by CompoundAssign's own indexed branch (slot[idx] <op>=
+    // rhs) and CompoundDerefAssign: the target's own address must
+    // already be pushed on top of the real stack by the caller -
+    // computeElementAddress()'s own pushed element address, or, for
+    // CompoundDerefAssign, the pointer value itself pushed the same
+    // way DerefAssign's own case already does - BEFORE this runs, so
+    // it survives whatever e.rhs's own evaluation might do (including
+    // a nested call); see storeThroughStackedAddress()'s own comment
+    // on why pushing the address first, rather than computing it
+    // fresh after, is what makes this safe against double-evaluating
+    // an indexed/pointer target's own sub-expression. Resolves that
+    // one address exactly once: loads the old value through it,
+    // combines it with rhs via prepareCompoundRhs()/finishCompoundOp(),
+    // and stores the new value back through the SAME address - never
+    // recomputed - leaving AC holding whichever of the two (old or
+    // new) e.yieldOld selects.
+    void genCompoundThroughStackedAddress(const ir::Expr &e);
+
     // A Global gets a *name*-based label (never `id`) - real separate
     // compilation means the file calling a function and the file
     // defining it compile with completely independent `id`

@@ -684,6 +684,44 @@ void ArmCodegen::genExpr(const ir::Expr &e) {
             storeOperand("r2", e.slot->type);
             return;
         }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--)
+                genIndexAddr(e.slot, *e.lhs);  // r2 = target address
+                genCompoundThroughR2(e);
+                return;
+            }
+            // A plain scalar target still needs its address computed
+            // (ARM has no absolute-addressing memory operand - see
+            // this file's own header comment), so it goes through the
+            // exact same held-address tail as the indexed form above.
+            loadSlotAddr("r2", e.slot);
+            genCompoundThroughR2(e);
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);  // r0 = pointer value
+            code_ << "    mov r2,r0\n";  // r2 = address
+            genCompoundThroughR2(e);
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            genExpr(*e.lhs);
+            // The condition's own type (unlike the ternary's result
+            // type - see IRBuilder.cpp's own Ternary comment: "width-
+            // independent, no conversion needed") can still be wide, so
+            // this reuses If/While's own wide-OR-then-compare idiom,
+            // not just a bare r0 test.
+            if (isWide(e.lhs->type)) code_ << "    orr r0,r0,r1\n";
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            code_ << "    cmp r0,0\n    beq " << Lelse << "\n";
+            genExpr(*e.rhs);
+            code_ << "    b " << Ldone << "\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
+            return;
+        }
         case ir::ExprKind::DerefAssign: {
             // Stores at e.type's own width/signedness - the pointee
             // type of a real typed pointer, or plain native-int-width
@@ -838,6 +876,68 @@ void ArmCodegen::genAddrOf(const ir::Expr &operand) {
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");
+}
+
+// Entry: r0 = old, r1 = rhs (both already at `type`'s own width/
+// signedness). Every instruction shape here is exactly the one
+// genBinary()/genMul()/genDivMod() already use for that same operator
+// at native width, just with r0/r1 as the two operands instead of
+// whichever registers a Binary node happens to leave them in - this
+// assembler's own data-processing/multiply/divide encoders take their
+// register operands as plain bitfields (see ArmAssembler.cpp's own
+// encodeAddSub()/encodeMul()/encodeDiv()/encodeMls()), so which actual
+// register holds which operand is free to pick.
+void ArmCodegen::genCompoundOp(const std::string &op, Type type) {
+    bool isUnsigned = type.isUnsigned;
+    if (op == "+") { code_ << "    add r0,r0,r1\n"; return; }
+    if (op == "-") { code_ << "    sub r0,r0,r1\n"; return; }
+    if (op == "*") { code_ << "    mul r0,r0,r1\n"; return; }
+    if (op == "&") { code_ << "    and r0,r0,r1\n"; return; }
+    if (op == "|") { code_ << "    orr r0,r0,r1\n"; return; }
+    if (op == "^") { code_ << "    eor r0,r0,r1\n"; return; }
+    if (op == "<<" || op == ">>") {
+        const char *insn = op == "<<" ? "lsl" : (isUnsigned ? "lsr" : "asr");
+        code_ << "    " << insn << " r0,r0,r1\n";
+        return;
+    }
+    // "/" or "%" - r3 (genDivMod()'s own quotient-holding scratch) is
+    // free to reuse here: by this point e.rhs has already fully
+    // evaluated, so nothing still needs whatever r3 held during that
+    // evaluation.
+    code_ << "    " << (isUnsigned ? "udiv" : "sdiv") << " r3,r0,r1\n";
+    if (op == "%") {
+        code_ << "    mls r0,r3,r1,r0\n";  // r0 = r0 - r3*r1 = old - quotient*rhs
+    } else {
+        code_ << "    mov r0,r3\n";
+    }
+}
+
+// r2 must already hold the resolved address on entry. The address is
+// stashed on the real hardware stack across evaluating e.rhs (the
+// same mechanism Assign's own indexed case and DerefAssign already
+// use for the identical problem - genExpr(*e.rhs) can reach arbitrary
+// nested codegen that may use r0 through r5), never recomputed
+// afterward, so an indexed/pointer target's own address sub-
+// expression is evaluated exactly once.
+void ArmCodegen::genCompoundThroughR2(const ir::Expr &e) {
+    code_ << "    sub sp,sp,4\n    stind sp,r2\n";  // stash address
+    genExpr(*e.rhs);                                  // r0 = rhs
+    code_ << "    mov r1,r0\n";                        // r1 = rhs
+    code_ << "    ldind sp,r2\n    add sp,sp,4\n";      // r2 = address (restored)
+    loadOperand("r2", e.type);                            // r0 = old
+    if (e.yieldOld) code_ << "    sub sp,sp,4\n    stind sp,r0\n";  // stash old
+    genCompoundOp(e.op, e.type);                           // r0 = new (raw)
+    narrowR0To(e.type);
+    if (e.yieldOld) {
+        code_ << "    mov r3,r0\n";                          // r3 = new
+        code_ << "    ldind sp,r0\n    add sp,sp,4\n";         // r0 = old
+        code_ << "    mov r1,r0\n";                             // r1 = old, preserved across the store below
+        code_ << "    mov r0,r3\n";                              // r0 = new - storeOperand always stores from r0
+        storeOperand("r2", e.type);
+        code_ << "    mov r0,r1\n";                               // r0 = old (final result)
+    } else {
+        storeOperand("r2", e.type);  // r0 already = new
+    }
 }
 
 void ArmCodegen::genBinary(const ir::Expr &e) {

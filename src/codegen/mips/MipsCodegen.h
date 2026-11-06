@@ -166,6 +166,17 @@ class MipsCodegen : public Backend {
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
+    // CompoundAssign/CompoundDerefAssign's "new = old <op> rhs" step -
+    // old already in t0, rhs already in t1 (both already at `type`'s
+    // own width/signedness, never wide here - IRBuilder.cpp's own
+    // rejectIfWide() guarantees it), leaves the raw (not yet re-
+    // truncated - see narrowT0To()) new value in t0.
+    void genCompoundOp(const std::string &op, Type type);
+    // Shared tail for CompoundAssign (both its scalar and indexed
+    // forms) and CompoundDerefAssign - t2 must already hold the
+    // resolved target address on entry (and nothing else live). See
+    // the .cpp's own comment.
+    void genCompoundThroughT2(const ir::Expr &e);
 
     int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }

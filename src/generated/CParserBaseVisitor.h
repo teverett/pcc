@@ -151,6 +151,10 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitAssignOp(CParser::AssignOpContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitAssignDerefExpr(CParser::AssignDerefExprContext *ctx) override {
     return visitChildren(ctx);
   }
@@ -171,7 +175,7 @@ public:
     return visitChildren(ctx);
   }
 
-  virtual std::any visitCharExpr(CParser::CharExprContext *ctx) override {
+  virtual std::any visitPreIncDecDerefExpr(CParser::PreIncDecDerefExprContext *ctx) override {
     return visitChildren(ctx);
   }
 
@@ -179,11 +183,7 @@ public:
     return visitChildren(ctx);
   }
 
-  virtual std::any visitSizeofTypeExpr(CParser::SizeofTypeExprContext *ctx) override {
-    return visitChildren(ctx);
-  }
-
-  virtual std::any visitAddrOfExpr(CParser::AddrOfExprContext *ctx) override {
+  virtual std::any visitPostIncDecVarExpr(CParser::PostIncDecVarExprContext *ctx) override {
     return visitChildren(ctx);
   }
 
@@ -191,15 +191,7 @@ public:
     return visitChildren(ctx);
   }
 
-  virtual std::any visitOrExpr(CParser::OrExprContext *ctx) override {
-    return visitChildren(ctx);
-  }
-
-  virtual std::any visitCallPtrExpr(CParser::CallPtrExprContext *ctx) override {
-    return visitChildren(ctx);
-  }
-
-  virtual std::any visitNumExpr(CParser::NumExprContext *ctx) override {
+  virtual std::any visitPreIncDecIndexExpr(CParser::PreIncDecIndexExprContext *ctx) override {
     return visitChildren(ctx);
   }
 
@@ -211,23 +203,7 @@ public:
     return visitChildren(ctx);
   }
 
-  virtual std::any visitShiftExpr(CParser::ShiftExprContext *ctx) override {
-    return visitChildren(ctx);
-  }
-
-  virtual std::any visitIndexExpr(CParser::IndexExprContext *ctx) override {
-    return visitChildren(ctx);
-  }
-
-  virtual std::any visitVarExpr(CParser::VarExprContext *ctx) override {
-    return visitChildren(ctx);
-  }
-
-  virtual std::any visitEqExpr(CParser::EqExprContext *ctx) override {
-    return visitChildren(ctx);
-  }
-
-  virtual std::any visitBitOrExpr(CParser::BitOrExprContext *ctx) override {
+  virtual std::any visitPostIncDecDerefExpr(CParser::PostIncDecDerefExprContext *ctx) override {
     return visitChildren(ctx);
   }
 
@@ -235,11 +211,11 @@ public:
     return visitChildren(ctx);
   }
 
-  virtual std::any visitAddExpr(CParser::AddExprContext *ctx) override {
+  virtual std::any visitPostIncDecIndexExpr(CParser::PostIncDecIndexExprContext *ctx) override {
     return visitChildren(ctx);
   }
 
-  virtual std::any visitDerefExpr(CParser::DerefExprContext *ctx) override {
+  virtual std::any visitTernaryExpr(CParser::TernaryExprContext *ctx) override {
     return visitChildren(ctx);
   }
 
@@ -256,6 +232,62 @@ public:
   }
 
   virtual std::any visitBitAndExpr(CParser::BitAndExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitCharExpr(CParser::CharExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitSizeofTypeExpr(CParser::SizeofTypeExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitAddrOfExpr(CParser::AddrOfExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitOrExpr(CParser::OrExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitCallPtrExpr(CParser::CallPtrExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitNumExpr(CParser::NumExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitShiftExpr(CParser::ShiftExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitIndexExpr(CParser::IndexExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitPreIncDecVarExpr(CParser::PreIncDecVarExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitVarExpr(CParser::VarExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitEqExpr(CParser::EqExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitBitOrExpr(CParser::BitOrExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitAddExpr(CParser::AddExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitDerefExpr(CParser::DerefExprContext *ctx) override {
     return visitChildren(ctx);
   }
 

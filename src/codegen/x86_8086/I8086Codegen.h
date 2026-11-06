@@ -79,6 +79,17 @@ class I8086Codegen : public Backend {
     void genIndex(const ir::Expr &e);          // slot[idx] read
     void genAddrOf(const ir::Expr &operand);   // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
+    // CompoundAssign/CompoundDerefAssign's "new = old <op> rhs" step -
+    // `old` already in ax, `rhs` already in bx (both already at
+    // `type`'s own width/signedness), leaves the raw (not yet
+    // re-truncated - see narrowAxTo()) new value in ax. `type` is
+    // never wide here - IRBuilder.cpp's own rejectIfWide() guarantees
+    // it.
+    void genCompoundOp(const std::string &op, Type type);
+    // Shared tail for CompoundAssign's indexed form and
+    // CompoundDerefAssign - bx must already hold the resolved address
+    // on entry (and nothing else live). See the .cpp's own comment.
+    void genCompoundThroughBx(const ir::Expr &e);
 
     int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }

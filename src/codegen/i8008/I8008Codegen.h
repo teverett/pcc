@@ -161,9 +161,55 @@ class I8008Codegen : public Backend {
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
     void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
+    // Shared tail of genMul()/genDivMod()/genShift() - the loop that
+    // does the actual bit-serial work once their own operands are
+    // already staged in the fixed memory cells each expects (see each
+    // one's own call site), factored out so CompoundAssign/
+    // CompoundDerefAssign's own genCompoundOp() below can drive the
+    // identical loop from operands it has already staged itself,
+    // rather than retyping it (every instruction here has to stay an
+    // exact copy of one this assembler already assembles correctly
+    // elsewhere - see I8008Assembler.h's own header comment).
+    void genMulCore();                                  // bc = multiplicand, dx = multiplier -> ac = product
+    void genDivModCore(bool wantRemainder, bool isUnsigned);  // bc = divisor, dx = dividend -> ac = quotient/remainder
+    void genShiftCore(bool isLeft, bool isUnsigned);     // bc = value, cx = count -> ac = result
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genConvert(const ir::Expr &e);
+    // Assumes `ptr` already holds the effective storage address -
+    // loads/stores a value of `type`'s own width there into/from
+    // `ac`, the same width dispatch genIndex()'s/the indexed Assign
+    // case's own former inline logic used (now shared by both of
+    // those and by CompoundAssign/CompoundDerefAssign's own
+    // genCompoundThroughPtr() below).
+    void loadOperandAtPtr(Type type);
+    void storeOperandAtPtr(Type type);
+    // CompoundAssign/CompoundDerefAssign's "new = old <op> rhs" step -
+    // `old` already in `ac`, `rhs` already in `bc` (both already
+    // promoted to this backend's native 16-bit word, per `type`'s own
+    // signedness), leaves the raw (not yet re-truncated - see
+    // narrowAcTo()) new value in `ac`. `type` is never wider than a
+    // native word here - IRBuilder.cpp's own rejectIfWide() guarantees
+    // it, so this never needs the `w*`/wide-value machinery above.
+    // Its own "/"/"%" case (genDivModCore()) uses `ptr` itself as
+    // scratch (this backend's divide routine has no spare cell that
+    // doesn't - see genDivMod()'s own comment), so a caller holding an
+    // address in `ptr` across this call (genCompoundThroughPtr() below)
+    // has to re-stash it first, the same as across any other nested
+    // codegen that's free to clobber it.
+    void genCompoundOp(const std::string &op, Type type);
+    // Shared tail for CompoundAssign's indexed form and
+    // CompoundDerefAssign - `ptr` must already hold the resolved
+    // address on entry (and nothing else live). See the .cpp's own
+    // comment.
+    void genCompoundThroughPtr(const ir::Expr &e);
+    // Re-truncates `ac` to `to`'s own width, re-extending per its own
+    // signedness if narrower than a native word - just
+    // emitSignExtendByte()'s own existing "ac"/"ac+1" idiom (see
+    // genConvert()'s own narrowCharFixup), pulled out under this name
+    // since genCompoundOp()'s own result needs the identical
+    // re-truncation.
+    void narrowAcTo(Type to);
 
     // Leaves slot[idxExpr]'s own effective address in the `ptr`
     // memory cell - see ../i8080/I8080Codegen.cpp's own genIndexAddr()

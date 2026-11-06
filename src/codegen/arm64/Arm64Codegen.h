@@ -157,6 +157,17 @@ class Arm64Codegen : public Backend {
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
     void genConvert(const ir::Expr &e);
+    // CompoundAssign/CompoundDerefAssign's "new = old <op> rhs" step -
+    // old already in w0, rhs already in w1 (both already at `type`'s
+    // own width/signedness - never wide here, IRBuilder.cpp's own
+    // rejectIfWide() guarantees it), leaves the raw (not yet re-
+    // truncated - see narrowW0To()) new value in w0.
+    void genCompoundOp(const std::string &op, Type type);
+    // Shared tail for CompoundAssign (both its scalar and indexed
+    // forms) and CompoundDerefAssign - x2 must already hold the
+    // resolved target address on entry (and nothing else live). See
+    // the .cpp's own comment.
+    void genCompoundThroughX2(const ir::Expr &e);
 
     int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }

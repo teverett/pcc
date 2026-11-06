@@ -172,6 +172,20 @@ enum class ExprKind {
     Index,        // slot[lhs]
     Assign,       // slot = rhs, or (if lhs set) slot[lhs] = rhs
     DerefAssign,  // *lhs = rhs
+    // slot = slot <op> rhs, or (if lhs set) slot[lhs] = slot[lhs] <op>
+    // rhs - `rhs` arrives already converted/scaled (a pointer target's
+    // step is pre-scaled by its pointee width, the same multiply
+    // `buildPointerBinary` already does for ptr+int) so codegen never
+    // needs to know the target's own type beyond its storage width.
+    // `yieldOld` (true only for a postfix '++'/'--') picks which of the
+    // two values - the one read before the op, or the one stored after
+    // it - is left in the backend's normal result location; see
+    // IRBuilder.cpp's own header comment on why this is a single
+    // value-producing node rather than a `slot = slot op rhs` desugar
+    // (the target's own index/pointer sub-expression is computed once,
+    // and the pre-op value has to still be reachable for `yieldOld`).
+    CompoundAssign,
+    CompoundDerefAssign,  // *lhs = *lhs <op> rhs - same as CompoundAssign, deref target
     Unary,        // op in {"-", "!", "~", "*", "&"}; "*"/"&" operate on rhs
     Binary,       // op in {"+","-","*","/","%","<<",">>","==","!=","<","<=",">",">=","&","^","|","&&","||"}
     Call,
@@ -209,6 +223,7 @@ enum class ExprKind {
     // source-level cast `(type)expr` - a cast needs no separate IR kind
     // of its own, since it's exactly this.
     Convert,
+    Ternary,  // lhs ? rhs : elseExpr - both branches already converted to this node's own `type`
 };
 
 struct Expr {
@@ -217,13 +232,17 @@ struct Expr {
 
     long intValue = 0;  // IntLit
     Type type;             // this expression's own resolved type (every kind has one)
-    Slot *slot = nullptr;  // Var / Index / Assign target (never null for those kinds)
+    bool yieldOld = false;  // CompoundAssign/CompoundDerefAssign: true only for postfix '++'/'--'
+    Slot *slot = nullptr;  // Var / Index / Assign(CompoundAssign) target (never null for those kinds)
     Function *func = nullptr;  // Call / Func
-    std::string op;            // Unary / Binary / Intrinsic ("ion" or "iof")
+    std::string op;            // Unary / Binary / Intrinsic ("ion" or "iof") / CompoundAssign(DerefAssign)
 
-    std::unique_ptr<Expr> lhs;  // Binary lhs; Index/indexed-Assign subscript; DerefAssign's pointer;
-                                  // CallPtr's callee (evaluates to the target address); Convert's operand
-    std::unique_ptr<Expr> rhs;  // Binary rhs; Assign/DerefAssign value; Unary operand
+    std::unique_ptr<Expr> lhs;  // Binary lhs; Index/indexed-Assign(CompoundAssign) subscript;
+                                  // DerefAssign/CompoundDerefAssign's pointer; CallPtr's callee
+                                  // (evaluates to the target address); Convert's operand; Ternary's condition
+    std::unique_ptr<Expr> rhs;  // Binary rhs; Assign/DerefAssign/CompoundAssign(DerefAssign) value;
+                                  // Unary operand; Ternary's then-branch
+    std::unique_ptr<Expr> elseExpr;  // Ternary's else-branch
     std::vector<std::unique_ptr<Expr>> args;  // Call arguments (CallPtr's is always empty - see ExprKind::CallPtr)
 };
 

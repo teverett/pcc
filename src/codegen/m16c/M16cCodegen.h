@@ -146,10 +146,47 @@ class M16cCodegen : public Backend {
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
     void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
+    // Shared tail of genDivMod() - the sign-fixup/real-hardware-divide
+    // sequence, once r0/r1 already hold the dividend/divisor (see that
+    // method's own call site) - factored out so CompoundAssign/
+    // CompoundDerefAssign's own genCompoundOp() below can drive the
+    // identical sequence from operands it has already staged itself
+    // (r0=old already is the dividend's own role, r1=rhs already is
+    // the divisor's own role - no register shuffling needed at all),
+    // rather than retyping it (every instruction here has to stay an
+    // exact copy of one this assembler already assembles correctly
+    // elsewhere - see M16cAssembler.h's own header comment: "not a
+    // general M16C encoder").
+    void genDivModCore(bool wantRemainder, bool isUnsigned);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
     void genConvert(const ir::Expr &e);
+    // CompoundAssign/CompoundDerefAssign's "new = old <op> rhs" step -
+    // `old` already in `r0`, `rhs` already in `r1` (both already
+    // promoted to this backend's native word, per `type`'s own
+    // signedness) - exactly genBinary()'s own r0/r1 roles for every
+    // one of these operators (dividend/value-to-shift in r0, divisor/
+    // count in r1), so every case here is either byte-identical to or
+    // a straightforward operand-order variant of genBinary()'s own
+    // per-operator instruction(s) (see that method). Leaves the raw
+    // (not yet re-truncated - see narrowR0To()) new value in `r0`.
+    // `type` is never wider than a native word here - IRBuilder.cpp's
+    // own rejectIfWide() guarantees it, so this never needs the
+    // `genWide*` machinery above.
+    void genCompoundOp(const std::string &op, Type type);
+    // Shared tail for CompoundAssign's indexed form and
+    // CompoundDerefAssign - `a0` must already hold the resolved
+    // address on entry (and nothing else live). See the .cpp's own
+    // comment.
+    void genCompoundThroughA0(const ir::Expr &e);
+    // Re-truncates `r0` to `to`'s own width, re-extending per its own
+    // signedness if narrower than a native word - genConvert()'s own
+    // existing "and.w 0x00FF,r0" / "movb r0,r0" idiom (see that
+    // method's own `!fromWide && !toWide` branch), pulled out here
+    // since genCompoundOp()'s own result needs the identical
+    // re-truncation.
+    void narrowR0To(Type to);
 
     int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }

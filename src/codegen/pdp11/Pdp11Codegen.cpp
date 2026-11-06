@@ -339,6 +339,49 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
             storeIndirect(e.type);
             return;
         }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--) - never wide, same gap as Assign's own
+                           // indexed case (element width isn't threaded through genIndexAddr here).
+                genIndexAddr(e.slot, *e.lhs);  // r2 = address
+                genCompoundThroughR2(e);
+                return;
+            }
+            // Plain scalar target - operandOf(slot) is a stable
+            // memory operand (a label or an r5-relative offset), never
+            // a clobberable register, so no address needs to be held
+            // across rhs's own evaluation at all.
+            std::string mem = operandOf(e.slot);
+            genExpr(*e.rhs);  // r0 = rhs
+            code_ << "    mov r0,r1\n";
+            loadOperand(mem, e.type);  // r0 = old
+            if (e.yieldOld) code_ << "    push r0\n";
+            genCompoundOp(e.op, e.type);
+            narrowR0To(e.type);
+            storeOperand(mem, e.type);
+            if (e.yieldOld) code_ << "    pop r0\n";
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);  // r0 = pointer value
+            code_ << "    mov r0,r2\n";  // r2 = address
+            genCompoundThroughR2(e);
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            genExpr(*e.lhs);
+            testTruthy(*e.lhs);
+            std::string Lthen = newLabel();
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            safeBranch("beq", Lelse, Lthen);
+            code_ << Lthen << ":\n";
+            genExpr(*e.rhs);
+            code_ << "    jmp " << Ldone << "\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
+            return;
+        }
         case ir::ExprKind::Unary: {
             if (e.op == "-") {
                 genExpr(*e.rhs);
@@ -806,6 +849,17 @@ void Pdp11Codegen::genConvert(const ir::Expr &e) {
     }
 }
 
+// Same narrow-to-narrow re-extension genConvert()'s own `!fromWide &&
+// !toWide` case above already does - a no-op unless `to` is a `char`.
+void Pdp11Codegen::narrowR0To(Type to) {
+    if (widthOfType(to) != 1) return;
+    if (to.isUnsigned) {
+        code_ << "    bic 0xFF00,r0\n";
+    } else {
+        code_ << "    movb r0,r0\n";  // narrow to the low byte, then (register dest) sign-extend back up
+    }
+}
+
 void Pdp11Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // r0 = index
     int shift = elemShift(slot->type);
@@ -885,6 +939,87 @@ void Pdp11Codegen::genAddrOf(const ir::Expr &operand) {
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");
+}
+
+// Entry convention: r0 = old value, r1 = rhs value (both already at
+// `type`'s own width/signedness - IRBuilder.cpp's own
+// buildCompoundRhs() already converts `rhs` to match). This is exactly
+// genBinary()'s own r0/r1 roles for `+`/`|`/`^` (both commutative, so
+// which operand is which register doesn't matter), `*` (genMul()'s own
+// `mul r1,r0`/`mov r1,r0` pair - multiplication's low word doesn't
+// depend on operand order either), and `<<`/`>>` (genShift()'s own
+// r0=value/r1=count loop body, already this exact convention with no
+// swap needed). `-` and `&` aren't commutative, so each is reordered
+// to land old-op-rhs with `old` already the one sitting in r0 - `sub
+// r1,r0` (r0 -= r1) is the same register-register SUB shape as
+// genBinary()'s own `sub r0,r1`, just the other way round (this
+// dialect's assembler encodes SUB generically for any register pair,
+// not per-register - see Pdp11Assembler.cpp's own encodeTwoOp()); `&`
+// uses BIC's own `dst &= ~src` meaning directly (`com r1` then `bic
+// r1,r0`) instead of genBinary()'s three-line de Morgan dance, since
+// here the destination is already the register (r0) that needs to end
+// up holding the result. `/`/`%` reshuffles into genDivMod()'s own
+// r1=dividend/r2=divisor layout with two extra register-register
+// `mov`s, then reuses its `tst`/`sxt`/`div` tail unchanged.
+void Pdp11Codegen::genCompoundOp(const std::string &op, Type type) {
+    bool isUnsigned = type.isUnsigned;
+    if (op == "+") { code_ << "    add r1,r0\n"; return; }
+    if (op == "-") { code_ << "    sub r1,r0\n"; return; }
+    if (op == "*") { code_ << "    mul r1,r0\n"; code_ << "    mov r1,r0\n"; return; }
+    if (op == "&") { code_ << "    com r1\n"; code_ << "    bic r1,r0\n"; return; }
+    if (op == "|") { code_ << "    bis r1,r0\n"; return; }
+    if (op == "^") { code_ << "    xor r1,r0\n"; return; }
+    if (op == "<<" || op == ">>") {
+        std::string Lloop = newLabel(), Lbody = newLabel(), Ldone = newLabel();
+        code_ << Lloop << ":\n    tst r1\n";
+        safeBranch("beq", Ldone, Lbody);
+        code_ << Lbody << ":\n";
+        if (op == "<<") {
+            code_ << "    asl r0\n";
+        } else if (isUnsigned) {
+            code_ << "    clc\n    ror r0\n";
+        } else {
+            code_ << "    asr r0\n";
+        }
+        code_ << "    sub 1,r1\n";
+        code_ << "    jmp " << Lloop << "\n";
+        code_ << Ldone << ":\n";
+        return;
+    }
+    // "/" or "%"
+    code_ << "    mov r1,r2\n";  // r2 = divisor
+    code_ << "    mov r0,r1\n";  // r1 = dividend
+    code_ << "    tst r1\n    sxt r0\n";  // r0 = sign extension of the dividend (high word)
+    code_ << "    div r2,r0\n";           // r0 = quotient, r1 = remainder
+    if (op == "%") code_ << "    mov r1,r0\n";
+}
+
+// r2 must already hold the resolved address on entry. The address is
+// always shuttled back into r2 right before each of the two real
+// memory accesses here (via the real stack, never some other register
+// held across rhs's own evaluation - that evaluation may recurse into
+// arbitrarily complex codegen that can use any register, e.g. a nested
+// compound assignment's own identical address-holding problem).
+void Pdp11Codegen::genCompoundThroughR2(const ir::Expr &e) {
+    code_ << "    push r2\n";  // stash address
+    genExpr(*e.rhs);            // r0 = rhs
+    code_ << "    push r0\n";    // stash rhs
+    code_ << "    pop r1\n";      // r1 = rhs
+    code_ << "    pop r2\n";       // r2 = address
+    loadOperand("[r2+0]", e.type);  // r0 = old
+    code_ << "    push r2\n";        // re-stash address for the store below
+    if (e.yieldOld) code_ << "    push r0\n";  // stash old too
+    genCompoundOp(e.op, e.type);                // r0 = new (raw)
+    narrowR0To(e.type);
+    if (e.yieldOld) {
+        code_ << "    pop r1\n";  // r1 = old (pre-op), stashed above, storeOperand() never touches r1
+        code_ << "    pop r2\n";   // r2 = address
+        storeOperand("[r2+0]", e.type);  // stores the new value (still in r0)
+        code_ << "    mov r1,r0\n";       // r0 = old (final result)
+    } else {
+        code_ << "    pop r2\n";  // r2 = address
+        storeOperand("[r2+0]", e.type);  // r0 already = new
+    }
 }
 
 void Pdp11Codegen::genBinary(const ir::Expr &e) {

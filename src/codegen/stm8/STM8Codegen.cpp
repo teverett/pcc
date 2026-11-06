@@ -919,6 +919,62 @@ void STM8Codegen::genExpr(const ir::Expr &e) {
             }
             return;
         }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--) - ptr = target address,
+                           // held across evaluating rhs the same way genCompoundThroughPtr() does for
+                           // CompoundDerefAssign below.
+                genIndexAddr(e.slot, *e.lhs);  // ptr = target address
+                genCompoundThroughPtr(e);
+                return;
+            }
+            // Plain scalar target - a Global's label or a Local/
+            // Param's fp-relative address is reproducible for free
+            // (no side effects, depends only on this call's own
+            // stable `fp`), so nothing needs to survive evaluating
+            // `rhs` at all - the address is simply recomputed
+            // afterward, exactly like a plain (non-indexed) Assign
+            // above never holds one across its own rhs either.
+            genExpr(*e.rhs);    // ac = rhs
+            copy16("dx", "ac");  // dx = rhs, held (nothing else evaluates a genExpr() before it's consumed)
+            if (e.slot->kind == ir::SlotKind::Global) {
+                copy16("ac", label(e.slot));  // ac = old
+            } else {
+                genSlotAddress(e.slot);
+                loadOperand(e.slot->type);  // ac = old
+            }
+            copy16("bc", "ac");   // bc = old - genCompoundOp()'s own precondition
+            copy16("ac", "dx");    // ac = rhs - genCompoundOp()'s own other precondition
+            if (e.yieldOld) copy16("cx", "bc");  // cx = old, held across the op/store below for the final result
+            genCompoundOp(e.op, e.type);
+            narrowAcTo(e.type);
+            if (e.slot->kind == ir::SlotKind::Global) {
+                copy16(label(e.slot), "ac");
+            } else {
+                genSlotAddress(e.slot);
+                storeOperand(e.slot->type);
+            }
+            if (e.yieldOld) copy16("ac", "cx");
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            genExpr(*e.lhs);
+            testTruthy(*e.lhs);
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            code_ << "    jreq " << Lelse << "\n";
+            genExpr(*e.rhs);
+            code_ << "    jp " << Ldone << "\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);              // ac = pointer value
+            code_ << "    ldw ptr, ac\n";  // ptr = address - the same line DerefAssign's own wide case uses above
+            genCompoundThroughPtr(e);
+            return;
+        }
         case ir::ExprKind::DerefAssign: {
             // Stores at e.type's own width/signedness - the pointee
             // type of a real typed pointer (char*/short*/long*/long
@@ -1359,6 +1415,155 @@ void STM8Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantR
         code_ << "    ld a, lc\n    xor a, " << divisorNeg << "+1\n    tnza\n    jreq " << Lskip << "\n";
         code_ << "    ldw x, ac\n    negw x\n    ldw ac, x\n";
         code_ << Lskip << ":\n";
+    }
+}
+
+// Precondition: `bc` holds `old`, `ac` holds `rhs` - exactly the
+// register roles genBitwise()'s own core already settles into right
+// after evaluating its own lhs/rhs (`bc` the left operand, `ac` the
+// right), with genMul()/genDivMod()/genShift()'s own equivalent roles
+// (`bc`/`dx`, `dx`/`bc`, `bc`/`lc` respectively) reached here by one
+// extra `copy16`/`ld` instead of their own nested genExpr(rhs). Every
+// instruction below is copied verbatim from that operator's own
+// post-setup body in genBinary()'s own helpers, operating on the same
+// named cells. Leaves the raw new value in `ac`.
+void STM8Codegen::genCompoundOp(const std::string &op, Type type) {
+    bool isUnsigned = type.isUnsigned;
+    if (op == "+" || op == "-") {
+        code_ << "    ldw x, bc\n    ldw y, ac\n";
+        code_ << "    " << (op == "+" ? "addw" : "subw") << " x, y\n    ldw ac, x\n";
+        return;
+    }
+    if (op == "*") {
+        copy16("dx", "ac");  // dx = multiplier (rhs) - bc already holds the multiplicand (old)
+        code_ << "    ldwi x, 0\n    ldw ac, x\n";  // ac = product = 0
+        code_ << "    ldi a, 16\n    ld lc, a\n";    // loop counter
+        std::string Lloop = newLabel(), Ldone = newLabel(), Lskipadd = newLabel();
+        code_ << Lloop << ":\n";
+        code_ << "    ld a, lc\n    tnza\n";
+        code_ << "    jreq " << Ldone << "\n";
+        code_ << "    ld a, dx+1\n    andi a, 1\n";
+        code_ << "    jreq " << Lskipadd << "\n";
+        code_ << "    ldw x, ac\n    ldw y, bc\n    addw x, y\n    ldw ac, x\n";
+        code_ << Lskipadd << ":\n";
+        shiftOneBit("bc", /*isLeft=*/true);
+        shiftOneBit("dx", /*isLeft=*/false);
+        code_ << "    ld a, lc\n    deca\n    ld lc, a\n";
+        code_ << "    jp " << Lloop << "\n";
+        code_ << Ldone << ":\n";
+        return;
+    }
+    if (op == "/" || op == "%") {
+        code_ << "    ldw x, bc\n    ldw dx, x\n";  // dx = dividend (old)
+        copy16("bc", "ac");                           // bc = divisor (rhs)
+        std::string divisorNeg = allocTemp();
+        declareTemp(divisorNeg);
+        if (!isUnsigned) {
+            std::string Ld = newLabel(), Lr = newLabel();
+            code_ << "    ldi a, 0\n    ld lc, a\n";  // lc = dividend-negative flag
+            code_ << "    ld a, dx\n    andi a, 0x80\n    tnza\n    jreq " << Ld << "\n";
+            code_ << "    ldw x, dx\n    negw x\n    ldw dx, x\n";
+            code_ << "    ldi a, 1\n    ld lc, a\n";
+            code_ << Ld << ":\n";
+            code_ << "    ldi a, 0\n    ld " << divisorNeg << "+1, a\n";
+            code_ << "    ld a, bc\n    andi a, 0x80\n    tnza\n    jreq " << Lr << "\n";
+            code_ << "    ldw x, bc\n    negw x\n    ldw bc, x\n";
+            code_ << "    ldi a, 1\n    ld " << divisorNeg << "+1, a\n";
+            code_ << Lr << ":\n";
+        }
+        code_ << "    ldwi x, 0\n    ldw ac, x\n";  // ac = quotient = 0
+        std::string Lloop = newLabel(), Ldone = newLabel();
+        code_ << Lloop << ":\n";
+        code_ << "    ldw x, dx\n    ldw y, bc\n    cpw x, y\n";
+        code_ << "    jrult " << Ldone << "\n";
+        code_ << "    subw x, y\n    ldw dx, x\n";
+        code_ << "    ldw x, ac\n    incw x\n    ldw ac, x\n";
+        code_ << "    jp " << Lloop << "\n";
+        code_ << Ldone << ":\n";
+        if (op == "%") {
+            copy16("ac", "dx");
+            if (!isUnsigned) {
+                std::string Lskip = newLabel();
+                code_ << "    ld a, lc\n    tnza\n    jreq " << Lskip << "\n";
+                code_ << "    ldw x, ac\n    negw x\n    ldw ac, x\n";
+                code_ << Lskip << ":\n";
+            }
+            return;
+        }
+        if (!isUnsigned) {
+            std::string Lskip = newLabel();
+            code_ << "    ld a, lc\n    xor a, " << divisorNeg << "+1\n    tnza\n    jreq " << Lskip << "\n";
+            code_ << "    ldw x, ac\n    negw x\n    ldw ac, x\n";
+            code_ << Lskip << ":\n";
+        }
+        return;
+    }
+    if (op == "&" || op == "|" || op == "^") {
+        const char *insn = (op == "&") ? "and" : (op == "|") ? "or" : "xor";
+        code_ << "    ld a, bc\n    " << insn << " a, ac\n    ld ac, a\n";
+        code_ << "    ld a, bc+1\n    " << insn << " a, ac+1\n    ld ac+1, a\n";
+        return;
+    }
+    // "<<" or ">>"
+    code_ << "    ld a, ac+1\n    ld lc, a\n";  // lc = shift count (rhs's own low byte) - bc already holds the
+                                                   // value to shift (old)
+    std::string Lloop = newLabel(), Ldone = newLabel();
+    code_ << Lloop << ":\n";
+    code_ << "    ld a, lc\n    tnza\n";
+    code_ << "    jreq " << Ldone << "\n";
+    if (op == "<<") {
+        shiftOneBit("bc", /*isLeft=*/true);
+    } else if (isUnsigned) {
+        shiftOneBit("bc", /*isLeft=*/false);
+    } else {
+        code_ << "    ldw x, bc\n    sraw x\n    ldw bc, x\n";
+    }
+    code_ << "    ld a, lc\n    deca\n    ld lc, a\n";
+    code_ << "    jp " << Lloop << "\n";
+    code_ << Ldone << ":\n";
+    copy16("ac", "bc");
+}
+
+// `ptr` holds the resolved address on entry. Stashed on the real
+// hardware stack while `rhs` is evaluated - `rhs` may itself be, or
+// contain, an arbitrarily deep expression (a call, another indexed/
+// dereferenced compound assignment of its own) free to reuse every
+// named cell this function touches, the same reasoning as
+// genBinary()'s own header comment. Once `rhs` is fully evaluated,
+// nothing further here ever recurses back into genExpr(), so every
+// named cell used from here on is a plain, non-reentrant scratch the
+// way genMul()/genDivMod()/etc. already use them after their own
+// setup.
+void STM8Codegen::genCompoundThroughPtr(const ir::Expr &e) {
+    code_ << "    ldw x, ptr\n    push x\n";  // stash address
+    genExpr(*e.rhs);                           // ac = rhs
+    copy16("dx", "ac");                          // dx = rhs, held safely until genCompoundOp() consumes it
+    code_ << "    pop x\n    ldw ptr, x\n";       // ptr = address, restored only now
+    code_ << "    ldw x, ptr\n";
+    loadOperand(e.type);  // ac = old
+    copy16("bc", "ac");    // bc = old - genCompoundOp()'s own precondition
+    copy16("ac", "dx");     // ac = rhs - genCompoundOp()'s own other precondition
+    if (e.yieldOld) copy16("cx", "bc");  // cx = old, held across the op/store below for the final result
+    genCompoundOp(e.op, e.type);           // ac = new (raw)
+    narrowAcTo(e.type);
+    code_ << "    ldw x, ptr\n";
+    storeOperand(e.type);  // stores ac (= new)
+    if (e.yieldOld) copy16("ac", "cx");  // ac = old (final result)
+}
+
+// Same truncate-then-sign/zero-extend sequence genConvert()'s own
+// int-to-char narrowing case uses - the only width this ever narrows
+// to, since IRBuilder.cpp's own rejectIfWide() keeps `to` no wider
+// than this backend's own native int, and 2 bytes (Int/pointer/Long,
+// all native-width here) needs no narrowing at all.
+void STM8Codegen::narrowAcTo(Type to) {
+    if (widthOfType(to) != 1) return;
+    if (to.isUnsigned) {
+        code_ << "    ldi a, 0\n    ld ac, a\n";
+    } else {
+        code_ << "    ld a, ac+1\n";
+        genSignFillByte();
+        code_ << "    ld ac, a\n";
     }
 }
 

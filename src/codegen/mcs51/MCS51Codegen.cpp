@@ -560,6 +560,57 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
             storeIndirect("ac", widthOfType(e.type));
             return;
         }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--)
+                genIndexAddr(e.slot, *e.lhs);  // ptr = target XDATA address
+                genCompoundThroughPtr(e);
+                return;
+            }
+            if (e.slot->kind == ir::SlotKind::Global) {
+                // A Global's own address is a plain compile-time
+                // label - no register to hold across evaluating rhs
+                // at all, same as Assign's own identical case above.
+                genExpr(*e.rhs);    // ac = rhs
+                copy16("dx", "ac");   // dx = rhs, held (nothing else evaluates a genExpr() before it's consumed)
+                loadXdata("ac", label(e.slot));  // ac = old
+                copy16("bc", "ac");                 // bc = old - genCompoundOp()'s own precondition
+                if (e.yieldOld) code_ << "    push ac\n    push ac+1\n";
+                copy16("ac", "dx");  // ac = rhs - genCompoundOp()'s own other precondition
+                genCompoundOp(e.op, e.type);
+                narrowAcTo(e.type);
+                storeXdata(label(e.slot), "ac");
+                if (e.yieldOld) code_ << "    pop ac+1\n    pop ac\n";
+                return;
+            }
+            // Local/Param - same "save ptr across evaluating rhs"
+            // reasoning as Assign's own identical scalar case above;
+            // once `ptr` holds the target address, this is the exact
+            // same tail as the indexed case.
+            loadFrameAddress("ptr", e.slot);
+            genCompoundThroughPtr(e);
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);  // ac = pointer value
+            copy16("ptr", "ac");  // ptr = address - the same line DerefAssign's own case above uses
+            genCompoundThroughPtr(e);
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            genExpr(*e.lhs);
+            code_ << "    mova ac\n    orl ac+1\n";
+            std::string Lthen = newLabel();
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            safeBranch("jz", Lelse, Lthen);
+            code_ << Lthen << ":\n";
+            genExpr(*e.rhs);
+            code_ << "    ljmp " << Ldone << "\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
+            return;
+        }
         case ir::ExprKind::Unary: {
             if (e.op == "-") {
                 genExpr(*e.rhs);
@@ -911,6 +962,141 @@ void MCS51Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool want
     code_ << "    ljmp " << Ldone << "\n";
     code_ << Ldone << ":\n";
     if (wantRemainder) copy16("ac", "dx");
+}
+
+// Precondition: `bc` holds `old`, `ac` holds `rhs` - exactly the
+// register roles genBinary()'s own inline "+"/"-"/"&"/"|"/"^" code,
+// and genMul()/genDivMod()/genShift()'s own equivalent roles (`bc`/
+// `dx`, `dx`/`bc`, implicit `ac`/`cx` respectively), already settle
+// into right after evaluating their own lhs/rhs, reached here by one
+// extra copy16()/mova instead of their own nested genExpr(rhs). Every
+// instruction below is copied verbatim from that operator's own post-
+// setup body in genBinary()'s own code/helpers. Leaves the raw new
+// value in `ac`.
+void MCS51Codegen::genCompoundOp(const std::string &op, Type type) {
+    if (op == "+") {
+        code_ << "    mova bc\n    add ac\n    movd ac\n";
+        code_ << "    mova bc+1\n    addc ac+1\n    movd ac+1\n";
+        return;
+    }
+    if (op == "-") {
+        code_ << "    mova bc\n    clrc\n    subb ac\n    movd ac\n";
+        code_ << "    mova bc+1\n    subb ac+1\n    movd ac+1\n";
+        return;
+    }
+    if (op == "*") {
+        copy16("dx", "ac");  // dx = multiplier (rhs) - bc already holds the multiplicand (old)
+        code_ << "    movai 0\n    movd ac\n    movai 0\n    movd ac+1\n";  // ac = product = 0
+        code_ << "    movai 16\n    movd cx\n";
+        std::string Lloop = newLabel(), Ladd = newLabel(), Lskipadd = newLabel(), Ldone = newLabel();
+        code_ << Lloop << ":\n";
+        code_ << "    mova dx\n    anli 1\n";
+        safeBranch("jnz", Ladd, Lskipadd);
+        code_ << Ladd << ":\n";
+        code_ << "    mova bc\n    add ac\n    movd ac\n";
+        code_ << "    mova bc+1\n    addc ac+1\n    movd ac+1\n";
+        code_ << Lskipadd << ":\n";
+        code_ << "    clrc\n    mova bc\n    rlca\n    movd bc\n";
+        code_ << "    mova bc+1\n    rlca\n    movd bc+1\n";
+        code_ << "    clrc\n    mova dx+1\n    rrca\n    movd dx+1\n";
+        code_ << "    mova dx\n    rrca\n    movd dx\n";
+        safeDjnz("cx", Lloop, Ldone);
+        code_ << Ldone << ":\n";
+        return;
+    }
+    if (op == "/" || op == "%") {
+        copy16("dx", "bc");  // dx = dividend (old) - copied before bc is overwritten below
+        copy16("bc", "ac");   // bc = divisor (rhs)
+        code_ << "    movai 0\n    movd ac\n    movai 0\n    movd ac+1\n";  // ac = quotient = 0
+        std::string Lloop = newLabel(), Lcommit = newLabel(), Llt = newLabel(), Ldone = newLabel();
+        code_ << Lloop << ":\n";
+        code_ << "    clrc\n    mova dx\n    subb bc\n    movd cx\n";
+        code_ << "    mova dx+1\n    subb bc+1\n";
+        safeBranch("jc", Llt, Lcommit);
+        code_ << Lcommit << ":\n";
+        code_ << "    movd dx+1\n    movdd dx, cx\n";
+        code_ << "    mova ac\n    addi 1\n    movd ac\n";
+        code_ << "    mova ac+1\n    addci 0\n    movd ac+1\n";
+        code_ << "    ljmp " << Lloop << "\n";
+        code_ << Llt << ":\n";
+        code_ << "    ljmp " << Ldone << "\n";
+        code_ << Ldone << ":\n";
+        if (op == "%") copy16("ac", "dx");
+        return;
+    }
+    if (op == "&" || op == "|" || op == "^") {
+        const char *insn = (op == "&") ? "anl" : (op == "|") ? "orl" : "xrl";
+        code_ << "    mova bc\n    " << insn << " ac\n    movd ac\n";
+        code_ << "    mova bc+1\n    " << insn << " ac+1\n    movd ac+1\n";
+        return;
+    }
+    // "<<" or ">>"
+    code_ << "    mova ac\n    movd cx\n";  // cx = shift count (rhs's own low byte) - ac about to be overwritten
+    copy16("ac", "bc");                       // ac = value to shift (old)
+    bool isLeft = op == "<<";
+    bool isUnsigned = type.isUnsigned;
+    std::string Lloop = newLabel(), Lbody = newLabel(), Ldone = newLabel();
+    code_ << Lloop << ":\n    mova cx\n";
+    safeBranch("jz", Ldone, Lbody);
+    code_ << Lbody << ":\n";
+    if (isLeft) {
+        code_ << "    clrc\n    mova ac\n    rlca\n    movd ac\n";
+        code_ << "    mova ac+1\n    rlca\n    movd ac+1\n";
+    } else if (isUnsigned) {
+        code_ << "    clrc\n    mova ac+1\n    rrca\n    movd ac+1\n";
+        code_ << "    mova ac\n    rrca\n    movd ac\n";
+    } else {
+        code_ << "    mova ac+1\n    rlca\n";
+        code_ << "    mova ac+1\n    rrca\n    movd ac+1\n";
+        code_ << "    mova ac\n    rrca\n    movd ac\n";
+    }
+    safeDjnz("cx", Lloop, Ldone);
+    code_ << Ldone << ":\n";
+}
+
+// `ptr` holds the resolved address on entry. Stashed via the real
+// hardware stack (`push ptr\n    push ptr+1\n` / `pop ptr+1\n    pop
+// ptr\n`) while `rhs` is evaluated - the same idiom Assign's own
+// indexed/Local-Param-scalar case and DerefAssign already use for the
+// identical "rhs might itself reuse ptr" reason (see those cases'
+// own comments). Once `rhs` is fully evaluated, nothing further here
+// ever recurses back into genExpr(), so `bc`/`cx`/`dx` are plain,
+// non-reentrant scratch from here on, the way genMul()/genDivMod()/
+// etc. already use them after their own setup; `yieldOld`'s own `old`
+// value instead survives on that same real hardware stack across
+// genCompoundOp()'s own use of every one of those.
+void MCS51Codegen::genCompoundThroughPtr(const ir::Expr &e) {
+    code_ << "    push ptr\n    push ptr+1\n";  // stash address
+    genExpr(*e.rhs);                              // ac = rhs
+    copy16("dx", "ac");                             // dx = rhs, held safely until genCompoundOp() consumes it
+    code_ << "    pop ptr+1\n    pop ptr\n";          // ptr = address, restored only now
+    loadIndirect("ac", widthOfType(e.type), e.type.isUnsigned);  // ac = old
+    copy16("bc", "ac");                                            // bc = old - genCompoundOp()'s own precondition
+    if (e.yieldOld) code_ << "    push ac\n    push ac+1\n";  // old, surviving genCompoundOp()'s own register use
+    copy16("ac", "dx");                                         // ac = rhs - genCompoundOp()'s own other precondition
+    genCompoundOp(e.op, e.type);                                  // ac = new (raw)
+    narrowAcTo(e.type);
+    storeIndirect("ac", widthOfType(e.type));  // stores ac (= new) - ptr untouched since the pop above
+    if (e.yieldOld) code_ << "    pop ac+1\n    pop ac\n";  // ac = old (final result)
+}
+
+// Same truncate-then-sign/zero-extend step genConvert()'s own int-to-
+// char narrowing case uses - the only width this ever narrows to,
+// since requireNarrow() keeps `to` no wider than this backend's own
+// native int, and 2 bytes (the only other width reachable here) needs
+// no narrowing at all.
+void MCS51Codegen::narrowAcTo(Type to) {
+    if (widthOfType(to) != 1) return;
+    if (to.isUnsigned) {
+        code_ << "    movai 0\n    movd ac+1\n";
+        return;
+    }
+    code_ << "    mova ac\n    anli 128\n";
+    std::string Lneg = newLabel(), Lnonneg = newLabel(), Ldone = newLabel();
+    safeBranch("jz", Lnonneg, Lneg);
+    code_ << Lneg << ":\n    movai 255\n    movd ac+1\n    ljmp " << Ldone << "\n";
+    code_ << Lnonneg << ":\n    movai 0\n    movd ac+1\n";
+    code_ << Ldone << ":\n";
 }
 
 void MCS51Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned) {

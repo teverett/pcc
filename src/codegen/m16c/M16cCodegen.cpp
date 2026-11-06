@@ -345,6 +345,48 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
             code_ << "    " << (widthOfType(e.type) == 1 ? "stb" : "st") << " r0,a0\n";
             return;
         }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--) - never wide, same known
+                           // limitation as the indexed Assign case above.
+                genIndexAddr(e.slot, *e.lhs);  // a0 = target address
+                genCompoundThroughA0(e);
+                return;
+            }
+            // Plain scalar target - operandOf(slot) is a stable
+            // operand text (a label, or an fb-relative displacement -
+            // `fb` itself is restored by any nested call's own
+            // epilogue before that call ever returns, see
+            // genFunction()), never a register rhs's own evaluation
+            // could clobber, so there's nothing to hold across it here.
+            genExpr(*e.rhs);              // r0 = rhs
+            code_ << "    mov.w r0,r1\n";  // r1 = rhs
+            loadOperand(operandOf(e.slot), e.type);  // r0 = old
+            if (e.yieldOld) code_ << "    push.w r0\n";
+            genCompoundOp(e.op, e.type);
+            narrowR0To(e.type);
+            storeOperand(operandOf(e.slot), e.type);
+            if (e.yieldOld) code_ << "    pop.w r0\n";
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);  // r0 = pointer value
+            code_ << "    mov.w r0,a0\n";
+            genCompoundThroughA0(e);
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            genExpr(*e.lhs);
+            testTruthy(*e.lhs);
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            code_ << "    jeq " << Lelse << "\n";
+            genExpr(*e.rhs);
+            code_ << "    jmp " << Ldone << "\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
+            return;
+        }
         case ir::ExprKind::Unary: {
             if (e.op == "-") {
                 genExpr(*e.rhs);
@@ -664,12 +706,7 @@ void M16cCodegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
 // fixing up the *sign* instead of the *width* (there's no dedicated
 // sign-extending widen instruction on this target to begin with - see
 // genConvert()'s own comment).
-void M16cCodegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
-    genExpr(lhs);
-    code_ << "    push.w r0\n";
-    genExpr(rhs);
-    code_ << "    mov.w r0,r1\n";  // r1 = divisor
-    code_ << "    pop.w r0\n";     // r0 = dividend
+void M16cCodegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
     if (isUnsigned) {
         code_ << "    mov.w 0,r2\n";
         code_ << "    divu.w r1,r0\n";  // r0 = quotient, r2 = remainder
@@ -703,6 +740,15 @@ void M16cCodegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantR
     code_ << "    cmp.w 0,r3\n    jeq " << Lskip << "\n";
     code_ << "    neg.w r0\n";
     code_ << Lskip << ":\n";
+}
+
+void M16cCodegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
+    genExpr(lhs);
+    code_ << "    push.w r0\n";
+    genExpr(rhs);
+    code_ << "    mov.w r0,r1\n";  // r1 = divisor
+    code_ << "    pop.w r0\n";     // r0 = dividend
+    genDivModCore(wantRemainder, isUnsigned);
 }
 
 void M16cCodegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned) {
@@ -810,6 +856,78 @@ void M16cCodegen::storeOperand(const std::string &mem, Type type) {
     } else {
         code_ << "    mov.w r0," << mem << "\n";
     }
+}
+
+void M16cCodegen::narrowR0To(Type to) {
+    if (widthOfType(to) != 1) return;  // a native word: r0 already holds the full value
+    if (to.isUnsigned) {
+        code_ << "    and.w 0x00FF,r0\n";
+        return;
+    }
+    code_ << "    movb r0,r0\n";  // narrow to the low byte, then (register dest) sign-extend back up
+}
+
+// `op` applied to r0=old, r1=rhs, leaving the raw new value in r0 -
+// r0/r1 already sit in exactly the roles genBinary()'s own per-
+// operator case expects them in (dividend/value-to-shift in r0,
+// divisor/count in r1 - see this method's own header comment in
+// M16cCodegen.h), so every one of these is the exact same mnemonic/
+// operand-shape genBinary() already emits, give or take which of two
+// already-used operand orders a commutative op's own instruction
+// text happens to use.
+void M16cCodegen::genCompoundOp(const std::string &op, Type type) {
+    bool isUnsigned = type.isUnsigned;
+    if (op == "+") {
+        code_ << "    add.w r1,r0\n";
+        return;
+    }
+    if (op == "-") {
+        code_ << "    sub.w r1,r0\n";
+        return;
+    }
+    if (op == "*") {
+        code_ << "    mul.w r1,r0\n";  // r2:r0 = r0*r1 = old*rhs (high word:low word)
+        return;
+    }
+    if (op == "/" || op == "%") {
+        genDivModCore(op == "%", isUnsigned);
+        return;
+    }
+    if (op == "&" || op == "|" || op == "^") {
+        const char *insn = (op == "&") ? "and.w" : (op == "|") ? "or.w" : "xor.w";
+        code_ << "    " << insn << " r1,r0\n";
+        return;
+    }
+    // "<<" or ">>" - real variable-count hardware shift, same
+    // signed-count convention as genShift() (negative = right).
+    if (op != "<<") code_ << "    neg.w r1\n";
+    code_ << "    " << ((op == "<<" || isUnsigned) ? "shl.w" : "sha.w") << " r1,r0\n";
+}
+
+// `a0` must already hold the resolved address on entry (see
+// genIndexAddr()/the indexed Assign case, or `mov.w r0,a0` off a
+// dereferenced pointer value, for the two ways a caller gets there).
+// `e.rhs`'s own evaluation can recursively reach arbitrarily complex
+// codegen (calls, nested expressions) that's free to clobber r0-r3 -
+// exactly the reason the indexed Assign case and DerefAssign already
+// stash `a0` on the real hardware stack across it rather than
+// trusting it to survive in place; genCompoundOp() itself never
+// touches `a0` (see genBinary()'s/genMul()'s/genDivMod()'s/
+// genShift()'s own bodies, none of which ever reference it), so
+// unlike this backend's divide-by-reuse counterparts on the 8008/
+// 65C02, `a0` needs no second re-stash around that call.
+void M16cCodegen::genCompoundThroughA0(const ir::Expr &e) {
+    code_ << "    push.w a0\n";    // stash address across rhs's own evaluation
+    genExpr(*e.rhs);               // r0 = rhs
+    code_ << "    mov.w r0,r1\n";  // r1 = rhs
+    code_ << "    pop.w a0\n";     // a0 restored
+    code_ << "    " << (widthOfType(e.type) == 1 ? "ldb" : "ld") << " a0,r0\n";  // r0 = old
+    if (widthOfType(e.type) == 1 && e.type.isUnsigned) code_ << "    and.w 0x00FF,r0\n";
+    if (e.yieldOld) code_ << "    push.w r0\n";  // stash old - this expr's own result
+    genCompoundOp(e.op, e.type);  // r0 = new (raw), using r0=old, r1=rhs
+    narrowR0To(e.type);
+    code_ << "    " << (widthOfType(e.type) == 1 ? "stb" : "st") << " r0,a0\n";
+    if (e.yieldOld) code_ << "    pop.w r0\n";  // r0 = old (final result)
 }
 
 // Word `wordIndex` (0 = least significant) of `slot`'s own multi-word

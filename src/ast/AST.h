@@ -16,6 +16,17 @@ enum class ExprKind {
     Index,        // name[lhs] - array element read
     Assign,       // name = rhs, or (if lhs is set) name[lhs] = rhs
     DerefAssign,  // *lhs = rhs
+    // name op= rhs, or (if lhs is set) name[lhs] op= rhs - `op` names the
+    // underlying binary operator (the compound token with its trailing
+    // '=' stripped, e.g. "+=" -> "+"); `yieldOld` is true only for a
+    // postfix '++'/'--' (built as op="+"/"-", rhs=IntLit(1)) - see
+    // IRBuilder.cpp's own note on why this is a real IR node rather than
+    // a `name = name op rhs` desugar: the target's index/pointer
+    // sub-expression must only be evaluated once, and returning the
+    // *old* value (postfix) needs the value to still be available right
+    // after the load, before the store.
+    CompoundAssign,
+    CompoundDerefAssign,  // *lhs op= rhs - same as CompoundAssign, deref target
     Unary,        // op applied to one sub-expression: '-', '!', '*' (deref) or '&' (address-of)
     Binary,       // + - * / % == != < <= > >= && ||
     Call,
@@ -23,6 +34,7 @@ enum class ExprKind {
     Cast,         // (type)rhs
     Sizeof,       // sizeof(type) or sizeof(rhs) - see sizeofIsType
     StringLit,    // "..." - decoded bytes in `name`; see IRBuilder's buildExpr
+    Ternary,      // lhs ? rhs : elseExpr
 };
 
 struct Expr {
@@ -32,12 +44,16 @@ struct Expr {
     long intValue = 0;        // IntLit
     Type type;                 // IntLit (from its suffix); Cast/Sizeof (the operand/measured type)
     bool sizeofIsType = false;  // Sizeof: true -> `type` is what's measured, false -> `rhs` is (unevaluated)
+    bool yieldOld = false;      // CompoundAssign/CompoundDerefAssign: true only for postfix '++'/'--'
     std::string name;         // Var / Index / Assign (target) / Call (callee) / StringLit (decoded bytes)
-    std::string op;           // Unary / Binary operator text
-    std::unique_ptr<Expr> lhs;  // Binary lhs, Index/indexed-Assign subscript, DerefAssign's pointer,
-                                 // CallPtr's callee expression
-    std::unique_ptr<Expr> rhs;                  // Binary rhs, Assign/DerefAssign rhs, Unary operand,
-                                                  // Cast operand, Sizeof's measured expression
+    std::string op;           // Unary / Binary / CompoundAssign(DerefAssign) operator text
+    std::unique_ptr<Expr> lhs;  // Binary lhs, Index/indexed-Assign(CompoundAssign) subscript,
+                                 // DerefAssign/CompoundDerefAssign's pointer, CallPtr's callee expression,
+                                 // Ternary's condition
+    std::unique_ptr<Expr> rhs;                  // Binary rhs, Assign/DerefAssign/CompoundAssign(DerefAssign)
+                                                  // value, Unary operand, Cast operand, Sizeof's measured
+                                                  // expression, Ternary's then-branch
+    std::unique_ptr<Expr> elseExpr;              // Ternary's else-branch
     std::vector<std::unique_ptr<Expr>> args;    // Call / CallPtr arguments
 };
 

@@ -411,6 +411,47 @@ void STM32Codegen::genExpr(const ir::Expr &e) {
             storeOperand("r2", e.type);
             return;
         }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--)
+                genIndexAddr(e.slot, *e.lhs);  // r2 = address
+                genCompoundThroughR2(e);
+                return;
+            }
+            // Plain scalar target - loadSlotAddr() is side-effect-free
+            // (no indexed sub-expression to re-evaluate), so it's
+            // computed after `e.rhs`, same order the existing Assign
+            // case above already uses.
+            genExpr(*e.rhs);  // r0 = rhs
+            code_ << "    mov r1,r0\n";
+            loadSlotAddr("r2", e.slot);
+            loadOperand("r2", e.type);  // r0 = old
+            if (e.yieldOld) code_ << "    push r0\n";
+            genCompoundOp(e.op, e.type);
+            narrowR0To(e.type);
+            storeOperand("r2", e.type);
+            if (e.yieldOld) code_ << "    pop r0\n";
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);  // r0 = pointer value
+            code_ << "    mov r2,r0\n";  // r2 = address
+            genCompoundThroughR2(e);
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            genExpr(*e.lhs);
+            if (isWide(e.lhs->type)) code_ << "    orr r0,r1\n";
+            code_ << "    cmpz r0\n";
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            code_ << "    beq " << Lelse << "\n";
+            genExpr(*e.rhs);
+            code_ << "    b " << Ldone << "\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
+            return;
+        }
         case ir::ExprKind::Unary: {
             if (e.op == "-") {
                 genExpr(*e.rhs);
@@ -541,6 +582,65 @@ void STM32Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
 void STM32Codegen::genIndex(const ir::Expr &e) {
     genIndexAddr(e.slot, *e.lhs);
     loadOperand("r2", e.slot->type);
+}
+
+void STM32Codegen::genCompoundOp(const std::string &op, Type type) {
+    bool isUnsigned = type.isUnsigned;
+    if (op == "+") { code_ << "    add r0,r0,r1\n"; return; }
+    if (op == "-") { code_ << "    sub r0,r0,r1\n"; return; }
+    // `muls r1,r0` (see genMul()'s own identical form) - a genuine
+    // 32x32->32 hardware product, no operand-width caveat here.
+    if (op == "*") { code_ << "    mul r1,r0\n"; return; }
+    if (op == "&") { code_ << "    and r0,r1\n"; return; }
+    if (op == "|") { code_ << "    orr r0,r1\n"; return; }
+    if (op == "^") { code_ << "    eor r0,r1\n"; return; }
+    if (op == "<<" || op == ">>") {
+        const char *insn = op == "<<" ? "lsl" : (isUnsigned ? "lsr" : "asr");
+        code_ << "    " << insn << " r0,r0,r1\n";
+        return;
+    }
+    // "/" or "%" - a real hardware divide (see genDivMod()'s own
+    // identical form): r4 = old / rhs, then (for "%") a real multiply-
+    // subtract recovers the remainder the same way genDivMod() already
+    // does. r4 (never r2) holds the quotient - r2 is this backend's
+    // own dedicated address register (see genCompoundThroughR2()'s own
+    // comment, and the plain-scalar CompoundAssign case in genExpr()),
+    // which a caller still needs intact for the store right after this
+    // call returns.
+    code_ << "    " << (isUnsigned ? "udiv" : "sdiv") << " r4,r0,r1\n";
+    if (op == "%") {
+        code_ << "    mul r1,r4\n";     // r4 = r4 * r1 = quotient * rhs
+        code_ << "    sub r0,r0,r4\n";  // r0 = old - quotient*rhs = remainder
+    } else {
+        code_ << "    mov r0,r4\n";
+    }
+}
+
+// r2 must already hold the resolved address on entry, and nothing
+// else live - mirrors genExpr()'s own indexed-Assign case, which
+// already stashes r2 on the real hardware stack across `e.rhs`'s own
+// evaluation for the identical reason: that evaluation can
+// recursively reach arbitrary codegen (calls included), which may
+// freely use every other register.
+void STM32Codegen::genCompoundThroughR2(const ir::Expr &e) {
+    code_ << "    push r2\n";
+    genExpr(*e.rhs);              // r0 = rhs
+    code_ << "    mov r1,r0\n";    // r1 = rhs, held across the r2 reload below
+    code_ << "    pop r2\n";        // r2 = address
+    loadOperand("r2", e.type);         // r0 = old
+    if (e.yieldOld) code_ << "    push r0\n";
+    genCompoundOp(e.op, e.type);          // r0 = new (raw)
+    narrowR0To(e.type);
+    if (e.yieldOld) {
+        code_ << "    mov r4,r0\n";   // r4 = new
+        code_ << "    pop r0\n";       // r0 = old
+        code_ << "    mov r5,r0\n";     // r5 = old, preserved across the store below
+        code_ << "    mov r0,r4\n";      // r0 = new (storeOperand always stores from r0)
+        storeOperand("r2", e.type);         // r2 still addresses the target (loadOperand never moves it - e.type is never wide)
+        code_ << "    mov r0,r5\n";          // r0 = old (final result)
+    } else {
+        storeOperand("r2", e.type);  // r0 already = new; r2 still addresses the target
+    }
 }
 
 // Stores arrayInit into `slot`'s own frame slots - every call needs

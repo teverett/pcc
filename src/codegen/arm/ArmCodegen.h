@@ -140,6 +140,17 @@ class ArmCodegen : public Backend {
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genConvert(const ir::Expr &e);
+    // CompoundAssign/CompoundDerefAssign's "new = old <op> rhs" step -
+    // old already in r0, rhs already in r1 (both already at `type`'s
+    // own width/signedness), leaves the raw (not yet re-truncated -
+    // see narrowR0To()) new value in r0. `type` is never wide here -
+    // IRBuilder.cpp's own rejectIfWide() guarantees it.
+    void genCompoundOp(const std::string &op, Type type);
+    // Shared tail for CompoundAssign (both its scalar and indexed
+    // forms) and CompoundDerefAssign - r2 must already hold the
+    // resolved target address on entry (and nothing else live). See
+    // the .cpp's own comment.
+    void genCompoundThroughR2(const ir::Expr &e);
 
     int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }

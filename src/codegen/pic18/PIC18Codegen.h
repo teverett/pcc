@@ -303,6 +303,30 @@ class PIC18Codegen : public Backend {
 
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
+    // CompoundAssign/CompoundDerefAssign's "new = old <op> rhs" step -
+    // `bc` must already hold `old` and `ac` must already hold `rhs`
+    // (both already at `type`'s own width/signedness, sign/zero-
+    // extended into this backend's one native 16-bit `ac`/`bc` cell
+    // exactly like any other value here) - the same register roles
+    // genBinary()'s own per-operator code (inline, or genMul()/
+    // genDivMod()/genShift()) already settles into right after
+    // evaluating its own lhs/rhs, just supplied directly here instead
+    // of via a nested genExpr() call. Leaves the raw (not yet re-
+    // narrowed - see narrowAcTo()) new value in `ac`. `type` is never
+    // wide here - IRBuilder.cpp's own rejectIfWide() guarantees it (on
+    // top of this backend's own blanket requireNarrow() check).
+    void genCompoundOp(const std::string &op, Type type);
+    // Shared tail for CompoundAssign's indexed form and
+    // CompoundDerefAssign - `ptr` must already hold the resolved
+    // address on entry. See the .cpp's own comment.
+    void genCompoundThroughPtr(const ir::Expr &e);
+    // Re-narrows `ac` to `to`'s own width/signedness, after a raw
+    // genCompoundOp() result - genConvert()'s own int-to-char
+    // narrowing case, factored out, since both are "a native-word
+    // value, now re-interpreted at `to`'s own narrower width"
+    // operations.
+    void narrowAcTo(Type to);
+
     // `slot`'s own byte offset from `FP` within the current
     // function's own frame (Local/Param only - a Global never goes
     // through `FP` at all, see slotAddrToPtr()) - a Param's own

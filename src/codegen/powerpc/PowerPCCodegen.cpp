@@ -347,6 +347,49 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
             storeOperand("t2", "t0", e.type);
             return;
         }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--)
+                genIndexAddr(e.slot, *e.lhs);  // t2 = address
+                genCompoundThroughT2(e);
+                return;
+            }
+            // Plain scalar target - loadSlotValue()/storeSlotValue()
+            // address it afresh every call with no side effect (a
+            // Global's own address load, or just `fp+slotDisp`), so
+            // there's no address to hold across `e.rhs`'s own
+            // evaluation at all - same order as the existing non-
+            // indexed Assign case above (rhs first, then the slot
+            // access).
+            genExpr(*e.rhs);  // t0 = rhs
+            code_ << "    or t1,t0,t0\n";  // t1 = t0 (real PowerPC "mr" idiom)
+            loadSlotValue("t0", e.slot);  // t0 = old
+            if (e.yieldOld) code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
+            genCompoundOp(e.op, e.type);
+            narrowT0To(e.type);
+            storeSlotValue(e.slot, "t0");
+            if (e.yieldOld) code_ << "    ldind sp,t0\n    addi sp,sp,4\n";
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);  // t0 = pointer value
+            code_ << "    or t2,t0,t0\n";  // t2 = t0 (real PowerPC "mr" idiom)
+            genCompoundThroughT2(e);
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            genExpr(*e.lhs);
+            if (isWide(e.lhs->type)) code_ << "    or t0,t0,t1\n";
+            code_ << "    cmpwi t0,0\n";
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            code_ << "    beq " << Lelse << "\n";
+            genExpr(*e.rhs);
+            code_ << "    b " << Ldone << "\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
+            return;
+        }
         case ir::ExprKind::Unary: {
             if (e.op == "-") {
                 genExpr(*e.rhs);
@@ -469,6 +512,71 @@ void PowerPCCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr)
 void PowerPCCodegen::genIndex(const ir::Expr &e) {
     genIndexAddr(e.slot, *e.lhs);
     loadOperand("t2", "t0", e.slot->type);
+}
+
+void PowerPCCodegen::genCompoundOp(const std::string &op, Type type) {
+    bool isUnsigned = type.isUnsigned;
+    if (op == "+") { code_ << "    add t0,t1,t0\n"; return; }
+    // "subf rT,rA,rB" = rB - rA (see genIndexAddr()'s own comment on
+    // this convention) - t0 = t0 - t1 = old - rhs.
+    if (op == "-") { code_ << "    subf t0,t1,t0\n"; return; }
+    // Real hardware `mullw` (see genMul()'s own identical form) - a
+    // full 32x32->32 product, commutative, so t1*t0 = rhs*old is the
+    // same value as old*rhs.
+    if (op == "*") { code_ << "    mullw t0,t1,t0\n"; return; }
+    if (op == "&") { code_ << "    and t0,t1,t0\n"; return; }
+    if (op == "|") { code_ << "    or t0,t1,t0\n"; return; }
+    if (op == "^") { code_ << "    xor t0,t1,t0\n"; return; }
+    if (op == "<<" || op == ">>") {
+        const char *insn = op == "<<" ? "slw" : (isUnsigned ? "srw" : "sraw");
+        code_ << "    " << insn << " t0,t0,t1\n";
+        return;
+    }
+    // "/" or "%" - real hardware `divw`/`divwu` (see genDivMod()'s own
+    // identical form): t0 = old, t1 = rhs (divisor); "%" recovers the
+    // remainder via a real multiply-subtract the same way genDivMod()
+    // already does, since classic PowerPC has no direct remainder
+    // instruction. t5 (never t2) holds the quotient scratch - t2 is
+    // this backend's own dedicated address register (see
+    // genCompoundThroughT2()'s own comment), which a caller still
+    // needs intact for the store right after this call returns.
+    const char *divInsn = isUnsigned ? "divwu" : "divw";
+    if (op == "%") {
+        code_ << "    " << divInsn << " t5,t0,t1\n";  // t5 = old / rhs
+        code_ << "    mullw t5,t5,t1\n";               // t5 = quotient * rhs
+        code_ << "    subf t0,t5,t0\n";                // t0 = old - quotient*rhs = remainder
+    } else {
+        code_ << "    " << divInsn << " t0,t0,t1\n";
+    }
+}
+
+// t2 must already hold the resolved address on entry, and nothing
+// else live - mirrors genExpr()'s own indexed-Assign case, which
+// already stashes t2 on the real hardware stack across `e.rhs`'s own
+// evaluation for the identical reason: that evaluation can
+// recursively reach arbitrary codegen (calls included), which may
+// freely use every other register. PowerPC has no dedicated push/pop,
+// so this uses the same `addi sp,sp,-4`/`stind sp,...` idiom every
+// other stack-held temporary in this backend already uses.
+void PowerPCCodegen::genCompoundThroughT2(const ir::Expr &e) {
+    code_ << "    addi sp,sp,-4\n    stind sp,t2\n";
+    genExpr(*e.rhs);               // t0 = rhs
+    code_ << "    or t1,t0,t0\n";   // t1 = t0 (real PowerPC "mr" idiom) - rhs, held across the t2 reload below
+    code_ << "    ldind sp,t2\n    addi sp,sp,4\n";  // t2 = address
+    loadOperand("t2", "t0", e.type);  // t0 = old
+    if (e.yieldOld) code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
+    genCompoundOp(e.op, e.type);          // t0 = new (raw)
+    narrowT0To(e.type);
+    if (e.yieldOld) {
+        code_ << "    or t3,t0,t0\n";               // t3 = new
+        code_ << "    ldind sp,t0\n    addi sp,sp,4\n";  // t0 = old
+        code_ << "    or t4,t0,t0\n";                 // t4 = old, preserved across the store below
+        code_ << "    or t0,t3,t3\n";                  // t0 = new (storeOperand always stores from t0)
+        storeOperand("t2", "t0", e.type);                 // t2 still addresses the target (loadOperand never moves it - e.type is never wide)
+        code_ << "    or t0,t4,t4\n";                       // t0 = old (final result)
+    } else {
+        storeOperand("t2", "t0", e.type);  // t0 already = new; t2 still addresses the target
+    }
 }
 
 // Stores `slot->arrayInit` into this Local array's own frame slots -

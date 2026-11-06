@@ -151,6 +151,21 @@ class PowerPCCodegen : public Backend {
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
+    // CompoundAssign/CompoundDerefAssign's "new = old <op> rhs" step -
+    // `old` already in t0, `rhs` already in t1 (both already at
+    // `type`'s own width/signedness), leaves the raw (not yet
+    // re-narrowed - see narrowT0To()) new value in t0. `type` is never
+    // wide here - IRBuilder.cpp's own rejectIfWide() guarantees it.
+    void genCompoundOp(const std::string &op, Type type);
+    // Shared tail for CompoundAssign's indexed form and
+    // CompoundDerefAssign - t2 must already hold the resolved address
+    // on entry. t2 survives `e.rhs`'s own evaluation on the real
+    // hardware stack the same way genExpr()'s own indexed-Assign case
+    // already preserves it there (PowerPC has no dedicated push/pop -
+    // see that case's own `addi sp,sp,-4`/`stind sp,t2` idiom), so a
+    // recursive/complex `e.rhs` (calls included) can safely clobber
+    // every other register.
+    void genCompoundThroughT2(const ir::Expr &e);
 
     int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }

@@ -86,6 +86,24 @@ void printExpr(const ir::Expr &e, std::ostream &out) {
             out << ") = ";
             printExpr(*e.rhs, out);
             return;
+        case ir::ExprKind::CompoundAssign:
+            if (e.yieldOld) out << "oldval ";
+            if (e.lhs) {
+                out << slotRef(e.slot) << "[";
+                printExpr(*e.lhs, out);
+                out << "] " << e.op << "= ";
+            } else {
+                out << slotRef(e.slot) << " " << e.op << "= ";
+            }
+            printExpr(*e.rhs, out);
+            return;
+        case ir::ExprKind::CompoundDerefAssign:
+            if (e.yieldOld) out << "oldval ";
+            out << "*(";
+            printExpr(*e.lhs, out);
+            out << ") " << e.op << "= ";
+            printExpr(*e.rhs, out);
+            return;
         case ir::ExprKind::Unary:
             out << e.op << "(";
             printExpr(*e.rhs, out);
@@ -121,6 +139,15 @@ void printExpr(const ir::Expr &e, std::ostream &out) {
         case ir::ExprKind::Convert:
             out << "(" << typeSpecText(e.type) << ")(";
             printExpr(*e.lhs, out);
+            out << ")";
+            return;
+        case ir::ExprKind::Ternary:
+            out << "(";
+            printExpr(*e.lhs, out);
+            out << " ? ";
+            printExpr(*e.rhs, out);
+            out << " : ";
+            printExpr(*e.elseExpr, out);
             out << ")";
             return;
     }

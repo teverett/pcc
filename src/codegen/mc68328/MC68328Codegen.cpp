@@ -308,6 +308,47 @@ void MC68328Codegen::genExpr(const ir::Expr &e) {
             storeIndirect(e.type);
             return;
         }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--)
+                genIndexAddr(e.slot, *e.lhs);  // a0 = address
+                genCompoundThroughA0(e);
+                return;
+            }
+            // Plain scalar target - operandOf(slot) is a stable frame/
+            // absolute operand, never a clobberable register, so no
+            // address needs to be held across rhs's own evaluation at
+            // all.
+            std::string mem = operandOf(e.slot);
+            genExpr(*e.rhs);  // d0 = rhs
+            code_ << "    movel d0,d1\n";
+            loadOperand(mem, "", e.type);  // d0 = old
+            if (e.yieldOld) code_ << "    pushl d0\n";
+            genCompoundOp(e.op, e.type);
+            narrowD0To(e.type);
+            storeOperand(mem, "", e.type);
+            if (e.yieldOld) code_ << "    popl d0\n";
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);  // d0 = pointer value
+            code_ << "    movel d0,a0\n";  // a0 = address
+            genCompoundThroughA0(e);
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            genExpr(*e.lhs);
+            if (isWide(e.lhs->type)) code_ << "    orl d1,d0\n";
+            code_ << "    cmpl 0,d0\n";
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            code_ << "    beq " << Lelse << "\n";
+            genExpr(*e.rhs);
+            code_ << "    bra " << Ldone << "\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
+            return;
+        }
         case ir::ExprKind::Unary: {
             if (e.op == "-") {
                 genExpr(*e.rhs);
@@ -433,6 +474,61 @@ void MC68328Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr)
     } else {
         code_ << "    movel " << operandOf(slot) << ",a0\n";
         code_ << "    adda d0,a0\n";
+    }
+}
+
+void MC68328Codegen::genCompoundOp(const std::string &op, Type type) {
+    bool isUnsigned = type.isUnsigned;
+    if (op == "+") { code_ << "    addl d1,d0\n"; return; }
+    if (op == "-") { code_ << "    subl d1,d0\n"; return; }
+    // MULS.W/MULU.W Dn,Dn (see genMul()'s own identical form) - this
+    // target's only hardware multiply, 16-bit operands in, correct
+    // 32-bit product out (see MC68328Codegen.h's own header comment on
+    // this limitation).
+    if (op == "*") { code_ << "    " << (isUnsigned ? "muluw" : "mulsw") << " d1,d0\n"; return; }
+    if (op == "&") { code_ << "    andl d1,d0\n"; return; }
+    if (op == "|") { code_ << "    orl d1,d0\n"; return; }
+    // EOR.L Dn,<ea> - d1 is the source register field, d0 the
+    // destination, same role EOR always plays in genBinary()'s own
+    // "^" case.
+    if (op == "^") { code_ << "    eorl d1,d0\n"; return; }
+    if (op == "<<" || op == ">>") {
+        code_ << "    " << (op == "<<" ? "lsll" : (isUnsigned ? "lsrl" : "asrl")) << " d1,d0\n";
+        return;
+    }
+    // "/" or "%" - DIVS.W/DIVU.W <ea>,Dn: d1 is the word-sized
+    // divisor, d0 the long dividend and destination (quotient in the
+    // low word, remainder in the high word afterward - see
+    // genDivMod()'s own identical form).
+    code_ << "    " << (isUnsigned ? "divuw" : "divsw") << " d1,d0\n";
+    if (op == "%") code_ << "    swapl d0\n";
+    code_ << "    " << (isUnsigned ? "andl 65535,d0\n" : "extl d0\n");
+}
+
+// A0 must already hold the resolved address on entry, and nothing
+// else live - mirrors genExpr()'s own indexed-Assign case, which
+// already stashes A0 on the real hardware stack (A7) across `e.rhs`'s
+// own evaluation for the identical reason: that evaluation can
+// recursively reach arbitrary codegen (calls included), which may
+// freely use every data register and A0 itself.
+void MC68328Codegen::genCompoundThroughA0(const ir::Expr &e) {
+    code_ << "    pushl a0\n";
+    genExpr(*e.rhs);              // d0 = rhs
+    code_ << "    movel d0,d1\n";  // d1 = rhs, held across the a0 reload below
+    code_ << "    popl a0\n";       // a0 = address
+    loadIndirect(e.type);             // d0 = old
+    if (e.yieldOld) code_ << "    pushl d0\n";
+    genCompoundOp(e.op, e.type);         // d0 = new (raw)
+    narrowD0To(e.type);
+    if (e.yieldOld) {
+        code_ << "    movel d0,d2\n";  // d2 = new
+        code_ << "    popl d0\n";       // d0 = old
+        code_ << "    movel d0,d3\n";    // d3 = old, preserved across the store below
+        code_ << "    movel d2,d0\n";     // d0 = new (storeIndirect always stores from d0)
+        storeIndirect(e.type);               // a0 still addresses the target (loadIndirect never bumps it - e.type is never wide)
+        code_ << "    movel d3,d0\n";          // d0 = old (final result)
+    } else {
+        storeIndirect(e.type);  // d0 already = new; a0 still addresses the target
     }
 }
 

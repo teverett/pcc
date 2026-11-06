@@ -910,6 +910,38 @@ void Z80Codegen::genExpr(const ir::Expr &e) {
             storeOperand(e.slot->type);
             return;
         }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--)
+                genIndexAddr(e.slot, *e.lhs);  // ptr = address
+            } else if (e.slot->kind == ir::SlotKind::Global) {
+                code_ << "    ld hl, " << label(e.slot) << "\n";
+                code_ << "    ld [ptr], hl\n";
+            } else {
+                loadFrameAddr(e.slot);
+                code_ << "    ld [ptr], hl\n";
+            }
+            genCompoundThroughPtr(e);
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);  // ac = pointer value
+            copy16("ptr", "ac");
+            genCompoundThroughPtr(e);
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            genExpr(*e.lhs);
+            testTruthy(*e.lhs);
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            code_ << "    jp z, " << Lelse << "\n";
+            genExpr(*e.rhs);
+            code_ << "    jp " << Ldone << "\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
+            return;
+        }
         case ir::ExprKind::DerefAssign: {
             // Stores through at e.type's own width - the pointee type
             // of a real typed pointer, or plain native-word width for
@@ -1158,6 +1190,137 @@ void Z80Codegen::genIndex(const ir::Expr &e) {
     }
     code_ << "    ld hl, [ptr]\n";
     loadOperand(e.slot->type);
+}
+
+// Entry convention: HL = old value, DE = rhs value (both already at
+// `type`'s own width/signedness - IRBuilder.cpp's own
+// buildCompoundRhs() already converts `rhs` to match). `+`/`-`/`&`/
+// `|`/`^` are the exact same HL/DE instruction shapes genBinary()'s
+// own narrow tail already uses for these operators (that tail already
+// ends by writing its result into `ac`, so this does too, directly,
+// rather than handing a raw register value back to the caller).
+// `*` seeds `_bc`/`dx` with HL/DE and zeroes `ac` before running
+// genMul()'s own 16-iteration shift-add loop body unchanged; `/`/`%`
+// seed `dx`/`_bc` (dividend/divisor) before genDivMod()'s own
+// repeated-subtraction loop body, copying `dx` into `ac` afterward for
+// `%`; `<<`/`>>` seed `_bc`/`b` (value/count) before genShift()'s own
+// one-bit-at-a-time loop body, copying `_bc` into `ac` afterward.
+void Z80Codegen::genCompoundOp(const std::string &op, Type type) {
+    bool isUnsigned = type.isUnsigned;
+    if (op == "+") { code_ << "    add hl, de\n    ld [ac], hl\n"; return; }
+    if (op == "-") { code_ << "    or a\n    sbc hl, de\n    ld [ac], hl\n"; return; }
+    if (op == "&" || op == "|" || op == "^") {
+        const char *insn = (op == "&") ? "and" : (op == "|") ? "or" : "xor";
+        code_ << "    ld a, l\n    " << insn << " e\n    ld l, a\n";
+        code_ << "    ld a, h\n    " << insn << " d\n    ld h, a\n";
+        code_ << "    ld [ac], hl\n";
+        return;
+    }
+    if (op == "*") {
+        code_ << "    ld [_bc], hl\n";  // bc = old (multiplicand)
+        code_ << "    ld [dx], de\n";    // dx = rhs (multiplier)
+        code_ << "    ld hl, 0\n    ld [ac], hl\n";
+        code_ << "    ld b, 16\n";
+        std::string Lloop = newLabel(), Ldone = newLabel(), Lskipadd = newLabel();
+        code_ << Lloop << ":\n";
+        code_ << "    ld a, b\n    or a\n";
+        code_ << "    jp z, " << Ldone << "\n";
+        code_ << "    ld a, [dx]\n    and 1\n";
+        code_ << "    jp z, " << Lskipadd << "\n";
+        code_ << "    ld hl, [ac]\n    ld de, [_bc]\n    add hl, de\n    ld [ac], hl\n";
+        code_ << Lskipadd << ":\n";
+        shiftOneBit("_bc", /*isLeft=*/true);
+        shiftOneBit("dx", /*isLeft=*/false);
+        code_ << "    dec b\n";
+        code_ << "    jp " << Lloop << "\n";
+        code_ << Ldone << ":\n";
+        return;
+    }
+    if (op == "<<" || op == ">>") {
+        code_ << "    ld [_bc], hl\n";  // bc = old (value)
+        code_ << "    ld a, e\n    ld b, a\n";  // b = shift count (low byte of rhs)
+        std::string Lloop = newLabel(), Ldone = newLabel();
+        code_ << Lloop << ":\n";
+        code_ << "    ld a, b\n    or a\n";
+        code_ << "    jp z, " << Ldone << "\n";
+        if (op == "<<" || isUnsigned) {
+            shiftOneBit("_bc", /*isLeft=*/op == "<<");
+        } else {
+            code_ << "    ld hl, [_bc]\n";
+            code_ << "    ld a, h\n    sra a\n    ld h, a\n";
+            code_ << "    rr l\n";
+            code_ << "    ld [_bc], hl\n";
+        }
+        code_ << "    dec b\n";
+        code_ << "    jp " << Lloop << "\n";
+        code_ << Ldone << ":\n";
+        copy16("ac", "_bc");
+        return;
+    }
+    // "/" or "%"
+    code_ << "    ld [dx], hl\n";  // dx = old (dividend)
+    code_ << "    ld [_bc], de\n";  // bc = rhs (divisor)
+    code_ << "    ld hl, 0\n    ld [ac], hl\n";
+    std::string Lloop = newLabel(), Ldone = newLabel();
+    code_ << Lloop << ":\n";
+    code_ << "    ld hl, [dx]\n    ld de, [_bc]\n";
+    code_ << "    or a\n    sbc hl, de\n";
+    code_ << "    jp c, " << Ldone << "\n";
+    code_ << "    ld [dx], hl\n";
+    code_ << "    ld hl, [ac]\n    inc hl\n    ld [ac], hl\n";
+    code_ << "    jp " << Lloop << "\n";
+    code_ << Ldone << ":\n";
+    if (op == "%") copy16("ac", "dx");
+}
+
+// `ptr` must already hold the resolved address on entry. The address
+// is always shuttled back through the real hardware stack across
+// evaluating `rhs` (this dialect's own `ptr` cell is a single shared
+// scratch location, not a stack - see Z80Codegen.h's own header
+// comment - and `rhs`'s own evaluation may recurse into arbitrarily
+// complex codegen that reuses `ptr`, e.g. a nested compound
+// assignment's own identical addressing problem). Once `rhs` has been
+// evaluated, nothing further here recurses into another expression,
+// so the shared `cx` cell (declared once in generate(), never written
+// by any other existing codegen in this file) is safe to use as a
+// transient `yieldOld` stash for the remainder of this one call.
+void Z80Codegen::genCompoundThroughPtr(const ir::Expr &e) {
+    code_ << "    ld hl, [ptr]\n";
+    loadOperand(e.type);  // ac = old
+    code_ << "    ld hl, [ptr]\n";
+    code_ << "    push hl\n";  // stash address
+    code_ << "    ld hl, [ac]\n";
+    code_ << "    push hl\n";  // stash old (ac is about to be overwritten by rhs)
+    genExpr(*e.rhs);            // ac = rhs
+    code_ << "    ld de, [ac]\n";
+    code_ << "    pop hl\n";  // hl = old
+    if (e.yieldOld) code_ << "    push hl\n";  // re-stash old for the final result
+    genCompoundOp(e.op, e.type);                // ac = new (raw)
+    narrowAcTo(e.type);
+    if (e.yieldOld) {
+        code_ << "    pop hl\n";  // hl = old
+        code_ << "    ld [cx], hl\n";
+        code_ << "    pop hl\n";  // hl = address
+        storeOperand(e.type);      // stores ac(=new) through hl
+        code_ << "    ld hl, [cx]\n";
+        code_ << "    ld [ac], hl\n";  // ac = old (final result)
+    } else {
+        code_ << "    pop hl\n";  // hl = address
+        storeOperand(e.type);      // ac already = new
+    }
+}
+
+// Same narrow-to-narrow re-extension genConvert()'s own `!fromWide &&
+// !toWide` case already does - a no-op unless `to` is a `char`.
+void Z80Codegen::narrowAcTo(Type to) {
+    if (widthOfType(to) != 1) return;
+    code_ << "    ld hl, [ac]\n";
+    if (to.isUnsigned) {
+        code_ << "    ld h, 0\n";
+    } else {
+        code_ << "    ld a, l\n    rla\n    sbc a, a\n    ld h, a\n";
+    }
+    code_ << "    ld [ac], hl\n";
 }
 
 void Z80Codegen::genAddrOf(const ir::Expr &operand) {

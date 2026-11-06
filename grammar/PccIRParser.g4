@@ -101,13 +101,32 @@ ref
 // Every alternative's shape is lifted straight from IRPrinter.cpp's
 // printExpr() - see the comment on each ExprKind case there for the
 // exact spelling this has to accept.
+// The ten compound-assignment operator spellings (IRPrinter.cpp's
+// `e.op + "="`), shared by compoundIndexExpr/compoundAssignExpr/
+// compoundDerefExpr below.
+compoundOp
+    : PLUSEQ | MINUSEQ | STAREQ | SLASHEQ | PERCENTEQ | AMPEQ | CARETEQ | PIPEEQ | SHLEQ | SHREQ
+    ;
+
 expr
     : NUMBER                                                      # intLitExpr
+    // CompoundAssign/CompoundDerefAssign (IRPrinter.cpp's own case) -
+    // OLDVAL_KW present only when `e.yieldOld` is true (a postfix
+    // '++'/'--'); these three must be tried before indexExpr/
+    // assignExpr/starExpr below, which would otherwise also match
+    // their own leading `ref`/`STAR` before ever reaching the
+    // compound operator.
+    | OLDVAL_KW? ref LBRACK expr RBRACK compoundOp expr             # compoundIndexExpr
+    | OLDVAL_KW? ref compoundOp expr                                # compoundAssignExpr
+    | OLDVAL_KW? STAR LPAREN expr RPAREN compoundOp expr            # compoundDerefExpr
     | ref LBRACK expr RBRACK (ASSIGN expr)?                        # indexExpr        // Index, or indexed Assign
     | ref ASSIGN expr                                              # assignExpr
     | STAR LPAREN expr RPAREN (ASSIGN expr)?                       # starExpr         // Unary "*" (deref read), or DerefAssign
     | (MINUS | BANG | TILDE | AMP) LPAREN expr RPAREN               # unaryExpr
     | LPAREN expr binOp expr RPAREN                                 # binaryExpr
+    // ExprKind::Ternary (IRPrinter.cpp's own case: "(" cond " ? " then
+    // " : " els ")").
+    | LPAREN expr QUESTION expr COLON expr RPAREN                   # ternaryExpr
     // ExprKind::Convert - an implicit or explicit type conversion
     // (IRPrinter.cpp's printExpr: "(" typeSpecText(e.type) ")(" ... ")").
     // No ambiguity with binaryExpr/callPtrExpr above: typeSpec always

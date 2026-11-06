@@ -47,6 +47,12 @@ RETURN_KW : 'return' ;
 BREAK_KW  : 'break' ;
 CONTINUE_KW : 'continue' ;
 POST_KW   : 'post' ;
+// Printed immediately before a CompoundAssign/CompoundDerefAssign
+// whose `yieldOld` is true (a postfix '++'/'--' - see IRPrinter.cpp's
+// own CompoundAssign/CompoundDerefAssign case) - a distinct keyword
+// from POST_KW above, which already means something else entirely
+// (While's own postStmt).
+OLDVAL_KW : 'oldval' ;
 LPAREN : '(' ;
 RPAREN : ')' ;
 LBRACK : '[' ;
@@ -77,6 +83,21 @@ CARET  : '^' ;
 PIPE   : '|' ;
 ANDAND : '&&' ;
 OROR   : '||' ;
+// Compound-assignment operator spellings (IRPrinter.cpp's own
+// CompoundAssign/CompoundDerefAssign case: `e.op + "="`) and the
+// ternary operator's own two punctuation marks.
+PLUSEQ    : '+=' ;
+MINUSEQ   : '-=' ;
+STAREQ    : '*=' ;
+SLASHEQ   : '/=' ;
+PERCENTEQ : '%=' ;
+AMPEQ     : '&=' ;
+CARETEQ   : '^=' ;
+PIPEEQ    : '|=' ;
+SHLEQ     : '<<=' ;
+SHREQ     : '>>=' ;
+QUESTION  : '?' ;
+COLON     : ':' ;
 
 IDENT  : [A-Za-z_][A-Za-z0-9_]* ;
 // A leading '-' is part of this token (not a separate MINUS) only

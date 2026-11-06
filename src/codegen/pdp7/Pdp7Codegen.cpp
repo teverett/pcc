@@ -1509,6 +1509,50 @@ void Pdp7Codegen::genExpr(const ir::Expr &e) {
             storeThroughStackedAddress();
             return;
         }
+        case ir::ExprKind::CompoundAssign: {
+            if (e.lhs) {  // slot[idx] <op>= rhs (including slot[idx]++/--)
+                computeElementAddress(e.slot, *e.lhs);  // pushes the element's own address
+                genCompoundThroughStackedAddress(e);
+                return;
+            }
+            // Plain scalar target - its own address (a Global's label,
+            // or a Local/Param's `__fp`-relative offset) is cheap
+            // enough to recompute from scratch after rhs's own
+            // evaluation, the same way plain Assign's own non-indexed
+            // branch above already does, so there's nothing here that
+            // needs to survive across a nested call the way an
+            // indexed/deref target's own sub-expression does.
+            genExpr(*e.rhs);  // AC = rhs
+            std::string rhsCell = prepareCompoundRhs(e);
+            emitLoadSlot(e.slot);  // AC = old
+            if (e.yieldOld) pushAC();
+            finishCompoundOp(e, rhsCell);
+            narrowAC(e.type);
+            emitStoreSlot(e.slot);  // leaves AC (the new value) unchanged
+            if (e.yieldOld) popAC();
+            return;
+        }
+        case ir::ExprKind::CompoundDerefAssign: {
+            genExpr(*e.lhs);  // AC = pointer value
+            pushAC();          // protect it - evaluating rhs may itself call
+            genCompoundThroughStackedAddress(e);
+            return;
+        }
+        case ir::ExprKind::Ternary: {
+            // Mirrors StmtKind::If's own label/branch shape exactly,
+            // using genExpr (not genStmt) for both branches, since a
+            // ternary produces a value rather than running a
+            // statement.
+            std::string Lelse = newLabel();
+            std::string Ldone = newLabel();
+            genCondBranch(*e.lhs, Lelse);
+            genExpr(*e.rhs);
+            code_ << "   jmp " << Ldone << "\n";
+            code_ << Lelse << ":\n";
+            genExpr(*e.elseExpr);
+            code_ << Ldone << ":\n";
+            return;
+        }
         case ir::ExprKind::Call: {
             // Arguments are pushed in REVERSE order (last argument
             // first) so that param 0 ends up CLOSEST to the callee's
@@ -1671,6 +1715,116 @@ void Pdp7Codegen::genAddrOf(const ir::Expr &operand) {
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");
+}
+
+std::string Pdp7Codegen::prepareCompoundRhs(const ir::Expr &e) {
+    const std::string &op = e.op;
+    if (op == "+") {
+        code_ << "   dac __stmp2\n";
+        return "__stmp2";
+    }
+    if (op == "-") {
+        code_ << "   cma\n   tad __one\n";
+        code_ << "   dac __stmp2\n";
+        return "__stmp2";
+    }
+    if (op == "&" || op == "^") {
+        code_ << "   dac __stmp2\n";
+        return "__stmp2";
+    }
+    if (op == "|") {
+        code_ << "   cma\n";
+        code_ << "   dac __stmp2\n";
+        return "__stmp2";
+    }
+    if (op == "*") {
+        // Not declared via declareTemp(): the same inline-operand
+        // convention genMul() already uses - the actual "<Tr>: 0"
+        // declaration happens later, in finishCompoundOp(), directly
+        // after the "mul" instruction it's the operand word for.
+        std::string Tr = allocTemp();
+        code_ << "   dac " << Tr << "\n";
+        return Tr;
+    }
+    if (op == "/" || op == "%") {
+        needDivMod_ = true;
+        code_ << "   dac __dm_b\n";
+        return "__dm_b";
+    }
+    if (op == "<<" || op == ">>") {
+        std::string N = allocTemp();
+        declareTemp(N);
+        code_ << "   dac " << N << "\n";
+        return N;
+    }
+    err(e.line, "internal: unhandled compound-assignment operator '" + op + "'");
+}
+
+void Pdp7Codegen::finishCompoundOp(const ir::Expr &e, const std::string &rhsCell) {
+    const std::string &op = e.op;
+    if (op == "+" || op == "-") {
+        code_ << "   tad " << rhsCell << "\n";
+        return;
+    }
+    if (op == "&" || op == "^") {
+        code_ << "   " << (op == "&" ? "and" : "xor") << " " << rhsCell << "\n";
+        return;
+    }
+    if (op == "|") {
+        code_ << "   cma\n";
+        code_ << "   and " << rhsCell << "\n";
+        code_ << "   cma\n";
+        return;
+    }
+    if (op == "*") {
+        code_ << "   cll\n   mul\n" << rhsCell << ": 0\n   lacq\n";
+        return;
+    }
+    if (op == "/" || op == "%") {
+        code_ << "   dac __dm_a\n";
+        code_ << "   jms __divmod\n";
+        if (op == "%") code_ << "   lac __dm_a\n";
+        return;
+    }
+    if (op == "<<" || op == ">>") {
+        std::string V = allocTemp();
+        declareTemp(V);
+        code_ << "   dac " << V << "\n";
+        std::string Lstart = newLabel(), Lbody = newLabel(), Lend = newLabel();
+        code_ << Lstart << ":\n";
+        code_ << "   lac " << rhsCell << "\n";
+        code_ << "   sza\n   jmp " << Lbody << "\n   jmp " << Lend << "\n";
+        code_ << Lbody << ":\n";
+        if (op == "<<") {
+            code_ << "   lac " << V << "\n   tad " << V << "\n   dac " << V << "\n";
+        } else if (e.type.isUnsigned) {
+            code_ << "   lac " << V << "\n   cll\n   rar\n   dac " << V << "\n";
+        } else {
+            std::string Lpos = newLabel(), Lneg = newLabel(), Lshift = newLabel();
+            code_ << "   lac " << V << "\n   sma\n   jmp " << Lpos << "\n   jmp " << Lneg << "\n";
+            code_ << Lpos << ":\n   cll\n   jmp " << Lshift << "\n";
+            code_ << Lneg << ":\n   stl\n";
+            code_ << Lshift << ":\n   lac " << V << "\n   rar\n   dac " << V << "\n";
+        }
+        code_ << "   lac __zero\n   cma\n   tad " << rhsCell << "\n   dac " << rhsCell << "\n";
+        code_ << "   jmp " << Lstart << "\n";
+        code_ << Lend << ":\n";
+        code_ << "   lac " << V << "\n";
+        return;
+    }
+    err(e.line, "internal: unhandled compound-assignment operator '" + op + "'");
+}
+
+void Pdp7Codegen::genCompoundThroughStackedAddress(const ir::Expr &e) {
+    genExpr(*e.rhs);  // may itself call - the address is safe on the stack
+    std::string rhsCell = prepareCompoundRhs(e);
+    std::string addr = popAddressIntoScratch();
+    code_ << "   lac " << addr << " i\n";  // AC = old
+    if (e.yieldOld) pushAC();
+    finishCompoundOp(e, rhsCell);
+    narrowAC(e.type);
+    code_ << "   dac " << addr << " i\n";
+    if (e.yieldOld) popAC();
 }
 
 void Pdp7Codegen::genBinary(const ir::Expr &e) {

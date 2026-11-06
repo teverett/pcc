@@ -57,6 +57,25 @@ CARET    : '^' ;
 PIPE     : '|' ;
 ANDAND   : '&&' ;
 OROR     : '||' ;
+// Compound-assignment operators, '++'/'--', and '?'/':' (the ternary
+// operator) - each lexed as its own maximal-munch token ('+=' always
+// wins over 'PLUS' then 'ASSIGN' separately, same automatic longest-
+// match rule that already makes '<=' beat '<' above) ahead of
+// ASSIGN/PLUS/etc. being tried alone.
+PLUSEQ    : '+=' ;
+MINUSEQ   : '-=' ;
+STAREQ    : '*=' ;
+SLASHEQ   : '/=' ;
+PERCENTEQ : '%=' ;
+AMPEQ     : '&=' ;
+CARETEQ   : '^=' ;
+PIPEEQ    : '|=' ;
+SHLEQ     : '<<=' ;
+SHREQ     : '>>=' ;
+INC       : '++' ;
+DEC       : '--' ;
+QUESTION  : '?' ;
+COLON     : ':' ;
 
 IDENT   : [a-zA-Z_][a-zA-Z_0-9]* ;
 // An optional u/l suffix picks the literal's type (unsigned/long/long

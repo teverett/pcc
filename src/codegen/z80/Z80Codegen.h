@@ -103,6 +103,26 @@ class Z80Codegen : public Backend {
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
+    // CompoundAssign/CompoundDerefAssign's "new = old <op> rhs" step -
+    // `old` already in HL, `rhs` already in DE (both already at
+    // `type`'s own width/signedness), leaves the raw (not yet
+    // re-narrowed - see narrowAcTo()) new value in `ac`. `type` is
+    // never wide here - IRBuilder.cpp's own rejectIfWide() guarantees
+    // it. `+`/`-`/`&`/`|`/`^` reuse genBinary()'s own HL/DE tail
+    // verbatim; `*`/`/`/`%`/`<<`/`>>` reuse genMul()'s/genDivMod()'s/
+    // genShift()'s own `_bc`/`dx`/loop-body shapes, just fed from HL/
+    // DE instead of each re-evaluating its own lhs/rhs expression.
+    void genCompoundOp(const std::string &op, Type type);
+    // Shared tail for CompoundAssign (every target shape) and
+    // CompoundDerefAssign - the `ptr` cell must already hold the
+    // resolved address on entry. See the .cpp's own comment.
+    void genCompoundThroughPtr(const ir::Expr &e);
+    // Re-narrows `ac` from its own low byte, per `to`'s signedness,
+    // when `to` is a `char` - the same instruction shapes
+    // genConvert()'s own narrow-to-narrow case already uses, needed
+    // here because a compound op computed at full 16-bit width can
+    // leave garbage above a `char` target's own 8 bits.
+    void narrowAcTo(Type to);
 
     // `widthOf(t, typeWidths())` - how many bytes `t` occupies on this
     // target. `isWide(t)` is `widthOfType(t) > 2`: a `long`/`long
