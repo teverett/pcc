@@ -19,12 +19,9 @@ namespace {
 
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("Z80Assembler: " + msg); }
 
-// --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
-// Same Syllable/Line shape as ../i8080/I8080Assembler.cpp's own - see
-// that file's own comment - except an Operand here also remembers
-// whether it was bracketed (`[expr]`), since that distinguishes two
-// genuinely different real Z80 instructions (see Z80Assembler.h's
-// own header comment).
+// --- Parsing, via the shared grammar/PccAsm.g4 -----------------------
+// An Operand also remembers whether it was bracketed (`[expr]`), since
+// that distinguishes two different real Z80 instructions (see Z80Assembler.h).
 
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
@@ -123,13 +120,7 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         }
         return line;
     }
-    // `dw` - a full little-endian 16-bit data word, resolved exactly
-    // like `ld hl, nn`'s own 16-bit immediate operand
-    // (Z80Codegen.cpp's own `arrayElemText()`/`declareArray()` uses
-    // this for a dispatch-table array element that names a function/
-    // global directly: a symbol's own address is only known to the
-    // assembler, once every label is bound, never to the codegen that
-    // writes this directive out).
+    // `dw` emits a little-endian 16-bit data word, resolved like `ld hl, nn`'s immediate operand.
     if (mnemonic == "dw") {
         line.kind = Line::Dw;
         for (auto *op : instr->operand()) {
@@ -164,11 +155,9 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
-// A single-syllable, unsigned, bare-identifier operand - the shape
-// every register name always takes. Returns its lowercased text, or
-// nullopt if the operand isn't that shape (a real symbol/number/
-// signed-or-grouped expression instead), in which case the caller
-// evaluates it as an ordinary expr.
+// A single-syllable, unsigned, bare-identifier operand - the shape a
+// register name takes. Returns its lowercased text, or nullopt otherwise
+// (caller then evaluates it as an ordinary expr).
 std::optional<std::string> asBareIdent(const Operand &operand) {
     if (operand.expr.size() != 1) return std::nullopt;
     const Syllable &s = operand.expr[0];
@@ -176,12 +165,9 @@ std::optional<std::string> asBareIdent(const Operand &operand) {
     return toLower(s.text);
 }
 
-// One pending fixup `assembleZ80Object()` (see Z80Assembler.h's own
-// header comment) turns into a real ObjRelocation once assembly is
-// done - `byteOffset` into `bytes()`, `symbolName` the reference that
-// couldn't be resolved locally (or the reserved pseudo-symbol ".."
-// for a same-file address's own needed base-shift - see
-// Z80Assembler.h's own header comment).
+// A pending fixup, turned into a real ObjRelocation once assembly is done;
+// `symbolName` is the unresolved reference, or ".." for a same-file
+// address's base-shift.
 struct Relocation {
     uint32_t byteOffset;
     std::string symbolName;
@@ -233,11 +219,8 @@ class Assembler {
         }
     }
 
-    // `externalName`/`needsBaseShift` mirror
-    // ../x86_8086/I8086Assembler.cpp's own `evalExpr` exactly - see
-    // Z80Assembler.h's own header comment on why *any* local address
-    // reference, not just an external one, needs a relocation here
-    // once `allowExternal_` is set.
+    // `externalName`/`needsBaseShift` report an unresolved reference and a
+    // local-address base-shift respectively, once `allowExternal_` is set.
     uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
@@ -297,10 +280,7 @@ class Assembler {
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
 
-    // A 16-bit immediate/absolute operand, little-endian, no range
-    // check (any symbol in this program's own 64KB address space is
-    // valid here) - `ld hl, nn`'s own operand, and `dw`'s own data
-    // word.
+    // A little-endian 16-bit immediate/absolute operand, no range check.
     void emit16(const Operand &op) {
         std::string externalName;
         bool needsBaseShift = false;
@@ -330,12 +310,9 @@ class Assembler {
         if (!op.isMemory) fail("'" + mnemonic + "': this operand must be a bracketed memory reference, e.g. [label]");
     }
 
-    // The Z80's own r/(HL) register field, shared by LD r,r'/LD r,n/
-    // INC r/DEC r/ADD A,r/CP r/etc, and by the CB-prefixed rotate
-    // group: b=0,c=1,d=2,e=3,h=4,l=5,m=6 (meaning the real `(HL)`
-    // operand - see Z80Assembler.h's own header comment on why that
-    // one case stays a bare pseudo-register name instead of using
-    // brackets),a=7.
+    // Z80's r/(HL) register field (LD r,r'/LD r,n/INC r/DEC r/ADD A,r/CP r/
+    // the CB-prefixed rotate group): b=0,c=1,d=2,e=3,h=4,l=5,m=6 (the real
+    // `(HL)` operand),a=7.
     uint8_t reg8Code(const Operand &operand, const std::string &mnemonic) {
         requireBare(operand, mnemonic);
         auto name = asBareIdent(operand);
@@ -348,12 +325,7 @@ class Assembler {
         return it->second;
     }
 
-    // LD rr,nn/INC rr/DEC rr/ADD HL,rr/ADC HL,rr/SBC HL,rr's own
-    // register-pair field: bc=0,de=1,hl=2,sp=3. Pairs are always
-    // spelled with their real two-letter name (never abbreviated to
-    // a single letter) - that's what keeps a pair operand
-    // unambiguous against a same-letter single register (reg8Code's
-    // own table) with no context-dependent guessing needed anywhere.
+    // Register-pair field for LD rr,nn/INC rr/DEC rr/ADD|ADC|SBC HL,rr: bc=0,de=1,hl=2,sp=3.
     uint8_t pairCodeBDHSP(const Operand &operand, const std::string &mnemonic) {
         requireBare(operand, mnemonic);
         auto name = asBareIdent(operand);
@@ -386,31 +358,22 @@ class Assembler {
         return it->second;
     }
 
-    // Requires `operand0` to literally be the bare identifier "a" -
-    // the explicit accumulator Z80 syntax demands for the 8-bit
-    // `ADC A,r`/`SBC A,r` forms (to disambiguate them from the 16-bit
-    // `ADC HL,rr`/`SBC HL,rr` forms - see Z80Codegen.h's own header
-    // comment).
+    // Requires the operand be literally "a", disambiguating 8-bit ADC/SBC
+    // A,r from the 16-bit ADC/SBC HL,rr forms.
     void requireA(const Operand &operand, const std::string &mnemonic) {
         requireBare(operand, mnemonic);
         auto name = asBareIdent(operand);
         if (!name || *name != "a") fail("'" + mnemonic + "' needs 'a' as its first operand");
     }
 
-    // The full instruction vocabulary ../Z80Codegen.cpp ever emits,
-    // encoded as real, standard Z80 opcodes (see Z80Assembler.h's own
-    // header comment) - not every Z80 instruction exists here, only
-    // the ones that backend needs.
+    // Encodes only the Z80 instructions Z80Codegen.cpp emits, not the full ISA.
     void encodeInstr(const std::string &mnemonic, const std::vector<Operand> &ops) {
         static const std::unordered_map<std::string, uint8_t> implied = {
             {"nop", 0x00}, {"rlca", 0x07}, {"rrca", 0x0F}, {"rla", 0x17}, {"rra", 0x1F}, {"cpl", 0x2F},
             {"scf", 0x37}, {"ccf", 0x3F},  {"ret", 0xC9},  {"ei", 0xFB},  {"di", 0xF3},  {"halt", 0x76},
         };
         if (mnemonic == "ex") {
-            // Only ever `EX DE,HL` here - checked by requiring the
-            // two bare operand names explicitly rather than giving
-            // this its own mnemonic spelling, since that's the real
-            // Z80 syntax.
+            // Only `EX DE,HL` is supported.
             auto a = asBareIdent(operandAt(ops, 0, mnemonic, 2));
             auto b = asBareIdent(operandAt(ops, 1, mnemonic, 2));
             if (!a || !b || *a != "de" || *b != "hl") fail("'ex' is only supported as 'ex de, hl' (EX DE,HL)");
@@ -423,12 +386,7 @@ class Assembler {
             return;
         }
 
-        // LD rr,nn (immediate) vs LD rr,[nn] (direct memory load) vs
-        // LD [nn],rr (direct memory store) vs LD r,r'/LD r,n (8-bit)
-        // vs LD a,[b]/LD a,[d]/LD [b],a/LD [d],a (LDAX/STAX-
-        // equivalent) - every real `LD` form this backend ever emits,
-        // disambiguated by each operand's own bracket-ness and
-        // identity, same as a real Z80 assembler's own grammar would.
+        // Every real LD form this backend emits, disambiguated by each operand's bracket-ness and identity.
         if (mnemonic == "ld") {
             const Operand &dst = operandAt(ops, 0, mnemonic, 2);
             const Operand &src = operandAt(ops, 1, mnemonic, 2);
@@ -469,10 +427,8 @@ class Assembler {
                 emit16(dst);
                 return;
             }
-            // LD bc,[nn]/LD de,[nn]/LD sp,[nn] and the reverse - the
-            // Z80's own `ED`-prefixed extended direct loads (see
-            // Z80Codegen.h's own header comment: the 8080 has no
-            // equivalent for any pair but HL).
+            // LD bc/de/sp,[nn] and the reverse, via the Z80's ED-prefixed
+            // extended direct loads (no 8080 equivalent for pairs other than HL).
             if (dstName && src.isMemory) {
                 static const std::unordered_map<std::string, uint8_t> edLoad = {
                     {"bc", 0x4B}, {"de", 0x5B}, {"sp", 0x7B}};
@@ -493,24 +449,15 @@ class Assembler {
                     return;
                 }
             }
-            // LD ix,nn - the one real `ix`-immediate form this
-            // backend's own frame setup ever emits (see
-            // Z80Codegen.cpp's own genFunction() comment: `ix` is
-            // zeroed, then real SP is added in, since there's no
-            // direct `ld ix,sp`). Checked explicitly, and before the
-            // generic bc/de/hl/sp table right below, since "ix" isn't
-            // in that table at all and would otherwise fall all the
-            // way through to the 8-bit `ld r,r'`/`ld r,n` case below
-            // and fail there with a confusing "not a register" error
-            // instead of actually being handled.
+            // LD ix,nn - checked before the bc/de/hl/sp table since "ix"
+            // isn't in it and would otherwise fail as an unrecognized register.
             if (dstName && *dstName == "ix" && !dst.isMemory && !src.isMemory) {
                 emit8(0xDD);
                 emit8(0x21);
                 emit16(src);
                 return;
             }
-            // LD rr,nn (16-bit immediate) - only once every bracketed
-            // form above has already been ruled out.
+            // LD rr,nn (16-bit immediate), once every bracketed form above is ruled out.
             if (dstName && !dst.isMemory && !src.isMemory) {
                 static const std::unordered_map<std::string, uint8_t> table = {
                     {"bc", 0x01}, {"de", 0x11}, {"hl", 0x21}, {"sp", 0x31}};
@@ -520,8 +467,7 @@ class Assembler {
                     return;
                 }
             }
-            // LD r,r' / LD r,n (8-bit, including `m` for the real
-            // `(HL)` operand - see reg8Code()'s own comment).
+            // LD r,r'/LD r,n (8-bit, including `m` for the real (HL) operand).
             uint8_t dstR = reg8Code(dst, mnemonic);
             if (!src.isMemory && asBareIdent(src)) {
                 uint8_t srcR = reg8Code(src, mnemonic);
@@ -554,12 +500,7 @@ class Assembler {
             const Operand &op1 = operandAt(ops, 1, mnemonic, 2);
             auto op0Name = asBareIdent(op0);
             if (op0Name && *op0Name == "ix") {
-                // ADD IX,SP - the one real `ix`-pair form this
-                // backend's own frame setup ever emits (see
-                // Z80Codegen.cpp's own genFunction() comment); the
-                // real DD-prefixed encoding is otherwise identical in
-                // shape to ADD HL,rr below, just with `ix` standing
-                // in for `hl`.
+                // ADD IX,SP - DD-prefixed, otherwise identical in shape to ADD HL,rr below.
                 if (mnemonic != "add") fail("'" + mnemonic + " ix,...' isn't supported - only 'add ix,sp' is");
                 auto op1Name = asBareIdent(op1);
                 if (!op1Name || *op1Name != "sp") fail("'add ix,...' is only supported as 'add ix,sp'");
@@ -616,12 +557,8 @@ class Assembler {
         }
         if (mnemonic == "push" || mnemonic == "pop") {
             const Operand &op0 = operandAt(ops, 0, mnemonic, 1);
-            // PUSH IX / POP IX - this backend's own frame setup
-            // saves/restores the caller's `ix` around every call
-            // (see Z80Codegen.cpp's own genFunction() comment); `ix`
-            // isn't in pairCodeBDHAF's own bc/de/hl/af table at all
-            // (it needs the real DD prefix instead), so it's checked
-            // explicitly first.
+            // PUSH IX/POP IX - `ix` isn't in the bc/de/hl/af table (needs
+            // the DD prefix), so it's checked explicitly first.
             auto name = asBareIdent(op0);
             if (name && *name == "ix") {
                 emit8(0xDD);
@@ -634,14 +571,10 @@ class Assembler {
             return;
         }
         if (mnemonic == "jp") {
-            // "jp [hl]" - the real Z80 `JP (HL)` (opcode 0xE9, same
-            // encoding as the 8080's `PCHL` - see I8080Assembler.h's
-            // own comment): jumps to the address *in* HL, not the
-            // value stored at that address, even though it's spelled
-            // with this dialect's own "[expr]" bracket syntax (see
-            // this file's own header comment) - the one place that
-            // syntax names a jump target rather than a true memory
-            // operand.
+            // "jp [hl]" is the real JP (HL) (0xE9, same encoding as 8080's
+            // PCHL): jumps to the address in HL, not the value stored
+            // there - the one place the bracket syntax doesn't mean a
+            // memory reference.
             if (ops.size() == 1 && ops[0].isMemory) {
                 auto name = asBareIdent(ops[0]);
                 if (!name || *name != "hl") fail("'jp [mem]' is only supported as 'jp [hl]' (JP (HL))");
@@ -683,12 +616,7 @@ class Assembler {
     bool allowExternal_;
 };
 
-// Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - see Z80Assembler.h's own `assembleZ80Object`
-// comment, and ../x86_8086/I8086Assembler.cpp's own `writeCoff` for
-// the original, COFF-only version this is ported from (identical
-// algorithm, just returning the neutral struct directly instead of
-// handing it to `writeCoffObject`).
+// Builds the format-neutral ObjectFile from a completed object-mode Assembler.
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kZ80CoffMachine;
@@ -701,12 +629,7 @@ ObjectFile buildObjectFile(const Assembler &a) {
     std::sort(obj.symbols.begin(), obj.symbols.end(),
               [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
 
-    // Every relocation's target symbol needs a symbol-table entry
-    // too - add one, undefined, for any name that isn't already a
-    // real local label (this also covers the reserved pseudo-symbol
-    // ".." - a linker resolves that one specially, never by looking
-    // it up here, but it still needs a table entry for the object-
-    // format writer to point the relocation's own symbol index at).
+    // Every relocation's target symbol needs a symbol-table entry too, including the pseudo-symbol "..".
     std::unordered_map<std::string, bool> known;
     for (const auto &s : obj.symbols) known[s.name] = true;
     for (const auto &r : a.relocations()) {

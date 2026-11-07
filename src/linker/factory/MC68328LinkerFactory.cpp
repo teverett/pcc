@@ -6,15 +6,8 @@
 namespace pcc {
 
 namespace {
-// `1048576` (0x100000) is the same initial-SSP value as
-// MC68328Codegen.cpp's own (private) `kInitialSP` - comfortably
-// above the loaded program and its data, growing down into
-// otherwise-unused RAM, same convention as ../m68k's own entry.
-// `dl _start` (not the literal `8`) lets the assembler resolve
-// vector 1 itself - this *is* a local address reference needing the
-// same base-shift relocation as any other (see
-// MC68328Assembler.h's own header comment), handled automatically,
-// no special-casing needed.
+// 0x100000 must match MC68328Codegen.cpp's private kInitialSP.
+// `dl _start` lets the assembler relocate reset vector 1 itself.
 constexpr const char *kEntryAsm =
     "org 0\n"
     "dl 1048576\n"

@@ -18,9 +18,7 @@ namespace {
 
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("STM32Assembler: " + msg); }
 
-// --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
-// Same Syllable/Group shape as every other backend's own assembler -
-// see M68kAssembler.cpp's own comment.
+// --- Parsing, via the shared grammar/PccAsm.g4 ----------------------------
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
     char sign = 0;
@@ -29,12 +27,9 @@ struct Syllable {
     std::vector<Syllable> group;
 };
 
-// One operand. `Reg` comes from recognizing a bare `r0`-`r12`/`sp`/
-// `lr`/`pc` identifier; `IndirectReg` from a bracketed one
-// (`[r2]` - see STM32Assembler.h's own header comment on why this
-// dialect, unlike 68000's, can use the grammar's own bracket syntax
-// directly); `Imm` from a bare (optionally signed) number; anything
-// else (a label, or `label+N`) is `Mem`.
+// One operand: `Reg` from a bare `r0`-`r12`/`sp`/`lr`/`pc` identifier, `IndirectReg` from a
+// bracketed one (`[r2]`), `Imm` from a bare (optionally signed) number, else (a label or
+// `label+N`) `Mem`.
 struct Operand {
     enum Kind { Reg, Imm, Mem, IndirectReg } kind = Imm;
     int reg = -1;
@@ -76,9 +71,7 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
     return result;
 }
 
-// `r0`-`r12`, `sp` (r13), `lr` (r14), `pc` (r15) - case-insensitive,
-// matching how mnemonics are lowercased too. Returns -1 if `name`
-// isn't one.
+// r0-r12, sp (r13), lr (r14), pc (r15), case-insensitive. Returns -1 if not a register name.
 int regNumber(const std::string &nameLower) {
     if (nameLower == "sp") return 13;
     if (nameLower == "lr") return 14;
@@ -91,10 +84,8 @@ int regNumber(const std::string &nameLower) {
     return (n >= 0 && n <= 15) ? n : -1;
 }
 
-// A bracketed operand's own inner expr must be a single bare
-// register syllable - this dialect's `[Rn]` never has a displacement
-// (see STM32Codegen.h's own header comment: every indirect access
-// here goes through a freshly computed `r2`, never `[Rn+offset]`).
+// A bracketed operand's inner expr must be a single bare register; this dialect's `[Rn]` never
+// has a displacement.
 Operand buildBracketOperand(PccAsmParser::ExprContext *ctx) {
     std::vector<Syllable> syls = exprToSyllables(ctx);
     if (syls.size() != 1 || syls[0].sign != 0 || syls[0].kind != SylKind::Symbol) {
@@ -204,13 +195,9 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
-// One pending fixup `assembleSTM32Object()` (see STM32Assembler.h's
-// own header comment) turns into a real ObjRelocation once assembly
-// is done - `offset` into `bytes()`, `symbolName` the reference that
-// couldn't be resolved locally (or the reserved pseudo-symbol ".."
-// for a same-file *flash* address's own needed base-shift - never
-// emitted for a RAM address, see `isRamLabel_` below), `kind` one of
-// kSTM32RelocAbs32/MovWLo/MovTHi/Branch25.
+// A pending fixup that becomes an ObjRelocation: `offset` into bytes(), `symbolName` the
+// unresolved reference (or the pseudo-symbol ".." for a same-file flash address's base-shift,
+// never emitted for RAM - see `isRamLabel_`), `kind` one of kSTM32RelocAbs32/MovWLo/MovTHi/Branch25.
 struct Relocation {
     uint32_t offset;
     std::string symbolName;
@@ -218,15 +205,8 @@ struct Relocation {
 };
 
 // --- Two-pass assembly ----------------------------------------------------
-// Two independent address spaces (see STM32Assembler.h's own header
-// comment) - `section_` says which one every label/`ds`/instruction
-// below currently affects. Only flash bytes ever land in `bytes_`
-// (RAM has no image content at all); `org`/`ramorg` are each expected
-// to run exactly once, in that order, never interleaved or repeated -
-// STM32Codegen.cpp's own generate() only ever emits one of each (see
-// that file's own comment on why globals are processed before any
-// function body text, even though RAM's own `ramorg` section is
-// textually last).
+// Two independent address spaces; `inRam_` says which one is currently active. Only flash bytes
+// land in `bytes_` (RAM has no image content). `org`/`ramorg` each run exactly once, in that order.
 class Assembler {
    public:
     explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
@@ -258,15 +238,9 @@ class Assembler {
     uint32_t currentAddr() const { return inRam_ ? ramBase_ + ramOffset_ : flashBase_ + flashOffset_; }
 
     void processLine(const Line &line) {
-        // `isRamLabel_` remembers which space each label was defined
-        // in, independently of `labels_`'s own resolved value - see
-        // `resolveSyllable()`'s own comment on why only a *flash*
-        // label's own address reference ever needs the ".." link-time
-        // base-shift relocation: a RAM label's value is already a
-        // real, final hardware address the instant it's resolved
-        // here, since `ramorg` (unlike `org` in object mode - see
-        // STM32Codegen.cpp's own `generate()`) always uses the real
-        // fixed hardware RAM base, never `0`.
+        // `isRamLabel_` records which space each label was defined in, independently of
+        // `labels_`'s resolved value: only a flash label's address ever needs the ".."
+        // link-time base-shift, since `ramorg` always uses the real fixed RAM base.
         for (const auto &lbl : line.labels) {
             labels_[lbl] = currentAddr();
             isRamLabel_[lbl] = inRam_;
@@ -289,11 +263,8 @@ class Assembler {
                 ramOffset_ += 4 * evalExpr(line.exprList.at(0));
                 return;
             case Line::Dsb:
-                // Byte-granular reservation - a `char`/`short` global
-                // or array (see STM32Codegen.cpp's own declareTemp()/
-                // declareArray()) doesn't need a whole RAM word per
-                // element the way the original word-only `ds` above
-                // always did.
+                // Byte-granular reservation, so a char/short global or array doesn't need a
+                // whole RAM word per element.
                 if (!inRam_) fail("'dsb' only valid after 'ramorg'");
                 ramOffset_ += evalExpr(line.exprList.at(0));
                 return;
@@ -302,22 +273,11 @@ class Assembler {
                 for (const auto &e : line.exprList) emit32(evalExpr(e));
                 return;
             case Line::Dlt: {
-                // The reset-handler vector entry: a label's own
-                // resolved flash address with its low (Thumb) bit
-                // forced on - see STM32Assembler.h's own header
-                // comment. `dlt`'s own target (always `_start`, always
-                // defined in this same file - see
-                // STM32LinkerFactory.cpp's own entry-object text) is a
-                // *flash* address, so it needs the same ".." base-
-                // shift relocation any other same-file flash address
-                // reference does; the shift and the already-baked-in
-                // Thumb bit coexist correctly under plain addition
-                // (`RelocKinds::patchAbs32`, see STM32Assembler.h's
-                // own header comment on why this field needs no
-                // dedicated split patch function) because every flash
-                // address here - this object's own final base
-                // included - is always even, so OR-ing in bit 0 ahead
-                // of time is equivalent to adding 1.
+                // The reset-handler vector entry: a label's resolved flash address with the low
+                // (Thumb) bit forced on. It needs the same ".." base-shift relocation as any
+                // same-file flash reference; the shift and the Thumb bit coexist correctly
+                // under plain addition since every flash address here is always even, so
+                // OR-ing in bit 0 is equivalent to adding 1.
                 if (inRam_) fail("'dlt' only valid in the flash section");
                 std::string externalName;
                 bool needsBaseShift = false;
@@ -336,13 +296,8 @@ class Assembler {
         }
     }
 
-    // `externalName`/`needsBaseShift` mirror ../arm/ArmAssembler.cpp's
-    // own `evalExpr` - except `needsBaseShift` is only ever set for a
-    // *flash* label (see `resolveSyllable()`'s own comment): a RAM
-    // label's resolved value needs no base-shift relocation at all,
-    // since `ramorg` already placed it at its real final hardware
-    // address (see STM32Assembler.h's own `assembleSTM32Object`
-    // comment).
+    // `needsBaseShift` is only set for a flash label; a RAM label's value needs no base-shift
+    // since `ramorg` already placed it at its final hardware address.
     uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
@@ -371,10 +326,8 @@ class Assembler {
         }
         auto it = labels_.find(syl.text);
         if (it != labels_.end()) {
-            // Only a flash label needs the ".." link-time base-shift -
-            // see this function's own header comment and
-            // STM32Assembler.h's own `assembleSTM32Object` comment on
-            // why a RAM label's value is already final.
+            // Only a flash label needs the ".." link-time base-shift; a RAM label's value is
+            // already final.
             if (allowExternal_ && wasLocalFlashAddress && !isRamLabel_.at(syl.text)) *wasLocalFlashAddress = true;
             return it->second;
         }
@@ -406,12 +359,9 @@ class Assembler {
         if (op.kind != Operand::Reg) fail("'" + mnemonic + "' needs a register operand");
         return static_cast<uint8_t>(op.reg);
     }
-    // This dialect's three "ac"/"the other operand"/"address" roles
-    // (see STM32Codegen.h's own header comment) are always r0-r2, and
-    // every two/three-register real Thumb-1 encoding this backend
-    // ever emits only has room for a *low* register (r0-r7) in each
-    // field anyway - `mov`/push/pop's own fixed lr/pc forms are the
-    // only place a high register ever appears.
+    // Every two/three-register Thumb-1 encoding this backend emits only has room for a low
+    // register (r0-r7) - `mov`/push/pop's fixed lr/pc forms are the only place a high register
+    // appears.
     static uint8_t requireLowReg(const Operand &op, const std::string &mnemonic) {
         uint8_t r = requireReg(op, mnemonic);
         if (r > 7) fail("'" + mnemonic + "': register operand must be r0-r7 in this dialect");
@@ -427,9 +377,8 @@ class Assembler {
         return ops[i];
     }
 
-    // `movw`/`movt Rd,#imm16` (T3) - this dialect's only way to get a
-    // 32-bit constant into a register (see STM32Assembler.h's own
-    // header comment); `movl`/`lea` below each call this twice.
+    // `movw`/`movt Rd,#imm16` (T3), the only way to get a 32-bit constant into a register;
+    // `movl`/`lea` below each call this twice.
     void emitMovWT(uint8_t rd, uint16_t imm16, bool top) {
         uint8_t imm4 = static_cast<uint8_t>((imm16 >> 12) & 0xF);
         uint8_t i = static_cast<uint8_t>((imm16 >> 11) & 1);
@@ -445,29 +394,14 @@ class Assembler {
         emitMovWT(rd, static_cast<uint16_t>((val >> 16) & 0xFFFF), /*top=*/true);
     }
 
-    // `bl`/`b` (T1 BL / T4 B, both a real 25-bit signed byte offset
-    // via the same S/I1/I2 "J bit" trick - confirmed against
-    // llvm-objdump during development, see STM32Assembler.h's own
-    // header comment) and the conditional `bcc` (T3, a real 21-bit
-    // signed byte offset, no J-bit trick needed). Both are always
-    // this dialect's *only* branch forms (see STM32Codegen.h's own
-    // header comment on why there's no 16-bit-range fallback here at
-    // all).
+    // `bl`/`b` (T1 BL / T4 B, a 25-bit signed byte offset via the S/I1/I2 "J bit" trick) and the
+    // conditional `bcc` (T3, a 21-bit signed byte offset, no J-bit trick). These are this
+    // dialect's only branch forms.
     void encodeBranch25(const Operand &target, bool isLink, const std::string &mnemonic) {
         if (target.kind != Operand::Mem) fail("'" + mnemonic + "': branch target must be a label");
-        // A branch target defined in *this* object is already a valid
-        // PC-relative offset regardless of where this object ends up
-        // linked (both its own address and this instruction's own are
-        // shifted by the same final flash base) - no relocation needed
-        // at all, unlike an absolute-address load (`lea` below). Only
-        // a genuinely cross-object target (undefined here, e.g. `bl
-        // fn_main` reaching another file's own function) needs
-        // deferring - see ../arm/ArmAssembler.cpp's own identical
-        // reasoning for its own PC-relative `b`/`bl`. The field itself
-        // is left zero here; STM32LinkerFactory.cpp's own local patch
-        // function fills it in once the symbol's real linked address
-        // is known, reproducing this same "+4" arithmetic at link
-        // time instead of assembly time.
+        // A target defined in this object is already a valid PC-relative offset regardless of
+        // link-time placement, so no relocation is needed; only a cross-object target needs
+        // deferring, with the field left zero for the linker to patch in.
         std::string externalName;
         uint32_t targetAddr = evalExpr(target.expr, &externalName);
         if (stage_ == 2 && allowExternal_ && !externalName.empty()) {
@@ -503,11 +437,8 @@ class Assembler {
         emit16(hw2);
     }
 
-    // The full instruction vocabulary ../STM32Codegen.cpp ever emits -
-    // see STM32Assembler.h's own header comment. Not a general
-    // Thumb-2 encoder: exactly these mnemonic/operand-shape
-    // combinations, each confirmed against a real toolchain's own
-    // encoding during development.
+    // The full instruction vocabulary STM32Codegen.cpp emits. Not a general Thumb-2 encoder:
+    // exactly these mnemonic/operand-shape combinations.
     void encodeInstr(const std::string &mnemonic, const std::vector<Operand> &ops) {
         if (mnemonic == "nop") {
             if (!ops.empty()) fail("'nop' takes no operand");
@@ -540,15 +471,9 @@ class Assembler {
             const Operand &src = requireOperand(ops, 0, mnemonic);
             uint8_t rd = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
             if (src.kind != Operand::Mem) fail("'lea': source must be a label");
-            // A RAM label's address is already final the moment it's
-            // resolved (see `resolveSyllable()`'s own comment), so
-            // `needsBaseShift` only ever fires for a flash one; either
-            // way, each half of the split gets its own relocation
-            // against the right pseudo-/real symbol, recorded right
-            // before the `movw`/`movt` instruction it belongs to (see
-            // STM32LinkerFactory.cpp's own `patchStm32MovWLo`/`Hi` for
-            // why each site is this specific 4-byte instruction's own
-            // start, not some other offset).
+            // `needsBaseShift` only fires for a flash label (a RAM address is already final).
+            // Each half of the movw/movt split gets its own relocation, recorded right before
+            // the instruction it belongs to.
             std::string externalName;
             bool needsBaseShift = false;
             uint32_t v = evalExpr(src.expr, &externalName, &needsBaseShift);
@@ -602,13 +527,8 @@ class Assembler {
             uint8_t rm = requireLowReg(requireOperand(ops, 1, mnemonic), mnemonic);
             static const std::unordered_map<std::string, uint16_t> base = {
                 {"and", 0x4000}, {"orr", 0x4300}, {"eor", 0x4040}, {"mvn", 0x43C0},
-                // Thumb-1 2-operand ALU-op-table forms (same table
-                // and/orr/eor/mvn above already use): ADC=0101,
-                // SBC=0110 - `Rdn += Rm + C` / `Rdn -= Rm + NOT(C)`,
-                // used by STM32Codegen.cpp's own wide (`long long`)
-                // add/sub to ripple the carry/borrow across a word
-                // pair, same reasoning as ../armm/ArmMAssembler.cpp's
-                // own identical addition.
+                // ADC/SBC: `Rdn += Rm + C` / `Rdn -= Rm + NOT(C)`, used for wide (`long long`)
+                // add/sub to ripple the carry/borrow across a word pair.
                 {"adc", 0x4140}, {"sbc", 0x4180},
             };
             emit16(static_cast<uint16_t>(base.at(mnemonic) | (rm << 3) | rd));
@@ -629,20 +549,15 @@ class Assembler {
             if (mnemonic == "sdiv") {
                 hw1 = static_cast<uint16_t>(0xFB90 | rn);
             } else if (mnemonic == "udiv") {
-                // UDIV.W Rd,Rn,Rm - same Thumb-2 "Signed/Unsigned
-                // Divide" encoding family as `sdiv` above, differing
-                // only in bit 4 of hw1 (0=signed,1=unsigned per the
-                // real ARMv7-M architecture reference).
+                // UDIV.W Rd,Rn,Rm - same encoding family as sdiv, differing only in bit 4
+                // (0=signed, 1=unsigned).
                 hw1 = static_cast<uint16_t>(0xFBB0 | rn);
             } else if (mnemonic == "lsl") {
                 hw1 = static_cast<uint16_t>(0xFA10 | rn);
             } else if (mnemonic == "lsr") {
                 hw1 = static_cast<uint16_t>(0xFA30 | rn);
             } else {
-                // ASR.W Rd,Rn,Rm (register-shifted-register, S=1) -
-                // same Thumb-2 "Shift (register)" encoding family as
-                // `lsl`/`lsr` above, confirmed against a real
-                // toolchain's own encoding the same way they were.
+                // ASR.W Rd,Rn,Rm (register-shifted-register, S=1).
                 hw1 = static_cast<uint16_t>(0xFA50 | rn);
             }
             bool isDivide = mnemonic == "sdiv" || mnemonic == "udiv";
@@ -658,11 +573,8 @@ class Assembler {
             return;
         }
         if (mnemonic == "ldrb" || mnemonic == "strb" || mnemonic == "ldrh" || mnemonic == "strh") {
-            // LDRB/STRB/LDRH/STRH Rt,[Rn] (T1, imm5=0) - zero-
-            // extending loads (a signed narrower-than-native-int
-            // value is re-sign-extended by STM32Codegen.cpp's own
-            // `lsl`+`asr` idiom once loaded, same reasoning as
-            // ../armm/ArmMAssembler.cpp's own identical pair).
+            // LDRB/STRB/LDRH/STRH Rt,[Rn] (T1, imm5=0) - loads always zero-extend; a signed
+            // value is re-sign-extended afterward via `lsl`+`asr`.
             uint8_t rd = requireLowReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rn = requireIndirectReg(requireOperand(ops, 1, mnemonic), mnemonic);
             bool isLoad = mnemonic[0] == 'l';
@@ -676,24 +588,15 @@ class Assembler {
             return;
         }
         if (mnemonic == "blx") {
-            // Real Thumb "BLX Rm" (register branch with link/exchange)
-            // - a 16-bit instruction, 0100 0111 1 Rm(4) 000, i.e.
-            // 0x4780 | (Rm << 3): a real indirect call through
-            // whatever address Rm holds, confirmed against a real
-            // toolchain's own encoding. Unlike every two/three-register
-            // Thumb-1 form above, its Rm field is the full 4-bit
-            // register number (any r0-r14), not restricted to a low
-            // register.
+            // BLX Rm (indirect call through Rm): 0100 0111 1 Rm(4) 000. Unlike the Thumb-1
+            // two/three-register forms above, Rm is the full 4-bit register number (r0-r14).
             uint8_t rm = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             emit16(static_cast<uint16_t>(0x4780 | (rm << 3)));
             return;
         }
         static const std::unordered_map<std::string, uint8_t> branchCond = {
             {"beq", 0x0}, {"bne", 0x1}, {"blt", 0xB}, {"ble", 0xD}, {"bgt", 0xC}, {"bge", 0xA},
-            // Unsigned orderings - real ARM condition-field values
-            // (CS/HS=2, CC/LO=3, HI=8, LS=9), used directly with no
-            // inversion the way ../armm/ArmMAssembler.cpp's own
-            // 2-instruction `Bcc`+`B.W` expansion needs.
+            // Unsigned orderings - ARM condition-field values (CS/HS=2, CC/LO=3, HI=8, LS=9).
             {"blo", 0x3}, {"bhs", 0x2}, {"bhi", 0x8}, {"bls", 0x9},
         };
         if (auto it = branchCond.find(mnemonic); it != branchCond.end()) {
@@ -716,22 +619,12 @@ class Assembler {
     bool allowExternal_;
 };
 
-// Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - see STM32Assembler.h's own
-// `assembleSTM32Object` comment, and ../m68k/M68kAssembler.cpp's own
-// `buildObjectFile` for the identical algorithm this is ported from.
-// Every symbol's own recorded value is its raw resolved address minus
-// `flashBase()` (`0` in object mode - see STM32Codegen.cpp's own
-// `generate()`), exactly like every other migrated target: for a
-// flash label that's a small offset GenericLinker::merge() correctly
-// re-bases by adding this object's own final flash placement; for a
-// RAM label (always `>= kRamBase`, far larger than `flashBase()` ever
-// is) that arithmetic leaves its value numerically unchanged, so it's
-// still the real, final hardware address - merge() re-basing it
-// anyway when some *other* object refers to it by name is this
-// migration step's one known gap (see STM32Assembler.h's own
-// `assembleSTM32Object` comment), harmless for every reference this
-// backend's own test coverage makes (always within one file).
+// Builds the format-neutral ObjectFile a completed object-mode Assembler produced. Every
+// symbol's recorded value is its resolved address minus flashBase() (0 in object mode): for a
+// flash label that's a small offset the linker re-bases correctly; for a RAM label (always
+// >= kRamBase) the subtraction leaves the value numerically unchanged, still the real hardware
+// address. The linker re-basing a RAM label anyway when another object refers to it by name is
+// a known gap, harmless since this backend's test coverage never crosses files.
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kSTM32CoffMachine;

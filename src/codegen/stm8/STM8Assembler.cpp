@@ -19,9 +19,7 @@ namespace {
 
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("STM8Assembler: " + msg); }
 
-// --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
-// Same shape as ../i8080/I8080Assembler.cpp's own Syllable/Line - see
-// that file's own comment.
+// --- Parsing, via the shared grammar/PccAsm.g4 ---------------------------
 
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
@@ -77,7 +75,7 @@ class ThrowingErrorListener : public antlr4::BaseErrorListener {
 std::vector<Syllable> buildOperand(PccAsmParser::OperandContext *ctx) {
     if (ctx->LBRACKET()) {
         fail("bracketed memory operands aren't part of this target's dialect - indirect-through-x addressing has "
-             "its own dedicated mnemonics instead (ldxind/stxind) - see STM8Assembler.h");
+             "its own dedicated mnemonics instead (ldxind/stxind)");
     }
     return exprToSyllables(ctx->expr());
 }
@@ -113,11 +111,8 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         for (auto *op : instr->operand()) line.exprList.push_back(buildOperand(op));
         return line;
     }
-    // "dw" is a full, real 16-bit value (same shape as `ldwi`/`call`'s
-    // own operand - see emit16()'s own comment) written out big-
-    // endian - unlike `db`, its own expression can resolve to any
-    // 16-bit value, symbol address included, not just one that fits
-    // in a single byte.
+    // Unlike `db`, "dw"'s expression can resolve to any 16-bit value
+    // (symbol address included), written out big-endian.
     if (mnemonic == "dw") {
         line.kind = Line::Dw;
         for (auto *op : instr->operand()) line.exprList.push_back(buildOperand(op));
@@ -149,11 +144,9 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
-// A single-syllable, unsigned, bare-identifier operand - the shape
-// every register name (`a`, `x`, `y`, `sp`) always takes. Returns its
-// lowercased text, or nullopt if the operand isn't that shape at all
-// (a real symbol/number/signed-or-grouped expression instead), in
-// which case the caller evaluates it as an ordinary expr.
+// A single-syllable, unsigned, bare-identifier operand - the shape a
+// register name (a/x/y/sp) always takes. Returns nullopt if the operand
+// isn't that shape, in which case the caller evaluates it as an ordinary expr.
 std::optional<std::string> asBareIdent(const std::vector<Syllable> &operand) {
     if (operand.size() != 1) return std::nullopt;
     const Syllable &s = operand[0];
@@ -161,11 +154,9 @@ std::optional<std::string> asBareIdent(const std::vector<Syllable> &operand) {
     return toLower(s.text);
 }
 
-// One pending fixup `assembleSTM8Object()` (see STM8Assembler.h's own
-// header comment) turns into a real ObjRelocation once assembly is
-// done - `byteOffset` into `bytes()`, `symbolName` the reference that
-// couldn't be resolved locally (or the reserved pseudo-symbol ".."
-// for a same-file address's own needed base-shift).
+// A pending fixup that becomes a real ObjRelocation once assembly is done -
+// `symbolName` is either an unresolved reference or the reserved
+// pseudo-symbol ".." for a same-file address's base-shift.
 struct Relocation {
     uint32_t byteOffset;
     std::string symbolName;
@@ -173,12 +164,8 @@ struct Relocation {
 
 // --- Two-pass assembly ----------------------------------------------------
 //
-// Opcode bytes below are this backend's own invention (see
-// STM8Assembler.h's own header comment on why byte-for-byte fidelity
-// to a real STM8 toolchain isn't the goal) - grouped by operand shape,
-// not by any real STM8 opcode map. Every "word" (16-bit) register
-// operand or immediate is encoded big-endian, matching how
-// STM8Codegen.cpp lays out its own memory cells (see STM8Codegen.h).
+// Opcode bytes are this backend's own invention, grouped by operand shape,
+// not any real STM8 opcode map. Every 16-bit operand is encoded big-endian.
 class Assembler {
    public:
     explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
@@ -224,11 +211,9 @@ class Assembler {
         }
     }
 
-    // `externalName`/`needsBaseShift` mirror
-    // ../z80/Z80Assembler.cpp's own `evalExpr` exactly - see
-    // STM8Assembler.h's own header comment on why *any* local address
-    // reference, not just an external one, needs a relocation here
-    // once `allowExternal_` is set.
+    // Once `allowExternal_` is set, any local address reference (not just
+    // an external one) needs a relocation, since labels resolve to
+    // "offset from org 0" until a linker adds the real base.
     uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
@@ -283,20 +268,13 @@ class Assembler {
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
 
-    // imm8 - any instruction's own immediate-byte operand.
     void emitImm8(const std::vector<Syllable> &e) {
         uint32_t v = evalExpr(e);
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
 
-    // addr16/imm16 - big-endian, full 16-bit resolved value (see this
-    // class's own header comment), no range check (any symbol in this
-    // program's own 64KB address space is valid here). This is the
-    // one choke point every absolute address this dialect ever emits
-    // goes through (ldwi/ldw/ld/and/or/xor's own mem operand, and
-    // every jump/call target, conditional ones included - see
-    // STM8Codegen.h's own header comment), so it's also the one place
-    // that needs to record a relocation.
+    // The one choke point every absolute address this dialect emits goes
+    // through, so it's also the one place that records a relocation.
     void emit16(const std::vector<Syllable> &e) {
         std::string externalName;
         bool needsBaseShift = false;
@@ -319,8 +297,7 @@ class Assembler {
         return ops[i];
     }
 
-    // x=0, y=1 - the only two word index registers STM8Codegen.cpp
-    // ever names in a `ldwi`/`push`/`pop`/`incw`/.../`slaw` operand.
+    // x=0, y=1.
     uint8_t wordRegCode(const std::vector<Syllable> &operand, const std::string &mnemonic) {
         auto name = asBareIdent(operand);
         if (!name) fail("'" + mnemonic + "' needs a register name (x/y), not an expression");
@@ -334,20 +311,13 @@ class Assembler {
         if (!name || *name != want) fail("'" + mnemonic + "' needs '" + want + "' here");
     }
 
-    // The full instruction vocabulary ../STM8Codegen.cpp ever emits -
-    // see STM8Codegen.h's own header comment for the real-STM8-vs-
-    // this-dialect design, and this file's own header comment for why
-    // the exact byte values below don't need to match a real STM8
-    // toolchain.
     void encodeInstr(const std::string &mnemonic, const std::vector<std::vector<Syllable>> &ops) {
         static const std::unordered_map<std::string, uint8_t> implied = {
             {"nop", 0x00},    {"halt", 0x01},   {"ret", 0x02},    {"rim", 0x03},    {"sim", 0x04},
             {"addw_xy", 0x05}, {"subw_xy", 0x06}, {"cpw_xy", 0x07}, {"exg_xy", 0x08},
             {"ldxind", 0x09}, {"stxind", 0x0A}, {"inca", 0x0B},   {"deca", 0x0C},   {"tnza", 0x0D},
-            // Real STM8 `SCF`/`RCF` - set/clear the carry flag directly,
-            // the two ways a `long`/`long long` shift seeds the carry a
-            // chained `rlc`/`rrc` then rotates in (see STM8Codegen.cpp's
-            // own `genWideShift()`).
+            // scf/rcf: real STM8 set/clear carry, used to seed a chained
+            // rlc/rrc for a long/long long shift (see genWideShift()).
             {"scf", 0x0E}, {"rcf", 0x0F},
         };
         if (mnemonic == "addw" || mnemonic == "subw" || mnemonic == "cpw" || mnemonic == "exg") {
@@ -357,19 +327,13 @@ class Assembler {
             return;
         }
         if (mnemonic == "inc" || mnemonic == "dec" || mnemonic == "tnz") {
-            // `inc a`/`dec a`/`tnz a` - the byte (accumulator-only)
-            // forms; STM8Codegen.cpp never emits `inc`/`dec`/`tnz` on
-            // anything else.
+            // Accumulator-only forms (inc a/dec a/tnz a).
             requireIdent(operandAt(ops, 0, mnemonic, 1), "a", mnemonic);
             emit8(implied.at(mnemonic + "a"));
             return;
         }
-        // `cpl a`/`rlc a`/`rrc a`/`sla a`/`sra a`/`srl a` - real STM8
-        // byte-wide complement/rotate-through-carry/shift, all
-        // accumulator-only (`STM8Codegen.cpp` never emits any of these
-        // on a direct memory operand) - the byte-serial primitives a
-        // `long`/`long long`'s own negate/shift chain across bytes
-        // through (see `genWideNegate()`/`genWideShift()`).
+        // Accumulator-only byte complement/rotate-through-carry/shift, the
+        // byte-serial primitives genWideNegate()/genWideShift() chain through.
         static const std::unordered_map<std::string, uint8_t> aluA = {
             {"cpl", 0x68}, {"rlc", 0x6A}, {"rrc", 0x6C}, {"sla", 0x6E}, {"sra", 0x70}, {"srl", 0x72},
         };
@@ -393,10 +357,8 @@ class Assembler {
             static const std::unordered_map<std::string, uint8_t> base = {
                 {"incw", 0x14}, {"decw", 0x16}, {"negw", 0x18}, {"cplw", 0x1A}, {"slaw", 0x1C},
                 {"srlw", 0x1E}, {"tnzw", 0x20},
-                // `sraw` - real STM8 word arithmetic (sign-preserving)
-                // right shift, the signed counterpart to `srlw`'s own
-                // logical shift - used for a signed, single-shift-
-                // amount `>>` (see STM8Codegen.cpp's own genShift()).
+                // sraw: word arithmetic (sign-preserving) right shift,
+                // srlw's signed counterpart.
                 {"sraw", 0x22},
             };
             uint8_t r = wordRegCode(operandAt(ops, 0, mnemonic, 1), mnemonic);
@@ -416,11 +378,8 @@ class Assembler {
             return;
         }
         if (mnemonic == "ldw") {
-            // Either "ldw <reg>, <mem>" or "ldw <mem>, <reg>" - the
-            // register operand's position tells the two apart (see
-            // STM8Codegen.h's own header comment: the bare-identifier
-            // slot picks the direction, same idea as i8080's `lxi`
-            // vs `lhld` using distinct mnemonics instead).
+            // Either "ldw <reg>, <mem>" or "ldw <mem>, <reg>"; which
+            // operand is the bare register name picks the direction.
             auto dstReg = asBareIdent(operandAt(ops, 0, mnemonic, 2));
             if (dstReg && (*dstReg == "x" || *dstReg == "y")) {
                 emit8(static_cast<uint8_t>(0x40 | (*dstReg == "x" ? 0 : 1)));
@@ -436,8 +395,7 @@ class Assembler {
             return;
         }
         if (mnemonic == "ld") {
-            // "ld a, <mem>" / "ld <mem>, a" - the byte equivalent of
-            // `ldw` above, always through `a`.
+            // Byte equivalent of ldw above, always through `a`.
             auto dstReg = asBareIdent(operandAt(ops, 0, mnemonic, 2));
             if (dstReg && *dstReg == "a") {
                 emit8(0x44);
@@ -473,11 +431,8 @@ class Assembler {
             emitImm8(operandAt(ops, 1, mnemonic, 2));
             return;
         }
-        // `add a, mem` / `sub a, mem` - real STM8 byte add/subtract
-        // (no carry in/out chained), the least-significant-byte step
-        // of a multi-byte `+`/`-` (see STM8Codegen.cpp's own
-        // `genWideAdd()`) - same direct-addressed shape as `and`/`or`/
-        // `xor` above.
+        // add/sub a, mem: byte add/subtract with no carry chained, the
+        // least-significant-byte step of a multi-byte +/- (genWideAdd()).
         static const std::unordered_map<std::string, uint8_t> aluMemArith = {
             {"add", 0x74}, {"sub", 0x76},
         };
@@ -487,22 +442,16 @@ class Assembler {
             emit16(operandAt(ops, 1, mnemonic, 2));
             return;
         }
-        // `addi a, imm` - real STM8 byte add-immediate, used only to
-        // add the literal `1` into a multi-byte negate's own least
-        // significant byte (see STM8Codegen.cpp's own
-        // `genWideNegate()`) - every later byte instead folds the
-        // carry in via `adc a, zero` (see that same comment).
+        // addi a, imm: used only to add 1 into a multi-byte negate's least
+        // significant byte; every later byte folds the carry via adc a, zero.
         if (mnemonic == "addi") {
             requireIdent(operandAt(ops, 0, mnemonic, 2), "a", mnemonic);
             emit8(0x78);
             emitImm8(operandAt(ops, 1, mnemonic, 2));
             return;
         }
-        // `adc a, mem` / `sbc a, mem` - real STM8 add-with-carry/
-        // subtract-with-borrow, the byte-serial ripple-carry idiom a
-        // `long`/`long long` `+`/`-` chains across bytes through (see
-        // STM8Codegen.cpp's own `genWideAdd()`) - same direct-addressed
-        // shape as `and`/`or`/`xor` above.
+        // adc/sbc a, mem: add-with-carry/subtract-with-borrow, the
+        // ripple-carry idiom a multi-byte +/- chains across bytes through.
         static const std::unordered_map<std::string, uint8_t> aluMemCarry = {
             {"adc", 0x5C}, {"sbc", 0x5E},
         };
@@ -517,16 +466,9 @@ class Assembler {
             emit16(operandAt(ops, 0, mnemonic, 1));
             return;
         }
-        // The real STM8 `CALL [mem]` Indirect addressing mode: unlike
-        // plain `call`, whose operand's own address IS the subroutine
-        // entry point, this mode's operand names the memory location
-        // *holding* the entry point - the word stored there becomes
-        // the new PC (after the return address is pushed, same as
-        // `call`). The shared grammar's `[` already means "bracketed
-        // memory operand isn't part of this dialect" (see this file's
-        // own header comment on `ldxind`/`stxind`'s identical problem),
-        // so this real addressing mode gets its own mnemonic instead of
-        // a literal `[mem]` operand.
+        // Real STM8 `CALL [mem]` indirect addressing: unlike plain `call`,
+        // the operand names the memory location holding the entry point,
+        // not the entry point itself.
         if (mnemonic == "callind") {
             emit8(0x66);
             emit16(operandAt(ops, 0, mnemonic, 1));
@@ -553,12 +495,6 @@ class Assembler {
     bool allowExternal_;
 };
 
-// Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - see STM8Assembler.h's own `assembleSTM8Object`
-// comment, and ../z80/Z80Assembler.cpp's own `buildObjectFile` for
-// the template this is ported from (identical algorithm, just
-// returning the neutral struct directly instead of handing it to
-// `writeCoffObject`).
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kSTM8CoffMachine;
@@ -571,12 +507,9 @@ ObjectFile buildObjectFile(const Assembler &a) {
     std::sort(obj.symbols.begin(), obj.symbols.end(),
               [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
 
-    // Every relocation's target symbol needs a symbol-table entry
-    // too - add one, undefined, for any name that isn't already a
-    // real local label (this also covers the reserved pseudo-symbol
-    // ".." - a linker resolves that one specially, never by looking
-    // it up here, but it still needs a table entry for the object-
-    // format writer to point the relocation's own symbol index at).
+    // Every relocation's target symbol needs a symbol-table entry too,
+    // including the pseudo-symbol ".." (resolved specially by the linker,
+    // but still needs an index for the object-format writer to point at).
     std::unordered_map<std::string, bool> known;
     for (const auto &s : obj.symbols) known[s.name] = true;
     for (const auto &r : a.relocations()) {

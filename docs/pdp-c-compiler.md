@@ -179,11 +179,10 @@ of external placeholder (resolved for real later, at `--link` time).
 Taking a bare name's own *address* — `&name`, or naming it directly as
 an array-initializer element (`int t[] = {name};`, the dispatch-table
 idiom) — is different: there's no way to tell a function address from
-a data address apart from the syntax alone, and guessing silently (an
-earlier version of this compiler tried defaulting to one kind or the
-other) is simply wrong exactly half the time, producing a confusing
-`undefined symbol 'FN_x'`/`'G_x'` from `--link`, not from the compile
-that actually made the wrong call. So `&name`/an array-initializer
+a data address apart from the syntax alone, so guessing which kind a
+bare name refers to would be wrong exactly half the time, producing a
+confusing `undefined symbol 'FN_x'`/`'G_x'` from `--link`, not from the
+compile that actually made the wrong call. So `&name`/an array-initializer
 element require the name to already be known by the time they're
 reached — defined in this file, already called/read earlier in it, or
 explicitly declared with `extern`:

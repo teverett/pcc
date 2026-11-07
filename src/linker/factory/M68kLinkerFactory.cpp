@@ -6,10 +6,7 @@
 namespace pcc {
 
 namespace {
-// `0x100000` is the same initial-stack-pointer value as
-// M68kCodegen.cpp's own (private) `kInitialSP` - comfortably above
-// the loaded program and its data, same reasoning as that file's own
-// comment.
+// 0x100000 must match M68kCodegen.cpp's private kInitialSP.
 constexpr const char *kEntryAsm =
     "org 0\n"
     "_start:\n"

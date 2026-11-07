@@ -19,8 +19,8 @@ namespace {
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("M16cAssembler: " + msg); }
 
 // --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
-// Same Syllable/Group shape as every other backend's own assembler -
-// see M68kAssembler.cpp's own comment.
+// Same Syllable/Group shape as the other backends' assemblers (see
+// M68kAssembler.cpp).
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
     char sign = 0;
@@ -29,16 +29,11 @@ struct Syllable {
     std::vector<Syllable> group;
 };
 
-// One operand, classified from a bare expression - see
-// M16cAssembler.h's own header comment on why there's no real
-// `[A0]`/`#n` MACRO-style syntax here. `Reg` comes from recognizing a
-// bare `r0`-`r3`/`a0`/`a1`/`sp`/`fb` identifier; `Imm` from a bare
-// (optionally signed) number; anything else without a bracket (a
-// label, or `label+N`) is `Mem` - an absolute address. `Disp` is the
-// one bracketed shape this dialect does support - `[fb+N]`/`[fb-N]`,
-// a frame-base-register-relative address (see M16cCodegen.h's
-// `frameOperand()`): `reg` holds the base register, `expr` the
-// (possibly negative) word-offset displacement.
+// One operand, classified from a bare expression. `Reg` is a bare
+// `r0`-`r3`/`a0`/`a1`/`sp`/`fb` identifier; `Imm` a bare signed number;
+// anything else unbracketed (a label, or `label+N`) is `Mem`. `Disp` is the
+// one bracketed shape this dialect supports - `[fb+N]`/`[fb-N]` - with `reg`
+// the base register and `expr` the (possibly negative) word-offset.
 struct Operand {
     enum Kind { Reg, Imm, Mem, Disp } kind = Imm;
     int reg = -1;
@@ -80,15 +75,9 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
     return result;
 }
 
-// `r0`-`r3` (case-insensitive, matching how mnemonics are lowercased
-// too), plus `a0`/`a1` (address registers), `sp` (the real hardware
-// stack pointer) and `fb` (the real hardware frame-base register,
-// used for every Local/Param's own per-call frame address - see
-// M16cCodegen.h's `frameOperand()`) - returns -1 if `name` is none of
-// those. Register codes 0-3 are R0-R3, 4-5 are A0-A1, 6 is SP, 7 is
-// FB - an arbitrary but fixed numbering, this dialect's own (see
-// M16cAssembler.h's own header comment: not Renesas's real
-// register-field encoding).
+// Register codes: 0-3 = R0-R3, 4-5 = A0-A1, 6 = SP, 7 = FB - this dialect's
+// own numbering, unrelated to Renesas's real register-field encoding.
+// Returns -1 if `name` is none of those.
 int regNumber(const std::string &lower) {
     if (lower.size() == 2 && lower[0] == 'r' && lower[1] >= '0' && lower[1] <= '3') return lower[1] - '0';
     if (lower == "a0") return 4;
@@ -100,16 +89,8 @@ int regNumber(const std::string &lower) {
 
 Operand buildOperand(PccAsmParser::OperandContext *ctx) {
     if (ctx->LBRACKET()) {
-        // The one bracketed memory-operand shape this dialect
-        // supports - `[fb+N]`/`[fb-N]` (see Operand's own header
-        // comment) - classified here by finding the one syllable
-        // that names a register among the bracket's own summed
-        // expression; every other syllable (there's always exactly
-        // one more, the displacement) sums into `expr`, same as
-        // every other multi-syllable expression elsewhere in this
-        // file. Every other address through a register (array/
-        // pointer dereference, `*`/`&`) still goes through the
-        // dedicated `ld`/`st` mnemonics instead (see M16cCodegen.h).
+        // `[fb+N]`/`[fb-N]`: find the one syllable naming a register; every
+        // other syllable sums into the displacement `expr`.
         std::vector<Syllable> syls = exprToSyllables(ctx->expr());
         int baseReg = -1;
         size_t baseIdx = 0;
@@ -163,13 +144,8 @@ class ThrowingErrorListener : public antlr4::BaseErrorListener {
     }
 };
 
-// A mnemonic's own size suffix (`.w`/`.b`) is purely cosmetic in this
-// dialect (every value here is a 16-bit word - see M16cCodegen.h's
-// own header comment: no byte-sized operation is ever emitted) - it's
-// stripped off before lookup so e.g. "mov.w" and "mov" both resolve to
-// the same table entry; nothing here ever actually emits a bare `mov`
-// without the suffix, but stripping it unconditionally is simpler than
-// asserting it's always present.
+// A mnemonic's size suffix (`.w`/`.b`) is cosmetic here (every value is a
+// 16-bit word), so it's stripped before table lookup.
 std::string stripSizeSuffix(const std::string &mnemonic) {
     auto dot = mnemonic.rfind('.');
     if (dot == std::string::npos) return mnemonic;
@@ -207,9 +183,7 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         }
         return line;
     }
-    // `db` - a single byte per element, used for a `char` Global/array
-    // (width 1 - see M16cCodegen.cpp's own `declareArray()`/`generate()`),
-    // the byte-granular counterpart to `dw`'s own word-per-element layout.
+    // `db` - a byte per element, used for a `char` Global/array.
     if (mnemonic == "db") {
         line.kind = Line::Db;
         for (auto *op : instr->operand()) {
@@ -244,12 +218,9 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
-// One pending fixup `assembleM16cObject()` (see M16cAssembler.h's own
-// header comment) turns into a real ObjRelocation once assembly is
-// done - `byteOffset` into `bytes()`, `symbolName` the reference that
-// couldn't be resolved locally (or the reserved pseudo-symbol ".."
-// for a same-file address's own needed base-shift - see
-// M16cAssembler.h's own header comment).
+// One pending fixup, turned into a real ObjRelocation once assembly is done.
+// `symbolName` is the unresolved reference, or the reserved pseudo-symbol
+// ".." for a same-file address's own base-shift.
 struct Relocation {
     uint32_t byteOffset;
     std::string symbolName;
@@ -301,11 +272,9 @@ class Assembler {
         }
     }
 
-    // `externalName`/`needsBaseShift` mirror
-    // ../z80/Z80Assembler.cpp's own `evalExpr` exactly - see
-    // M16cAssembler.h's own header comment on why *any* local address
-    // reference, not just an external one, needs a relocation here
-    // once `allowExternal_` is set.
+    // In object mode (`allowExternal_`), any local address reference also
+    // needs a relocation (not just an external symbol), since this file's
+    // own final load address isn't known until link time.
     uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
@@ -357,15 +326,10 @@ class Assembler {
         emit8(static_cast<uint8_t>((w >> 8) & 0xFF));
     }
 
-    // The "evalExpr, then emit16 the result" pattern every absolute-
-    // address field (a `Mem`-kind operand in `encodeOperand()`, or a
-    // jump/call/`lea`'s own address field) shares - see
-    // ../z80/Z80Assembler.cpp's own `emit16` for the identical
-    // pattern this is ported from. Records a relocation against the
-    // reserved pseudo-symbol ".." when the expression touched a local
-    // address, and/or a real relocation against an external symbol
-    // when it referenced one - both can apply to the same field at
-    // once.
+    // Evaluates and emits an absolute-address field, recording a relocation
+    // against ".." when the expression touched a local address and/or a
+    // real relocation when it referenced an external symbol (both can apply
+    // to the same field).
     void emitAddr16(const std::vector<Syllable> &expr) {
         std::string externalName;
         bool needsBaseShift = false;
@@ -378,14 +342,11 @@ class Assembler {
     }
 
     // --- operand encoding --------------------------------------------
-    // This dialect's own invented, simply-decodable operand shape -
-    // see M16cAssembler.h's own header comment: not real M16C object
-    // code. A one-byte tag (0=register, 1=immediate, 2=absolute
-    // address, 3=frame-base-relative) followed by that mode's own
-    // value bytes: one byte for a register code, two little-endian
-    // bytes for an immediate/absolute-address word, or (for `Disp`)
-    // one base-register byte then two little-endian displacement
-    // bytes.
+    // This dialect's own invented operand encoding: a one-byte tag
+    // (0=register, 1=immediate, 2=absolute address, 3=frame-base-relative)
+    // followed by that mode's value bytes (one register-code byte; two
+    // little-endian bytes for an immediate/address word; for `Disp`, one
+    // base-register byte then two little-endian displacement bytes).
     static constexpr uint8_t kTagReg = 0, kTagImm = 1, kTagMem = 2, kTagDisp = 3;
 
     void encodeOperand(const Operand &op) {
@@ -403,11 +364,8 @@ class Assembler {
                 emitAddr16(op.expr);
                 return;
             case Operand::Disp:
-                // Never an address needing a relocation (a frame
-                // displacement is a pure compile-time integer, always
-                // resolved relative to a runtime register value, never
-                // to this program's own load address) - a plain
-                // evalExpr, same as Imm's.
+                // A frame displacement is a compile-time integer resolved
+                // against a runtime register, so it never needs a relocation.
                 emit8(kTagDisp);
                 emit8(static_cast<uint8_t>(op.reg));
                 emit16(static_cast<uint16_t>(evalExpr(op.expr)));
@@ -428,20 +386,14 @@ class Assembler {
         if (op.kind != Operand::Reg) fail("'" + mnemonic + "' needs a register operand");
         return static_cast<uint8_t>(op.reg);
     }
-    // `mul`/`divu`'s own destination is always exactly R0 (see
-    // M16cCodegen.h's own header comment) - still spelled out as an
-    // ordinary operand in the mnemonic/codegen source for clarity, but
-    // validated (and not separately encoded, since it can only ever
-    // be one value) rather than genuinely variable.
+    // `mul`/`divu`'s destination is always R0.
     static void requireR0(const Operand &op, const std::string &mnemonic) {
         if (op.kind != Operand::Reg || op.reg != 0) fail("'" + mnemonic + "': destination must be r0");
     }
 
-    // The two-operand "dst = dst OP src" family (mov/add/sub/and/or/
-    // xor/shl/cmp - see M16cCodegen.h's own header comment on this
-    // convention; `mov` is the one exception, "dst = src"). `writesDst`
-    // rejects an immediate destination for every member that actually
-    // writes one; `cmp` is the one exception (read-only).
+    // The two-operand "dst = dst OP src" family (`mov` is the exception,
+    // "dst = src"). `writesDst` rejects an immediate destination; `cmp` is
+    // the exception (read-only).
     void encodeTwoOp(uint8_t opcode, const std::string &mnemonic, const std::vector<Operand> &ops, bool writesDst) {
         requireOperandCount(ops, 2, mnemonic);
         const Operand &src = ops[0];
@@ -452,8 +404,7 @@ class Assembler {
         encodeOperand(dst);
     }
 
-    // The one-operand family (not/neg - both write their own operand
-    // in place, so an immediate is never valid there either).
+    // The one-operand family (not/neg - both write their own operand).
     void encodeOneOp(uint8_t opcode, const std::string &mnemonic, const std::vector<Operand> &ops) {
         requireOperandCount(ops, 1, mnemonic);
         if (ops[0].kind == Operand::Imm) fail("'" + mnemonic + "': an immediate can't be a destination");
@@ -461,27 +412,17 @@ class Assembler {
         encodeOperand(ops[0]);
     }
 
-    // The full instruction vocabulary ../M16cCodegen.cpp ever emits -
-    // see M16cAssembler.h's own header comment. Not a general M16C
-    // encoder: exactly these mnemonic/operand-shape combinations.
+    // The full instruction vocabulary M16cCodegen.cpp emits - not a general
+    // M16C encoder.
     void encodeInstr(const std::string &mnemonic, const std::vector<Operand> &ops) {
         static const std::unordered_map<std::string, uint8_t> twoOpWrite = {
             {"mov", 0x01}, {"add", 0x02}, {"sub", 0x03}, {"and", 0x04}, {"or", 0x05}, {"xor", 0x06}, {"shl", 0x07},
-            // `sha` - real M16C `SHA.W`, the arithmetic (sign-
-            // preserving on a right shift) counterpart to `shl`'s own
-            // logical shift - same signed-count convention (negative
-            // = right - see M16cCodegen.h's own header comment), used
-            // for a signed `>>` (see M16cCodegen.cpp's own
-            // `genShift()`).
+            // `sha` - arithmetic (sign-preserving) shift counterpart to
+            // `shl`, same signed-count convention (negative = right).
             {"sha", 0x25},
-            // `adc`/`sbb` - real M16C add-with-carry/subtract-with-
-            // borrow, the multi-word ripple-carry idiom every
-            // `long`/`long long` `+`/`-` here chains through (see
-            // M16cCodegen.cpp's own `genWideAdd()`) - this dialect's
-            // own two-operand convention applies here exactly as it
-            // does to `add`/`sub`: `dst = dst +/- src +/- carry`,
-            // and sets the carry/borrow flag `rol`/`ror` below (and
-            // the next `adc`/`sbb`) read.
+            // `adc`/`sbb` - add-with-carry/subtract-with-borrow for the
+            // multi-word ripple-carry chain (`dst = dst +/- src +/- carry`);
+            // sets the carry/borrow flag the next `adc`/`sbb`/`rol`/`ror` reads.
             {"adc", 0x27},
             {"sbb", 0x28},
         };
@@ -493,14 +434,9 @@ class Assembler {
             encodeTwoOp(0x08, mnemonic, ops, /*writesDst=*/false);
             return;
         }
-        // `movb` - real M16C `MOV.B`, the byte-sized counterpart to
-        // `mov` - used for a `char` scalar's own storage (see
-        // M16cCodegen.cpp's own `loadOperand()`/`storeOperand()`). A
-        // register destination always sign-extends to the full 16
-        // bits (same hardware behavior this project's own pdp11
-        // backend relies on for `MOVB` - see Pdp11Codegen.cpp's own
-        // `loadOperand()`); an unsigned `char` load masks the high
-        // byte back off itself afterward, same as that backend.
+        // `movb` - byte-sized `mov`, used for a `char` scalar. A register
+        // destination always sign-extends to 16 bits; an unsigned `char`
+        // load masks the high byte back off afterward.
         if (mnemonic == "movb") {
             encodeTwoOp(0x1E, mnemonic, ops, /*writesDst=*/true);
             return;
@@ -508,12 +444,9 @@ class Assembler {
         static const std::unordered_map<std::string, uint8_t> oneOp = {
             {"not", 0x09},
             {"neg", 0x0A},
-            // `rol`/`ror` - real M16C single-bit rotate-through-
-            // carry, the bit-serial primitive a multi-word `<<`/`>>`
-            // chains across words through (see M16cCodegen.cpp's own
-            // `genWideShift()`) - the carry bit rotated in is whatever
-            // the immediately preceding `clc`/`stc`/`adc`/`sbb`/`rol`/
-            // `ror` last left it as.
+            // `rol`/`ror` - single-bit rotate-through-carry, chained across
+            // words for a multi-word `<<`/`>>`; rotates in whatever the
+            // preceding `clc`/`stc`/`adc`/`sbb`/`rol`/`ror` last left as carry.
             {"rol", 0x29},
             {"ror", 0x2A},
         };
@@ -542,10 +475,9 @@ class Assembler {
             emit8(rn);
             return;
         }
-        // `ld addrReg,dst` / `st src,addrReg` - the dedicated
-        // register-indirect-through-an-address-register mnemonics (see
-        // M16cCodegen.h's own header comment on why there's no
-        // bracketed-operand syntax instead).
+        // `ld addrReg,dst` / `st src,addrReg` - register-indirect access
+        // through an address register (no bracketed-operand syntax exists
+        // for this instead).
         if (mnemonic == "ld") {
             requireOperandCount(ops, 2, mnemonic);
             uint8_t addr = requireReg(ops[0], mnemonic);
@@ -564,14 +496,9 @@ class Assembler {
             emit8(addr);
             return;
         }
-        // `ldb addrReg,dst` / `stb src,addrReg` - real M16C `MOV.B
-        // [A0],R0L`-style byte-sized register-indirect access, the
-        // byte-granular counterpart to `ld`/`st` - used for a `char`
-        // array element (see M16cCodegen.cpp's own `genIndex()`). A
-        // load always sign-extends into the full 16-bit destination
-        // register (see M16cCodegen.cpp's own `loadOperand()` for why
-        // that's always correct even for an unsigned `char`: the
-        // caller masks the high byte back off itself afterward).
+        // `ldb addrReg,dst` / `stb src,addrReg` - byte-sized `ld`/`st`, used
+        // for a `char` array element. A load always sign-extends into the
+        // full 16-bit destination register.
         if (mnemonic == "ldb") {
             requireOperandCount(ops, 2, mnemonic);
             uint8_t addr = requireReg(ops[0], mnemonic);
@@ -592,15 +519,10 @@ class Assembler {
         }
         if (mnemonic == "lea") {
             requireOperandCount(ops, 2, mnemonic);
-            // Source is either an absolute label (`Mem`, a Global's
-            // own address) or a frame-relative `[fb+N]`/`[fb-N]`
-            // (`Disp`, a Local/Param's own address - see
-            // M16cCodegen.h's `frameOperand()`) - every other kind is
-            // never a real address. Checked explicitly against both
-            // allowed kinds (not just "!= Mem") so a future third
-            // memory-operand shape can't silently fall through this
-            // check the way an exclusion list checked against only
-            // the OLD shapes would.
+            // Source must be an absolute label or a frame-relative
+            // `[fb+N]`/`[fb-N]` - checked against both allowed kinds
+            // explicitly so a future third memory-operand shape can't
+            // silently fall through.
             if (ops[0].kind != Operand::Mem && ops[0].kind != Operand::Disp) {
                 fail("'lea': source must be a label or a frame-relative '[fb+N]'/'[fb-N]' address");
             }
@@ -617,18 +539,12 @@ class Assembler {
             emitAddr16(ops[0].expr);
             return;
         }
-        // `JSRI.W` - the real M16C indirect-call instruction: unlike
-        // `jsr`, whose Mem operand's own address IS the subroutine
-        // entry point, `jsri`'s operand names the memory location
-        // *holding* the entry point - the word stored there becomes
-        // the new PC (after the return address is pushed, same as
-        // `jsr`). The real hardware form supports a general EA for
-        // that memory location (register-relative, absolute, etc.);
-        // this dialect only ever needs the absolute-address case
-        // (M16cCodegen.cpp's own genExpr() always spills the callee's
-        // address to a temp word cell first, then points `jsri` at
-        // that cell's own label - see that file's own CallPtr
-        // comment).
+        // `jsri` - indirect call: unlike `jsr`, whose operand address IS the
+        // entry point, `jsri`'s operand names the memory location *holding*
+        // the entry address (which becomes the new PC after the return
+        // address is pushed). This dialect only needs the absolute-address
+        // case: genExpr()'s CallPtr case spills the callee address to a temp
+        // cell first and points `jsri` at that cell.
         if (mnemonic == "jsri") {
             requireOperandCount(ops, 1, mnemonic);
             if (ops[0].kind != Operand::Mem) fail("'jsri': target must be a label");
@@ -641,9 +557,8 @@ class Assembler {
             emit8(0x13);
             return;
         }
-        // `clc`/`stc` - clear/set the real M16C carry flag directly,
-        // the two ways a multi-word shift seeds the carry `rol`/`ror`
-        // then rotates in (see M16cCodegen.cpp's own `genWideShift()`).
+        // `clc`/`stc` - clear/set the carry flag directly, seeding a
+        // multi-word shift's `rol`/`ror` chain.
         if (mnemonic == "clc" || mnemonic == "stc") {
             requireOperandCount(ops, 0, mnemonic);
             emit8(mnemonic == "clc" ? 0x26 : 0x2B);
@@ -658,13 +573,8 @@ class Assembler {
         }
         static const std::unordered_map<std::string, uint8_t> condJump = {
             {"jeq", 0x15}, {"jne", 0x16}, {"jlt", 0x17}, {"jle", 0x18}, {"jgt", 0x19}, {"jge", 0x1A},
-            // Real M16C unsigned conditional jumps (`JLTU`/`JLEU`/
-            // `JGTU`/`JGEU`), driven by the same `CMP.W`-set flags as
-            // the signed family above - see M16cCodegen.cpp's own
-            // `genCompare()`/`genWideAdd()` (the latter uses `jltu` to
-            // synthesize a software carry/borrow bit, since this
-            // dialect's own instruction set has no hardware carry flag
-            // a two-operand add/sub could chain through directly).
+            // Unsigned conditional jumps, driven by the same `CMP.W`-set
+            // flags as the signed family.
             {"jltu", 0x21}, {"jleu", 0x22}, {"jgtu", 0x23}, {"jgeu", 0x24},
         };
         if (auto it = condJump.find(mnemonic); it != condJump.end()) {
@@ -675,11 +585,8 @@ class Assembler {
             return;
         }
         if (mnemonic == "fset" || mnemonic == "fclr") {
-            // `fset i` / `fclr i` - the interrupt-enable flag bit is
-            // this dialect's own only ever operand to either mnemonic
-            // (see M16cCodegen.cpp's own Intrinsic case); `i` is just
-            // a bare identifier to the shared grammar, consumed here
-            // without needing its own register/operand classification.
+            // `fset i` / `fclr i` - the interrupt-enable flag bit, this
+            // dialect's only supported operand to either mnemonic.
             requireOperandCount(ops, 1, mnemonic);
             if (toLower(ops[0].expr.empty() ? "" : ops[0].expr[0].text) != "i" || ops[0].kind != Operand::Mem) {
                 fail("'" + mnemonic + "' only supports the 'i' (interrupt enable) flag");
@@ -699,10 +606,8 @@ class Assembler {
     bool allowExternal_;
 };
 
-// Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - see M16cAssembler.h's own `assembleM16cObject`
-// comment, and ../z80/Z80Assembler.cpp's own `buildObjectFile` for
-// the identical algorithm this is ported from.
+// Builds the format-neutral ObjectFile from a completed object-mode
+// Assembler.
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kM16cCoffMachine;
@@ -715,12 +620,8 @@ ObjectFile buildObjectFile(const Assembler &a) {
     std::sort(obj.symbols.begin(), obj.symbols.end(),
               [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
 
-    // Every relocation's target symbol needs a symbol-table entry
-    // too - add one, undefined, for any name that isn't already a
-    // real local label (this also covers the reserved pseudo-symbol
-    // ".." - a linker resolves that one specially, never by looking
-    // it up here, but it still needs a table entry for the object-
-    // format writer to point the relocation's own symbol index at).
+    // Every relocation's target symbol needs a symbol-table entry too,
+    // including the reserved pseudo-symbol "..".
     std::unordered_map<std::string, bool> known;
     for (const auto &s : obj.symbols) known[s.name] = true;
     for (const auto &r : a.relocations()) {

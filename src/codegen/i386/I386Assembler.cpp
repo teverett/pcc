@@ -18,9 +18,7 @@ namespace {
 
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("I386Assembler: " + msg); }
 
-// --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
-// Same Syllable/Group shape as every other backend's own assembler -
-// see M68kAssembler.cpp's own comment.
+// --- Parsing, via the shared grammar/PccAsm.g4 ---
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
     char sign = 0;
@@ -29,28 +27,16 @@ struct Syllable {
     std::vector<Syllable> group;
 };
 
-// `Reg` carries a register index (see regIndex() below) and whether
-// it's `al` specifically (`is8`) - the one 8-bit register name this
-// dialect ever uses (`mov al,<imm8>` / `out <port>,al`, both only for
-// I386Codegen.cpp's own fixed PIC-masking sequence - see that file's
-// own `generate()` comment). `Mem` is one of the exactly three
-// addressing-mode shapes I386Codegen.cpp ever emits - `[label]`
-// (`memHasEbx=false`), `[ebx]` (`memHasEbx=true`, `memHasDisp=false`),
-// or `[label+ebx]` (both true, `expr` holding the label) - see
-// I8086Assembler.cpp's own `Operand` comment, the same three shapes
-// with `ebx` in place of `bx`; `Imm` covers a literal number or a
-// bare symbol used as a jump/call target.
+// Reg carries a register index and whether it's `al` (is8), the only 8-bit register this
+// dialect uses. Mem is one of three shapes: [label], [ebx] (memHasEbx), or [label+ebx]
+// (both, expr holding the label). Imm is a literal number or a bare symbol branch target.
 struct Operand {
     enum Kind { Reg, Mem, Imm } kind = Imm;
     int reg = -1;
     bool is8 = false;   // al
     bool is16 = false;  // ax
-    // A memory operand's own size override ("byte [...]"/"word
-    // [...]" - grammar/PccAsm.g4's own `operand::size`), for a
-    // narrower-than-native-int Var/Slot's own load/store - see
-    // I386Codegen.cpp's loadOperand()/storeOperand(). Absent (0)
-    // means the plain, always-32-bit shapes every other mnemonic
-    // here already used before those existed.
+    // "byte [...]"/"word [...]" size override for a narrower-than-int load/store; None
+    // means the plain 32-bit form.
     enum MemSize { None, Byte, Word } memSize = None;
     bool memHasEbx = false;
     bool memHasEbp = false;
@@ -93,16 +79,8 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
     return result;
 }
 
-// `cl` maps to the same index as `ecx` - this dialect never uses any
-// other 8-bit sub-register name besides `al` (handled separately in
-// buildOperand() below, since unlike `cl` it needs its own 8-bit
-// immediate/instruction forms, not just a shared index) - see
-// I386Codegen.h's own header comment on this language's "every
-// variable is a 32-bit int" model; `shl`/`shr`'s own real `<reg>,cl`
-// shape (see encodeInstr() below) is the one real i386 instruction
-// that still names an 8-bit register no matter how wide everything
-// else here is, so there's no need for a real, separate 8-bit
-// register index space just for that one.
+// `cl` shares ecx's index; `al` is handled separately in buildOperand() since it needs its
+// own 8-bit immediate/instruction forms, not just a shared index.
 int regIndex(const std::string &nameLower) {
     static const std::unordered_map<std::string, int> regs = {
         {"eax", 0}, {"ecx", 1}, {"edx", 2}, {"ebx", 3}, {"esp", 4}, {"ebp", 5}, {"esi", 6}, {"edi", 7}, {"cl", 1},
@@ -111,10 +89,7 @@ int regIndex(const std::string &nameLower) {
     return it != regs.end() ? it->second : -1;
 }
 
-// `[...]` and plain-expr operand forms, classified into exactly the
-// shapes I386Codegen.cpp ever emits - see Operand's own comment, and
-// I8086Assembler.cpp's `buildOperand` for the 16-bit original this is
-// ported from.
+// Classifies `[...]` and plain-expr operand text into the shapes in Operand's comment.
 Operand buildOperand(PccAsmParser::OperandContext *ctx) {
     Operand op;
     if (ctx->LBRACKET()) {
@@ -245,24 +220,16 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
-// One pending fixup `assembleI386Object()` (see I386Assembler.h's own
-// header comment) turns into a real ObjRelocation once assembly is
-// done - `byteOffset` into `bytes()`, `symbolName` the reference that
-// couldn't be resolved locally (or the reserved pseudo-symbol ".."
-// for a same-file address's own needed base-shift), `kind` one of
-// `kI386RelocAbs32`/`kI386RelocRel32`.
+// symbolName is the unresolved reference, or the reserved pseudo-symbol ".." for a
+// same-file address that needs a base-shift once linked.
 struct Relocation {
     uint32_t byteOffset;
     std::string symbolName;
     uint16_t kind;
 };
 
-// --- Two-pass assembly ----------------------------------------------------
-// One flat blob, `org` called exactly once at the top (this backend's
-// Multiboot header is loaded and runs at the same fixed address - see
-// I386Codegen.cpp's own `kLoadAddr`) - same single `orgBase_` shape as
-// M68kAssembler.cpp's own assembler, no section-switching needed the
-// way STM32Assembler.cpp's flash/RAM split requires.
+// --- Two-pass assembly ---
+// `org` is called exactly once, at the top: one flat image, no section switching.
 class Assembler {
    public:
     explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
@@ -304,13 +271,8 @@ class Assembler {
                 for (const auto &e : line.exprList) emit16(static_cast<uint16_t>(evalExpr(e)));
                 return;
             case Line::Dd:
-                // Routed through the same emitAbs32() choke point a bare
-                // label used as a 32-bit immediate goes through (see its
-                // own header comment) - a "dd" word holding a symbol (an
-                // array initializer's dispatch-table element, see
-                // I386Codegen.cpp's own arrayElemText) gets the exact same
-                // relocation treatment, while a plain numeric word's value
-                // comes out unchanged.
+                // Routed through emitAbs32() so a symbol gets the same relocation treatment
+                // as a label used as a 32-bit immediate.
                 for (const auto &e : line.exprList) emitAbs32(e);
                 return;
             case Line::Instr:
@@ -319,11 +281,8 @@ class Assembler {
         }
     }
 
-    // `externalName`/`needsBaseShift` mirror
-    // ../m68k/M68kAssembler.cpp's own `evalExpr` exactly - see
-    // I386Assembler.h's own header comment on why *any* local address
-    // reference, not just an external one, needs a relocation here
-    // once `allowExternal_` is set.
+    // Any local address reference, not just an external one, needs a relocation here once
+    // allowExternal_ is set.
     uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
@@ -385,14 +344,8 @@ class Assembler {
         return ops[i];
     }
 
-    // One of this dialect's three memory-operand shapes (see
-    // Operand's own comment) as a real i386 ModRM [+disp32] pair,
-    // with `reg` (0-7) already carrying the instruction's own real
-    // register field (which register the memory operand is being
-    // combined with/into - mov's own direction is the caller's
-    // concern, not this helper's). Mod/rm values confirmed directly
-    // against a real toolchain - see I386Assembler.h's own header
-    // comment.
+    // Encodes one of the three memory-operand shapes as an i386 ModRM [+disp32] pair; `reg`
+    // carries the instruction's other register field.
     void emitModRMMem(const Operand &mem, uint8_t reg) {
         if (mem.memHasEbx && !mem.memHasDisp) {
             emit8(static_cast<uint8_t>(0x00 | (reg << 3) | 0x03));  // mod=00, rm=011 (ebx)
@@ -404,13 +357,8 @@ class Assembler {
             return;
         }
         if (mem.memHasEbp) {
-            // [ebp+disp32]: mod=10, rm=101 (ebp) - mod=00/rm=101 is
-            // reserved for the no-base direct-[label] form below, so a
-            // disp32-with-base ebp reference always needs mod=10 even
-            // when the displacement would otherwise fit in a byte (a
-            // Local/Param's own addr() - I386Codegen.h - never emits a
-            // zero displacement, so the mod=01/rm=101 "[ebp]" edge case
-            // never arises here).
+            // mod=10, rm=101 (ebp); mod=01 (8-bit disp) is never used since addr()
+            // (I386Codegen.h) never emits a zero displacement.
             emit8(static_cast<uint8_t>(0x80 | (reg << 3) | 0x05));
             emitAbs32(mem.expr);
             return;
@@ -420,18 +368,9 @@ class Assembler {
         emitAbs32(mem.expr);
     }
 
-    // The one choke point every absolute-32-bit-address reference in
-    // this dialect passes through - `[label]`/`[label+ebx]` disp32
-    // fields, the moffs32 `mov eax,[label]`/`mov [label],eax`
-    // shortcut forms, `add eax,<label>`'s own short-immediate form,
-    // and a bare label used as a 32-bit immediate (`mov eax,<label>` -
-    // genAddrOf()'s own address-of-a-static-variable case, the same
-    // role as m68k's `leal`). Records a `kI386RelocAbs32` relocation
-    // against the reserved pseudo-symbol ".." whenever the reference
-    // needs its own object's base added (every one of them, once
-    // linked - see I386Assembler.h's own header comment), plus a
-    // second one against the real symbol name if it's not yet defined
-    // in this object at all.
+    // Every absolute 32-bit address reference passes through here. Records a relocation
+    // against the ".." pseudo-symbol when the reference needs this object's own base added,
+    // plus one against the real symbol name if it's not yet defined in this object.
     void emitAbs32(const std::vector<Syllable> &expr) {
         std::string externalName;
         bool needsBaseShift = false;
@@ -445,11 +384,8 @@ class Assembler {
 
     uint32_t offset() const { return static_cast<uint32_t>(bytes_.size()); }
 
-    // The full instruction vocabulary ../I386Codegen.cpp ever emits -
-    // see I386Assembler.h's own header comment. Not a general i386
-    // encoder: exactly these mnemonic/operand-shape combinations,
-    // each confirmed against a real toolchain's own encoding during
-    // development.
+    // Exactly the mnemonic/operand-shape combinations I386Codegen.cpp emits, not a general
+    // i386 encoder.
     void encodeInstr(const std::string &mnemonic, const std::vector<Operand> &ops) {
         if (mnemonic == "ret" || mnemonic == "hlt" || mnemonic == "cli" || mnemonic == "sti" || mnemonic == "cdq") {
             static const std::unordered_map<std::string, uint8_t> simple = {
@@ -468,9 +404,6 @@ class Assembler {
             mnemonic == "div" || mnemonic == "idiv") {
             uint8_t r = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             static const std::unordered_map<std::string, uint8_t> ext = {
-                // mul/div (unsigned) alongside imul/idiv (signed) -
-                // I386Codegen.cpp picks between them per operand
-                // signedness (see genMul()/genDivMod()).
                 {"not", 2}, {"neg", 3}, {"mul", 4}, {"imul", 5}, {"div", 6}, {"idiv", 7},
             };
             emit8(0xF7);
@@ -478,20 +411,10 @@ class Assembler {
             return;
         }
         if (mnemonic == "shl" || mnemonic == "shr" || mnemonic == "sar") {
-            // Two shapes: the real variable-count register form
-            // (`<reg>,cl` - I386Codegen.cpp's own `<<`/`>>` operator,
-            // where the count is itself a runtime value) and the real
-            // immediate-count form (`<reg>,<N>` - computeElementAddr's
-            // own fixed "multiply the index by 4" shift, where the
-            // count is always a compile-time constant - see that
-            // file's own comment). Both confirmed against a real
-            // toolchain's own encoding - see I386Assembler.h's own
-            // header comment.
+            // Two shapes: variable-count register form (<reg>,cl) and immediate-count form
+            // (<reg>,<N>).
             uint8_t r = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             const Operand &count = requireOperand(ops, 1, mnemonic);
-            // sar (arithmetic/signed right shift, ext=7) alongside
-            // shr (logical/unsigned, ext=5) - I386Codegen.cpp picks
-            // between them per the shifted value's own signedness.
             uint8_t ext = mnemonic == "shl" ? 4 : mnemonic == "shr" ? 5 : 7;
             if (count.kind == Operand::Reg && count.reg == 1) {
                 emit8(0xD3);
@@ -510,10 +433,6 @@ class Assembler {
             const Operand &dst = requireOperand(ops, 0, mnemonic);
             const Operand &src = requireOperand(ops, 1, mnemonic);
             if (dst.kind == Operand::Reg && dst.is8 && src.kind == Operand::Imm) {
-                // `mov al,<imm8>` - I386Codegen.cpp's own fixed PIC-
-                // masking sequence only (see that file's own
-                // `generate()` comment) - confirmed against a real
-                // toolchain's own encoding.
                 emit8(static_cast<uint8_t>(0xB0 | dst.reg));
                 emit8(static_cast<uint8_t>(evalExpr(src.expr) & 0xFF));
                 return;
@@ -529,13 +448,8 @@ class Assembler {
                 return;
             }
             if (dst.kind == Operand::Reg && src.kind == Operand::Mem && src.memSize == Operand::None) {
-                // `mov eax,[label]` (no base register) uses the real
-                // moffs32 shortcut form - confirmed only ever paired
-                // with `eax` here (see I386Codegen.cpp - the "ac"
-                // register is the only one ever loaded straight from
-                // a plain label); every other shape (`[ebx]`,
-                // `[label+ebx]`, or any other destination register)
-                // goes through the general ModRM form instead.
+                // [label] with no base register uses the moffs32 shortcut, valid only for
+                // eax; every other shape goes through the general ModRM form.
                 if (dst.reg == 0 && !src.memHasEbx && !src.memHasEbp) {
                     emit8(0xA1);
                     emitAbs32(src.expr);
@@ -555,18 +469,13 @@ class Assembler {
                 emitModRMMem(dst, src.reg);
                 return;
             }
-            // `mov byte [mem],al` - a narrower-than-native-int Var/
-            // Slot's own store (see I386Codegen.cpp's storeOperand())
-            // - the real r/m8,r8 form (88 /r), writing only that one
-            // byte of memory, unlike the always-32-bit forms above.
+            // r/m8,r8 form (88 /r): writes only the one byte.
             if (dst.kind == Operand::Mem && dst.memSize == Operand::Byte && src.kind == Operand::Reg && src.is8) {
                 emit8(0x88);
                 emitModRMMem(dst, static_cast<uint8_t>(src.reg));
                 return;
             }
-            // `mov word [mem],ax` - same idea, 16 bits: the real
-            // r/m16,r16 form, which is the always-32-bit 89 /r above
-            // with the standard 0x66 operand-size override prefix.
+            // r/m16,r16 form: the 32-bit 89 /r form with a 0x66 operand-size override prefix.
             if (dst.kind == Operand::Mem && dst.memSize == Operand::Word && src.kind == Operand::Reg && src.is16) {
                 emit8(0x66);
                 emit8(0x89);
@@ -576,14 +485,8 @@ class Assembler {
             fail("'mov': unsupported operand combination in this dialect");
         }
         if (mnemonic == "movzx" || mnemonic == "movsx") {
-            // `movzx/movsx eax, byte/word [mem]` (a narrower-than-
-            // native-int Var/Slot's own load) or `movzx/movsx eax,al`
-            // / `...,ax` (re-extending a value already sitting in a
-            // register, e.g. narrowEaxTo()'s own re-truncation) - zero-
-            // or sign-extended up to a full 32-bit register in one
-            // real instruction (0F B6/B7 zero-extend, 0F BE/BF sign-
-            // extend, byte vs word respectively) - see
-            // I386Codegen.cpp's own loadOperand()/narrowEaxTo().
+            // 0F B6/B7 zero-extend, 0F BE/BF sign-extend; byte vs word selects B6/BE vs
+            // B7/BF.
             const Operand &dst = requireOperand(ops, 0, mnemonic);
             const Operand &src = requireOperand(ops, 1, mnemonic);
             if (dst.kind != Operand::Reg || dst.is8 || dst.is16) {
@@ -605,12 +508,7 @@ class Assembler {
             return;
         }
         if (mnemonic == "lea") {
-            // `lea reg,[ebp+disp32]` - I386Codegen.cpp's own way to
-            // compute a Local/Param's own runtime effective address
-            // (its own stack slot has no compile-time-foldable label
-            // the way a Global's does) - real 8D /r, same real
-            // instruction as I8086Codegen.cpp's own `lea`, just 32
-            // bits wide throughout.
+            // 8D /r: computes an effective address without touching memory.
             if (ops.size() != 2 || ops[0].kind != Operand::Reg || ops[1].kind != Operand::Mem) {
                 fail("'lea' needs a register destination and a memory source in this dialect");
             }
@@ -620,17 +518,8 @@ class Assembler {
         }
         if (mnemonic == "add" && requireOperand(ops, 0, mnemonic).kind == Operand::Reg &&
             requireOperand(ops, 0, mnemonic).reg != 0 && requireOperand(ops, 1, mnemonic).kind == Operand::Imm) {
-            // `add <reg>,<N or label>` for any register but eax (which
-            // already has its own shorter `05`-opcode form above) -
-            // two real call sites: `add esp,<N>` (I386Codegen.cpp's
-            // own caller-side stack cleanup after a `Call`, always a
-            // small literal count) and `add ebx,<label>`
-            // (computeElementAddr()'s own array-base-plus-scaled-index
-            // computation when the array is a Global - a real
-            // relocatable address, not a literal). The real `81 /0
-            // id` full-imm32 form (through the same emitAbs32() choke
-            // point every other absolute address reference uses) - a
-            // literal count just costs three wasted immediate bytes.
+            // 81 /0 id (full imm32 add), for any register but eax (which has its own
+            // shorter 05-opcode form below).
             uint8_t dst = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             emit8(0x81);
             emit8(static_cast<uint8_t>(0xC0 | (0 << 3) | dst));
@@ -639,12 +528,8 @@ class Assembler {
         }
         if (mnemonic == "sub" && requireOperand(ops, 0, mnemonic).kind == Operand::Reg &&
             requireOperand(ops, 1, mnemonic).kind == Operand::Imm) {
-            // `sub esp,<N>` - I386Codegen.cpp's own per-call stack-
-            // frame prologue (reserving `frameSize` dwords of local
-            // storage) - the real `83 /5 ib` sign-extended-imm8 form,
-            // same shape as `cmp`'s own immediate case just above
-            // (every frame this backend ever builds is comfortably
-            // under 128 dwords).
+            // 83 /5 ib (sign-extended imm8 sub); every frame this backend builds fits under
+            // 128 dwords.
             uint8_t dst = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint32_t imm = evalExpr(requireOperand(ops, 1, mnemonic).expr);
             if (imm > 0x7F && imm < 0xFFFFFF80) fail("'sub': immediate operand must fit in a signed byte");
@@ -654,9 +539,7 @@ class Assembler {
             return;
         }
         if (mnemonic == "out") {
-            // `out <port>,al` - I386Codegen.cpp's own fixed PIC-
-            // masking sequence only. The real imm8-port form
-            // (confirmed against a real toolchain's own encoding).
+            // E6: imm8 port, al source.
             const Operand &port = requireOperand(ops, 0, mnemonic);
             const Operand &src = requireOperand(ops, 1, mnemonic);
             if (port.kind != Operand::Imm) fail("'out': port must be a literal");
@@ -667,40 +550,21 @@ class Assembler {
         }
         if (mnemonic == "add" && requireOperand(ops, 0, mnemonic).kind == Operand::Reg &&
             requireOperand(ops, 0, mnemonic).reg == 0 && requireOperand(ops, 1, mnemonic).kind == Operand::Imm) {
-            // `add eax,<label>` - genAddrOf()'s own "base address plus
-            // scaled index" computation for a plain (non-pointer)
-            // array's own `&arr[idx]`, where the label itself is a
-            // compile-time constant address, not a register - the
-            // real eax-specific short immediate form (confirmed
-            // against a real toolchain's own encoding - see
-            // I386Assembler.h's own header comment).
+            // 05: eax-specific short immediate add form.
             emit8(0x05);
             emitAbs32(requireOperand(ops, 1, mnemonic).expr);
             return;
         }
         if (mnemonic == "add" && requireOperand(ops, 0, mnemonic).kind == Operand::Reg &&
             requireOperand(ops, 1, mnemonic).kind == Operand::Mem) {
-            // `add eax,[label]` - genAddrOf()'s own version of the
-            // same computation when the base is a plain pointer
-            // *variable* rather than a declared array: the base has
-            // to be read out of memory first, not folded into the
-            // instruction as a compile-time constant the way the
-            // `Imm` case above is - the real register+memory ADD form
-            // (confirmed against a real toolchain's own encoding -
-            // see I386Assembler.h's own header comment).
+            // 03 /r: register+memory add form.
             uint8_t dst = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             emit8(0x03);
             emitModRMMem(requireOperand(ops, 1, mnemonic), dst);
             return;
         }
         if (mnemonic == "cmp" && requireOperand(ops, 1, mnemonic).kind == Operand::Imm) {
-            // `cmp <reg>,0` - the only immediate `cmp` I386Codegen.cpp
-            // ever emits (every `if`/`while` condition check, plus
-            // every logical-operator short-circuit test), always
-            // against a literal that fits in a sign-extended imm8 -
-            // the real `83 /7 ib` form (confirmed against a real
-            // toolchain's own encoding choice for `cmp eax,0` - see
-            // I386Assembler.h's own header comment).
+            // 83 /7 ib (sign-extended imm8 cmp).
             uint8_t dst = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint32_t imm = evalExpr(requireOperand(ops, 1, mnemonic).expr);
             if (imm > 0x7F && imm < 0xFFFFFF80) fail("'cmp': immediate operand must fit in a signed byte");
@@ -711,11 +575,7 @@ class Assembler {
         }
         static const std::unordered_map<std::string, uint8_t> aluRegReg = {
             {"add", 0x01}, {"sub", 0x29}, {"cmp", 0x39}, {"and", 0x21}, {"or", 0x09}, {"xor", 0x31},
-            // adc/sbb (add/sub-with-carry/borrow) - the real r/m32,r32
-            // ALU forms, same shape as add/sub above - I386Codegen.cpp's
-            // own ripple-carry chain for a `long long` add/sub (2
-            // native 32-bit words).
-            {"adc", 0x11}, {"sbb", 0x19},
+            {"adc", 0x11}, {"sbb", 0x19},  // add/sub-with-carry, used for long-long add/sub
         };
         if (auto it = aluRegReg.find(mnemonic); it != aluRegReg.end()) {
             uint8_t dst = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
@@ -725,33 +585,15 @@ class Assembler {
             return;
         }
         if (mnemonic == "call" && requireOperand(ops, 0, mnemonic).kind == Operand::Reg) {
-            // `call eax` (I386Codegen.cpp's new ExprKind::CallPtr) - a
-            // real, direct near-indirect call through a register: FF
-            // /2, the same "group FF" ModRM-register form `not`/
-            // `imul`/`idiv` above already use, just with reg field
-            // 0b010 ("CALL r/m32, near indirect") - confirmed against
-            // a real toolchain's own encoding. No REX prefix concern
-            // here (this dialect is pure 32-bit protected mode, not
-            // long mode), and the plain register-direct ModRM byte
-            // (mod=11) needs no disp32 extension.
+            // FF /2: near-indirect call through a register.
             uint8_t r = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             emit8(0xFF);
             emit8(static_cast<uint8_t>(0xC0 | (2 << 3) | r));
             return;
         }
         if (mnemonic == "call" || mnemonic == "jmp") {
-            // `call`/`jmp label` (E8/E9 rel32) - the one place this
-            // dialect's control flow can reach another file's own
-            // code (every conditional `jcc` below is always an
-            // intra-function branch to a `newLabel()`-generated
-            // target - see I386Codegen.cpp's own call sites - so it
-            // never needs a relocation). A same-object target's own
-            // relative displacement is base-shift-invariant (both the
-            // site and the target move by the same linked base - see
-            // ../m68k/M68kAssembler.cpp's own `encodeBranch` comment
-            // for the identical reasoning), so it's only deferred as
-            // a real `kI386RelocRel32` relocation when the target
-            // isn't defined in this object at all.
+            // E8/E9 rel32. A same-object target's displacement is base-shift-invariant, so
+            // a relocation is only needed when the target isn't defined in this object.
             const Operand &target = requireOperand(ops, 0, mnemonic);
             if (target.kind != Operand::Imm) fail("'" + mnemonic + "': target must be a label");
             std::string externalName;
@@ -767,10 +609,7 @@ class Assembler {
         }
         static const std::unordered_map<std::string, uint8_t> jcc = {
             {"je", 0x84}, {"jne", 0x85}, {"jl", 0x8C}, {"jle", 0x8E}, {"jg", 0x8F}, {"jge", 0x8D},
-            // Unsigned counterparts - I386Codegen.cpp's own unsigned
-            // comparisons (real x86 jb/jae/jbe/ja, same two-byte 0F 8x
-            // family as the signed ones above).
-            {"jb", 0x82}, {"jae", 0x83}, {"jbe", 0x86}, {"ja", 0x87},
+            {"jb", 0x82}, {"jae", 0x83}, {"jbe", 0x86}, {"ja", 0x87},  // unsigned counterparts
         };
         if (auto it = jcc.find(mnemonic); it != jcc.end()) {
             const Operand &target = requireOperand(ops, 0, mnemonic);
@@ -792,10 +631,7 @@ class Assembler {
     bool allowExternal_;
 };
 
-// Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - see I386Assembler.h's own `assembleI386Object`
-// comment, and ../m68k/M68kAssembler.cpp's own `buildObjectFile` for
-// the identical algorithm this is ported from.
+// Builds the format-neutral ObjectFile from a completed object-mode Assembler.
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kI386CoffMachine;

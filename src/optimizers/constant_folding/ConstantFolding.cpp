@@ -21,15 +21,11 @@ std::optional<long> evalUnary(const std::string &op, long a) {
     if (op == "-") return -a;
     if (op == "!") return a == 0 ? 1 : 0;
     if (op == "~") return ~a;
-    return std::nullopt;  // "*"/"&" (deref/address-of) - never foldable
+    return std::nullopt;  // "*"/"&" (deref/address-of): never foldable
 }
 
-// nullopt means "don't fold this" - either the op isn't one of ours,
-// or folding it here would require host-undefined-behavior (a
-// division/modulo by a constant zero, or a shift by an amount a
-// native `long` shift can't give a well-defined answer for) that the
-// real target's own runtime instruction has a perfectly well-defined
-// (if silly) answer for instead.
+// nullopt means "don't fold": div/mod by zero or a shift outside [0, 63]
+// would need host-undefined-behavior to evaluate here.
 std::optional<long> evalBinary(const std::string &op, long a, long b) {
     if (op == "+") return a + b;
     if (op == "-") return a - b;
@@ -52,11 +48,7 @@ std::optional<long> evalBinary(const std::string &op, long a, long b) {
     return std::nullopt;
 }
 
-// Folds `e`'s own children first (so e.g. `((2 + 3) * 4)` folds
-// bottom-up into `20`, not left half-folded), then tries to fold `e`
-// itself in place. Every other ExprKind (Var/Index/Assign/
-// DerefAssign/Call/Intrinsic) is left alone - not constant by
-// definition, though its own children may have just been folded.
+// Folds children first (bottom-up), then tries to fold `e` itself.
 void foldExpr(ir::ExprPtr &e, bool &changed) {
     if (!e) return;
     foldExpr(e->lhs, changed);

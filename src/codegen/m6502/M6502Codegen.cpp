@@ -14,51 +14,28 @@ namespace {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
-// Where the whole program is loaded and starts executing - a bare,
-// no-OS flat binary (see M6502Codegen.h's own header comment), $0600
-// being the conventional "put your test program here" address for a
-// minimal/bare 6502 setup (below any BASIC/OS reservation, above
-// zero page and the hardware stack page $0100-$01FF).
+// $0600: conventional bare-6502 load address, above zero page and the
+// hardware stack page $0100-$01FF.
 constexpr uint32_t kBaseAddress = 0x0600;
 
-// Where every call's own Local/Param frame storage is bump-allocated
-// from (see M6502Codegen.h's own header comment on `fp`/`sp`) - below
-// the real hardware stack page ($0100-$01FF, left to JSR/RTS and this
-// backend's own transient PHA/PLA use) and comfortably below where
-// any program's own code/data ever starts (`kBaseAddress` above, and
-// the same address real separate compilation always links at too -
-// see M6502Assembler.h's own `kM6502BaseAddress`), so this region
-// never collides with either.
+// Frame storage bump allocator region, between the hardware stack page and
+// kBaseAddress so it never collides with either.
 constexpr uint32_t kFrameStackBase = 0x0200;
 }  // namespace
 
-// A literal element's own decimal text, or a symbol element's (a
-// dispatch-table address-of-function/global, see IR.h's
-// ArrayInitElem) own label - the referenced Slot's or Function's own
-// label() text. declareArray() below never has a resolved numeric
-// value for a symbol element at codegen time (only the assembler,
-// once every label is bound, does), so unlike a plain literal it
-// can't be split into its own low/high byte here - each half is
-// instead written out as its own `dblo`/`dbhi` directive and left for
-// the assembler to resolve, the same way genAddrOf()/genIndexAddr()
-// already get a label's low/high byte via `ldai`/`ldai_hi` (see
-// M6502Assembler.cpp's own `emitImmLow`/`emitImmHigh`).
+// A literal element's decimal text, or a symbol element's label (a
+// dispatch-table address-of-function/global). A symbol has no resolved
+// numeric value at codegen time, so it's left as a label for the
+// assembler's `dblo`/`dbhi` directives to split into bytes later.
 std::string M6502Codegen::arrayElemText(const ir::ArrayInitElem &e) {
     if (!e.isSymbol) return std::to_string(e.value);
     return e.slot ? label(e.slot) : label(e.func);
 }
 
-// A symbol element (a dispatch-table's own function/global address)
-// is always native-int width (2 bytes - see IR.h's own ArrayInitElem
-// comment); only a plain literal element can be `char`-width (1
-// byte) or wide (`long`/`long long`, 4 or 8 bytes). A `char` element
-// is a single plain `db` (no low/high split needed - there's nothing
-// to split). A wide element has no "dblo"/"dbhi" counterpart at all
-// (this dialect's own data directives only ever split a 16-bit
-// value) - its own literal value is instead split into `w` plain
-// bytes here directly, least significant first, matching every wide
-// scalar's own little-endian storage layout (see generate()'s own
-// Global-scalar case).
+// A symbol element is always native-int width (2 bytes); only a plain
+// literal element can be `char`-width (1 byte) or wide (4/8 bytes). A wide
+// literal has no dblo/dbhi counterpart, so it's split into plain bytes
+// directly, least significant first.
 void M6502Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values,
                                  Type elemType) {
     if (values.empty()) return;
@@ -90,26 +67,17 @@ void M6502Codegen::copy16(const std::string &dst, const std::string &src) {
 }
 
 namespace {
-// `base+i`'s own operand text (just `base` for byte 0, matching
-// every existing "ac"/"ac+1"-style reference elsewhere in this file).
+// `base+i` operand text (just `base` for byte 0).
 std::string byteAt(const char *base, int i) { return i == 0 ? base : (std::string(base) + "+" + std::to_string(i)); }
 }  // namespace
 
-// Pushes `base`'s own `nbytes` bytes onto the real hardware stack,
-// ascending (byte 0 first) - the last one pushed (byte `nbytes-1`,
-// the most significant) ends up on top, the direct generalization of
-// every existing 2-byte "lda ac\npha\nlda ac+1\npha" idiom already in
-// this file (push byte 0 then byte 1 - top of stack is the high
-// byte) to an arbitrary wide-value byte count.
+// Pushes `base`'s `nbytes` bytes ascending (byte 0 first), so the most
+// significant byte ends up on top.
 void M6502Codegen::pushWide(const char *base, int nbytes) {
     for (int i = 0; i < nbytes; i++) code_ << "    lda " << byteAt(base, i) << "\n    pha\n";
 }
 
-// Pops `nbytes` bytes back off the real hardware stack into `base`,
-// descending (byte `nbytes-1` - the most significant, sitting on
-// top - comes off first) - the exact mirror of pushWide() above, and
-// the generalization of every existing "pla\nsta bc+1\npla\nsta bc"
-// idiom.
+// Mirror of pushWide(): pops descending (most significant, on top, first).
 void M6502Codegen::popWide(const char *base, int nbytes) {
     for (int i = nbytes - 1; i >= 0; i--) code_ << "    pla\n    sta " << byteAt(base, i) << "\n";
 }
@@ -136,11 +104,8 @@ void M6502Codegen::safeBranch(const std::string &branchMnemonic, const std::stri
     code_ << "    jmp " << targetIfTaken << "\n";
 }
 
-// Word `byteOffset/2`'s own label text (a Global's own `label+N`, 0
-// omitted the same way every other `+N`-style operand here is) -
-// only ever used for a Global's own wide storage; a Local/Param's
-// wide words are reached through `ptr`/Y instead (see
-// genWideLoad()/genWideStore()).
+// A Global's wide-storage word label (`label+N`, N omitted for 0); a
+// Local/Param's wide words go through `ptr`/Y instead.
 std::string M6502Codegen::wideWordLabel(const ir::Slot *slot, int byteOffset) const {
     std::string lbl = label(slot);
     return byteOffset == 0 ? lbl : (lbl + "+" + std::to_string(byteOffset));
@@ -244,13 +209,7 @@ void M6502Codegen::narrowAcTo(Type to) {
     code_ << Ldone << ":\n";
 }
 
-// `op` applied to ac=old, bc=rhs, leaving the raw new value in ac -
-// every instruction here is the exact same mnemonic/operand shape
-// genBinary()'s own per-operator case already emits (see that
-// method), with only ac/bc's own roles swapped where the operator
-// isn't commutative (old plays genBinary()'s own "first/lhs operand"
-// role here, rhs its "second/rhs operand" role - see this method's
-// own header comment in M6502Codegen.h).
+// `op` applied to ac=old, bc=rhs, leaving the raw new value in ac.
 void M6502Codegen::genCompoundOp(const std::string &op, Type type) {
     bool isUnsigned = type.isUnsigned;
     if (op == "+") {
@@ -279,22 +238,14 @@ void M6502Codegen::genCompoundOp(const std::string &op, Type type) {
         code_ << "    lda ac+1\n    " << insn << " bc+1\n    sta ac+1\n";
         return;
     }
-    // "<<" or ">>" - bc's own low byte is the shift count; bc is dead
-    // from here on (free as the loop's own scratch), the same "dead
-    // afterward" property genShift()'s own copy16("ac","bc") leaves it
-    // in once its own count has been pulled out of it.
+    // "<<" or ">>": bc's low byte is the shift count; bc is dead afterward.
     code_ << "    lda bc\n    sta cx\n";
     genShiftCore(op == "<<", isUnsigned);
 }
 
-// `ptr` must already hold the resolved address on entry (see
-// genIndexAddr()/the Assign indexed case, or copy16("ptr","ac") off a
-// dereferenced pointer value, for the two ways a caller gets there).
-// `e.rhs`'s own evaluation can recursively reach arbitrarily complex
-// codegen (calls, nested expressions) that's free to clobber every
-// one of ptr/ac/bc/cx/dx - exactly the reason Assign's own indexed
-// case and DerefAssign already stash `ptr` on the real hardware stack
-// across it rather than trusting it to survive in place.
+// `ptr` must already hold the resolved address on entry. e.rhs's own
+// evaluation may clobber ptr/ac/bc/cx/dx (nested calls, etc.), so `ptr` is
+// stashed on the hardware stack across it.
 void M6502Codegen::genCompoundThroughPtr(const ir::Expr &e) {
     code_ << "    lda ptr\n    pha\n    lda ptr+1\n    pha\n";  // stash address
     genExpr(*e.rhs);                                            // ac = rhs
@@ -322,60 +273,28 @@ std::string M6502Codegen::generate(const ir::Program &prog, bool objectMode) {
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // Real separate compilation (`--format=coff`/`elf`/`macho`/
-    // `aout` from a single file - see IRBuilder.h's `allowExternal`)
-    // means `prog` may not define `main` at all - an ordinary object
-    // file never does. `objectMode` (see Codegen.h) means no object
-    // file ever emits this entry sequence itself, even the one that
-    // happens to define `main` - M6502Linker.cpp is solely
-    // responsible for synthesizing exactly one, once every object is
-    // merged and `main`'s linked address is resolvable (see
-    // Linker.h) - same pattern Z80Codegen.cpp's own `objectMode`
-    // comment documents. An object file's own base is `org 0` - it's
-    // the linker's job to place it, not this backend's.
+    // Real separate compilation means `prog` may not define `main` at all.
+    // `objectMode` means no object file emits this entry sequence; the
+    // linker synthesizes exactly one once every object is merged. An
+    // object file's base is `org 0` - placement is the linker's job.
     code_ << "org " << (objectMode ? 0 : kBaseAddress) << "\n\n";
-    // The fixed zero-page pseudo-registers - see M6502Codegen.h's own
-    // header comment for what each one is for and why `ptr`
-    // specifically has to be bound this way (a pure compile-time
-    // equate, not the usual sequential data-trailer layout) rather
-    // than wherever declareTemp() would otherwise place it. Unlike
-    // Z80Codegen.cpp's own shared memory cells (which really are
-    // runtime storage, and so can't be redeclared per object - see
-    // that file's own `generate()` comment), these are plain
-    // compile-time constants: `ptr`/`ac`/`bc`/`cx`/`dx` bind to the
-    // exact same zero-page addresses in every object regardless of
-    // where it ends up linked, so every object - including this one,
-    // even in object mode - declares them identically with no
-    // conflict and no relocation ever needed for the equate itself.
-    // `fp`/`sp` - see M6502Codegen.h's own header comment: the
-    // software frame pointer every Local/Param access goes through,
-    // and the bump allocator tracking the next free byte of
-    // `kFrameStackBase`'s own region that every call's frame is cut
-    // from. Equated identically to `ptr`/`ac`/`bc`/`cx`/`dx` above,
-    // for the same reason (see that code's own comment).
-    // `wac`/`wbc`/`wtmp`/`wtmp2` - the wide (`long`/`long long`) value
-    // buffers (see M6502Codegen.h's own header comment on this whole
-    // mechanism), 8 bytes each (wide enough for a `long long`), bound
-    // the same fixed-equate way as every other pseudo-register above.
+    // Fixed zero-page pseudo-registers, bound via compile-time equate (not
+    // the usual data-trailer layout) so every object declares them
+    // identically regardless of where it's linked, with no relocation
+    // needed for the equate itself. `fp`/`sp`: the software frame pointer
+    // and the frame-stack bump allocator. `wac`/`wbc`/`wtmp`/`wtmp2`: the
+    // 8-byte wide-value buffers.
     code_ << "ptr = 0\nac = 2\nbc = 4\ncx = 6\ndx = 8\nfp = 10\nsp = 12\naBase = 14\n";
     code_ << "wac = 16\nwbc = 24\nwtmp = 32\nwtmp2 = 40\n\n";
     if (!objectMode) {
         code_ << "_start:\n";
-        // One-time initialization of the frame-stack bump allocator,
-        // before the very first call - every function's own prologue
-        // (genFunction()) only ever reads/advances `sp` from here on,
-        // never re-initializes it.
+        // One-time init of the frame-stack bump allocator before the first
+        // call; genFunction()'s prologue only reads/advances `sp` after this.
         code_ << "    ldai " << (kFrameStackBase & 0xFF) << "\n    sta sp\n";
         code_ << "    ldai " << ((kFrameStackBase >> 8) & 0xFF) << "\n    sta sp+1\n";
         code_ << "    jsr " << label(mainFn) << "\n";
-        // The program's own final result sits in `ac`/`ac+1` (memory,
-        // $0002/$0003) the moment execution reaches `halt` below - the
-        // authoritative place to read it from (see M6502Codegen.h's own
-        // comment on the 6502 having no register wide enough to hold a
-        // full 16-bit result the way pdp7's AC/8086's AX do). This extra
-        // `lda` is a minor nicety only: it leaves the low byte sitting in
-        // the real A register too, for a quick look with nothing more
-        // than a register dump.
+        // The program's final result sits in ac/ac+1 at `halt` below. This
+        // extra `lda` also leaves the low byte in the real A register.
         code_ << "    lda ac\n";
         code_ << "halt:\n    jmp halt\n\n";
     }
@@ -384,12 +303,8 @@ std::string M6502Codegen::generate(const ir::Program &prog, bool objectMode) {
 
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        // An external global (real separate compilation - see IR.h's
-        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
-        // defined in this file at all - it must never get a local
-        // storage word here, only ever be referenced by name (see
-        // label()) in code, letting the assembler's own undefined-
-        // symbol handling defer it to a relocation.
+        // An external global isn't defined in this file; it's only
+        // referenced by name, letting the assembler defer it to a relocation.
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
@@ -409,41 +324,23 @@ std::string M6502Codegen::generate(const ir::Program &prog, bool objectMode) {
     return out.str();
 }
 
-// Single-file-only (see M6502Codegen.h's own header comment: no
-// `--format=coff`, so `--dump-asm` is never asked to split output
-// across more than one input file for this target) - the whole
-// generated text is simply attributed to whichever file defines
-// `main`, skipping the fine-grained code/trailer-range tracking
-// ../pdp7/Pdp7Codegen.cpp/../x86_8086/I8086Codegen.cpp's own
-// perFileAsm() needs for their real multi-file case.
+// Single-file-only (no `--format=coff` for this target), so the whole
+// generated text is attributed to whichever file defines `main`.
 std::map<std::string, std::string> M6502Codegen::perFileAsm() const { return perFileAsm_; }
 
-// See M6502Codegen.h's own header comment for the whole frame
-// convention this implements. `paramBytes` is exactly the size of
-// the argument area the CALLER already reserved and wrote (see the
-// `Call` case in genExpr()) right before this `jsr` - subtracting it
-// back off the current `sp` is what makes `fp` land on argument 0's
-// own cell (frameByteOffset()'s Param case: 2*paramIndex). There's no
-// immediate-operand SBC on this target (M6502Assembler.cpp's own
-// `immLow` table), so the subtraction is done as addition of its
-// two's-complement instead - ordinary mod-65536 wraparound makes that
-// exact, the same trick a real 6502 assembler's own negated-constant
-// idiom relies on.
+// `paramBytes` is the caller's already-reserved argument-area size;
+// subtracting it off `sp` makes `fp` land on argument 0's cell. There's no
+// immediate SBC on this target, so the subtraction is addition of the
+// two's-complement, exact under mod-65536 wraparound.
 void M6502Codegen::genFunction(const ir::FunctionBody &fn) {
     curFunction_ = fn.func;
     code_ << label(fn.func) << ":\n";
-    // Every param reserves at least one native `int`'s width (2
-    // bytes - IRBuilder's own convention, see IR.h's own
-    // Slot::frameOffset comment), a wider type (`long`/`long long`)
-    // reserves its own real width instead - the sum is exactly the
-    // caller's own argument-area size (see the `Call` case in
-    // genExpr()).
+    // Every param reserves at least a native int's width (2 bytes); a wider
+    // type reserves its own width - the sum is the caller's argument-area size.
     int paramBytes = 0;
     for (const ir::Slot *p : fn.func->params) paramBytes += std::max(widthOfType(p->type), 2);
     int localBytes = fn.func->frameSize;
-    // Save the caller's own `fp` on the real hardware stack (JSR/RTS'
-    // own reentrant mechanism, already untouched by any of this - see
-    // M6502Codegen.h's header comment) - restored by genEpilogue().
+    // Save the caller's `fp` on the hardware stack; restored by genEpilogue().
     code_ << "    lda fp\n    pha\n    lda fp+1\n    pha\n";
     if (paramBytes > 0) {
         int negParamBytes = (0x10000 - paramBytes) & 0xFFFF;
@@ -462,31 +359,21 @@ void M6502Codegen::genFunction(const ir::FunctionBody &fn) {
 }
 
 void M6502Codegen::genEpilogue() {
-    // sp = fp: Params and Locals collapse back to this call's own
-    // frame base in one step (the software-fp analogue of x86's "mov
-    // sp, bp" - I8086Codegen.cpp's own genFunction()).
+    // sp = fp: Params and Locals collapse back to this call's frame base.
     code_ << "    lda fp\n    sta sp\n    lda fp+1\n    sta sp+1\n";
-    // Restore the caller's own fp, saved by the prologue above.
-    code_ << "    pla\n    sta fp+1\n    pla\n    sta fp\n";
+    code_ << "    pla\n    sta fp+1\n    pla\n    sta fp\n";  // restore caller's fp
     code_ << "    rts\n";
 }
 
 int M6502Codegen::frameByteOffset(const ir::Slot *slot) const {
     if (slot->kind == ir::SlotKind::Param) {
-        // IRBuilder's own Slot::frameOffset for a Param is counted
-        // past a fixed two-native-`int`-widths reservation (see
-        // IR.h's own comment) for whatever a backend's own call
-        // sequence keeps there - this backend's own `fp` lands
-        // exactly on the first argument instead (see genFunction()'s
-        // own header comment), so that reservation is subtracted
-        // back off here to get this backend's own, zero-based offset.
+        // IRBuilder's frameOffset for a Param is counted past a fixed
+        // two-native-int reservation; `fp` here lands on the first
+        // argument instead, so that reservation is subtracted back off.
         return slot->frameOffset - 2 * widthOfType(Type{BaseType::Int, false});
     }
-    // The locals region starts right after the params region (see
-    // genFunction()'s own `paramBytes`), so the first local's own
-    // frameOffset (one native int's width, by IRBuilder's own
-    // convention) has to land right there, not one int's width
-    // further on.
+    // Locals start right after params, so the first local's frameOffset
+    // (one native int's width) must land there, not one int further on.
     int paramBytes = 0;
     for (const ir::Slot *p : curFunction_->params) paramBytes += std::max(widthOfType(p->type), 2);
     return paramBytes + slot->frameOffset - widthOfType(Type{BaseType::Int, false});
@@ -511,11 +398,8 @@ void M6502Codegen::loadSlotToAc(const ir::Slot *slot) {
             code_ << "    ldai 0\n    sta ac+1\n";
             return;
         }
-        // Sign-extend ac's own top bit into ac+1 - there's no direct
-        // "test bit 7" instruction in this dialect (no BIT/CMP - see
-        // M6502Assembler.cpp's own encodeInstr), so the sign bit is
-        // extracted into the carry flag via ASL on a throwaway copy
-        // (cx - free here, not yet live for anything else) instead.
+        // No "test bit 7" instruction in this dialect, so the sign bit is
+        // extracted into the carry via ASL on a throwaway copy (cx).
         code_ << "    lda ac\n    sta cx\n    asl cx\n";
         std::string Lneg = newLabel(), Ldone = newLabel();
         code_ << "    ldai 0\n    sta ac+1\n";
@@ -552,11 +436,8 @@ void M6502Codegen::storeAcToSlot(const ir::Slot *slot) {
     code_ << "    ldyi 1\n    lda ac+1\n    staind ptr\n";
 }
 
-// See I8086Codegen.cpp's own genLocalArrayInit() for the general
-// idea (every call needs its own array re-initialized, there being
-// no one-time static trailer for a Local's storage any more) -
-// element i's own cell is this array's own frame cell plus i*2 bytes
-// (see setPtrToFrameSlot()'s own `extraByteOffset`).
+// Every call re-initializes the array, since there's no static trailer for
+// Local storage; element i's cell is the array's frame cell plus i*2 bytes.
 void M6502Codegen::genLocalArrayInit(const ir::Slot *slot) {
     int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
@@ -571,9 +452,8 @@ void M6502Codegen::genLocalArrayInit(const ir::Slot *slot) {
                 code_ << "    ldyi 1\n    lda ac+1\n    staind ptr\n";
             }
         } else {
-            // A wide element's own literal is never a symbol (see
-            // declareArray()'s own comment) - split directly into
-            // `w` plain bytes, least significant first.
+            // A wide element's literal is never a symbol - split directly
+            // into `w` plain bytes, least significant first.
             auto uv = static_cast<unsigned long>(elem.value);
             for (int b = 0; b < w; b++) {
                 code_ << "    ldai " << ((uv >> (8 * b)) & 0xFF) << "\n    sta ac\n";
@@ -635,11 +515,7 @@ void M6502Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            // Early exit - genFunction()'s own fall-through epilogue
-            // never runs for this path, so it needs its own frame
-            // teardown inline here too (see genEpilogue()'s own
-            // comment for what each instruction does).
-            genEpilogue();
+            genEpilogue();  // early exit: genFunction()'s fall-through epilogue doesn't run here
             return;
         }
         case ir::StmtKind::LocalDecl: {
@@ -653,11 +529,8 @@ void M6502Codegen::genStmt(const ir::Stmt &s) {
                     storeAcToSlot(s.declSlot);
                 }
             }
-            // No "else" case for a bare, uninitialized scalar: its
-            // own frame cell already exists (genFunction()'s own `sp`
-            // bump reserved it) - same as a real, ordinary C
-            // automatic variable, its value is simply whatever was
-            // already in that frame cell until something assigns it.
+            // No "else" case: an uninitialized scalar's frame cell already
+            // exists (reserved by genFunction()'s `sp` bump).
             return;
         }
         case ir::StmtKind::ExprStmt: {
@@ -702,11 +575,8 @@ void M6502Codegen::genExpr(const ir::Expr &e) {
             if (e.lhs) {  // slot[idx] = rhs
                 int w = widthOfType(e.slot->type);
                 genIndexAddr(e.slot, *e.lhs);  // ptr = target address
-                // Save `ptr` across evaluating rhs (which might
-                // itself index through `ptr` again) on the real
-                // hardware stack - the exact role
-                // ../x86_8086/I8086Codegen.cpp's own "push bx"/"pop
-                // bx" plays around the same spot.
+                // Save `ptr` across evaluating rhs, which might index
+                // through `ptr` again.
                 code_ << "    lda ptr\n    pha\n    lda ptr+1\n    pha\n";
                 genExpr(*e.rhs);
                 code_ << "    pla\n    sta ptr+1\n    pla\n    sta ptr\n";
@@ -727,11 +597,8 @@ void M6502Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Stores at e.type's own width/signedness - the pointee
-            // type of a real typed pointer (char*/short*/long*/long
-            // long*/...), or a plain native word for the still-
-            // supported untyped-int-as-address style - see
-            // IRBuilder.cpp's own DerefAssign comment.
+            // Stores at e.type's width/signedness: the pointee type of a
+            // typed pointer, or a plain native word for untyped-int-as-address.
             genExpr(*e.lhs);  // ac = pointer value
             copy16("ptr", "ac");
             code_ << "    lda ptr\n    pha\n    lda ptr+1\n    pha\n";
@@ -746,13 +613,9 @@ void M6502Codegen::genExpr(const ir::Expr &e) {
                 genCompoundThroughPtr(e);
                 return;
             }
-            // Plain scalar target - its own storage (a Global's fixed
-            // label, or fp+frameByteOffset() for a Local/Param) is
-            // reconstructible at zero cost after rhs evaluates: unlike
-            // ptr/ac/bc/cx/dx, `fp` itself is restored by any nested
-            // call's own epilogue before that call ever returns (see
-            // genFunction()), so there's nothing that needs holding
-            // across rhs's own evaluation here at all.
+            // Plain scalar target: its storage (fixed label or
+            // fp+frameByteOffset()) is reconstructible after rhs evaluates,
+            // since `fp` is restored by any nested call's epilogue.
             genExpr(*e.rhs);     // ac = rhs
             copy16("bc", "ac");  // bc = rhs
             loadSlotToAc(e.slot);  // ac = old
@@ -797,8 +660,7 @@ void M6502Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                // Loads at e.type's own width/signedness - see
-                // DerefAssign's identical comment above.
+                // Loads at e.type's width/signedness (see DerefAssign above).
                 genExpr(*e.rhs);  // ac = pointer value
                 copy16("ptr", "ac");
                 loadOperandAtPtr(e.type);
@@ -820,20 +682,12 @@ void M6502Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            // Every argument is evaluated first and parked on the
-            // real hardware stack (low byte then high, same
-            // convention copy16()'s own callers use elsewhere) - this
-            // has to finish, with no further `sp`/`aBase` use, before
-            // a nested call inside a LATER argument's own expression
-            // gets a chance to invalidate an EARLIER argument's own
-            // computed address (see M6502Codegen.h's header comment
-            // on this whole call sequence).
-            // Every argument reserves at least one native int's width
-            // (2 bytes); a wider one (`long`/`long long`, already
-            // converted to its own param's real type by IRBuilder's
-            // own call-argument conversion) reserves its own real
-            // width instead - the exact mirror of genFunction()'s own
-            // `paramBytes` on the callee side.
+            // Every argument is evaluated and parked on the hardware stack
+            // first, before any `sp`/`aBase` use, so a nested call in a
+            // later argument can't invalidate an earlier one's computed
+            // address. Each reserves at least a native int's width (2
+            // bytes); a wider type reserves its own width - mirroring
+            // genFunction()'s `paramBytes` on the callee side.
             std::vector<int> argWidths(e.args.size());
             int totalBytes = 0;
             for (size_t i = 0; i < e.args.size(); i++) {
@@ -848,10 +702,8 @@ void M6502Codegen::genExpr(const ir::Expr &e) {
                 }
             }
             if (!e.args.empty()) {
-                // aBase = sp (this call's own argument area, which
-                // becomes the callee's own `fp` once its prologue
-                // subtracts this same size back off - see
-                // genFunction()), then reserve it.
+                // aBase = sp (this call's argument area, becoming the
+                // callee's `fp` once its prologue subtracts this size off).
                 code_ << "    lda sp\n    sta aBase\n    lda sp+1\n    sta aBase+1\n";
                 code_ << "    clc\n    lda sp\n    adci " << (totalBytes & 0xFF) << "\n    sta sp\n";
                 code_ << "    lda sp+1\n    adci " << ((totalBytes >> 8) & 0xFF) << "\n    sta sp+1\n";
@@ -861,9 +713,8 @@ void M6502Codegen::genExpr(const ir::Expr &e) {
                     offsets[i] = running;
                     running += argWidths[i];
                 }
-                // Unpark each value (LIFO - the last-pushed, highest-
-                // indexed argument comes off first) into its own
-                // cell, aBase+offsets[i].
+                // Unpark LIFO (last-pushed argument comes off first) into
+                // its own cell, aBase+offsets[i].
                 for (size_t i = e.args.size(); i-- > 0;) {
                     int w = argWidths[i];
                     if (w > 2) {
@@ -883,35 +734,21 @@ void M6502Codegen::genExpr(const ir::Expr &e) {
                 }
             }
             code_ << "    jsr " << label(e.func) << "\n";
-            // A wide return value is simply wherever the callee's own
-            // `return` expression last left it (`wac`, a fixed
-            // buffer untouched by genEpilogue() - see
-            // M6502Codegen.h's own header comment) - nothing further
-            // to do here, unlike a register-based convention that
-            // would need saving across the callee's own epilogue.
+            // A wide return value is wherever the callee's `return`
+            // expression left it (`wac`, untouched by genEpilogue()).
             return;
         }
         case ir::ExprKind::CallPtr: {
-            // e.args is always empty here - IRBuilder.cpp rejects any
-            // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr): there's no per-callee
-            // p_<fn>_<i> cell to write one into until the callee is
-            // known, which it never is at compile time for this kind.
+            // e.args is always empty: there's no per-callee p_<fn>_<i> cell
+            // to write into until the callee is known.
             //
-            // The 6502 has no indirect-call instruction - only `jmp
-            // (addr)` ("jmpi" in this dialect, M6502Assembler.cpp's own
-            // encoding of real opcode $6C, indirect JMP). A call
-            // through a computed address is built by hand out of that
-            // and a real JSR's own return-address convention: JSR
-            // pushes (return address - 1), high byte then low byte,
-            // and RTS pulls low then high and adds 1 back before
-            // jumping. Pushing (Lret-1) the same way, then jumping
-            // indirectly through `ptr` (the fixed zero-page cell
-            // holding the callee's own entry address, set just below),
-            // leaves the real hardware stack in exactly the state a
-            // `jsr` to the same callee would have, so the callee's own
-            // `rts` returns here, to the instruction right after
-            // "jmpi ptr", the same as any other call.
+            // The 6502 has no indirect-call instruction, only indirect JMP
+            // ("jmpi", opcode $6C). A call through a computed address is
+            // built by hand from JSR's return-address convention: JSR
+            // pushes (return address - 1), RTS adds 1 back after popping.
+            // Pushing (Lret-1) the same way, then jumping indirectly
+            // through `ptr`, leaves the stack exactly as a real `jsr`
+            // would, so `rts` returns to right after "jmpi ptr".
             genExpr(*e.lhs);  // ac = the callee's own entry address
             copy16("ptr", "ac");
             std::string Lret = newLabel();
@@ -926,11 +763,7 @@ void M6502Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Intrinsic: {
-            // Real 6502 interrupt enable/disable - SEI sets the
-            // interrupt-disable flag (iof), CLI clears it (ion); same
-            // real hardware feature as the 8086 backend's sti/cli
-            // (see I8086Codegen.cpp), just the opposite mnemonic-to-
-            // meaning mapping.
+            // SEI sets the interrupt-disable flag, CLI clears it.
             code_ << "    " << (e.op == "ion" ? "cli" : "sei") << "\n";
             return;
         }
@@ -943,20 +776,13 @@ void M6502Codegen::genExpr(const ir::Expr &e) {
     }
 }
 
-// See M6502Codegen.h's own header comment on this being the one
-// thing that ever needs a real zero-page address. `slot->arraySize >
-// 0` means the base is a compile-time-known label (an *address*, so
-// `ldai`/`ldai_hi` applied to that label's own name split it into
-// its low/high byte at assemble time - see
-// M6502Assembler.cpp's emitImmLow/High's own comment); otherwise
-// `slot` is a plain pointer variable, so the base instead comes from
-// *reading* that variable's own stored value (`adc <label>`/`adc
-// <label>+1`, an ordinary absolute-memory operand, not an immediate).
+// `slot->arraySize > 0` means the base is a compile-time-known label
+// (an address, split into low/high bytes via `ldai`/`ldai_hi`);
+// otherwise `slot` is a pointer variable, so the base comes from
+// reading its stored value (an absolute-memory operand, not an immediate).
 void M6502Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
-    // ac *= widthOf(slot->type) (a power of two - see elemShift()),
-    // same reason as ../x86_8086/I8086Codegen.cpp's own `shl ax,N`.
-    int shift = elemShift(slot->type);
+    int shift = elemShift(slot->type);  // ac *= widthOf(slot->type), a power of two
     for (int i = 0; i < shift; i++) code_ << "    asl ac\n    rol ac+1\n";
     if (slot->kind == ir::SlotKind::Global) {
         std::string lbl = label(slot);
@@ -970,25 +796,16 @@ void M6502Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
         }
         return;
     }
-    // Local/Param: this slot's own cell lives at fp+frameByteOffset()
-    // in THIS call's own frame (every activation gets its own `fp`) -
-    // set into `ptr` first (see setPtrToFrameSlot()), since `ac`
-    // already holds the scaled index.
+    // Local/Param: set `ptr` to fp+frameByteOffset() first; `ac` already
+    // holds the scaled index.
     setPtrToFrameSlot(slot, 0);
     if (slot->arraySize > 0) {
-        // `ptr` IS the array's own first word - base-plus-scaled-
-        // index (ascending layout - see M6502Codegen.h's own header
-        // comment on why this never needs a base-MINUS-index form).
-        // `ptr`'s own low byte is read before being overwritten by
-        // the very same `sta`, same as any other accumulator-based
-        // read-modify-write sequence.
+        // `ptr` IS the array's first word - base-plus-scaled-index.
         code_ << "    clc\n    lda ac\n    adc ptr\n    sta ptr\n";
         code_ << "    lda ac+1\n    adc ptr+1\n    sta ptr+1\n";
     } else {
-        // slot is a plain pointer VARIABLE stored at that cell - read
-        // its own value first (through `ptr`, which still holds the
-        // cell's own address at this point), then add the index to
-        // that value instead of to the cell's address.
+        // slot is a pointer variable stored at that cell - read its value
+        // (through `ptr`, still the cell's address) and add the index to that.
         code_ << "    ldyi 0\n    ldaind ptr\n    sta bc\n";
         code_ << "    ldyi 1\n    ldaind ptr\n    sta bc+1\n";
         code_ << "    clc\n    lda ac\n    adc bc\n    sta ptr\n";
@@ -1048,13 +865,10 @@ void M6502Codegen::genAddrOf(const ir::Expr &operand) {
 }
 
 // An implicit or explicit type conversion (see IR.h's own ExprKind::
-// Convert comment). Every arithmetic/comparison operand narrower
-// than `int` is already promoted by IRBuilder before any Binary/
-// Unary ever sees it, so the real work here is narrowing/widening a
-// `char` (mask or sign-extend its own top byte) and crossing the
-// native-word/`long`-or-`long long` boundary (padding `wac` with
-// more sign/zero-extension bytes, or just leaving the low bytes
-// already there alone when shrinking).
+// Every arithmetic/comparison operand narrower than `int` is already
+// promoted by IRBuilder, so the real work here is narrowing/widening a
+// `char` and crossing the native-word/wide boundary (padding `wac` with
+// sign/zero-extension bytes, or leaving the low bytes alone when shrinking).
 void M6502Codegen::genConvert(const ir::Expr &e) {
     Type from = e.lhs->type;
     Type to = e.type;
@@ -1100,13 +914,9 @@ void M6502Codegen::genConvert(const ir::Expr &e) {
         code_ << "    lda ac\n    sta " << byteAt("wac", 0) << "\n";
         code_ << "    lda ac+1\n    sta " << byteAt("wac", 1) << "\n";
         if (toWords > 1) {
-            // Sign/zero-extend ac's own top byte into every
-            // remaining byte, per the SOURCE's own signedness - a
-            // pointer's own native-word value is always zero-extended
-            // instead, since `from.isUnsigned` would otherwise
-            // describe the POINTEE's signedness, not the pointer's
-            // own (see Type.h's own header comment on Type::ptrDepth),
-            // and a pointer value has no sign to extend regardless.
+            // Sign/zero-extend per the source's signedness. A pointer value
+            // is always zero-extended: `from.isUnsigned` would otherwise
+            // describe the pointee's signedness, not the pointer's own.
             if (isPointer(from) || from.isUnsigned) {
                 code_ << "    ldai 0\n    sta dx\n";
             } else {
@@ -1138,16 +948,12 @@ void M6502Codegen::genConvert(const ir::Expr &e) {
         }
         for (int i = fromN; i < toN; i++) code_ << "    lda dx\n    sta " << byteAt("wac", i) << "\n";
     }
-    // toN < fromN: the low `toN` bytes already sitting in `wac` are
-    // exactly this type's own truncated value - nothing further to do.
+    // toN < fromN: the low `toN` bytes already in `wac` are the truncated value.
 }
 
-// Pushes `lhs`'s own `words`-word value onto the real hardware stack
-// across evaluating `rhs` (see M6502Codegen.h's own header comment on
-// this convention), leaving wbc=lhs, wac=rhs, then combines the two
-// byte by byte with a single carry chain (CLC/SEC once, up through
-// every byte - ADC/SBC each fold in the previous byte's own carry
-// automatically), writing the result back into `wac`.
+// Pushes lhs across evaluating rhs, leaving wbc=lhs, wac=rhs, then combines
+// byte by byte with a single carry chain (CLC/SEC once; ADC/SBC fold in the
+// previous byte's carry automatically) into `wac`.
 void M6502Codegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd, int words) {
     int n = 2 * words;
     genExpr(lhs);
@@ -1174,12 +980,7 @@ void M6502Codegen::genWideBitwise(const ir::Expr &lhs, const ir::Expr &rhs, cons
     }
 }
 
-// Scans bytes most-significant first, deciding "lhs < rhs" (or
-// `==`/`!=`) from the first byte that differs - the byte-level
-// generalization of every narrow backend's own multi-byte compare,
-// just with "word" replaced by "byte" throughout (see
-// Pdp11Codegen.cpp's own genWideCompare() for the word-level version
-// of this exact same idea).
+// XORs every byte pair together (into `dx`, ORed across bytes), zero iff equal.
 void M6502Codegen::emitWideEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, int words, bool wantEqual) {
     int n = 2 * words;
     genExpr(lhs);
@@ -1198,15 +999,9 @@ void M6502Codegen::emitWideEqualityCompare(const ir::Expr &lhs, const ir::Expr &
     code_ << Ldone << ":\n";
 }
 
-// A single chained SBC from the least to the most significant byte
-// (one `sec`, then one `sbc` per byte - the carry/borrow propagates
-// automatically) computes the full `words`-word subtraction in one
-// pass; the final (most significant) byte's own flags alone decide
-// the whole comparison (same N-xor-V fixup as the narrow
-// emitLessCompare(), just applied once, after every byte, instead of
-// after 16 bits) - no separate "did an earlier byte already differ"
-// scan is needed, the same reason a 32-bit x86 `cmp` correctly
-// decides a signed 32-bit "<" in one shot instead of scanning bytes.
+// One chained SBC from least to most significant byte computes the full
+// subtraction in one pass; the final byte's flags alone decide the
+// comparison, with the same N-xor-V overflow fixup as emitLessCompare().
 void M6502Codegen::emitWideLessCompare(const ir::Expr &a, const ir::Expr &b, bool isUnsigned, int words,
                                         bool invert) {
     int n = 2 * words;
@@ -1220,7 +1015,7 @@ void M6502Codegen::emitWideLessCompare(const ir::Expr &a, const ir::Expr &b, boo
     }
     std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
     if (isUnsigned) {
-        safeBranch(invert ? "bcs" : "bcc", Ltrue, Lfalse);
+        safeBranch(invert ? "bcs" : "bcc", Ltrue, Lfalse);  // carry alone already means unsigned "<"
     } else {
         std::string Lfixskip = newLabel();
         code_ << "    bvc " << Lfixskip << "\n    eori 128\n" << Lfixskip << ":\n";
@@ -1242,16 +1037,11 @@ void M6502Codegen::genWideCompare(const std::string &op, const ir::Expr &lhs, co
     err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
 }
 
-// A `long`/`long long` shifted by a runtime count - no hardware shift
-// here is wider than one bit on one byte, so this loops one bit at a
-// time (the wide generalization of genShift()'s own narrow version),
-// chaining the carry across all `n` bytes via ASL/ROL (left) or
-// LSR/ROR (right, processed highest byte first so the carry flows
-// downward) each iteration. A signed right shift re-derives the
-// current sign bit into the carry before the top byte's own ROR,
-// instead of LSR's fixed 0-fill - the same trick genShift() uses,
-// just needing its own throwaway copy (`dx`, free here: `cx` already
-// holds the loop's own shift count) since every byte of `wac` is live.
+// Loops one bit at a time, chaining carry across all `n` bytes via ASL/ROL
+// (left) or LSR/ROR (right, highest byte first so carry flows downward). A
+// signed right shift re-derives the sign bit into carry before the top
+// byte's ROR instead of LSR's fixed 0-fill (using `dx` as scratch, since
+// `cx` holds the loop count and every byte of `wac` is live).
 void M6502Codegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned, int words) {
     int n = 2 * words;
     genExpr(lhs);
@@ -1279,16 +1069,10 @@ void M6502Codegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool i
     code_ << Ldone << ":\n";
 }
 
-// Textbook shift-and-add multiply (the wide generalization of
-// genMul() - see M6502Codegen.h's own header comment on why there's
-// no hardware multiply at all), `n*8` bits serially: `wbc` is the
-// multiplicand (shifted left each iteration, truncated mod 2^(8n) -
-// exactly matching this language's own truncating multiply
-// semantics), `wac` the multiplier (shifted right, consumed one bit
-// at a time), `wtmp` the accumulating product. Needs no signedness
-// at all - a truncated product's own bit pattern is identical
-// whether the operands are interpreted as signed or unsigned (the
-// same reason plain 16-bit `*` never branches on it either).
+// Shift-and-add multiply, `n*8` bits serially: `wbc` is the multiplicand
+// (shifted left each iteration, truncated mod 2^(8n)), `wac` the multiplier
+// (shifted right, consumed one bit at a time), `wtmp` the product. Needs no
+// signedness: a truncated product's bit pattern is the same either way.
 void M6502Codegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int words) {
     int n = 2 * words;
     genExpr(lhs);
@@ -1321,32 +1105,17 @@ void M6502Codegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int word
     copyWide("wac", "wtmp", n);
 }
 
-// Binary long division, `n*8` bits serially: `wbc` (consumed from its
-// own most significant bit) and `wtmp` (the running remainder,
-// starting at 0) together act as one combined `2n`-byte shift
-// register - each iteration shifts the whole pair left by one bit
-// (wbc's own outgoing top bit becomes wtmp's own new bottom bit, via
-// one continuous carry chain across both), then tries `wtmp -= wac`
-// (the fixed divisor): if that leaves no borrow, the bit just
-// shifted into the quotient (`wtmp2`) is 1 and the subtraction
-// stands; otherwise it's 0 and `wac` is added straight back (always
-// exactly restoring `wtmp` to what it was before the trial
-// subtraction, borrow or not - see M6502Codegen.cpp's own header
-// comment, or Pdp11Codegen.cpp's own non-restoring-division comment
-// for the general technique). Repeated SUBTRACTION (the plain
-// 16-bit genDivMod()'s own algorithm) would need up to 2^(8n)
-// iterations - entirely infeasible once n reaches 4/8 bytes - so
-// this needs the real bit-serial algorithm instead, not just a wider
-// copy of that loop.
+// Binary long division, `n*8` bits serially: `wbc` and `wtmp` (running
+// remainder) act as one combined `2n`-byte shift register - each iteration
+// shifts the pair left by one bit, then tries `wtmp -= wac` (the divisor):
+// no borrow means quotient bit 1 and the subtraction stands; otherwise bit
+// 0 and `wac` is added back. Repeated subtraction (the narrow genDivMod()
+// algorithm) would need up to 2^(8n) iterations, infeasible at 4/8 bytes.
 //
-// Signed division/modulo wraps this same unsigned core: negate
-// either operand's own magnitude first if it started negative
-// (recording each original sign as a 0/1 flag in `dx`/`dx+1` - free
-// here, this routine's own loop count lives in `cx`), then fix the
-// quotient's sign (negative iff the two original signs differed) and
-// the remainder's (always the dividend's own original sign)
-// afterward - the same wrapper every other backend's own signed
-// div/mod uses around an unsigned core.
+// Signed division wraps this unsigned core: negate either operand's
+// magnitude if it started negative (flags in `dx`/`dx+1`), then fix the
+// quotient's sign (negative iff signs differed) and the remainder's
+// (always the dividend's original sign) afterward.
 void M6502Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned,
                                   int words) {
     int n = 2 * words;
@@ -1384,9 +1153,8 @@ void M6502Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool 
     code_ << Lloop << ":\n    lda cx\n";
     safeBranch("beq", Ldone, Lbody);
     code_ << Lbody << ":\n";
-    // Combined 1-bit left shift of the (wtmp:wbc) pair - wbc's own
-    // outgoing top bit (the carry after its own chain) becomes
-    // wtmp's own new bottom bit via the very next `rol`.
+    // Combined 1-bit left shift of (wtmp:wbc): wbc's outgoing top bit
+    // becomes wtmp's new bottom bit via the carry chain.
     code_ << "    asl " << byteAt("wbc", 0) << "\n";
     for (int i = 1; i < n; i++) code_ << "    rol " << byteAt("wbc", i) << "\n";
     for (int i = 0; i < n; i++) code_ << "    rol " << byteAt("wtmp", i) << "\n";
@@ -1424,11 +1192,9 @@ void M6502Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool 
 
 void M6502Codegen::genBinary(const ir::Expr &e) {
     const std::string &op = e.op;
-    // Every arithmetic/bitwise/comparison operand here already
-    // shares one common type (IRBuilder's own usual-arithmetic-
-    // conversion pass - see Type.h), except shift (only the LHS's own
-    // type matters) and &&/|| (width-independent) - see
-    // Pdp11Codegen.cpp's own version of this same comment.
+    // Every arithmetic/bitwise/comparison operand shares one common type
+    // (IRBuilder's usual-arithmetic-conversion pass), except shift (only
+    // LHS's type matters) and &&/|| (width-independent).
     if (op == "&&") {
         genLogicalAnd(*e.lhs, *e.rhs);
         return;
@@ -1504,10 +1270,8 @@ void M6502Codegen::genBinary(const ir::Expr &e) {
     genCompare(op, *e.lhs, *e.rhs, isUnsigned);
 }
 
-// No variable-count shift instruction (ASL/LSR always shift exactly
-// one bit) - loop `rhs` times instead, the same fix
-// ../pdp7/Pdp7Codegen.cpp's own `<<`/`>>` already needed for the
-// same reason (see M6502Codegen.h's own header comment).
+// No variable-count shift instruction (ASL/LSR shift exactly one bit), so
+// this loops `rhs` times instead.
 void M6502Codegen::genShiftCore(bool isLeft, bool isUnsigned) {
     std::string Lloop = newLabel(), Lbody = newLabel(), Ldone = newLabel();
     code_ << Lloop << ":\n    lda cx\n";
@@ -1519,11 +1283,9 @@ void M6502Codegen::genShiftCore(bool isLeft, bool isUnsigned) {
         // Logical (unsigned) shift: fills with 0 either way.
         code_ << "    lsr ac+1\n    ror ac\n";
     } else {
-        // Arithmetic (signed) shift: re-derive the current sign bit
-        // (ac+1's own bit 7) into the carry each iteration (via a
-        // throwaway copy in `bc+1`, since ASL needs a memory operand
-        // and would otherwise destroy ac+1 itself) and rotate that
-        // bit back in at the top, instead of LSR's own fixed 0-fill.
+        // Arithmetic (signed) shift: re-derive the sign bit (ac+1 bit 7)
+        // into carry via a throwaway copy (bc+1, since ASL needs a memory
+        // operand and would destroy ac+1), then rotate it back in at the top.
         code_ << "    lda ac+1\n    sta bc+1\n    asl bc+1\n";
         code_ << "    ror ac+1\n    ror ac\n";
     }
@@ -1542,11 +1304,9 @@ void M6502Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLef
     genShiftCore(isLeft, isUnsigned);
 }
 
-// Textbook shift-and-add multiply (no hardware multiply - see
-// M6502Codegen.h's own header comment): `bc` is the multiplicand
-// (shifted left each iteration), `dx` the multiplier (shifted right,
-// consumed one bit at a time into `cx`'s own loop), `ac` the
-// accumulating product. Only verified against non-negative operands.
+// Shift-and-add multiply: `bc` the multiplicand (shifted left each
+// iteration), `dx` the multiplier (shifted right, consumed one bit at a
+// time), `ac` the product. Only verified against non-negative operands.
 void M6502Codegen::genMulCore() {
     code_ << "    ldai 0\n    sta ac\n    ldai 0\n    sta ac+1\n";  // ac = product = 0
     code_ << "    ldai 16\n    sta cx\n";
@@ -1577,21 +1337,16 @@ void M6502Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genMulCore();
 }
 
-// Repeated subtraction (no hardware divide - see M6502Codegen.h's own
-// header comment) - the same algorithm, for the same reason,
-// ../pdp7/Pdp7Codegen.cpp's own ensureDivModRoutine() already uses:
-// `dx` is the running remainder (starts as the dividend, `bc` the
-// fixed divisor), `ac` the quotient, counting how many times `bc`
-// was subtracted out of `dx` before it would've gone negative. Only
-// verified against non-negative operands.
+// Repeated subtraction: `dx` is the running remainder (starts as the
+// dividend), `bc` the divisor, `ac` the quotient, counting how many times
+// `bc` was subtracted before going negative. Only verified against
+// non-negative operands.
 void M6502Codegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
     auto negate16 = [&](const char *lbl) {
         code_ << "    ldai 0\n    sec\n    sbc " << lbl << "\n    sta " << lbl << "\n";
         code_ << "    ldai 0\n    sbc " << lbl << "+1\n    sta " << lbl << "+1\n";
     };
-    // `isNeg(lbl)` leaves 0/1 in `dst` per `lbl`'s own top (sign) bit
-    // - the same "copy to a throwaway byte, ASL it for the carry"
-    // trick loadSlotToAc() uses for a `char`'s own sign extension.
+    // Leaves 0/1 in `dst` per `lbl`'s top (sign) bit.
     auto isNeg = [&](const char *lbl, const char *dst) {
         code_ << "    lda " << lbl << "+1\n    sta cx\n    asl cx\n";
         std::string Lneg = newLabel(), Ldone = newLabel();
@@ -1608,15 +1363,9 @@ void M6502Codegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
         negate16(lbl);
         code_ << Lskip << ":\n";
     };
-    // `cx`'s own low/high byte double as this operation's two 0/1
-    // sign flags (dividend/divisor). `isNeg()` itself always uses
-    // `cx` as scratch while computing its result (regardless of
-    // which byte `dst` names), so the dividend's flag - computed
-    // first, into `cx` itself - has to be stashed in `aBase` (free
-    // here) and restored back into `cx` before either flag is read
-    // by `negateIf()` below; only `cx+1` (the divisor's flag, written
-    // last and never used as anyone else's scratch) can be read
-    // straight out of its own cell.
+    // `cx`'s low/high byte double as the dividend/divisor sign flags, but
+    // isNeg() also uses `cx` as scratch, so the dividend's flag is stashed
+    // in `aBase` and restored before either flag is read below.
     if (!isUnsigned) {
         isNeg("dx", "cx");
         code_ << "    lda cx\n    sta aBase\n";  // stash the dividend's own sign flag (aBase: free here)
@@ -1628,10 +1377,9 @@ void M6502Codegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
     code_ << "    ldai 0\n    sta ac\n    ldai 0\n    sta ac+1\n";  // ac = quotient = 0
     std::string Lloop = newLabel(), Lcommit = newLabel(), Llt = newLabel(), Ldone = newLabel();
     code_ << Lloop << ":\n";
-    // Tentatively compute dx - bc; carry set afterward means no
-    // borrow occurred, i.e. dx >= bc. The low byte's tentative result
-    // is stashed on the stack (A is needed for the high byte's own
-    // subtraction next) until it's known whether to actually commit.
+    // Tentatively compute dx - bc; carry set means no borrow (dx >= bc).
+    // The low byte's result is stashed on the stack until it's known
+    // whether to commit.
     code_ << "    sec\n    lda dx\n    sbc bc\n    pha\n";
     code_ << "    lda dx+1\n    sbc bc+1\n";
     safeBranch("bcs", Lcommit, Llt);
@@ -1640,13 +1388,12 @@ void M6502Codegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
     inc16("ac");
     code_ << "    jmp " << Lloop << "\n";
     code_ << Llt << ":\n";
-    code_ << "    pla\n";  // discard the stashed tentative low byte - this iteration's subtraction is rejected
+    code_ << "    pla\n";  // discard the stashed low byte - subtraction rejected
     code_ << "    jmp " << Ldone << "\n";
     code_ << Ldone << ":\n";
     if (!isUnsigned) {
-        // Quotient is negative iff the two original signs differed;
-        // the remainder always takes the dividend's own original
-        // sign (same rule as every other backend's signed div/mod).
+        // Quotient is negative iff the two original signs differed; the
+        // remainder always takes the dividend's original sign.
         code_ << "    lda cx\n    eor cx+1\n";
         std::string Lskip = newLabel(), Ldo = newLabel();
         safeBranch("beq", Lskip, Ldo);
@@ -1670,10 +1417,8 @@ void M6502Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool want
 void M6502Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned) {
     if (op == "==") return emitEqualityCompare(lhs, rhs, /*wantEqual=*/true);
     if (op == "!=") return emitEqualityCompare(lhs, rhs, /*wantEqual=*/false);
-    // Every ordering comparison reduces to one "is a < b?" primitive
-    // (emitLessCompare) by choosing which operand goes first and
-    // whether to invert the final sense: a>b is b<a; a<=b is !(b<a);
-    // a>=b is !(a<b).
+    // Every ordering comparison reduces to "is a < b?" by choosing operand
+    // order and whether to invert: a>b is b<a; a<=b is !(b<a); a>=b is !(a<b).
     if (op == "<") return emitLessCompare(lhs, rhs, isUnsigned, /*invert=*/false);
     if (op == ">") return emitLessCompare(rhs, lhs, isUnsigned, /*invert=*/false);
     if (op == "<=") return emitLessCompare(rhs, lhs, isUnsigned, /*invert=*/true);
@@ -1681,11 +1426,9 @@ void M6502Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const 
     err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
 }
 
-// `==`/`!=` need no sign handling at all: a-b (full 16 bits, borrow
-// chained from low into high byte) is zero iff a==b, checked the same
-// "OR the two result bytes together" way genLogicalNot() checks `ac`
-// for zero - `dx` holds the low byte's tentative result while the
-// high byte's own subtraction needs A.
+// `==`/`!=` need no sign handling: a-b (16 bits, borrow chained low into
+// high byte) is zero iff a==b; `dx` holds the low byte while A is needed
+// for the high byte's subtraction.
 void M6502Codegen::emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, bool wantEqual) {
     genExpr(lhs);
     code_ << "    lda ac\n    pha\n    lda ac+1\n    pha\n";
@@ -1700,16 +1443,10 @@ void M6502Codegen::emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs,
     code_ << Ldone << ":\n";
 }
 
-// Signed 16-bit "a < b" via subtraction, the standard 6502 multi-byte
-// signed-compare idiom: after `a - b`'s final (high) byte SBC, the
-// sign bit (N) only reflects the *true* signed result once corrected
-// for overflow (V) - if V is set, the apparent sign is backwards, so
-// `EOR #$80` (flipping just the sign bit, which also recomputes N/Z
-// for the corrected value) fixes it up. This is exactly the "N xor V"
-// rule x86's SF/OF flags encode as a single combined test (see
-// ../x86_8086/I8086Codegen.cpp's own signed `cmp`+`jl`/`jle`/etc.) -
-// the 6502 has both flags too, just no one instruction to test their
-// XOR directly, hence the explicit fixup.
+// Signed 16-bit "a < b" via subtraction: after the final (high) byte SBC,
+// N reflects the true signed result only once corrected for overflow (V) -
+// if V is set, `EOR #$80` flips the sign bit to fix it (the 6502's N-xor-V
+// rule, with no single instruction to test it directly).
 void M6502Codegen::emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool isUnsigned, bool invert) {
     genExpr(a);
     code_ << "    lda ac\n    pha\n    lda ac+1\n    pha\n";
@@ -1718,30 +1455,24 @@ void M6502Codegen::emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool is
     code_ << "    sec\n    lda bc\n    sbc ac\n    lda bc+1\n    sbc ac+1\n";
     std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
     if (isUnsigned) {
-        // No sign/overflow fixup needed - the carry flag after a
-        // full chained subtraction directly says "no borrow" (a>=b)
-        // or "borrow" (a<b), which is exactly unsigned "<" already.
+        // No fixup needed: carry after the subtraction directly means
+        // "no borrow" (a>=b) or "borrow" (a<b).
         safeBranch(invert ? "bcs" : "bcc", Ltrue, Lfalse);
     } else {
         std::string Lfixskip = newLabel();
         code_ << "    bvc " << Lfixskip << "\n";
         code_ << "    eori 128\n";
         code_ << Lfixskip << ":\n";
-        // N now correctly reflects "a < b" (BMI) / "a >= b" (BPL).
-        safeBranch(invert ? "bpl" : "bmi", Ltrue, Lfalse);
+        safeBranch(invert ? "bpl" : "bmi", Ltrue, Lfalse);  // N now correctly reflects a<b (BMI) / a>=b (BPL)
     }
     code_ << Ltrue << ":\n    ldai 1\n    sta ac\n    ldai 0\n    sta ac+1\n    jmp " << Ldone << "\n";
     code_ << Lfalse << ":\n    ldai 0\n    sta ac\n    ldai 0\n    sta ac+1\n";
     code_ << Ldone << ":\n";
 }
 
-// After genExpr(e) has just run, leaves `ac` holding 0 (false) or
-// nonzero (true), with the Z flag already set correctly from the
-// final instruction (safe for an immediately-following `beq`/`bne`,
-// same as every call site already assumed before this existed) - for
-// a wide value (left in `wac` - see M6502Codegen.h's own header
-// comment), ORs every one of its bytes into `ac` first, since a
-// multi-byte value is true iff ANY byte is nonzero.
+// Leaves `ac` holding 0 (false) or nonzero (true), with Z set correctly for
+// an immediately-following beq/bne. For a wide value, ORs all `wac` bytes
+// into `ac` first (true iff any byte is nonzero).
 void M6502Codegen::testTruthy(const ir::Expr &e) {
     if (!isWide(e.type)) {
         code_ << "    lda ac\n    ora ac+1\n";
@@ -1801,14 +1532,8 @@ std::string M6502Codegen::buildAssembleCommand(const std::string &, const std::s
 std::optional<std::string> M6502Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "raw") return assembleM6502(asmText);
-    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
-    // (see generate()'s own `objectMode` comment) - this backend's
-    // own assembler builds one format-neutral ObjectFile exactly once
-    // (see M6502Assembler.h's own `assembleM6502Object`), and
-    // whichever of these names was asked for just picks that
-    // format's own FileFormatWriter (see
-    // fileformat/FileFormat.h) to serialize it - this file never
-    // touches a real COFF/ELF/Mach-O/a.out byte layout itself.
+    // `coff`/`elf`/`macho`/`aout`/`objraw`: builds one format-neutral
+    // ObjectFile, then picks that format's FileFormatWriter to serialize it.
     if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleM6502Object(asmText);
         return makeFileFormatWriter(*kind)->write(obj);

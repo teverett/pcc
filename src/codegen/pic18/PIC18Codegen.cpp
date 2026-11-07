@@ -46,8 +46,7 @@ void PIC18Codegen::shiftOneBit(const std::string &lbl, bool isLeft) {
     }
 }
 
-// dst = a + b via ADDWFC's own real carry chain - see PIC18Codegen.h's
-// own header comment on why this needs no PIC16-style manual fixup.
+// dst = a + b via ADDWFC's carry chain; no manual fixup needed.
 void PIC18Codegen::add16(const std::string &dst, const std::string &a, const std::string &b) {
     code_ << "    movf " << b << ",w\n";
     code_ << "    addwf " << a << ",w\n";
@@ -57,7 +56,7 @@ void PIC18Codegen::add16(const std::string &dst, const std::string &a, const std
     code_ << "    movwf " << dst << "+1\n";
 }
 
-// dst = a - b via SUBWFB's own real borrow chain.
+// dst = a - b via SUBWFB's borrow chain.
 void PIC18Codegen::sub16(const std::string &dst, const std::string &a, const std::string &b) {
     code_ << "    movf " << b << ",w\n";
     code_ << "    subwf " << a << ",w\n";
@@ -67,28 +66,22 @@ void PIC18Codegen::sub16(const std::string &dst, const std::string &a, const std
     code_ << "    movwf " << dst << "+1\n";
 }
 
-// Size, in bytes, of `FSTACK` - see PIC18Codegen.h's own header
-// comment on the real trade-off this constant is: more headroom for
-// simultaneous call frames (deeper recursion before this backend's
-// own frame region runs out, rather than the real 31-level hardware
-// call stack) against fewer bytes left over, in this chip's own 96-
-// byte Access Bank window, for every linked program's own globals.
+// Size, in bytes, of `FSTACK`: more headroom for simultaneous call
+// frames against fewer bytes left over for globals in the 96-byte
+// Access Bank window.
 constexpr int kFrameStackBytes = 48;
 
-// Saves the caller's own `FP` (untouched by the real hardware `call`
-// that just landed here) at `NFP-1`, then adopts `NFP` - the address
-// the caller already computed for this call's own frame, immediately
-// before `call` - as this call's own `FP`. See PIC18Codegen.h's own
-// header comment.
+// Saves the caller's `FP` at `NFP-1`, then adopts `NFP` (the address the
+// caller computed for this call's frame, immediately before `call`) as
+// this call's `FP`.
 void PIC18Codegen::emitPrologue() {
     code_ << "    movf NFP,w\n    addlw 255\n    movwf ptr\n";  // ptr = NFP-1 (255 == -1 mod 256)
     code_ << "    movf ptr,w\n    movwf FSR0L\n";
-    code_ << "    movf FP,w\n    movwf INDF0\n";  // [NFP-1] = caller's own FP
+    code_ << "    movf FP,w\n    movwf INDF0\n";  // [NFP-1] = caller's FP
     code_ << "    movf NFP,w\n    movwf FP\n";
 }
 
-// The reverse: restores the caller's own `FP` from `FP-1`, right
-// before falling through to the real hardware `return`.
+// Reverse: restores the caller's `FP` from `FP-1`, before `return`.
 void PIC18Codegen::emitEpilogue() {
     code_ << "    movf FP,w\n    addlw 255\n    movwf ptr\n";  // ptr = FP-1
     code_ << "    movf ptr,w\n    movwf FSR0L\n";
@@ -146,10 +139,8 @@ void PIC18Codegen::gotoIfNonZero(const std::string &target) {
     code_ << "    goto " << target << "\n";
 }
 
-// Via FSR0L/INDF0/POSTINC0 - one real instruction fewer than PIC16's
-// own FSR/INDF-plus-explicit-INCF pair (see PIC18Codegen.h's own
-// header comment): POSTINC0 reads/writes through FSR0 and then
-// auto-increments it in the same instruction.
+// POSTINC0 reads/writes through FSR0 and auto-increments it in the same
+// instruction, one fewer than PIC16's FSR/INDF-plus-explicit-INCF pair.
 void PIC18Codegen::storeAcIndirect(int width) {
     code_ << "    movf ptr,w\n    movwf FSR0L\n";
     if (width == 1) {
@@ -171,7 +162,6 @@ void PIC18Codegen::loadAcIndirect(int width, bool isUnsigned) {
     code_ << "    movf INDF0,w\n    movwf ac+1\n";
 }
 
-// See PIC16Codegen.cpp's own identical helper.
 void PIC18Codegen::signExtendAcHighByte(bool isUnsigned) {
     if (isUnsigned) {
         code_ << "    clrf ac+1\n";
@@ -200,16 +190,11 @@ void PIC18Codegen::storeAcToLabel(const std::string &lbl, int width) {
     code_ << "    movff ac+1," << lbl << "+1\n";
 }
 
-// Real runtime push/pop on the shared `SSTACK` region via `SP`/FSR0 -
-// see PIC18Codegen.h's own header comment on why this has to be a
-// genuine stack, not a compile-time-indexed fixed cell. POSTINC0
-// (access, then increment) is a natural push. There's no hardware
-// pre-decrement mode on this core to mirror it for pop (PIC18 only
-// has INDFn/POSTINCn/POSTDECn/PREINCn/PLUSWn - no PREDECn), so pop
-// instead decrements FSR0L explicitly (DECF) before each plain INDF0
-// access - two real instructions instead of one, but still correct.
-// `SP` is kept in sync with FSR0L itself by simply copying it back
-// out afterward.
+// Runtime push/pop on the shared `SSTACK` region via `SP`/FSR0.
+// POSTINC0 (access, then increment) is a natural push. There's no
+// hardware pre-decrement mode on this core, so pop decrements FSR0L
+// explicitly before each plain INDF0 access. `SP` is kept in sync with
+// FSR0L by copying it back out afterward.
 void PIC18Codegen::pushCell2(const std::string &src) {
     code_ << "    movf SP,w\n    movwf FSR0L\n";
     code_ << "    movf " << src << ",w\n    movwf POSTINC0\n";
@@ -241,18 +226,12 @@ std::string PIC18Codegen::generate(const ir::Program &prog, bool objectMode) {
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // IRBuilder guarantees a parameterless `main` exists whenever
-    // `objectMode` is false (see Codegen.h's own header comment), so
-    // `mainFn` is only ever null in object mode, for a file that
-    // doesn't happen to define `main` itself.
+    // mainFn is only ever null in object mode, for a file that doesn't
+    // define `main` itself.
 
     if (objectMode) {
         // Plain compile-time equates, identical in every object and in
-        // PIC18LinkerFactory.cpp's own entry object - see
-        // PIC18Codegen.h's own `objectMode` comment and
-        // PIC18Assembler.h's own `kPIC18DataBaseAddress` comment for
-        // why these specific addresses (and why no relocation is
-        // needed for them at all).
+        // PIC18LinkerFactory.cpp's entry object, so none need relocation.
         code_ << "ac = 0\nbc = 2\ncx = 4\ndx = 6\nptr = 8\nSP = 9\nSSTACK = 10\nFP = 34\nNFP = 35\nFSTACK = 36\n";
     } else {
         declareRam("ac", 2, false);
@@ -291,12 +270,8 @@ std::string PIC18Codegen::generate(const ir::Program &prog, bool objectMode) {
 
     for (const auto &fb : prog.functionBodies) {
         if (objectMode && fb.func == mainFn) {
-            // This file's own globals' init code has nowhere else to
-            // run in object mode - see PIC18Codegen.h's own
-            // `objectMode` comment for why `fn_main`'s own prologue is
-            // the one place every linked program is guaranteed to
-            // reach exactly once, before any other code, that this
-            // file *does* control.
+            // globalInit has nowhere else to run in object mode, so it
+            // runs in fn_main's own prologue instead.
             genFunction(fb, globalInit.str());
         } else {
             genFunction(fb);
@@ -304,31 +279,21 @@ std::string PIC18Codegen::generate(const ir::Program &prog, bool objectMode) {
     }
 
     std::ostringstream header;
-    // Access Bank SFR short addresses (see PIC18Codegen.h's own
-    // header comment - this is the real PIC18F2420 SFR map's own
-    // bottom byte, the exact form every instruction here other than
-    // MOVFF resolves via the Access Bank's own 0x60-0xFF->0xF60-0xFFF
-    // hardware aliasing).
+    // Access Bank SFR short addresses, resolved via the Access Bank's
+    // 0x60-0xFF->0xF60-0xFFF hardware aliasing.
     header << "STATUS = 0xD8\nFSR0L = 0xE9\nFSR0H = 0xEA\nPOSTINC0 = 0xEE\nINDF0 = 0xEF\nINTCON = 0xF2\n";
-    // PCL/PCLATH/PCLATU/STKPTR/TOSL/TOSH/TOSU - the real PIC18 core's
-    // own program-counter-latch and top-of-return-stack registers
-    // (0xFF9-0xFFF, standardized identically across the whole PIC18
-    // family, not a per-chip peripheral address) - see genExpr's own
-    // CallPtr case for what these are for.
+    // Program-counter-latch and top-of-return-stack registers, used by
+    // genExpr's CallPtr case.
     header << "PCL = 0xF9\nPCLATH = 0xFA\nPCLATU = 0xFB\nSTKPTR = 0xFC\nTOSL = 0xFD\nTOSH = 0xFE\nTOSU = 0xFF\n\n";
     if (objectMode) {
-        // No entry sequence here at all - see PIC18Codegen.h's own
-        // `objectMode` comment: PIC18LinkerFactory.cpp's own
-        // synthesized entry object is solely responsible for the real
-        // hardware reset vector, `FSR0H`/`SP` setup, and `call
-        // fn_main`/halt, once every object is merged.
+        // PIC18LinkerFactory.cpp's synthesized entry object is solely
+        // responsible for the reset vector, FSR0H/SP setup, and
+        // call fn_main/halt, once every object is merged.
         header << "org 0\n\n";
     } else {
         header << "org 0\n    goto START\n\n";
         header << "START:\n";
-        header << "    clrf FSR0H\n";  // FSR0 only ever needs its low byte set - see PIC18Codegen.h's own header
-                                        // comment (this target's own data is restricted to the Access Bank's own
-                                        // low byte, so the high byte of a real pointer never has to change)
+        header << "    clrf FSR0H\n";  // data is restricted to the Access Bank's low byte, so FSR0H never changes
         header << "    movlw SSTACK\n    movwf SP\n";
         for (const auto &entry : zeroAtStart_) {
             for (int i = 0; i < entry.second; i++) {
@@ -338,12 +303,10 @@ std::string PIC18Codegen::generate(const ir::Program &prog, bool objectMode) {
             }
         }
         header << globalInit.str();
-        // `fn_main`'s own prologue expects `NFP` to already hold its
-        // new frame's own address (see this file's own header comment
-        // on `FP`/`NFP`) - `FSTACK+1` (not `FSTACK` itself) leaves one
-        // byte at `FSTACK+0` for that same prologue's own "caller's
-        // FP" save, never read back meaningfully since `main` has no
-        // real caller to return `FP` to in whole-program mode.
+        // fn_main's prologue expects `NFP` to hold its new frame's
+        // address; FSTACK+1 leaves one byte at FSTACK+0 for the
+        // prologue's "caller's FP" save, never meaningfully read back
+        // since `main` has no real caller in whole-program mode.
         header << "    movlw FSTACK+1\n    movwf NFP\n";
         header << "    call " << label(mainFn) << "\n";
         header << "HALT:\n    goto HALT\n\n";
@@ -361,9 +324,6 @@ std::map<std::string, std::string> PIC18Codegen::perFileAsm() const { return per
 
 void PIC18Codegen::genFunction(const ir::FunctionBody &fn, const std::string &extraPrologue) {
     paramCount_ = static_cast<int>(fn.func->params.size());
-    // `fn.func->frameSize` is now a real byte count (see IR.h's own
-    // comment on Function::frameSize); only the Params region still
-    // needs its own word-to-byte multiplication here.
     frameSizeBytes_ = paramCount_ * 2 + fn.func->frameSize;
     code_ << label(fn.func) << ":\n";
     emitPrologue();
@@ -427,10 +387,8 @@ void PIC18Codegen::genStmt(const ir::Stmt &s) {
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            // Space for every Local is already accounted for by
-            // `Slot::frameOffset`/`Function::frameSize` (IR.h) - this
-            // only ever has an initializer left to emit, for a
-            // scalar; an array local has none.
+            // Space for every Local is already accounted for; this only
+            // ever has a scalar initializer left to emit.
             if (s.declSlot->arraySize == 0 && s.initOrReturnOrExpr) {
                 genExpr(*s.initOrReturnOrExpr);
                 storeAcToSlot(s.declSlot);
@@ -451,9 +409,6 @@ void PIC18Codegen::genStmt(const ir::Stmt &s) {
     }
 }
 
-// See PIC18Codegen.h's own header comment on why a single check here
-// suffices for every wide (`long`/`long long`) value this backend
-// could ever be asked to materialize into `ac`.
 void PIC18Codegen::requireNarrow(const ir::Expr &e) const {
     if (widthOfType(e.type) > 2) {
         err(e.line, "'long'/'long long' arithmetic isn't supported on this target - "
@@ -461,7 +416,6 @@ void PIC18Codegen::requireNarrow(const ir::Expr &e) const {
     }
 }
 
-// See PIC16Codegen.cpp's own identical genConvert() comment.
 void PIC18Codegen::genConvert(const ir::Expr &e) {
     genExpr(*e.lhs);
     if (widthOfType(e.type) != 1) return;
@@ -504,10 +458,6 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
             pushPtrCell();
             genExpr(*e.rhs);
             popPtrCell();
-            // e.type is the pointee's own real type for a typed
-            // pointer, or plain native-int-width for the still-
-            // supported untyped-int-as-address style - see
-            // IRBuilder.cpp's own DerefAssign comment.
             storeAcIndirect(widthOfType(e.type));
             return;
         }
@@ -517,18 +467,14 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
                 genCompoundThroughPtr(e);
                 return;
             }
-            // Scalar target - slotAddrToPtr()'s own address
-            // computation depends only on `FP`/a compile-time label
-            // (see loadSlotToAc()'s own comment), so nothing needs to
-            // survive evaluating `rhs` at all - it's simply
-            // recomputed, via loadSlotToAc()/storeAcToSlot(), exactly
-            // Assign's own identical scalar case above.
+            // Scalar target - the address computation never touches
+            // `ac`, so it's simply recomputed afterward.
             genExpr(*e.rhs);  // ac = rhs
-            copy2("dx", "ac");  // dx = rhs, held (nothing else evaluates a genExpr() before it's consumed)
+            copy2("dx", "ac");  // dx = rhs, held until consumed
             loadSlotToAc(e.slot);  // ac = old
-            copy2("bc", "ac");  // bc = old - genCompoundOp()'s own precondition
-            if (e.yieldOld) pushCell2("bc");  // old, surviving genCompoundOp()'s own pseudo-register use
-            copy2("ac", "dx");  // ac = rhs - genCompoundOp()'s own other precondition
+            copy2("bc", "ac");  // bc = old - genCompoundOp()'s precondition
+            if (e.yieldOld) pushCell2("bc");  // old, saved across genCompoundOp()
+            copy2("ac", "dx");  // ac = rhs - genCompoundOp()'s other precondition
             genCompoundOp(e.op, e.type);
             narrowAcTo(e.type);
             storeAcToSlot(e.slot);
@@ -537,7 +483,7 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
         }
         case ir::ExprKind::CompoundDerefAssign: {
             genExpr(*e.lhs);  // ac = pointer value
-            code_ << "    movf ac,w\n    movwf ptr\n";  // ptr = address - the same line DerefAssign's own case above uses
+            code_ << "    movf ac,w\n    movwf ptr\n";
             genCompoundThroughPtr(e);
             return;
         }
@@ -564,7 +510,7 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "*") {
                 genExpr(*e.rhs);  // ac = pointer value
                 code_ << "    movf ac,w\n    movwf ptr\n";
-                loadAcIndirect(widthOfType(e.type), e.type.isUnsigned);  // see DerefAssign's comment above
+                loadAcIndirect(widthOfType(e.type), e.type.isUnsigned);
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "    comf ac,f\n    comf ac+1,f\n";
@@ -574,66 +520,40 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            // The callee's own new frame starts right after this
-            // function's own ("`FP + frameSizeBytes_`"), with one more
-            // byte set aside first for the callee's own saved-FP slot
-            // - see this file's own header comment on `FP`/`NFP`.
-            // `frameSizeBytes_` is this function's own compile-time
-            // constant throughout its whole codegen, so this offset
-            // from the *current* `FP` is correct at whatever call
-            // depth this call site actually runs at, recursive or
-            // not.
+            // The callee's new frame starts at FP + frameSizeBytes_, plus
+            // one byte for the callee's saved-FP slot. frameSizeBytes_ is
+            // a compile-time constant, so this offset from the current
+            // `FP` is correct at any call depth, recursive or not.
             int newFrameOff = frameSizeBytes_ + 1;
             for (size_t i = 0; i < e.args.size(); i++) {
                 genExpr(*e.args[i]);  // ac = this argument's value
-                // ptr = FP + newFrameOff + i*2 - recomputed fresh for
-                // every argument, after evaluating it (which may
-                // itself call through its own complete frame, but
-                // always restores `FP` first) rather than carried
-                // across more than one argument's own evaluation.
+                // ptr = FP + newFrameOff + i*2, recomputed fresh for every
+                // argument since evaluating one may itself call through a
+                // complete frame.
                 code_ << "    movf FP,w\n    addlw " << (newFrameOff + static_cast<int>(i) * 2) << "\n";
                 code_ << "    movwf ptr\n";
-                storeAcIndirect(2);  // every argument reserves a full native-int-width slot - see IRBuilder.cpp
+                storeAcIndirect(2);  // every argument reserves a native-int-width slot
             }
-            // NFP = FP + newFrameOff - handed to the callee's own
-            // prologue, recomputed fresh (not reused from any earlier
-            // value) immediately before `call` so no argument's own
-            // evaluation above can have clobbered it.
+            // NFP = FP + newFrameOff, recomputed fresh immediately before
+            // `call` so no argument evaluation above can have clobbered it.
             code_ << "    movf FP,w\n    addlw " << newFrameOff << "\n    movwf NFP\n";
             code_ << "    call " << label(e.func) << "\n";
             return;
         }
         case ir::ExprKind::CallPtr: {
-            // Real PIC18F2420 has no indirect-CALL instruction at all
-            // (GOTO/CALL always encode their own 20-bit target
-            // directly in the instruction word) and doesn't enable
-            // the optional Extended Instruction Set's CALLW either
-            // (see this file's own header comment on the classic,
-            // non-enhanced core this backend targets) - so this is
-            // the real mechanism actual PIC18 C compilers use on a
-            // core without CALLW: PUSH reserves a fresh slot on the
-            // real hardware return stack, then that slot's own three
-            // bytes - TOSU/TOSH/TOSL, directly addressable SFRs, the
-            // same as any other - are overwritten with the REAL
-            // desired return point, a symbolic label the assembler
-            // resolves on its own, never a hand-counted offset (that
-            // was the one real risk here - getting "how many
-            // instructions until the jump" wrong by hand would
-            // corrupt the return-address stack silently rather than
-            // failing loudly; a label removes the question entirely).
-            // PCLATU/PCLATH/PCL are then loaded from the callee's own
-            // computed address, PCL last - writing it is what
-            // actually latches PCLATH/PCLATU into the real PC and
-            // jumps.
+            // This core has no indirect-CALL instruction and no CALLW,
+            // so this is the standard mechanism: PUSH reserves a fresh
+            // slot on the hardware return stack, then its three bytes
+            // (TOSU/TOSH/TOSL) are overwritten with the real desired
+            // return point (a symbolic label, never a hand-counted
+            // offset). PCLATU/PCLATH/PCL are then loaded from the
+            // callee's address, PCL last - writing it latches
+            // PCLATH/PCLATU into the PC and jumps.
             genExpr(*e.lhs);  // ac/ac+1 = the callee's own address
-            // Same NFP handoff the direct Call case above gives every
-            // callee - IRBuilder.cpp already enforces 0 arguments for
-            // this kind (see its own comment on ir::ExprKind::CallPtr),
-            // so there's no argument-copying loop to mirror, but the
-            // callee still needs its own frame to start in the right
-            // place. Recomputed fresh here, after evaluating the
-            // callee (which may itself call through a normal frame),
-            // same as the direct Call case's own reasoning for why.
+            // Same NFP handoff as the direct Call case; IRBuilder.cpp
+            // enforces 0 arguments for this kind. Recomputed fresh after
+            // evaluating the callee, which may itself call through a
+            // normal frame.
             int newFrameOff = frameSizeBytes_ + 1;
             code_ << "    movf FP,w\n    addlw " << newFrameOff << "\n    movwf NFP\n";
             std::string Lret = newLabel();
@@ -656,9 +576,7 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Intrinsic: {
-            // Real PIC18 global-interrupt enable/disable - INTCON<7>
-            // (GIE), the exact same bit position and mechanism
-            // PIC16Codegen.cpp's own _ion()/_iof() uses.
+            // Global-interrupt enable/disable: INTCON<7> (GIE).
             code_ << "    " << (e.op == "ion" ? "bsf" : "bcf") << " INTCON,7\n";
             return;
         }
@@ -667,15 +585,11 @@ void PIC18Codegen::genExpr(const ir::Expr &e) {
 
 void PIC18Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
-    // ac *= slot's own element width - see elemShift()'s own comment
-    // (a `char` element scales by 1, i.e. no shift at all).
+    // ac *= element width (elemShift()); a char element needs no shift.
     for (int i = 0, n = elemShift(slot->type); i < n; i++) shiftOneBit("ac", /*isLeft=*/true);
     if (slot->arraySize > 0) {
-        // `slot` is itself the array - its own base address is a
-        // fixed, compile-time label for a Global, or `FP` plus this
-        // function's own compile-time offset for it for a Local -
-        // computed into `bc` (not `ac`, which still holds `index*2`
-        // here) either way.
+        // `slot` is the array itself; its base address is computed into
+        // `bc`, since `ac` still holds `index*2`.
         if (slot->kind == ir::SlotKind::Global) {
             code_ << "    movlw " << label(slot) << "\n    movwf bc\n";
         } else {
@@ -685,9 +599,8 @@ void PIC18Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
             code_ << "    movwf bc\n";
         }
     } else {
-        // `slot` holds a pointer *value* - save `index*2` (still in
-        // `ac`) in `bc` before loadSlotToAc() overwrites `ac` with
-        // that value.
+        // `slot` holds a pointer value - save index*2 in `bc` before
+        // loadSlotToAc() overwrites `ac` with that value.
         code_ << "    movf ac,w\n    movwf bc\n";
         loadSlotToAc(slot);  // ac = the pointer's own current value
     }
@@ -699,15 +612,12 @@ void PIC18Codegen::genIndex(const ir::Expr &e) {
     loadAcIndirect(widthOfType(e.slot->type), e.slot->type.isUnsigned);
 }
 
-// A literal element's own value, split into two compile-time-known
-// bytes and loaded via emitInitByte()'s usual clrf/movlw+movwf
-// choice; a symbol element (a dispatch-table address-of-function/
-// global, see IR.h's ArrayInitElem) has no compile-time byte value at
-// all - a Function's own real program-memory address is split low
-// byte/high byte the same way genAddrOf()'s own Func case does
-// (`movlwcl`/`movlwch`), and a Slot's own one-byte RAM address is
-// loaded with a zero high byte, the same way genAddrOf()'s own Var
-// case does.
+// A literal element's value is split into two compile-time-known bytes
+// and loaded via emitInitByte(). A symbol element (dispatch-table
+// address-of-function/global) has no compile-time byte value: a
+// Function's address splits low/high byte like genAddrOf()'s Func case
+// (movlwcl/movlwch); a Slot's one-byte RAM address loads with a zero
+// high byte, like genAddrOf()'s Var case.
 void PIC18Codegen::emitInitElem(std::ostream &out, const std::string &base, int width, const ir::ArrayInitElem &e) {
     if (e.isSymbol) {
         const std::string hi = base + "+1";
@@ -732,10 +642,8 @@ void PIC18Codegen::genAddrOf(const ir::Expr &operand) {
         if (operand.slot->kind == ir::SlotKind::Global) {
             code_ << "    movlw " << label(operand.slot) << "\n    movwf ac\n";
         } else {
-            // A Local/Param's own address is `FP` plus this
-            // function's own compile-time offset for it - a real
-            // runtime value (`FP` itself varies call to call), unlike
-            // a Global's own fixed label above.
+            // A Local/Param's address is FP plus a compile-time offset -
+            // a runtime value, unlike a Global's fixed label above.
             code_ << "    movf FP,w\n";
             int off = slotFrameOffsetBytes(operand.slot);
             if (off != 0) code_ << "    addlw " << off << "\n";
@@ -750,14 +658,11 @@ void PIC18Codegen::genAddrOf(const ir::Expr &operand) {
         return;
     }
     if (operand.kind == ir::ExprKind::Func) {
-        // `ac` ends up holding `fn`'s own real program-memory *byte*
-        // address, split low byte/high byte across two literal loads
-        // (see PIC18Assembler.cpp's own `movlwcl`/`movlwch` comment) -
-        // GOTO/CALL always encode their own target directly in the
-        // instruction word, so there's no single real instruction for
-        // taking a function's address as plain data either. See
-        // genExpr's own CallPtr case for calling through a value in
-        // exactly this form.
+        // `ac` holds fn's program-memory address, split low/high byte.
+        // GOTO/CALL always encode their target directly in the
+        // instruction word, so there's no single instruction for taking
+        // a function's address as plain data; see genExpr's CallPtr case
+        // for calling through a value in this form.
         code_ << "    movlwcl " << label(operand.func) << "\n    movwf ac\n";
         code_ << "    movlwch " << label(operand.func) << "\n    movwf ac+1\n";
         return;
@@ -873,15 +778,9 @@ void PIC18Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool want
     if (wantRemainder) copy2("ac", "dx");
 }
 
-// Precondition: `bc` holds `old`, `ac` holds `rhs` - exactly the
-// register roles genBinary()'s own inline "&"/"|"/"^" code, and
-// genMul()/genDivMod()/genShift()'s own equivalent roles (`bc`/`dx`,
-// `dx`/`bc`, implicit `ac`/`cx` respectively), already settle into
-// right after evaluating their own lhs/rhs, reached here by one extra
-// copy2()/movf instead of their own nested genExpr(rhs). Every
-// instruction below is copied verbatim from that operator's own
-// post-setup body (or calls the same shared add16()/sub16() helper
-// those bodies call). Leaves the raw new value in `ac`.
+// Precondition: `bc` holds `old`, `ac` holds `rhs` - the same register
+// roles genBinary()'s operator bodies settle into after evaluating their
+// own lhs/rhs. Leaves the raw new value in `ac`.
 void PIC18Codegen::genCompoundOp(const std::string &op, Type) {
     if (op == "+") {
         add16("ac", "bc", "ac");
@@ -944,39 +843,25 @@ void PIC18Codegen::genCompoundOp(const std::string &op, Type) {
     code_ << Ldone << ":\n";
 }
 
-// `ptr` holds the resolved address on entry. Stashed via
-// pushPtrCell() while `rhs` is evaluated - `rhs` may itself be, or
-// contain, an arbitrarily deep expression (a call, another indexed/
-// dereferenced compound assignment of its own) free to reuse every
-// pseudo-register this function touches, the same reasoning as
-// genIndexAddr()'s own header comment. Once `rhs` is fully evaluated,
-// nothing further here ever recurses back into genExpr(), so `bc`/
-// `cx`/`dx` are plain, non-reentrant scratch from here on, the way
-// genMul()/genDivMod()/etc. already use them after their own setup;
-// `yieldOld`'s own `old` value instead survives on the real `SSTACK`
-// software stack (pushCell2()/popCell2()) across genCompoundOp()'s
-// own use of every one of those, exactly the same reason a Call's own
-// arguments do.
+// `ptr` holds the resolved address on entry, stashed via pushPtrCell()
+// while `rhs` (which may itself clobber every pseudo-register) is
+// evaluated. `yieldOld`'s value survives on `SSTACK` across
+// genCompoundOp()'s use of bc/cx/dx.
 void PIC18Codegen::genCompoundThroughPtr(const ir::Expr &e) {
     pushPtrCell();        // stash address
     genExpr(*e.rhs);        // ac = rhs
-    copy2("dx", "ac");         // dx = rhs, held safely until genCompoundOp() consumes it
+    copy2("dx", "ac");         // dx = rhs, held until genCompoundOp() consumes it
     popPtrCell();                // ptr = address, restored only now
     loadAcIndirect(widthOfType(e.type), e.type.isUnsigned);  // ac = old
-    copy2("bc", "ac");                                         // bc = old - genCompoundOp()'s own precondition
-    if (e.yieldOld) pushCell2("bc");  // old, on SSTACK, surviving genCompoundOp()'s own pseudo-register use
-    copy2("ac", "dx");                  // ac = rhs - genCompoundOp()'s own other precondition
+    copy2("bc", "ac");                                         // bc = old - genCompoundOp()'s precondition
+    if (e.yieldOld) pushCell2("bc");  // old, saved across genCompoundOp()
+    copy2("ac", "dx");                  // ac = rhs - genCompoundOp()'s other precondition
     genCompoundOp(e.op, e.type);          // ac = new (raw)
     narrowAcTo(e.type);
-    storeAcIndirect(widthOfType(e.type));  // stores ac (= new) - ptr is still untouched since popPtrCell() above
+    storeAcIndirect(widthOfType(e.type));  // ptr still untouched since popPtrCell()
     if (e.yieldOld) popCell2("ac");          // ac = old (final result)
 }
 
-// Same truncate-then-sign/zero-extend step genConvert()'s own int-to-
-// char narrowing case uses - the only width this ever narrows to,
-// since requireNarrow() keeps `to` no wider than this backend's own
-// native int, and 2 bytes (the only other width reachable here) needs
-// no narrowing at all.
 void PIC18Codegen::narrowAcTo(Type to) {
     if (widthOfType(to) != 1) return;
     signExtendAcHighByte(to.isUnsigned);
@@ -1007,11 +892,8 @@ void PIC18Codegen::emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs,
     code_ << Ldone << ":\n";
 }
 
-// Signed 16-bit "a < b" via the real N-xor-OV rule (see
-// PIC18Codegen.h's own header comment on why this core, unlike
-// PIC16's, has a real hardware overflow flag to use instead of a
-// sign-bit-bias trick): after sub16()'s own final SUBWFB, "a < b"
-// holds iff STATUS<N> and STATUS<OV> disagree.
+// Signed 16-bit "a < b" via the N-xor-OV rule: after sub16()'s final
+// SUBWFB, "a < b" holds iff STATUS<N> and STATUS<OV> disagree.
 void PIC18Codegen::emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert) {
     genExpr(a);
     pushCell2("ac");
@@ -1090,13 +972,8 @@ std::string PIC18Codegen::buildAssembleCommand(const std::string &, const std::s
 std::optional<std::string> PIC18Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "hex") return assemblePIC18(asmText);
-    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
-    // (see generate()'s own `objectMode` comment) - this backend's
-    // own assembler builds one format-neutral ObjectFile exactly once
-    // (see PIC18Assembler.h's own `assemblePIC18Object`), and whichever
-    // of these five names was asked for just picks that format's own
-    // FileFormatWriter (see fileformat/FileFormat.h) to
-    // serialize it.
+    // coff/elf/macho/aout/objraw: build one format-neutral ObjectFile,
+    // then pick that format's FileFormatWriter to serialize it.
     if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assemblePIC18Object(asmText);
         return makeFileFormatWriter(*kind)->write(obj);

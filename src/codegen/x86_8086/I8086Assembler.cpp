@@ -21,22 +21,12 @@ namespace {
 
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("I8086Assembler: " + msg); }
 
-// --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
-//
-// Same grammar as ../pdp7/Pdp7Assembler.cpp (see that file's own
-// header comment for the shared rationale), interpreted completely
-// differently here: a mnemonic selects a real x86 instruction and
-// each comma-separated operand is a distinct, structurally real
-// argument to it (register, memory, or immediate) - never OR-combined
-// the way pdp7's own semantics work.
+// --- Parsing, via the shared grammar/PccAsm.g4 -----------------------
 
-// `Group` is a parenthesized sub-expression (NASM's own "510-($-$$)"
-// idiom, used for the boot-sector/placement padding - see
-// I8086Codegen.cpp's `emitPlacement()`): its own syllables (`group`)
-// get evaluated recursively (same evalExpr) to one combined value,
-// which the OUTER sign then adds/subtracts, exactly like any other
-// syllable's value - this is what lets a group be negated as a
-// whole ("N-(A-B)" = N-A+B, not N-A-B).
+// `Group` is a parenthesized sub-expression (NASM's "510-($-$$)" idiom, used for
+// boot-sector/placement padding). Its syllables evaluate recursively to one combined
+// value, which the outer sign then adds/subtracts - letting a group be negated as a
+// whole ("N-(A-B)" = N-A+B).
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
     char sign = 0;
@@ -45,17 +35,10 @@ struct Syllable {
     std::vector<Syllable> group;  // Group
 };
 
-// A parsed operand. `Reg`/`SegReg` carry a register index (see
-// regIndex()/segRegIndex() below); `Mem` is one of the addressing-
-// mode shapes I8086Codegen.cpp ever emits - `[label]` (direct,
-// `memHasBx=false`), `[bx]` (`memHasBx=true`, `memHasDisp=false`),
-// `[label+bx]` (`memHasBx=true`, `memHasDisp=true`), or `[bp+disp]`/
-// `[bp-disp]` (`memHasBp=true`, `memHasDisp=true` - a Local/Param's
-// own frame-relative address, see I8086Codegen.h's `addr()`) - with
-// `expr` holding the displacement for every form that has one; `Imm`
-// covers everything else (a literal number, or a bare symbol used as
-// a jump/call target or as a pointer value, e.g. `mov ax, arr_0` for
-// `&arr`).
+// A parsed operand. Mem covers the addressing-mode shapes codegen emits: `[label]`
+// (memHasBx=false), `[bx]` (memHasBx, !memHasDisp), `[label+bx]` (memHasBx+memHasDisp),
+// or `[bp+-disp]` (memHasBp+memHasDisp, a Local/Param's frame-relative address). Imm
+// covers a literal number or a bare symbol used as a jump/call target or pointer value.
 struct Operand {
     enum Kind { Reg, SegReg, Mem, Imm } kind = Imm;
     int reg = -1;
@@ -118,17 +101,14 @@ int segRegIndex(const std::string &name) {
     return it != regs.end() ? it->second : -1;
 }
 
-// `[...]` and plain-expr operand forms, classified into exactly the
-// shapes I8086Codegen.cpp ever emits - see Operand's own comment.
+// `[...]` and plain-expr operand forms, classified into the shapes codegen emits.
 Operand buildOperand(PccAsmParser::OperandContext *ctx) {
     Operand op;
     if (ctx->LBRACKET()) {
         op.kind = Operand::Mem;
         auto syls = exprToSyllables(ctx->expr());
-        // "bx" can be unsigned (bare `[bx]`) or '+'-signed (the second
-        // syllable of `[label+bx]` - the label comes first there, see
-        // I8086Codegen.cpp's `computeElementAddr`), so check by name
-        // alone, not by position or sign.
+        // "bx" is matched by name, not position/sign, since it can appear unsigned
+        // (bare `[bx]`) or signed (second syllable of `[label+bx]`).
         auto isBx = [](const Syllable &s) { return s.kind == SylKind::Symbol && s.text == "bx"; };
         auto isBp = [](const Syllable &s) { return s.kind == SylKind::Symbol && s.text == "bp"; };
         if (syls.size() == 1 && isBx(syls[0])) {
@@ -143,10 +123,7 @@ Operand buildOperand(PccAsmParser::OperandContext *ctx) {
             op.memHasDisp = true;
             op.expr = {syls[0]};
         } else if (syls.size() == 2 && isBp(syls[0]) && !isBp(syls[1])) {
-            // "[bp+N]"/"[bp-N]" - a Local/Param's own frame-relative
-            // address (see I8086Codegen.h's `addr()`); bp always
-            // comes first here, unlike bx above, since codegen only
-            // ever emits it that one way.
+            // "[bp+N]"/"[bp-N]": bp always comes first, since codegen only emits it that way.
             op.memHasBp = true;
             op.memHasDisp = true;
             op.expr = {syls[1]};
@@ -250,10 +227,8 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
     return line;
 }
 
-// Dynamic_cast dispatch on the labeled-alternative Context subclasses,
-// the same convention ../../ast/BuildAst.cpp and
-// ../pdp7/Pdp7Assembler.cpp already use, rather than the generated
-// Visitor interface.
+// Dynamic_cast dispatch on the labeled-alternative Context subclasses, rather than
+// the generated Visitor interface.
 std::vector<Line> parseProgram(const std::string &text) {
     antlr4::ANTLRInputStream input(text);
     PccAsmLexer lexer(&input);
@@ -273,17 +248,11 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
-// One patch a future linker still needs to apply, for a symbol this
-// file's own labels don't define - see I8086Assembler.h's own comment
-// on `allowExternal`. `Abs16` is a direct-address/immediate 2-byte
-// field that just needs the symbol's final linked address; `Rel16` is
-// a `jmp`/`call`'s 2-byte displacement field, which needs
-// `target - (site+2)` - only computable once linked, so this file
-// just emits a `0x0000` placeholder and leaves the real relative
-// subtraction to the linker too.
-// (Values mirrored as kI8086RelocAbs16/Rel16 in I8086Assembler.h,
-// exported for ../../linker/I8086Linker.cpp - kept in sync by hand,
-// same spirit as Pdp7Assembler.h/.cpp's kPdp7RelocOr/Add/Sub.)
+// A patch the linker still needs to apply, for a symbol this file's labels don't
+// define. Abs16 is a direct-address/immediate field needing the symbol's final linked
+// address; Rel16 is a jmp/call displacement needing `target - (site+2)`, only
+// computable once linked - this file emits a 0x0000 placeholder for it.
+// (Values mirrored as kI8086RelocAbs16/Rel16 in I8086Assembler.h - kept in sync by hand.)
 enum class RelocKind : uint16_t { Abs16 = 1, Rel16 = 2 };
 struct Relocation {
     uint32_t byteOffset;
@@ -293,12 +262,8 @@ struct Relocation {
 
 // --- Two-pass assembly ----------------------------------------------------
 //
-// Every instruction's *size* is fixed by its syntactic form alone
-// (see I8086Assembler.h) - pass 1 and pass 2 run the exact same
-// encoding logic; pass 1 just discards the bytes and only cares about
-// how many there were, so there's never a second, separately
-// maintained "how big is this" implementation to let drift out of
-// sync with the real encoder.
+// Pass 1 and pass 2 run the exact same encoding logic; pass 1 just discards the bytes
+// and counts them, so there's no separate "how big is this" implementation to drift.
 class Assembler {
    public:
     explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
@@ -341,14 +306,8 @@ class Assembler {
             case Line::Times: {
                 if (line.innerMnemonic != "db") fail("'times' only supports a 'db' body in this dialect");
                 uint32_t count = evalExpr(line.timesCount);
-                // I8086Codegen.cpp's own boot-sector padding is
-                // "times (510-($-$$)) db 0" - if the real code+data
-                // already runs past 510 bytes, that subtraction is
-                // negative and wraps around to a huge uint32_t here,
-                // which would otherwise silently try to emit
-                // gigabytes of padding instead of failing - a boot
-                // sector genuinely has no room left, which is exactly
-                // what should be reported.
+                // A negative "times (510-($-$$))" count wraps to a huge uint32_t -
+                // reject it rather than silently emitting gigabytes of padding.
                 if (count > 0x10000) fail("program too large for a 512-byte boot sector (--format=raw) - use --format=coff instead");
                 uint32_t v = line.exprList.empty() ? 0 : evalExpr(line.exprList.at(0));
                 for (uint32_t i = 0; i < count; i++) emit8(static_cast<uint8_t>(v));
@@ -360,24 +319,13 @@ class Assembler {
         }
     }
 
-    // --- expression evaluation (ADD-combine, not pdp7's OR) ---------
+    // --- expression evaluation ---------
 
-    // `externalName`, if given, is set to the one symbol any syllable
-    // here named that isn't defined anywhere in this file (only
-    // possible when `allowExternal_` - see resolveSyllable); `
-    // needsBaseShift`, if given, is set true when any syllable
-    // resolved to a LOCAL address (a label, `$`, or `$$` - all are
-    // "offset from this object's own `ORG 0`" in object mode, see
-    // resolveSyllable) - the caller (emitExprAsWord/emitRel16) is
-    // then responsible for recording the actual relocation(s), since
-    // this function doesn't know the field's own byte offset or
-    // Abs16-vs-Rel16 kind. Nothing pcc itself ever generates combines
-    // more than one external reference into the same field, so "the
-    // one" externalName is enough; a field can need both a base shift
-    // and an external relocation at once (e.g. `label_local + 4`
-    // combined with something external never actually happens today,
-    // but a bare local label and a bare external reference are each
-    // their own, separately-recorded case).
+    // `externalName`, if given, is set to the one external symbol a syllable named
+    // (only possible when allowExternal_). `needsBaseShift`, if given, is set true
+    // when a syllable resolved to a LOCAL address (a label, $, or $$ - "offset from
+    // this object's ORG 0" in object mode); the caller then records the relocation(s),
+    // since this function doesn't know the field's byte offset or Abs16/Rel16 kind.
     uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
@@ -395,13 +343,9 @@ class Assembler {
         return total;
     }
 
-    // `wasExternal`, if given, is set true when `syl` named a symbol
-    // not defined anywhere in this file and `allowExternal_` let that
-    // through rather than failing. `wasLocalAddress`, if given, is
-    // set true when `syl` resolved to a position-dependent LOCAL
-    // value (a label already defined in this file, or `$`/`$$`) -
-    // see evalExpr's own comment for why that also needs a
-    // relocation in object mode, unlike a plain literal number.
+    // `wasExternal`: syl named an undefined symbol, allowed through by allowExternal_.
+    // `wasLocalAddress`: syl resolved to a position-dependent local value (a label, $,
+    // or $$), which needs a relocation in object mode, unlike a plain literal number.
     uint32_t resolveSyllable(const Syllable &syl, bool *wasExternal = nullptr, bool *wasLocalAddress = nullptr) {
         if (syl.kind == SylKind::Group) return evalExpr(syl.group);
         if (syl.kind == SylKind::Number) {
@@ -444,16 +388,9 @@ class Assembler {
         emit8(static_cast<uint8_t>(v & 0xFF));
         emit8(static_cast<uint8_t>((v >> 8) & 0xFF));
     }
-    // The "evalExpr, then emit16 the result" pattern every Abs16 call
-    // site (dw/mem-displacement/mov-imm/cmp-imm/add-imm) shares.
-    // Records an Abs16 relocation against the reserved pseudo-symbol
-    // ".." when the expression touched a local address (see
-    // evalExpr's own comment: the value stored here is only "offset
-    // from this object's own ORG 0" until the linker adds this
-    // specific object's real, final base - Linker.cpp resolves ".."
-    // that way, never by searching another object's symbol table),
-    // and/or a real Abs16 relocation against an external symbol when
-    // it referenced one - both can apply to the same field at once.
+    // Records an Abs16 relocation against the pseudo-symbol ".." when the expression
+    // touched a local address (the linker adds this object's real base to it), and/or
+    // a real Abs16 relocation against an external symbol - both can apply at once.
     void emitExprAsWord(const std::vector<Syllable> &expr) {
         std::string externalName;
         bool needsBaseShift = false;
@@ -492,22 +429,17 @@ class Assembler {
         if (mf.hasDisp) emitExprAsWord(memOp.expr);
     }
 
-    // Near jmp/call (opcode + rel16) and short Jcc (opcode + rel8) -
-    // both fixed-size regardless of distance (see I8086Assembler.h);
-    // only pass 2's actual displacement value can ever be wrong, and
-    // only Jcc's rel8 range is checked (pass 2 only - pass 1's labels
-    // aren't all resolved yet, so the "value" is meaningless there,
-    // only the size matters).
+    // Near jmp/call (opcode + rel16) and short Jcc (opcode + rel8) are both
+    // fixed-size regardless of distance; only pass 2's rel8 range is checked
+    // (pass 1's labels aren't all resolved yet, so only the size matters there).
     void emitRel16(uint8_t opcode, const Operand &target) {
         uint32_t endAddr = orgBase_ + offset_ + 3;
         std::string externalName;
         uint32_t targetAddr = evalExpr(target.expr, &externalName);
         emit8(opcode);
         if (stage_ == 2 && !externalName.empty()) {
-            // Only the linker, once every object is merged, can know
-            // `target`'s real linked address to compute `target -
-            // (site+2)` - leave a placeholder and let it do the
-            // subtraction itself (see Relocation's own comment).
+            // Only the linker can compute `target - (site+2)` once merged -
+            // leave a placeholder and let it do the subtraction.
             relocations_.push_back({offset_, externalName, RelocKind::Rel16});
             emit16(0);
         } else {
@@ -519,10 +451,7 @@ class Assembler {
         uint32_t endAddr = orgBase_ + offset_ + 2;
         std::string externalName;
         uint32_t targetAddr = evalExpr(target.expr, &externalName);
-        // A short jCC's target is always internal control flow within
-        // one function, never a cross-file reference - fail loudly
-        // rather than silently resolve-to-0 if that ever stops being
-        // true (see I8086Assembler.h).
+        // A short jCC's target is always internal control flow, never cross-file.
         if (stage_ == 2 && !externalName.empty()) {
             fail("conditional jump target '" + externalName + "' is external - short jumps can't cross file boundaries");
         }
@@ -545,26 +474,15 @@ class Assembler {
                op.expr[0].kind == SylKind::Symbol && op.expr[0].text == name;
     }
 
-    // The full instruction vocabulary ../I8086Codegen.cpp ever emits
-    // - see I8086Assembler.h's header comment. Not a general x86
-    // encoder: exactly these mnemonic/operand-shape combinations,
-    // nothing else.
+    // The full instruction vocabulary codegen emits - not a general x86 encoder.
     void encodeInstr(const std::string &mnemonic, const std::vector<Operand> &ops) {
         if (mnemonic == "cli") { emit8(0xFA); return; }
         if (mnemonic == "sti") { emit8(0xFB); return; }
         if (mnemonic == "hlt") { emit8(0xF4); return; }
         if (mnemonic == "ret") { emit8(0xC3); return; }
         if (mnemonic == "cwd") { emit8(0x99); return; }
-        // Sign-extends AL into AX (AH:AL) - this dialect's own
-        // narrower-than-word (`char`) load, when signed - see
-        // I8086Codegen.cpp's loadOperand().
-        if (mnemonic == "cbw") { emit8(0x98); return; }
-        // `int imm8` - a real BIOS/DOS software interrupt (e.g. `int
-        // 0x13`, the real disk-I/O call every boot-sector program
-        // uses - see ../../tests/disk.c) - no portable C expression
-        // for this any more than pdp7's own IOT instructions have
-        // one, same "raw hardware instruction, write it in an `asm`
-        // block" story.
+        if (mnemonic == "cbw") { emit8(0x98); return; }  // sign-extends AL into AX
+        // `int imm8` - a real BIOS/DOS software interrupt (e.g. disk I/O via int 0x13).
         if (mnemonic == "int") {
             if (ops.size() != 1 || ops[0].kind != Operand::Imm) fail("'int' needs one immediate operand");
             emit8(0xCD);
@@ -578,20 +496,12 @@ class Assembler {
         if (mnemonic == "not")  { requireReg(ops, 1); emitModRegRM(0xF7, 0b11, 0b010, static_cast<uint8_t>(ops[0].reg)); return; }
         if (mnemonic == "imul") { requireReg(ops, 1); emitModRegRM(0xF7, 0b11, 0b101, static_cast<uint8_t>(ops[0].reg)); return; }
         if (mnemonic == "idiv") { requireReg(ops, 1); emitModRegRM(0xF7, 0b11, 0b111, static_cast<uint8_t>(ops[0].reg)); return; }
-        // Unsigned counterparts (F7 /4, /6) - I8086Codegen.cpp picks
-        // between these and imul/idiv per operand signedness.
-        if (mnemonic == "mul")  { requireReg(ops, 1); emitModRegRM(0xF7, 0b11, 0b100, static_cast<uint8_t>(ops[0].reg)); return; }
+        if (mnemonic == "mul")  { requireReg(ops, 1); emitModRegRM(0xF7, 0b11, 0b100, static_cast<uint8_t>(ops[0].reg)); return; }  // unsigned counterparts
         if (mnemonic == "div")  { requireReg(ops, 1); emitModRegRM(0xF7, 0b11, 0b110, static_cast<uint8_t>(ops[0].reg)); return; }
 
         if (mnemonic == "jmp")  { if (ops.size()!=1) fail("'jmp' needs one operand"); emitRel16(0xE9, ops[0]); return; }
-        // A direct `call label` (the only form used before indirect
-        // calls through a computed function-pointer value existed -
-        // see I8086Codegen.cpp's genExpr ExprKind::Call) is still the
-        // fixed-size rel16 form above every other jmp/call shares.
-        // `call reg16` (I8086Codegen.cpp's new ExprKind::CallPtr) is a
-        // genuinely different encoding - FF /2, the same "group FF"
-        // ModRM-register form `not`/`imul`/`idiv` above already use,
-        // just with reg field 0b010 ("CALL r/m16, near indirect").
+        // `call reg16` (indirect, via a function pointer) is FF /2 - the same group-FF
+        // ModRM form as not/imul/idiv, reg field 0b010 ("CALL r/m16, near indirect").
         if (mnemonic == "call") {
             if (ops.size() != 1) fail("'call' needs one operand");
             if (ops[0].kind == Operand::Reg) {
@@ -607,17 +517,11 @@ class Assembler {
         if (mnemonic == "jle")  { emitRel8(0x7E, ops.at(0)); return; }
         if (mnemonic == "jg")   { emitRel8(0x7F, ops.at(0)); return; }
         if (mnemonic == "jge")  { emitRel8(0x7D, ops.at(0)); return; }
-        // Unsigned counterparts - I8086Codegen.cpp's own unsigned
-        // comparisons (real 8086 jb/jae/jbe/ja, same short-jump
-        // family as the signed ones above).
-        if (mnemonic == "jb")   { emitRel8(0x72, ops.at(0)); return; }
+        if (mnemonic == "jb")   { emitRel8(0x72, ops.at(0)); return; }  // unsigned counterparts
         if (mnemonic == "jae")  { emitRel8(0x73, ops.at(0)); return; }
         if (mnemonic == "jbe")  { emitRel8(0x76, ops.at(0)); return; }
         if (mnemonic == "ja")   { emitRel8(0x77, ops.at(0)); return; }
-        // jc/jnc - the carry flag directly, same encoding as jb/jae
-        // (I8086Codegen.cpp's own bit-serial division: testing the
-        // carry a shift/rotate just produced, not a cmp result).
-        if (mnemonic == "jc")   { emitRel8(0x72, ops.at(0)); return; }
+        if (mnemonic == "jc")   { emitRel8(0x72, ops.at(0)); return; }  // carry flag directly, same encoding as jb/jae
         if (mnemonic == "jnc")  { emitRel8(0x73, ops.at(0)); return; }
 
         if (mnemonic == "mov") {
@@ -641,16 +545,9 @@ class Assembler {
             if (dst.kind == Operand::Mem && src.kind == Operand::Reg) { emitMemInstr(0x89, src.reg, dst); return; }
             fail("unsupported 'mov' operand combination");
         }
-        // "movb ax,[mem]" / "movb [mem],ax" - a narrower-than-word
-        // (`char`) Var/Slot's own load/store (see I8086Codegen.cpp's
-        // loadOperand()/storeOperand()): real opcode 0x8A/0x88 (MOV
-        // r8,r/m8 / MOV r/m8,r8), reusing the "ax" Operand's own reg
-        // field (0), which is numerically identical to AL's - the
-        // byte-sized opcode is what makes this a one-byte transfer,
-        // not anything in the operand encoding itself. Only ever
-        // valid with `ax` specifically in this dialect (AH is never
-        // used), matching every other codegen call site's own "ac"
-        // register convention.
+        // "movb ax,[mem]" / "movb [mem],ax" - a byte-sized (`char`) load/store, opcode
+        // 0x8A/0x88 (MOV r8,r/m8 / MOV r/m8,r8); ax's reg field (0) is AL's. Only `ax`
+        // is valid here (AH is never used).
         if (mnemonic == "movb") {
             if (ops.size() != 2) fail("'movb' needs two operands");
             const Operand &dst = ops[0];
@@ -666,14 +563,9 @@ class Assembler {
             fail("'movb' only supports ax<->mem in this dialect");
         }
 
-        // "lea reg,[bp-4]" - loads the EFFECTIVE ADDRESS itself (here,
-        // always a Local/Param's own frame-relative address - see
-        // I8086Codegen.h's `effAddr()`) rather than the word stored
-        // there, the real way to compute a runtime address this
-        // backend can't fold into a compile-time immediate the way a
-        // Global's bare label already is (see genAddrOf). Real opcode
-        // 0x8D, same reg<-mem ModRM shape "mov"'s own Reg<-Mem case
-        // above already uses.
+        // "lea reg,[bp-4]" loads the effective address itself (always a Local/Param's
+        // frame-relative address here), not the word stored there - opcode 0x8D, same
+        // reg<-mem ModRM shape as "mov"'s Reg<-Mem case above.
         if (mnemonic == "lea") {
             if (ops.size() != 2 || ops[0].kind != Operand::Reg || ops[1].kind != Operand::Mem) {
                 fail("'lea' needs a register destination and a memory source in this dialect");
@@ -686,19 +578,15 @@ class Assembler {
             emitModRegRM(0x31, 0b11, static_cast<uint8_t>(ops[1].reg), static_cast<uint8_t>(ops[0].reg));
             return;
         }
-        // "cmp ax, 0"-style truthiness checks (If/While conditions,
-        // &&/||/! - see genStmt/genLogicalAnd/Or/Not) need CMP
-        // r/m16,imm16 (0x81 /7), not just the reg,reg form below.
+        // "cmp ax, 0"-style truthiness checks need CMP r/m16,imm16 (0x81 /7), not just
+        // the reg,reg form below.
         if (mnemonic == "cmp" && ops.size() == 2 && ops[0].kind == Operand::Reg && ops[1].kind == Operand::Imm) {
             emitModRegRM(0x81, 0b11, 0b111, static_cast<uint8_t>(ops[0].reg));
             emitExprAsWord(ops[1].expr);
             return;
         }
-        // "add" alone also shows up as Reg,Mem (`add ax, [p]` - pointer
-        // arithmetic reading through a slot's value, genAddrOf) and
-        // Reg,Imm (`add ax, arr_1` - an array's own bare address used
-        // as an immediate, same genAddrOf) - no other ALU mnemonic
-        // here needs either form (see I8086Codegen.cpp's genAddrOf).
+        // "add" also shows up as Reg,Mem (pointer arithmetic) and Reg,Imm (an array's
+        // bare address used as an immediate) - no other ALU mnemonic needs either form.
         if (mnemonic == "add" && ops.size() == 2 && ops[0].kind == Operand::Reg) {
             if (ops[1].kind == Operand::Mem) {
                 emitMemInstr(0x03, ops[0].reg, ops[1]);
@@ -710,30 +598,22 @@ class Assembler {
                 return;
             }
         }
-        // "sub sp,N" - reserving/releasing a stack frame's own local
-        // storage (I8086Codegen.cpp's genFunction()) - same reg,imm
-        // group-0x81 form "add"'s own Reg,Imm case above uses, just
-        // reg field 0b101 instead of 0b000.
+        // "sub sp,N" reserves/releases frame storage - same group-0x81 reg,imm form as
+        // "add" above, reg field 0b101.
         if (mnemonic == "sub" && ops.size() == 2 && ops[0].kind == Operand::Reg && ops[1].kind == Operand::Imm) {
             emitModRegRM(0x81, 0b11, 0b101, static_cast<uint8_t>(ops[0].reg));
             emitExprAsWord(ops[1].expr);
             return;
         }
-        // "and ax, 0x00FF" - zero-extending AX's own low byte in place
-        // (I8086Codegen.cpp's narrowAxTo(), for an unsigned char) - the
-        // same 0x81 group AND's reg,reg form below can't use, since
-        // this dialect has no "ah" register to mask with a plain
-        // reg,reg AND.
+        // "and ax, 0x00FF" zero-extends AX's low byte - needs the reg,imm form since
+        // this dialect has no "ah" register to mask with a plain reg,reg AND.
         if (mnemonic == "and" && ops.size() == 2 && ops[0].kind == Operand::Reg && ops[1].kind == Operand::Imm) {
             emitModRegRM(0x81, 0b11, 0b100, static_cast<uint8_t>(ops[0].reg));
             emitExprAsWord(ops[1].expr);
             return;
         }
-        // "adc ax, 0" / "sbb ax, 0" - propagating a carry/borrow into
-        // a word whose other operand is the literal 0 (I8086Codegen.cpp's
-        // ripple-carry chains, e.g. sign/zero-extending a wide value's
-        // extra words) - same 0x81 group adc/sbb's own reg,reg form
-        // below can't use.
+        // "adc/sbb ax, 0" propagates a carry/borrow into a word - the reg,imm form,
+        // which the reg,reg form below can't cover.
         if ((mnemonic == "adc" || mnemonic == "sbb") && ops.size() == 2 && ops[0].kind == Operand::Reg &&
             ops[1].kind == Operand::Imm) {
             emitModRegRM(0x81, 0b11, mnemonic == "adc" ? 0b010 : 0b011, static_cast<uint8_t>(ops[0].reg));
@@ -742,10 +622,7 @@ class Assembler {
         }
         static const std::unordered_map<std::string, uint8_t> aluOpcode = {
             {"add", 0x03}, {"sub", 0x2B}, {"and", 0x23}, {"or", 0x0B}, {"cmp", 0x3B},
-            // adc/sbb (add/sub-with-carry/borrow) - I8086Codegen.cpp's
-            // own ripple-carry chain for a `long`/`long long` add/sub
-            // (more than one native 16-bit word).
-            {"adc", 0x13}, {"sbb", 0x1B},
+            {"adc", 0x13}, {"sbb", 0x1B},  // add/sub-with-carry/borrow, for multi-word arithmetic
         };
         if (auto it = aluOpcode.find(mnemonic); it != aluOpcode.end()) {
             if (ops.size() != 2 || ops[0].kind != Operand::Reg || ops[1].kind != Operand::Reg) {
@@ -757,18 +634,10 @@ class Assembler {
 
         if (mnemonic == "shl" || mnemonic == "shr" || mnemonic == "sar" || mnemonic == "rcl" || mnemonic == "rcr") {
             if (ops.size() != 2 || ops[0].kind != Operand::Reg) fail("'" + mnemonic + "' needs a register destination");
-            // sar (arithmetic/signed right shift, ext=7) alongside
-            // shr (logical/unsigned, ext=5) - I8086Codegen.cpp picks
-            // between them per the shifted value's own signedness.
-            // rcl/rcr (rotate-through-carry, ext=2/3) chain a single-
-            // bit shift across a `long`/`long long`'s own several
-            // native words - see I8086Codegen.cpp's genWideShift():
-            // shifting the least (or most) significant word first
-            // with a plain shl/shr leaves the real CARRY flag holding
-            // the bit that crossed a word boundary, and `mov` never
-            // touches FLAGS on this target, so a following rcl/rcr on
-            // the next word picks that bit back up correctly even
-            // with memory loads/stores in between.
+            // sar (signed) vs shr (unsigned) right shift. rcl/rcr (rotate-through-carry)
+            // chain a 1-bit shift across a multi-word value: shl/shr leaves the bit that
+            // crossed a word boundary in the carry flag, which `mov` never disturbs, so
+            // the next word's rcl/rcr picks it back up even with loads/stores between.
             uint8_t regField = (mnemonic == "shl") ? 0b100 : (mnemonic == "shr") ? 0b101
                                 : (mnemonic == "sar") ? 0b111 : (mnemonic == "rcl") ? 0b010 : 0b011;
             if (isLiteralNumber(ops[1], "1")) {
@@ -794,21 +663,13 @@ class Assembler {
     int stage_ = 1;
 };
 
-// COFF (see ../../fileformat/coff/CoffFormat.h): the one `.text` section is just
-// `bytes()` as-is (already byte-addressable, unlike pdp7's 18-bit
-// words), and each label's symbol value is its offset within that
-// section (its address minus `orgBase()`, the fixed boot-sector load
-// address every label is already relative to). Machine type 0x0086 is
-// a custom, non-registered COFF machine ID (real 16-bit 8086/DOS
-// tooling used OMF, not COFF, so there's no real one to use) chosen
-// only to be unique and memorable, distinct from pdp7's 0x1987.
+// The one `.text` section is just `bytes()` as-is; each label's symbol value is its
+// offset within that section (address minus orgBase()). Machine type 0x0086 is a
+// custom, non-registered COFF machine ID (real 8086/DOS tooling used OMF, not COFF).
 constexpr uint16_t kI8086CoffMachine = 0x0086;
 
-// Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - shared by `writeCoff()` (serializes it
-// straight to COFF bytes, for `assembleI8086`'s own `Coff` case) and
-// `assembleI8086Object()` (returns it directly - see
-// I8086Assembler.h's own comment on why).
+// Shared by writeCoff() (serializes to COFF bytes) and assembleI8086Object() (returns
+// the ObjectFile directly).
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kI8086CoffMachine;
@@ -822,9 +683,8 @@ ObjectFile buildObjectFile(const Assembler &a) {
     std::sort(obj.symbols.begin(), obj.symbols.end(),
               [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
 
-    // Every relocation's target symbol needs a symbol-table entry too
-    // (the writer resolves relocations to symbols by index) - add one,
-    // undefined, for any name that isn't already a real local label.
+    // Every relocation's target symbol needs a symbol-table entry (the writer resolves
+    // relocations by index) - add one, undefined, for any name not already a local label.
     std::unordered_map<std::string, bool> known;
     for (const auto &s : obj.symbols) known[s.name] = true;
     for (const auto &r : a.relocations()) {

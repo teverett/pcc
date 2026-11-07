@@ -20,11 +20,7 @@ std::string ListFormatWriter::write(const ObjectFile &obj) const {
     std::sort(syms.begin(), syms.end(), [](const ObjSymbol *a, const ObjSymbol *b) { return a->name < b->name; });
     char buf[64];
     for (const ObjSymbol *sym : syms) {
-        // A code symbol's own value is relative to `.text`'s own
-        // start (see ObjectFile.h's own header comment) - `obj.base`
-        // recovers the real, final address; a data symbol's value is
-        // already the real, final, absolute data-space address, with
-        // no `base` to add.
+        // Code symbol values are relative to .text start; data symbol values are already absolute.
         uint32_t addr = sym->isData ? sym->value : obj.base + sym->value;
         std::snprintf(buf, sizeof(buf), "%-8.8s %#06o", sym->name.c_str(), addr & 0777777);
         out << buf << "\n";

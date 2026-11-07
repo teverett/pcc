@@ -19,8 +19,6 @@ namespace {
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("MC68328Assembler: " + msg); }
 
 // --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
-// Same Syllable/Group shape as every other backend's own assembler -
-// see M6502Assembler.cpp's own comment.
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
     char sign = 0;
@@ -29,20 +27,11 @@ struct Syllable {
     std::vector<Syllable> group;
 };
 
-// One operand, classified from a bare expression - see
-// MC68328Assembler.h's own comment (and ../m68k/M68kAssembler.h's own,
-// which this shares unchanged) on why there's no real `#imm`/`(An)`
-// syntax here. `Dreg`/`Areg` come from recognizing a bare `d0`-`d7`/
-// `a0`-`a7` identifier; `Imm` from a bare (optionally signed) number;
-// anything else (a label, or `label+N`) is `Mem` - an absolute
-// address.
-// `AnDisp` is the real 68000 address-register-indirect-with-
-// displacement mode (d16(An)) - this dialect spells it "[a6+N]"/
-// "[a6-N]" (bracketed, like the other backends' own memory operands -
-// see I386Assembler.cpp's own `buildOperand`), used by
-// MC68328Codegen.cpp to address a Local/Param's own frame-relative
-// storage. `reg` is the address register (always a6 in practice - the
-// frame pointer); `expr` is the signed 16-bit displacement.
+// One operand, classified from a bare expression: `Dreg`/`Areg` from a bare `d0`-`d7`/`a0`-`a7`
+// identifier, `Imm` from a bare signed number, anything else (a label or `label+N`) is `Mem` (an
+// absolute address). `AnDisp` is 68000 address-register-indirect-with-displacement (d16(An)),
+// spelled "[a6+N]"/"[a6-N]" here; `reg` is the address register (always a6, the frame pointer in
+// practice), `expr` the signed 16-bit displacement.
 struct Operand {
     enum Kind { Dreg, Areg, Imm, Mem, AnDisp } kind = Imm;
     int reg = -1;
@@ -85,8 +74,7 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
     return result;
 }
 
-// `d0`-`d7` / `a0`-`a7` only (case-insensitive, matching how
-// mnemonics are lowercased too) - returns -1 if `name` isn't one.
+// `d0`-`d7` / `a0`-`a7` only (case-insensitive); returns -1 if `name` isn't one.
 int regNumber(const std::string &name, char prefix) {
     if (name.size() != 2 || std::tolower(static_cast<unsigned char>(name[0])) != prefix) return -1;
     if (name[1] < '0' || name[1] > '7') return -1;
@@ -95,10 +83,7 @@ int regNumber(const std::string &name, char prefix) {
 
 Operand buildOperand(PccAsmParser::OperandContext *ctx) {
     if (ctx->LBRACKET()) {
-        // The only bracketed shape this dialect supports: "[aN]" or
-        // "[aN+disp]"/"[aN-disp]" - frame-relative addressing (see
-        // Operand::AnDisp above). Anything else bracketed is rejected,
-        // same as before.
+        // Only "[aN]" or "[aN+disp]"/"[aN-disp]" (frame-relative addressing) is supported bracketed.
         std::vector<Syllable> syls = exprToSyllables(ctx->expr());
         if (!syls.empty() && syls[0].sign == 0 && syls[0].kind == SylKind::Symbol) {
             if (int r = regNumber(toLower(syls[0].text), 'a'); r >= 0) {
@@ -211,11 +196,8 @@ std::vector<Line> parseProgram(const std::string &text) {
 }
 
 // --- Two-pass assembly ----------------------------------------------------
-// One pending fixup `assembleMC68328Object()` turns into a real
-// ObjRelocation once assembly is done - mirrors
-// ../x86_8086/I8086Assembler.cpp's own `Relocation`/`RelocKind`
-// (just one kind here, `kMC68328RelocAbs32` - see
-// MC68328Assembler.h's own header comment).
+// One pending fixup, turned into a real ObjRelocation (kind kMC68328RelocAbs32) once assembly
+// is done.
 struct Relocation {
     uint32_t byteOffset;
     std::string symbolName;
@@ -258,12 +240,8 @@ class Assembler {
                 orgBase_ = evalExpr(line.exprList.at(0));
                 return;
             case Line::Dl:
-                // Each word's own expression goes through the exact same
-                // external-name/base-shift tracking as a `Mem` operand's
-                // extension word (see emitEAExtension) - a bare symbol here
-                // (an array initializer's address-of-function/global
-                // element) resolves and relocates identically to one used
-                // as an instruction's absolute address.
+                // Each word goes through the same external-name/base-shift tracking as a `Mem`
+                // operand's extension word (see emitEAExtension).
                 for (const auto &e : line.exprList) {
                     std::string externalName;
                     bool needsBaseShift = false;
@@ -275,10 +253,8 @@ class Assembler {
                     emit32(v);
                 }
                 return;
-            // `db`/`dw` - a `char`/`short` global or array element's
-            // own storage - always a plain literal value, never a
-            // relocatable symbol (a byte/word is too narrow to hold a
-            // real 32-bit address anyway).
+            // `db`/`dw` are always a plain literal, never a relocatable symbol (too narrow for
+            // a 32-bit address).
             case Line::Dw:
                 for (const auto &e : line.exprList) emit16(static_cast<uint16_t>(evalExpr(e)));
                 return;
@@ -291,11 +267,8 @@ class Assembler {
         }
     }
 
-    // `externalName`/`needsBaseShift` mirror
-    // ../x86_8086/I8086Assembler.cpp's own `evalExpr` exactly - see
-    // MC68328Assembler.h's own header comment on why *any* local
-    // address reference, not just an external one, needs a
-    // relocation once `allowExternal_` is set.
+    // `externalName`/`needsBaseShift`: any local address reference, not just an external one,
+    // needs a relocation once `allowExternal_` is set.
     uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
@@ -353,15 +326,10 @@ class Assembler {
         emit16(static_cast<uint16_t>(v & 0xFFFF));
     }
 
-    // Mode/register pair for `op`'s own effective-address field (see
-    // MC68328Assembler.h's own header comment for why there's no
-    // general indirect/indexed mode here - only what `op`'s own
-    // classification already covers): Dn direct (000), An direct
-    // (001), address register indirect with displacement (101 -
-    // frame-relative Local/Param access, MC68328Codegen.cpp's
-    // `addr()`), absolute long (111, 001 - extension word(s) hold the
-    // address), or immediate (111, 100 - extension word(s) hold the
-    // value).
+    // Mode/register pair for `op`'s effective-address field: Dn direct (000), An direct (001),
+    // address-register-indirect-with-displacement (101, frame-relative Local/Param access),
+    // absolute long (111,001, extension word(s) hold the address), or immediate (111,100,
+    // extension word(s) hold the value).
     struct EA {
         uint8_t mode;
         uint8_t reg;
@@ -381,21 +349,13 @@ class Assembler {
         }
         fail("internal: unhandled operand kind");
     }
-    // Emits `op`'s own extension word(s), if its EA mode needs any
-    // (Mem/Imm both do - a 32-bit absolute address or a 32-bit
-    // immediate value, since this dialect only has .L-sized forms for
-    // every instruction that can take a Mem/Imm operand at all;
-    // `AnDisp`'s own extension word is a plain compile-time-constant
-    // signed 16-bit displacement, never a label, one word wide - the
-    // real hardware's own `d16(An)` extension-word size).
+    // Emits `op`'s extension word(s) if its EA mode needs any: Mem/Imm each need a 32-bit word
+    // (this dialect only has .L-sized forms); AnDisp needs a compile-time-constant signed
+    // 16-bit displacement (the real hardware's d16(An) extension-word size).
     void emitEAExtension(const Operand &op) {
         if (op.kind == Operand::Mem) {
-            // An absolute address - every reference needs the base-
-            // shift (and, in object mode, possibly external) handling
-            // MC68328Assembler.h's own header comment describes;
-            // `Operand::Imm` (a plain numeric constant - see this
-            // file's own `Operand` comment on why it's never anything
-            // else) never does, so it's intentionally excluded here.
+            // An absolute address needs base-shift (and, in object mode, possibly external)
+            // relocation handling; a plain Imm constant never does.
             std::string externalName;
             bool needsBaseShift = false;
             uint32_t v = evalExpr(op.expr, &externalName, &needsBaseShift);
@@ -414,23 +374,17 @@ class Assembler {
         }
     }
 
-    // The `<ea>,Dn` / `Dn,<ea>` family (ADD/SUB/AND/OR/CMP/EOR/MULS/
-    // DIVS/ADDA - see encodeInstr's own table): a fixed 3-bit register
-    // field, a fixed 3-bit opmode, and one EA (the *other* operand -
-    // whichever one of the two isn't the plain Dn/An register).
+    // The `<ea>,Dn` / `Dn,<ea>` family (ADD/SUB/AND/OR/CMP/EOR/MULS/DIVS/ADDA): fixed 3-bit
+    // register field, fixed 3-bit opmode, and one EA for the other (non-register) operand.
     void encodeRegOpEA(uint16_t base, uint8_t regField, uint8_t opmode, const Operand &ea) {
         EA e = classifyEA(ea);
         emit16(static_cast<uint16_t>(base | (regField << 9) | (opmode << 6) | (e.mode << 3) | e.reg));
         emitEAExtension(ea);
     }
 
-    // MOVE.L <src>,<dst> / MOVEA.L <src>,An (the same instruction
-    // family - a destination mode of 001 is what makes it "MOVEA"
-    // rather than "MOVE", with no other encoding difference at all) -
-    // both operands get their own full EA field, so both get their
-    // own extension word if they need one (source's own extension, if
-    // any, comes first - matching real object code order, since the
-    // source operand is evaluated before the destination for a MOVE).
+    // MOVE.L <src>,<dst> / MOVEA.L <src>,An (same encoding; destination mode 001 is what makes
+    // it "MOVEA"). Both operands get a full EA field and their own extension word if needed,
+    // source first.
     void encodeMove(const Operand &src, const Operand &dst, uint16_t base = 0x2000) {
         if (dst.kind == Operand::Imm) fail("'move': an immediate can't be a destination");
         EA s = classifyEA(src);
@@ -440,10 +394,7 @@ class Assembler {
         emitEAExtension(dst);
     }
 
-    // LEA <label>,An / LEA [aN+disp],An - loads the source's own
-    // *effective address* (never a Dreg/Imm - see MC68328Codegen.cpp's
-    // own call sites, always a label or a frame-relative Local/Param
-    // slot) into An.
+    // LEA <label>,An / LEA [aN+disp],An - loads the source's effective address into An.
     void encodeLea(const Operand &src, const Operand &dst) {
         if (dst.kind != Operand::Areg) fail("'leal': destination must be an address register");
         if (src.kind != Operand::Mem && src.kind != Operand::AnDisp) {
@@ -454,27 +405,18 @@ class Assembler {
         emitEAExtension(src);
     }
 
-    // SWAP/EXT.L/NEG.L/NOT.L - a single Dn operand (SWAP/EXT.L) or a
-    // single EA operand (NEG.L/NOT.L, but MC68328Codegen.cpp only
-    // ever passes a Dreg).
+    // SWAP/EXT.L (single Dn operand) or NEG.L/NOT.L (single EA operand).
     void encodeUnary(uint16_t word, const Operand &op) {
         EA e = classifyEA(op);
         emit16(static_cast<uint16_t>(word | (e.mode << 3) | e.reg));
         emitEAExtension(op);
     }
 
-    // Bcc/BRA - always the 16-bit-displacement form (the opcode
-    // word's own low byte is 0x00, which per the real hardware's own
-    // rule always means "the extension word that immediately follows
-    // is the real, 16-bit, displacement").
+    // Bcc/BRA - always the 16-bit-displacement form (opcode low byte 0x00).
     void encodeBranch(uint8_t condition, const Operand &target) {
         if (target.kind != Operand::Mem) fail("a branch target must be a label");
-        // The displacement is relative to the address of the opcode
-        // word plus 2 - i.e. right after the *opcode* word alone,
-        // regardless of whether a 16-bit or 32-bit displacement
-        // extension follows it (see ../m68k/M68kAssembler.cpp's own
-        // comment: confirmed directly against qemu's own disassembler
-        // - a `bra` targeting itself needs displacement -2, not -4).
+        // Displacement is relative to the opcode word's address plus 2 (confirmed against
+        // qemu: a `bra` targeting itself needs displacement -2, not -4).
         uint32_t endAddr = orgBase_ + offset_ + 2;
         uint32_t targetAddr = evalExpr(target.expr);
         emit16(static_cast<uint16_t>(0x6000 | (condition << 8)));
@@ -483,9 +425,8 @@ class Assembler {
         emit16(static_cast<uint16_t>(static_cast<int16_t>(rel)));
     }
 
-    // LSL.L/LSR.L <countDn>,<dataDn> - the register (variable-count)
-    // shift form: `dir` 1=left/0=right, `I`=1 (bit 5) means "count
-    // comes from the register field", not a literal 1-8 count.
+    // LSL.L/LSR.L <countDn>,<dataDn>, register (variable-count) form: bit 5 set means the count
+    // comes from the register field, not a literal 1-8.
     void encodeShift(uint8_t countReg, uint8_t dataReg, bool left, uint8_t type = 0b01) {
         uint16_t word = static_cast<uint16_t>(0xE000 | (countReg << 9) | (left ? 1 << 8 : 0) | (0b10 << 6) |
                                                (1 << 5) | (type << 3) | dataReg);
@@ -505,11 +446,8 @@ class Assembler {
         return static_cast<uint8_t>(op.reg);
     }
 
-    // The full instruction vocabulary ../mc68328/MC68328Codegen.cpp
-    // ever emits - not a general 68000 encoder: exactly these
-    // mnemonic/operand-shape combinations (identical to
-    // ../m68k/M68kAssembler.cpp's own vocabulary - see
-    // MC68328Assembler.h's own header comment).
+    // Not a general 68000 encoder: only the mnemonic/operand-shape combinations
+    // MC68328Codegen.cpp actually emits.
     void encodeInstr(const std::string &mnemonic, const std::vector<Operand> &ops) {
         if (mnemonic == "rts") {
             if (!ops.empty()) fail("'rts' takes no operand");
@@ -525,12 +463,8 @@ class Assembler {
             encodeLea(requireOperand(ops, 0, mnemonic), requireOperand(ops, 1, mnemonic));
             return;
         }
-        // Push/pop onto the real hardware stack (A7) - MOVE.L
-        // Dn/An,-(A7) / MOVE.L (A7)+,Dn/An (either kind of register -
-        // MC68328Codegen.cpp pushes/pops `a0` as well as `d0`/`d1`).
-        // Spelled as their own mnemonics, not a generic pre-decrement/
-        // post-increment operand - mode 100/011 with register 7 (A7),
-        // fixed.
+        // Push/pop onto A7: MOVE.L Dn/An,-(A7) / MOVE.L (A7)+,Dn/An, spelled as their own
+        // mnemonics rather than a generic pre-decrement/post-increment operand.
         if (mnemonic == "pushl") {
             const Operand &reg = requireOperand(ops, 0, mnemonic);
             if (reg.kind != Operand::Dreg && reg.kind != Operand::Areg) {
@@ -551,8 +485,7 @@ class Assembler {
             emit16(static_cast<uint16_t>(0x2000 | (e.reg << 9) | (e.mode << 6) | (0b011 << 3) | 7));
             return;
         }
-        // (An) indirect, spelled as its own mnemonics rather than a
-        // generic bracketed operand.
+        // (An) indirect, spelled as its own mnemonics rather than a generic bracketed operand.
         if (mnemonic == "ldind" || mnemonic == "ldindw" || mnemonic == "ldindb") {
             uint16_t base = mnemonic == "ldind" ? 0x2000 : mnemonic == "ldindw" ? 0x3000 : 0x1000;
             uint8_t an = requireAreg(requireOperand(ops, 0, mnemonic), mnemonic);
@@ -588,8 +521,7 @@ class Assembler {
             return;
         }
         if (mnemonic == "eorl") {
-            // EOR Dn,<ea> - Dn is always the *source* here (the
-            // register field), <ea> the destination.
+            // EOR Dn,<ea>: Dn is the source (register field), <ea> the destination.
             uint8_t dn = requireDreg(requireOperand(ops, 0, mnemonic), mnemonic);
             encodeRegOpEA(0xB000, dn, 0b110, requireOperand(ops, 1, mnemonic));
             return;
@@ -638,17 +570,8 @@ class Assembler {
             encodeShift(countReg, dataReg, left, type);
             return;
         }
-        // LINK An,#disp / UNLK An - this target's own dedicated
-        // frame-setup/teardown instructions (MC68328Codegen.cpp's
-        // genFunction()/Return case use them with An=a6): LINK pushes
-        // An onto the real hardware stack (A7), sets An=A7, then adds
-        // the signed 16-bit displacement `disp` to A7 (negative to
-        // reserve that many bytes of locals below the new frame
-        // pointer); UNLK sets A7=An then pops the old An back off the
-        // stack. Neither goes through classifyEA/emitEAExtension - An
-        // and the (for LINK) displacement are both fixed-position
-        // fields of the opcode word/extension word themselves, not a
-        // general effective address.
+        // LINK An,#disp / UNLK An - frame setup/teardown: LINK pushes An onto A7, sets An=A7,
+        // then adds signed 16-bit `disp` to A7 (negative to reserve locals); UNLK reverses it.
         if (mnemonic == "linkl") {
             uint8_t an = requireAreg(requireOperand(ops, 0, mnemonic), mnemonic);
             const Operand &dispOp = requireOperand(ops, 1, mnemonic);
@@ -671,13 +594,8 @@ class Assembler {
             emitEAExtension(target);
             return;
         }
-        // "JSR (An)" - a real near call through whatever address An
-        // holds, mode 0b010 - same "(An) gets its own mnemonic rather
-        // than a generic bracketed operand" convention ldind/stind
-        // already use (classifyEA's Areg case is register DIRECT,
-        // mode 0b001, which the real MC68EC000 ISA doesn't accept as a
-        // JSR target at all - this needs the true indirect mode, not
-        // what "jsr a0" would otherwise encode).
+        // "JSR (An)": near call through An, mode 0b010 (true indirect; classifyEA's Areg case
+        // is register-direct mode 0b001, which the ISA rejects as a JSR target).
         if (mnemonic == "jsrind") {
             uint8_t an = requireAreg(requireOperand(ops, 0, mnemonic), mnemonic);
             emit16(static_cast<uint16_t>(0x4E80 | (0b010 << 3) | an));
@@ -704,9 +622,7 @@ class Assembler {
     bool allowExternal_;
 };
 
-// Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - mirrors ../z80/Z80Assembler.cpp's own
-// `buildObjectFile`.
+// Builds the format-neutral ObjectFile a completed object-mode Assembler produced.
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kMC68328CoffMachine;

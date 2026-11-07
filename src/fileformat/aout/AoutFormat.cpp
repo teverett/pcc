@@ -37,8 +37,7 @@ std::string AoutFormatWriter::write(const ObjectFile &obj) const {
         if (r.type > 3) fail("relocation type " + std::to_string(r.type) + " doesn't fit in a.out's 2-bit r_length");
     }
 
-    // No mandatory null entry, like Mach-O: ObjSymbol i is nlist
-    // index i directly.
+    // ObjSymbol i is nlist index i directly; no mandatory null entry.
     std::unordered_map<std::string, uint32_t> symIndex;
     for (size_t i = 0; i < obj.symbols.size(); i++) symIndex[obj.symbols[i].name] = static_cast<uint32_t>(i);
 
@@ -47,16 +46,14 @@ std::string AoutFormatWriter::write(const ObjectFile &obj) const {
         auto it = symIndex.find(r.symbolName);
         if (it == symIndex.end()) fail("relocation references unknown symbol '" + r.symbolName + "'");
         put32(reloctab, r.offset);  // r_address
-        // Bitfield word: r_symbolnum(24) | r_pcrel(1)<<24 | r_length(2)<<25 | r_extern(1)<<27 | 0 (baserel/
-        // jmptable/relative, unused). This project's own relocation `type` is carried in r_length (2 bits) -
-        // see AoutFormat.h's own header comment.
+        // Bitfield word: r_symbolnum(24) | r_pcrel(1)<<24 | r_length(2)<<25 | r_extern(1)<<27.
         uint32_t word = (it->second & 0xFFFFFFu) | (0u << 24) | ((static_cast<uint32_t>(r.type) & 0x3) << 25) |
                          (1u << 27);
         put32(reloctab, word);
     }
 
     std::string strtab;
-    put32(strtab, 0);  // placeholder, patched to the real total length below (the field itself counts)
+    put32(strtab, 0);  // placeholder; patched to the total length including itself
     std::vector<uint32_t> nameOffsets(obj.symbols.size());
     for (size_t i = 0; i < obj.symbols.size(); i++) {
         nameOffsets[i] = static_cast<uint32_t>(strtab.size());
@@ -73,9 +70,6 @@ std::string AoutFormatWriter::write(const ObjectFile &obj) const {
     for (size_t i = 0; i < obj.symbols.size(); i++) {
         const ObjSymbol &sym = obj.symbols[i];
         put32(symtab, nameOffsets[i]);  // n_strx
-        // N_TEXT or N_BSS (a Harvard target's own data-space symbol -
-        // see ObjSymbol::isData's own comment) when defined, N_UNDF
-        // otherwise.
         uint8_t nType = !sym.isDefined ? kNUndf : (sym.isData ? kNBss : kNText);
         symtab.push_back(static_cast<char>(nType | kNExt));  // n_type
         symtab.push_back(static_cast<char>(0));                                                      // n_other
@@ -87,17 +81,9 @@ std::string AoutFormatWriter::write(const ObjectFile &obj) const {
     put32(out, kOMagic);
     put32(out, static_cast<uint32_t>(obj.textBytes.size()));  // a_text
     put32(out, 0);                                              // a_data
-    put32(out, obj.dataSize);                                    // a_bss - a Harvard target's own data-space
-                                                                   // size reservation (0 for von-Neumann)
+    put32(out, obj.dataSize);                                    // a_bss
     put32(out, static_cast<uint32_t>(symtab.size()));             // a_syms
-    // a_entry: this project's own documented choice for a field
-    // whose real-world variants disagree on what it even means -
-    // here it's the absolute address execution starts at (`obj.base`
-    // - every linked ObjectFile places byte/word 0 of `textBytes` at
-    // the entry sequence its own TargetLinker synthesized, and every
-    // not-yet-linked one leaves `base` at its default `0`, same as
-    // every other field here that's only meaningful once linked).
-    put32(out, obj.base);
+    put32(out, obj.base);  // a_entry: absolute execution start address
     put32(out, static_cast<uint32_t>(reloctab.size()));             // a_trsize
     put32(out, 0);                                                   // a_drsize
 

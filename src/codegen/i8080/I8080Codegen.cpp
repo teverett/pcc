@@ -14,41 +14,23 @@ namespace {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
-// Where the whole program is loaded and starts executing - low
-// enough to leave plenty of RAM above it in a bare 64KB 8080 system,
-// high enough to stay clear of 0x0000-0x00FF (conventionally the
-// RST-vector/boot area on real 8080 hardware, even though nothing
-// here ever uses interrupts or RST - see tests/run_tests.sh's own
-// emulator setup, which just loads this binary here and sets PC to
-// it directly, no boot ROM involved).
+// Where the whole program is loaded and starts executing - above the conventional
+// RST-vector/boot area (0x0000-0x00FF), though nothing here uses interrupts or RST.
 constexpr uint32_t kBaseAddress = 0x0100;
-// The hardware stack (SP/PUSH/POP/CALL/RET) needs an explicit initial
-// value - unlike the 6502 (whose stack page is architecturally fixed
-// at $0100) the 8080's SP is simply undefined at reset. Comfortably
-// above every label this backend could ever generate for an ordinary
-// test-sized program, inside the 64KB RAM tests/run_tests.sh gives
-// the emulator.
+// Initial SP: the 8080's SP is undefined at reset (unlike the 6502's fixed $0100 stack page).
 constexpr uint32_t kStackTop = 0xFF00;
 }  // namespace
 
 void I8080Codegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": db 0, 0"); }
 
-// A literal element's own decimal text, or a symbol element's (a
-// dispatch-table address-of-function/global, see IR.h's
-// ArrayInitElem) own label - the referenced Slot's or Function's own
-// label() text, exactly the shape `lxi`'s own 16-bit operand already
-// takes (see genAddrOf()/genIndexAddr()). declareArray() below hands
-// this straight to a `dw` directive rather than computing a numeric
-// low/high split itself - I8080Assembler.cpp's own `emit16` already
-// resolves a symbol's full 16-bit address once every label is bound,
-// the same single evaluator call `lxi`'s own operand goes through.
+// A literal element's decimal text, or a symbol element's (a dispatch-table
+// address-of-function/global) label text.
 std::string I8080Codegen::arrayElemText(const ir::ArrayInitElem &e) {
     if (!e.isSymbol) return std::to_string(e.value);
     return e.slot ? label(e.slot) : label(e.func);
 }
 
-// `elemType` picks the data directive - see ../z80/Z80Codegen.cpp's
-// own declareArray() comment, which this mirrors exactly.
+// `elemType` picks the data directive.
 void I8080Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType) {
     if (values.empty()) return;
     int w = widthOfType(elemType);
@@ -87,25 +69,16 @@ void I8080Codegen::storePair(const std::string &dst, const std::string &pairReg)
 }
 
 void I8080Codegen::storeAcIndirect() {
-    // Assumes HL already holds the target address (see this
-    // function's own declaration comment) - `lda`/`sta` address `ac`
-    // directly, by name, never touching HL, so the caller's address
-    // in HL survives across both byte stores.
+    // `lda`/`sta` address `ac` directly by name, never touching HL, so the caller's address in
+    // HL survives across both byte stores.
     code_ << "    lda ac\n    mov m,a\n";
     code_ << "    inx h\n";
     code_ << "    lda ac+1\n    mov m,a\n";
 }
 
-// One in-place 1-bit rotate of the 16-bit memory cell `lbl`, used by
-// genShift()'s own loop and inlined directly by genMul()/
-// genDivMod() (see I8080Codegen.h's own header comment on why there's
-// no variable-count shift instruction to use instead). `ana a` is
-// this target's own idiom for "clear carry without otherwise
-// disturbing A" (every logical instruction clears CY as a side
-// effect, and ANA A's "AND A with itself" leaves A's value alone) -
-// needed because the 8080, unlike the 6502, has no explicit "clear
-// carry" instruction, and a left/right rotate always needs a known
-// carry-in to shift a 0 into the vacated bit.
+// One in-place 1-bit rotate of the 16-bit memory cell `lbl`. `ana a` clears carry without
+// disturbing A (the 8080 has no explicit clear-carry instruction), giving a known 0 carry-in to
+// shift into the vacated bit.
 void I8080Codegen::shiftOneBit(const std::string &lbl, bool isLeft) {
     code_ << "    lhld " << lbl << "\n";
     code_ << "    ana a\n";
@@ -113,9 +86,7 @@ void I8080Codegen::shiftOneBit(const std::string &lbl, bool isLeft) {
         code_ << "    mov a,l\n    ral\n    mov l,a\n";
         code_ << "    mov a,h\n    ral\n    mov h,a\n";
     } else {
-        // Logical (unsigned) shift - same convention, and the same
-        // reason (no unsigned type to make the distinction with), as
-        // every other backend's own `>>`.
+        // Logical (unsigned) shift.
         code_ << "    mov a,h\n    rar\n    mov h,a\n";
         code_ << "    mov a,l\n    rar\n    mov l,a\n";
     }
@@ -134,14 +105,9 @@ int I8080Codegen::elemShift(Type t) const {
     }
 }
 
-// HL already holds the operand's own address. The sign-extension
-// idiom - `mov a,l` / `ral` / `sbb a` - leaves the carry flag holding
-// exactly L's own original bit 7 after `ral` (RAL always rotates bit
-// 7 into the carry), and `SBB A` is always `A - A - CY`, which is
-// exactly 0x00 or 0xFF (CY clear or set) regardless of what `ral`
-// left in A - the sign-extension byte, in three real instructions
-// with no branch. An unsigned `char` just zero-fills H directly
-// instead.
+// HL must hold the operand's address. Sign-extension idiom: `ral` rotates L's bit 7 into carry,
+// then `sbb a` (A-A-CY) yields 0x00 or 0xFF - the sign-extension byte, in three instructions
+// with no branch. An unsigned `char` just zero-fills H instead.
 void I8080Codegen::loadOperand(Type type) {
     if (widthOfType(type) == 1) {
         code_ << "    mov a,m\n    mov l,a\n";
@@ -199,10 +165,8 @@ void I8080Codegen::genWideLoadLiteral(long value, int words) {
 
 void I8080Codegen::genWideStore(const ir::Slot *slot, int words) {
     for (int i = 0; i < words; i++) {
-        // Popped into BC, not DE - genFrameAddr() below uses DE as its
-        // own scratch for a Local/Param's offset (lxi d/dad d), so
-        // popping the value-to-store into DE would have it clobbered
-        // before the mov m,*/mov m,* below ever reads it back out.
+        // Popped into BC, not DE - genFrameAddr() below uses DE as scratch for a Local/Param's
+        // offset, which would clobber a value popped into DE before it's stored.
         code_ << "    pop b\n";
         if (slot->kind == ir::SlotKind::Global) {
             code_ << "    lxi h, " << label(slot) << (i ? ("+" + std::to_string(2 * i)) : "") << "\n";
@@ -213,21 +177,12 @@ void I8080Codegen::genWideStore(const ir::Slot *slot, int words) {
     }
 }
 
-// Multi-byte add/sub/negate/bitwise/compare all work byte-at-a-time
-// here, LSB first, chaining the real carry/borrow flag through ADC/
-// SBB (there's no 16-bit ADC/SBB on this chip the way the Z80's
-// `ADC HL,rr`/`SBC HL,rr` give ../z80/Z80Codegen.cpp's own version a
-// per-*word* chain instead) - every wide helper below first pops both
-// operands into the fixed "wa"/"wb" scratch cells (see
-// I8080Codegen.h's own header comment on wideScratch() - no SP-
-// relative addressing exists on this chip either), then walks every
-// byte of every word from least to most significant.
+// Multi-byte add/sub/negate/bitwise/compare all work byte-at-a-time, LSB first, chaining the
+// carry/borrow flag through ADC/SBB (no 16-bit ADC/SBB on this chip). Every wide helper below
+// first pops both operands into the fixed "wa"/"wb" scratch cells, then walks every byte of
+// every word from least to most significant.
 namespace {
-// `role`'s own `words`-word value, as individual byte labels, least
-// significant byte first - `wideScratch(role,0)` is that byte,
-// `wideScratch(role,0)+"+1"` the next, `wideScratch(role,1)` the one
-// after that, and so on (see I8080Codegen.h's own wideScratch()
-// comment: each word is a real 2-byte "db lo, hi" cell).
+// `role`'s `words`-word value, as individual byte labels, least significant byte first.
 std::vector<std::string> wideByteLabelsLsbFirst(const char *role, int words) {
     std::vector<std::string> out;
     for (int i = 0; i < words; i++) {
@@ -309,10 +264,9 @@ void I8080Codegen::genWideEqualityCompare(const ir::Expr &lhs, const ir::Expr &r
     code_ << Ldone << ":\n";
 }
 
-// Compares most-significant byte first - only that byte's own
-// comparison ever needs the signed/unsigned bias (see
-// emitLessCompare()'s own comment); once a byte differs, every byte
-// after it is comparing a pure, already-unsigned magnitude.
+// Compares most-significant byte first - only that byte needs the signed/unsigned bias (see
+// emitLessCompare()); once a byte differs, every byte after it compares a plain unsigned
+// magnitude.
 void I8080Codegen::genWideLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert, bool isUnsigned, int words) {
     genExpr(a);
     genExpr(b);
@@ -357,21 +311,11 @@ void I8080Codegen::genWideCompare(const std::string &op, const ir::Expr &lhs, co
     err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
 }
 
-// One bit at a time, most significant byte first (see genShift()'s
-// own header comment on why even the single-word case already does
-// this one bit at a time) - `ral`/`rar` always rotate the
-// accumulator, chaining the real carry flag from one byte into the
-// next exactly the way shiftOneBit() already chains it across the
-// two bytes of a plain `int`. The very first byte shifted right is
-// the whole value's own top byte; a signed shift needs that one bit
-// preserved (arithmetic), not always 0 (logical) - `mov b,a`/`ral`/
-// `mov a,b`/`rar` computes that top byte's own software SRA (there's
-// no hardware one on this chip): `ral` first copies the byte's own
-// sign bit into the carry (via its own top-bit rotation), then `rar`
-// on the *original* byte (restored from `b`) rotates that same bit
-// back in as the new top bit while shifting right - the sign
-// survives, and the carry `rar` shifts *out* (the original bit 0) is
-// exactly what the next, lower byte's own plain `rar` needs.
+// One bit at a time, most significant byte first, chaining the carry flag from one byte to the
+// next via `ral`/`rar`. A signed right shift needs the top byte's sign bit preserved
+// (arithmetic, not logical): `mov b,a`/`ral`/`mov a,b`/`rar` computes a software SRA by first
+// copying the sign bit into carry, then rotating it back in from the *original* byte while
+// shifting right.
 void I8080Codegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned, int words) {
     genExpr(lhs);
     popWideInto("a", words);
@@ -406,12 +350,9 @@ void I8080Codegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool i
     pushWideFrom("a", words);
 }
 
-// See ../pdp11/Pdp11Codegen.cpp's own genWideMul()/genWideDivMod()
-// comment (mirrored on ../z80/Z80Codegen.cpp too) for the reasoning
-// this repeats exactly: no simulator in this project's own test
-// harness to verify a hand-written multi-word multiply/divide
-// routine against, so failing loudly is safer than shipping an
-// unverifiable, possibly wrong one.
+// Unimplemented: no simulator in this project's test harness to verify a hand-written
+// multi-word multiply/divide routine against, so failing loudly is safer than shipping an
+// unverifiable one.
 void I8080Codegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int) {
     err(lhs.line, "multiplying two 'long'/'long long' values isn't supported on this target yet - "
                    "see I8080Codegen.cpp's own genWideMul() comment");
@@ -424,9 +365,7 @@ void I8080Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool,
     (void)rhs;
 }
 
-// An implicit or explicit conversion - see ../z80/Z80Codegen.cpp's
-// own genConvert(), which this mirrors exactly (just through this
-// backend's own mnemonics/sign-extension idiom).
+// An implicit or explicit conversion.
 void I8080Codegen::genConvert(const ir::Expr &e) {
     Type from = e.lhs->type;
     Type to = e.type;
@@ -462,14 +401,11 @@ void I8080Codegen::genConvert(const ir::Expr &e) {
         return;
     }
     if (!fromWide && toWide) {
-        // See ../z80/Z80Codegen.cpp's own version of this branch for
-        // why every word is written into the "wa" scratch cells and
-        // pushed via pushWideFrom() (LSW-on-top order, centrally)
-        // rather than pushing word 0 directly followed by the
-        // extension word(s) - the latter would leave an extension
-        // word on top instead of the native (least significant) one.
+        // Every word is written into the "wa" scratch cells and pushed via pushWideFrom() (LSW
+        // on top) rather than pushing word 0 directly followed by the extension word(s), which
+        // would leave an extension word on top instead of the least significant one.
         int toWords = wordCountOf(to);
-        genExpr(*e.lhs);  // ac already holds the native-width value, correctly sign/zero-extended to 16 bits
+        genExpr(*e.lhs);  // ac already holds the native-width value, sign/zero-extended to 16 bits
         code_ << "    lhld ac\n    shld " << wideScratch("a", 0) << "\n";
         for (int i = 1; i < toWords; i++) {
             if (from.isUnsigned) {
@@ -504,59 +440,37 @@ std::string I8080Codegen::generate(const ir::Program &prog, bool objectMode) {
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // Real separate compilation (`--format=coff`/`elf`/`macho`/
-    // `aout` from a single file - see IRBuilder.h's `allowExternal`)
-    // means `prog` may not define `main` at all. `objectMode` (see
-    // Codegen.h) means no object file ever emits this entry sequence
-    // itself, even the one that happens to define `main` -
-    // I8080LinkerFactory.cpp is solely responsible for synthesizing
-    // exactly one, once every object is merged and `main`'s linked
-    // address is resolvable (see Linker.h) - same pattern
-    // Z80Codegen.cpp's own `objectMode` comment documents. An object
-    // file's own base is `org 0` - it's the linker's job to place it,
-    // not this backend's.
+    // Real separate compilation means `prog` may not define `main` at all. `objectMode` means
+    // no object file emits this entry sequence itself; I8080LinkerFactory.cpp synthesizes
+    // exactly one once every object is merged and `main`'s linked address is resolvable. An
+    // object file's base is `org 0` - placing it is the linker's job.
     code_ << "org " << (objectMode ? 0 : kBaseAddress) << "\n\n";
     if (!objectMode) {
         code_ << "_start:\n";
         code_ << "    lxi sp, " << kStackTop << "\n";
         code_ << "    call " << label(mainFn) << "\n";
-        // The program's own final result sits in `ac` the moment
-        // execution reaches `halt` below - the authoritative place to
-        // read it from. This extra `lhld` leaves it in the real HL
-        // pair too, for a quick look with nothing more than a
-        // register dump.
+        // The program's final result sits in `ac` once execution reaches `halt` below; this
+        // extra `lhld` also leaves it in HL for a quick look via register dump.
         code_ << "    lhld ac\n";
         code_ << "halt:\n    jmp halt\n\n";
     }
 
-    // The fixed memory pseudo-registers - see I8080Codegen.h's own
-    // header comment for what each one is for. Every genExpr() call
-    // anywhere in the *whole linked program* shares the same `ac`
-    // (it's the one place a callee's own return value and a caller's
-    // own next operand both pass through), so unlike every other
-    // symbol this backend emits, these five can't each be redeclared
-    // per-object: in whole-program mode they're declared once, right
-    // here, as ordinary temps; in object mode, this file never
-    // declares them at all - every reference anywhere in a compiled
-    // object is then automatically deferred as an external
-    // relocation, resolved against the one real definition
-    // I8080LinkerFactory.cpp's own synthesized entry object provides
-    // - see Z80Codegen.cpp's own `generate()` comment for the
-    // original version of this same reasoning.
+    // The fixed memory pseudo-registers. Every genExpr() call in the whole linked program
+    // shares the same `ac`, so unlike every other symbol this backend emits, these five can't
+    // be redeclared per-object: in whole-program mode they're declared once here as ordinary
+    // temps; in object mode this file never declares them, so every reference is deferred as an
+    // external relocation against the definition I8080LinkerFactory.cpp's synthesized entry
+    // object provides.
     if (!objectMode) {
         declareTemp("ac");
         declareTemp("bc");
         declareTemp("cx");
         declareTemp("dx");
         declareTemp("ptr");
-        // The current function's own software frame pointer (see
-        // I8080Codegen.h's own header comment) - shared the same way
-        // as the five cells above, since a callee's own prologue and
-        // its caller both need to agree on the one real place it
-        // lives, exactly like `ac` does for a return value.
+        // The current function's software frame pointer, shared the same way as the cells
+        // above since a callee's prologue and its caller must agree on where it lives.
         declareTemp("fp");
-        // Wide (`long`/`long long`) scratch cells - see
-        // I8080Codegen.h's own header comment on wideScratch().
+        // Wide (`long`/`long long`) scratch cells.
         for (int i = 0; i < 4; i++) declareTemp(wideScratch("a", i));
         for (int i = 0; i < 4; i++) declareTemp(wideScratch("b", i));
         for (int i = 0; i < 4; i++) declareTemp(wideScratch("ret", i));
@@ -566,12 +480,8 @@ std::string I8080Codegen::generate(const ir::Program &prog, bool objectMode) {
 
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        // An external global (real separate compilation - see IR.h's
-        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
-        // defined in this file at all - it must never get a local
-        // storage word here, only ever be referenced by name (see
-        // label()) in code, letting the assembler's own undefined-
-        // symbol handling defer it to a relocation.
+        // An external global isn't defined in this file - it must never get a local storage
+        // word here, only be referenced by name, letting the assembler defer it to a relocation.
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
@@ -606,35 +516,21 @@ std::string I8080Codegen::generate(const ir::Program &prog, bool objectMode) {
     return out.str();
 }
 
-// Single-file-only (see I8080Codegen.h's own header comment: no
-// `--format=coff`) - the whole generated text is simply attributed
-// to whichever file defines `main`, same as every other single-file
-// backend's own perFileAsm().
+// The whole generated text is attributed to whichever file defines `main`.
 std::map<std::string, std::string> I8080Codegen::perFileAsm() const { return perFileAsm_; }
 
-// Every activation gets its own real stack frame (see I8080Codegen.h's
-// own header comment for the full layout): `lhld fp`/`push h` saves
-// the caller's own frame pointer on the real hardware stack, `lxi
-// h,0`/`dad sp` reads the current SP into HL (the standard 8080 idiom
-// for that - there's no direct "HL=SP" instruction) right after that
-// push, so it's exactly the address of the just-pushed word, and
-// `shld fp` makes that this call's own new frame base. `dad d` (with
-// the locals' own *negative* total byte size already in DE) then
-// `sphl` moves SP down below them in one step, reserving that memory
-// so nothing later in this function (a nested `push`, or a nested
-// `call`'s own argument pushes) can ever land on top of it - the same
-// role I8086Codegen.cpp's own `sub sp, N` plays, just computed by hand
-// since the 8080 has no instruction that subtracts an immediate from
-// SP directly.
+// Every activation gets its own real stack frame: `lhld fp`/`push h` saves the caller's frame
+// pointer, `lxi h,0`/`dad sp` reads SP into HL (there's no direct "HL=SP" instruction) right
+// after that push - exactly the address of the just-pushed word - and `shld fp` makes that this
+// call's new frame base. `dad d` (with the locals' negative total byte size in DE) then `sphl`
+// moves SP down below them in one step, reserving that memory before anything later in this
+// function can land on top of it.
 void I8080Codegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
     code_ << "    lhld fp\n    push h\n";
     code_ << "    lxi h, 0\n    dad sp\n    shld fp\n";
-    // See ../z80/Z80Codegen.cpp's own genFunction() comment for why
-    // `fn.func->frameSize` alone can fall up to `intUnits-1` bytes
-    // short of the deepest byte any individual Local slot actually
-    // needs below `fp` (same shared-IRBuilder quirk, same fix) -
-    // padding by that much here always covers the worst case.
+    // `fn.func->frameSize` alone can fall up to `intUnits-1` bytes short of the deepest byte a
+    // Local slot needs below `fp`; padding by that much covers the worst case.
     long reserveBytes = static_cast<long>(fn.func->frameSize) + (typeWidths().intUnits - 1);
     if (reserveBytes > 0) {
         code_ << "    lxi d, " << (-reserveBytes) << "\n    dad d\n    sphl\n";
@@ -644,26 +540,17 @@ void I8080Codegen::genFunction(const ir::FunctionBody &fn) {
     code_ << "\n";
 }
 
-// See this file's own header comment above genFunction() for the
-// prologue this undoes: `lhld fp`/`sphl` snaps SP back up to this
-// call's own frame base (dropping the locals' reserved region in one
-// instruction, regardless of how many words that was), `pop h` lifts
-// the caller's own frame pointer back off the real hardware stack,
-// `shld fp` restores it as the current `fp`, and `ret` returns to the
-// caller exactly as it always did - the real hardware CALL/RET pair
-// (and the real SP they already use) never needed any change of their
-// own to be reentrant.
+// Undoes genFunction()'s prologue: `lhld fp`/`sphl` snaps SP back to this call's frame base,
+// dropping the locals' reserved region; `pop h`/`shld fp` restores the caller's `fp`; `ret`
+// returns.
 void I8080Codegen::emitEpilogue() {
     code_ << "    lhld fp\n    sphl\n";
     code_ << "    pop h\n    shld fp\n";
     code_ << "    ret\n";
 }
 
-// A Local or Param slot's own effective address, computed fresh every
-// time rather than ever cached - see I8080Codegen.h's own header
-// comment for why this target has no addressing mode that could do
-// this as part of a single `mov`/`mvi`/etc. the way Z80's `(IX+d)` or
-// 8086's `[bp+d]` can.
+// A Local/Param slot's effective address, computed fresh every time rather than cached - this
+// target has no addressing mode that could do it as part of a single instruction.
 void I8080Codegen::genFrameAddr(const ir::Slot *slot, long extraBytes) {
     code_ << "    lhld fp\n";
     code_ << "    lxi d, " << frameByteOffset(slot, extraBytes) << "\n";
@@ -720,15 +607,10 @@ void I8080Codegen::genStmt(const ir::Stmt &s) {
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) {
                 genExpr(*s.initOrReturnOrExpr);
-                // A wide value sits on the real stack (LSW on top -
-                // see I8080Codegen.h's own header comment) after
-                // genExpr() - pop it into the fixed "wret" scratch
-                // cells first (plain memory, untouched by
-                // emitEpilogue()'s own `sphl`) rather than leaving it
-                // on the stack, since `sphl` is about to reset SP
-                // straight back to `fp`, abandoning (not reading)
-                // whatever still sits above it. genExpr()'s own Call
-                // case reads it back out of "wret" the same way.
+                // A wide value sits on the real stack (LSW on top) after genExpr(); pop it into
+                // the "wret" scratch cells since emitEpilogue()'s `sphl` is about to reset SP
+                // back to `fp`, abandoning whatever's above it. genExpr()'s Call case reads it
+                // back out of "wret" the same way.
                 if (isWide(s.initOrReturnOrExpr->type)) {
                     int words = wordCountOf(s.initOrReturnOrExpr->type);
                     for (int i = 0; i < words; i++) {
@@ -736,9 +618,8 @@ void I8080Codegen::genStmt(const ir::Stmt &s) {
                     }
                 }
             }
-            // An early return bypasses genFunction()'s own fall-
-            // through epilogue entirely, so it needs this same frame
-            // teardown inline - see emitEpilogue()'s own comment.
+            // An early return bypasses genFunction()'s fall-through epilogue, so it needs this
+            // same frame teardown inline.
             emitEpilogue();
             return;
         }
@@ -755,11 +636,9 @@ void I8080Codegen::genStmt(const ir::Stmt &s) {
                 genFrameAddr(s.declSlot);
                 storeOperand(s.declSlot->type);
             }
-            // No "else" case for a bare, uninitialized scalar: its own
-            // frame word already exists (genFunction()'s own prologue
-            // already reserved it) - same as a real, ordinary C
-            // automatic variable, its value is simply whatever was
-            // already in that stack slot until something assigns it.
+            // No "else" case for a bare, uninitialized scalar: its frame word already exists
+            // (genFunction()'s prologue reserved it), so its value is whatever was already in
+            // that stack slot until something assigns it.
             return;
         }
         case ir::StmtKind::ExprStmt: {
@@ -809,14 +688,10 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
                 genIndexAddr(e.slot, *e.lhs);  // ptr = target address
                 if (isWide(e.slot->type)) {
                     int words = wordCountOf(e.slot->type);
-                    // `ptr` is a single shared scratch cell - evaluating
-                    // `rhs` might itself index another array (clobbering
-                    // it), so the element address is saved on the real
-                    // stack across that call, the same way the narrow
-                    // case below saves it in HL via push/pop; the rhs's
-                    // own `words` pushed words land on top of that saved
-                    // address, so they're popped into "wb" (safely out of
-                    // the way) before the address underneath is restored.
+                    // `ptr` is a single shared scratch cell - evaluating `rhs` might itself
+                    // index another array and clobber it, so the element address is saved on
+                    // the real stack first; rhs's pushed words land on top of it and are popped
+                    // into "wb" before the address underneath is restored.
                     code_ << "    lhld ptr\n    push h\n";
                     genExpr(*e.rhs);
                     popWideInto("b", words);
@@ -873,13 +748,10 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Stores through at e.type's own width - the pointee type
-            // of a real typed pointer, or plain native-word width for
-            // the still-supported untyped-int-as-address style - see
-            // IRBuilder.cpp's own DerefAssign comment. A wide pointee
-            // mirrors the indexed Assign's own wide branch above,
-            // except `ptr` comes from evaluating e.lhs (the pointer,
-            // always narrow) instead of genIndexAddr().
+            // Stores at e.type's width - the pointee type of a typed pointer, or native-word
+            // width for the untyped-int-as-address style. A wide pointee mirrors the indexed
+            // Assign's wide branch above, except `ptr` comes from evaluating e.lhs (the
+            // pointer, always narrow) instead of genIndexAddr().
             genExpr(*e.lhs);  // ac = pointer value
             copy16("ptr", "ac");
             if (isWide(e.type)) {
@@ -912,8 +784,7 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                // Loads at e.type's own width - see DerefAssign's
-                // identical comment above.
+                // Loads at e.type's width - see DerefAssign above.
                 genExpr(*e.rhs);  // ac = pointer value
                 copy16("ptr", "ac");
                 if (isWide(e.type)) {
@@ -947,19 +818,10 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            // Each argument is pushed onto the real hardware stack,
-            // last-declared one first, so argument 0 ends up closest
-            // to the return address `call` is about to push - the
-            // address every Param already addresses itself by (see
-            // I8080Codegen.h's own `frameByteOffset()`: paramIndex 0 is
-            // `fp+4`, the lowest positive offset). The callee's own
-            // prologue lays them into ITS OWN frame itself; nothing
-            // here needs to know anything about the callee's
-            // parameter count beyond `e.args.size()`. Each value is
-            // computed into `ac` and then transited through HL (the
-            // only way to get a memory value onto the real stack -
-            // `PUSH` only ever takes a register pair, never a memory
-            // operand).
+            // Each argument is pushed last-declared first, so argument 0 ends up closest to the
+            // return address `call` is about to push (paramIndex 0 is `fp+4`). Each value is
+            // computed into `ac` and transited through HL, since `PUSH` only takes a register
+            // pair, never a memory operand.
             int totalWords = 0;
             for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
@@ -971,22 +833,15 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
                 }
             }
             code_ << "    call " << label(e.func) << "\n";
-            // The caller cleans its own pushed arguments back off
-            // afterward - cdecl's own convention, chosen here (same
-            // as I8086Codegen.cpp's own `add sp, N`) only because it
-            // needs no cooperation from the callee at all. `lxi
-            // h,N`/`dad sp`/`sphl` moves SP by a compile-time-constant
-            // amount in one step, the same idiom genFunction()'s own
-            // prologue uses to reserve locals.
+            // The caller cleans its own pushed arguments off afterward (cdecl convention),
+            // needing no cooperation from the callee.
             if (totalWords > 0) {
                 code_ << "    lxi h, " << (totalWords * 2) << "\n    dad sp\n    sphl\n";
             }
             if (isWide(e.type)) {
-                // The callee left its own wide return value in the
-                // "wret" scratch cells (see genStmt()'s own Return
-                // case) - push it back onto the stack as this
-                // expression's own result, most significant word
-                // first so the least significant ends up on top.
+                // The callee left its wide return value in the "wret" scratch cells; push it
+                // back as this expression's result, most significant word first so the least
+                // significant ends up on top.
                 int words = wordCountOf(e.type);
                 for (int i = words - 1; i >= 0; i--) {
                     code_ << "    lhld " << wideScratch("ret", i) << "\n    push h\n";
@@ -995,20 +850,12 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::CallPtr: {
-            // e.args is always empty here - IRBuilder.cpp rejects any
-            // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr). The 8080 has no
-            // indirect-CALL instruction, only `PCHL` (jump to the
-            // address in HL) - so a real CALL is emulated by hand:
-            // push the return address (the label right after `pchl`)
-            // onto the real hardware stack, exactly as `CALL` itself
-            // would, then `PCHL` to the callee. The callee's own
-            // `ret` pops that same address back into PC, landing
-            // right after `pchl` below - indistinguishable from an
-            // ordinary call/return pair.
+            // The 8080 has no indirect-CALL instruction, only `PCHL` (jump to the address in
+            // HL), so a real CALL is emulated: push the return address, then `PCHL`. The
+            // callee's `ret` pops that address back into PC, landing right after `pchl` below.
             genExpr(*e.lhs);  // ac = the callee's own entry address
             std::string Lret = newLabel();
-            code_ << "    lhld ac\n";  // HL = callee's address - pchl's own implicit target
+            code_ << "    lhld ac\n";  // HL = callee's address - pchl's implicit target
             code_ << "    lxi d, " << Lret << "\n";
             code_ << "    push d\n";
             code_ << "    pchl\n";
@@ -1020,9 +867,7 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Intrinsic: {
-            // Real 8080 interrupt enable/disable - EI/DI, the same
-            // real hardware feature as the 6502/8086 backends' own
-            // cli/sti (see M6502Codegen.cpp/I8086Codegen.cpp).
+            // Real 8080 interrupt enable/disable: EI/DI.
             code_ << "    " << (e.op == "ion" ? "ei" : "di") << "\n";
             return;
         }
@@ -1035,53 +880,24 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
     }
 }
 
-// Leaves slot[idxExpr]'s own effective address in the `ptr` memory
-// cell. `idxExpr` is always evaluated *first*, and alone - genExpr()
-// is a general recursive-descent call that might itself need `ptr`/
-// `bc`/`cx`/`dx` (or DE/HL transiently) for its own nested
-// subexpressions, so nothing of this function's own can safely be
-// sitting in any of those across that call; only after it returns
-// (and its result is safely resting in `ac`) does this function
-// start using its own scratch.
+// Leaves slot[idxExpr]'s effective address in the `ptr` memory cell. `idxExpr` is evaluated
+// first and alone, since genExpr() may itself need `ptr`/`bc`/`cx`/`dx` for nested
+// subexpressions.
 //
-// `slot->arraySize > 0` means `slot` is itself the array, and its own
-// base address is the thing to index from; otherwise `slot` is a
-// plain pointer variable and the base instead comes from *reading*
-// that variable's own stored value. A Global's own base is a compile-
-// time-known label (a bare `lxi d, <label>` loads a symbol's own
-// address, exactly like genAddrOf()'s own use of the same trick) or,
-// for a pointer variable, a direct read of its known address
-// (loadPair()); a Local/Param's base is only known at runtime,
-// relative to `fp` (genFrameAddr()), and for a pointer variable means
-// dereferencing that frame address rather than just computing it.
+// `slot->arraySize > 0` means `slot` is itself the array; otherwise `slot` is a pointer
+// variable and the base comes from reading its stored value. A Global's base is a compile-
+// time-known label, or for a pointer variable a direct read of it (loadPair()); a Local/Param's
+// base is runtime-relative to `fp` (genFrameAddr()), and for a pointer variable means
+// dereferencing that frame address.
 //
-// A Global array's element i sits at base+2*i, same as any ordinary
-// increasing-address memory - but a *Local* array's element i sits at
-// base-2*i (`frameByteOffset()` is already negative, and
-// genFrameAddr()'s own `addr()` is the array's first/lowest-index
-// word - see I8080Codegen.h's own header comment on why): getting
-// this backwards silently corrupts whatever's above the array in the
-// frame (another Local, the saved `fp`, or the return address
-// itself), so the combine step below subtracts `ptr` (idx*2) from the
-// base instead of adding it whenever the base came from a Local/Param
-// array.
+// A Global array's element i sits at base+2*i, but a Local array's element i sits at base-2*i
+// (frameByteOffset() is negative and genFrameAddr() gives the array's lowest-index word):
+// getting this backwards silently corrupts whatever's above the array in the frame, so the
+// combine step below subtracts instead of adds whenever the base came from a Local/Param array.
 void I8080Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
-    // `elemShift()` already scales by the element's own full width
-    // (0/1/2/3 for a 1/2/4/8-byte element - see I8080Codegen.h's own
-    // header comment), so this address computation is exactly as
-    // valid for a wide (`long`/`long long`) element as for a plain
-    // one; only the callers that read/write through the resulting
-    // `ptr` need their own wide-aware path (see genIndex()/genExpr()'s
-    // own Assign case).
     genExpr(idxExpr);  // ac = index
-    // HL = index * widthOfType(slot->type) - `dad h` doubles HL in a
-    // single instruction (adding a value to itself is exactly
-    // doubling it), repeated `elemShift()` times (0 for a `char`
-    // element, 1 for `short`/`int`, 2/3 for `long`/`long long` - see
-    // I8080Codegen.h's own header comment). Stashed in `ptr`
-    // immediately - loading the base below (particularly
-    // loadPair()/genFrameAddr(), which go through HL) would otherwise
-    // clobber it.
+    // HL = index * widthOfType(slot->type), via `dad h` (doubling) repeated elemShift() times.
+    // Stashed in `ptr` immediately since loading the base below goes through HL too.
     code_ << "    lhld ac\n";
     int shift = elemShift(slot->type);
     for (int i = 0; i < shift; i++) code_ << "    dad h\n";
@@ -1098,17 +914,15 @@ void I8080Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
         if (slot->arraySize > 0) {
             code_ << "    push h\n    pop d\n";  // DE = that address (the array's own base)
         } else {
-            // slot is a pointer VARIABLE living in this frame - DE
-            // needs its stored runtime VALUE, not its own address.
+            // slot is a pointer variable living in this frame - DE needs its stored runtime
+            // value, not its own address.
             code_ << "    mov e,m\n    inx h\n    mov d,m\n";
         }
     }
     const bool subtractIdx = !isGlobal && slot->arraySize > 0;
     if (subtractIdx) {
-        // ptr = base(DE) - index*2(currently in `ptr`) - see this
-        // function's own header comment on why a Local array needs
-        // this instead of the add below. Same DE-minus-HL byte-by-
-        // byte borrow chain as genBinary()'s own "-" operator.
+        // ptr = base(DE) - index*2(currently in `ptr`); same DE-minus-HL borrow chain as
+        // genBinary()'s "-" operator.
         code_ << "    lhld ptr\n";
         code_ << "    mov a,e\n    sub l\n    mov e,a\n";
         code_ << "    mov a,d\n    sbb h\n    mov d,a\n";
@@ -1118,15 +932,9 @@ void I8080Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     }
 }
 
-// `ptr` already holds the element's own address (genIndexAddr()).
-// Reads its `words` 16-bit words, most significant first, pushing
-// each one onto the real stack as it goes - same least-significant-
-// word-on-top convention as every other wide load here (see
-// I8080Codegen.h's own header comment) - by recomputing `ptr+2*i`
-// fresh for each word via the otherwise-unused BC pair (DE already
-// held the popped value in the Assign-side equivalent of this; here
-// there's no popped value to protect, so this could use DE too, but
-// BC keeps this and genWideStoreAtPtr() symmetric).
+// `ptr` already holds the element's address (genIndexAddr()). Reads its `words` 16-bit words,
+// most significant first, pushing each onto the real stack (LSW on top), recomputing
+// `ptr+2*i` fresh for each word via BC.
 void I8080Codegen::genWideLoadAtPtr(int words) {
     for (int i = words - 1; i >= 0; i--) {
         code_ << "    lhld ptr\n";
@@ -1136,13 +944,9 @@ void I8080Codegen::genWideLoadAtPtr(int words) {
     }
 }
 
-// The mirror image for a write: `wideScratch(role,i)` already holds
-// word `i` of the value to store (see this function's own caller -
-// genExpr()'s Assign case pops the evaluated rhs into "wb" first,
-// before the element's own address can be clobbered by evaluating
-// it), and `lda`/direct-`sta`-by-label addressing reaches that value
-// one byte at a time without ever needing it in a register pair that
-// `ptr+2*i`'s own address computation is also using.
+// The mirror image for a write: `wideScratch(role,i)` already holds word `i` of the value to
+// store, reached one byte at a time via `lda` without needing a register pair that
+// `ptr+2*i`'s address computation is also using.
 void I8080Codegen::genWideStoreAtPtr(const char *role, int words) {
     for (int i = 0; i < words; i++) {
         code_ << "    lhld ptr\n";
@@ -1163,21 +967,10 @@ void I8080Codegen::genIndex(const ir::Expr &e) {
     loadOperand(e.slot->type);
 }
 
-// Entry convention: HL = old value, DE = rhs value (both already at
-// `type`'s own width/signedness - IRBuilder.cpp's own
-// buildCompoundRhs() already converts `rhs` to match). `+` is a single
-// `dad d` (HL already holds both operands' "accumulator" role, unlike
-// genBinary()'s own tail, which has to shuttle lhs/rhs out of `ac`
-// first since genExpr() always deposits there). `-`/`&`/`|`/`^` reuse
-// genBinary()'s own byte-wise instruction shapes with HL/DE's roles
-// swapped from that function's own lhs/rhs convention - a register-
-// generic mnemonic (MOV/SUB/SBB/ANA/ORA/XRA all encode any 8-bit
-// register operand the same way - see I8080Assembler.cpp's own
-// reg8Code()), so this is the same instruction shape, not a new one.
-// `*`/`/`/`%`/`<<`/`>>` seed `bc`/`dx` directly from HL/DE (HL can go
-// straight to its target cell via `shld`; DE needs a real stack round-
-// trip through HL first, same as storePair()) and then run genMul()'s/
-// genDivMod()'s/genShift()'s own loop body unchanged.
+// Entry convention: HL = old value, DE = rhs value, both already at `type`'s width/signedness.
+// `+` is a single `dad d`. `-`/`&`/`|`/`^` reuse genBinary()'s byte-wise instruction shapes with
+// HL/DE's roles swapped. `*`/`/`/`%`/`<<`/`>>` seed `bc`/`dx` from HL/DE and run genMul()'s/
+// genDivMod()'s/genShift()'s loop bodies unchanged.
 void I8080Codegen::genCompoundOp(const std::string &op, Type type) {
     bool isUnsigned = type.isUnsigned;
     if (op == "+") { code_ << "    dad d\n    shld ac\n"; return; }
@@ -1255,12 +1048,9 @@ void I8080Codegen::genCompoundOp(const std::string &op, Type type) {
     if (op == "%") copy16("ac", "dx");
 }
 
-// The target's own address is a pure function of `e.slot` (see this
-// method's own declaration comment), so it's computed once before
-// loading `old`, and again - fresh, no state carried across `rhs`'s
-// own evaluation - right before the final store; only `old` itself
-// (and, for a postfix `++`/`--`, a second copy of it for the final
-// result) needs the real stack to survive evaluating `rhs`.
+// The target address is computed once before loading `old`, then again fresh right before the
+// final store; only `old` (and, for a postfix `++`/`--`, a second copy for the final result)
+// needs the real stack to survive evaluating `rhs`.
 void I8080Codegen::genCompoundScalar(const ir::Expr &e) {
     auto genAddr = [&] {
         if (e.slot->kind == ir::SlotKind::Global) {
@@ -1291,17 +1081,10 @@ void I8080Codegen::genCompoundScalar(const ir::Expr &e) {
     }
 }
 
-// `ptr` must already hold the resolved address on entry. The address
-// is always shuttled back through the real hardware stack across
-// evaluating `rhs` (`ptr` is a single shared scratch cell, not a
-// stack - see I8080Codegen.h's own header comment - and `rhs`'s own
-// evaluation may recurse into arbitrarily complex codegen that reuses
-// `ptr`, e.g. a nested compound assignment's own identical addressing
-// problem). Once `rhs` has been evaluated, nothing further here
-// recurses into another expression, so the shared `cx` cell (declared
-// once in generate(), never written by any other existing codegen in
-// this file) is safe to use as a transient `yieldOld` stash for the
-// remainder of this one call.
+// `ptr` must already hold the resolved address on entry. The address is shuttled through the
+// real hardware stack across evaluating `rhs`, since `rhs` may recurse into codegen that reuses
+// `ptr` (e.g. a nested compound assignment). After `rhs` is evaluated nothing here recurses
+// further, so `cx` is safe as a transient `yieldOld` stash.
 void I8080Codegen::genCompoundThroughPtr(const ir::Expr &e) {
     code_ << "    lhld ptr\n";
     loadOperand(e.type);  // ac = old
@@ -1328,8 +1111,7 @@ void I8080Codegen::genCompoundThroughPtr(const ir::Expr &e) {
     }
 }
 
-// Same narrow-to-narrow re-extension genConvert()'s own `!fromWide &&
-// !toWide` case already does - a no-op unless `to` is a `char`.
+// A no-op unless `to` is a `char`.
 void I8080Codegen::narrowAcTo(Type to) {
     if (widthOfType(to) != 1) return;
     code_ << "    lhld ac\n";
@@ -1363,17 +1145,10 @@ void I8080Codegen::genAddrOf(const ir::Expr &operand) {
     err(operand.line, "internal: unhandled addressable-operand kind");
 }
 
-// Stores arrayInit into `slot`'s own frame slots - every call needs
-// this re-run, since (unlike a Global's one static trailer) a Local's
-// storage is this activation's own fresh frame region, not pre-set to
-// anything; arrayInit is always fully populated up to arraySize
-// (zero-padded even with no source-level initializer), so this always
-// leaves the whole array in a known state, same as a Global array's
-// static trailer always did. Element i's own address is
-// `frameByteOffset(slot) - 2*i` (see I8080Codegen.h's own header
-// comment on why a Local array's elements sit at decreasing addresses
-// as i increases) - computed directly here rather than through
-// genFrameAddr(), which only ever knows `slot`'s own single offset.
+// Stores arrayInit into `slot`'s frame slots; every call re-runs this since a Local's storage
+// is a fresh frame region each activation, not pre-set like a Global's static trailer.
+// arrayInit is always fully populated up to arraySize (zero-padded), leaving the whole array in
+// a known state.
 void I8080Codegen::genLocalArrayInit(const ir::Slot *slot) {
     int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
@@ -1390,9 +1165,7 @@ void I8080Codegen::genLocalArrayInit(const ir::Slot *slot) {
             storeAcIndirect();
             continue;
         }
-        // A wide (`long`/`long long`) element - 2 or 4 words, least
-        // significant first, same layout as every other wide value's
-        // own in-memory representation elsewhere in this file.
+        // A wide (`long`/`long long`) element - 2 or 4 words, least significant first.
         auto uv = static_cast<unsigned long>(elem.value);
         int words = w / 2;
         for (int j = 0; j < words; j++) {
@@ -1404,22 +1177,14 @@ void I8080Codegen::genLocalArrayInit(const ir::Slot *slot) {
     }
 }
 
-// Every binary op here saves its left operand across evaluating the
-// right one on the *real* 8080 hardware stack (`push h`/`pop d`),
-// never in a named memory cell like `bc` - the right operand's own
-// genExpr() is a general recursive call that might itself be another
-// binary op (or genMul()/genDivMod()/genShift(), which all share the
-// same `bc`/`cx`/`dx` cells), so a named cell holding "the other
-// operand" would get clobbered the moment a nested one reuses it.
-// The real stack has no such aliasing problem - it's genuinely
-// unique call-depth storage, same reason the 6502 backend's own
-// PHA/PLA sequences serve this exact role (see M6502Codegen.cpp).
+// Every binary op saves its left operand across evaluating the right one on the real 8080
+// hardware stack (`push h`/`pop d`), never in a named cell like `bc` - the right operand's
+// genExpr() might itself be another binary op (or genMul()/genDivMod()/genShift(), which share
+// the same `bc`/`cx`/`dx` cells), which would clobber a named "other operand" cell.
 void I8080Codegen::genBinary(const ir::Expr &e) {
     const std::string &op = e.op;
-    // Every arithmetic/bitwise/comparison operand here already shares
-    // one common type (IRBuilder's own usual-arithmetic-conversion
-    // pass - see Type.h), except shift (only the LHS's own type
-    // matters) and &&/|| (width-independent).
+    // Every operand here shares one common type (usual arithmetic conversions), except shift
+    // (only the LHS's type matters) and &&/|| (width-independent).
     Type operandType = e.lhs->type;
     bool wide = isWide(operandType);
     bool isUnsigned = operandType.isUnsigned;
@@ -1430,9 +1195,7 @@ void I8080Codegen::genBinary(const ir::Expr &e) {
             return;
         }
         genExpr(*e.lhs);
-        code_ << "    lhld ac\n    push h\n";  // save lhs on the real stack across evaluating rhs - see this
-                                                // function's own header comment on why a named memory cell can't
-                                                // be used for that instead
+        code_ << "    lhld ac\n    push h\n";  // save lhs on the real stack across evaluating rhs
         genExpr(*e.rhs);                        // ac = rhs
         code_ << "    pop d\n";                  // DE = lhs (popped only now, after rhs is fully evaluated)
         if (op == "+") {
@@ -1500,17 +1263,12 @@ void I8080Codegen::genBinary(const ir::Expr &e) {
     genCompare(op, *e.lhs, *e.rhs, isUnsigned);
 }
 
-// No variable-count shift instruction - loop `rhs` times instead, one
-// bit at a time, via shiftOneBit() (see I8080Codegen.h's own header
-// comment, and the same fix every other software-shift backend here
-// already needs for the same reason). `isUnsigned` only matters for
-// `>>` - see genWideShift()'s own comment on the same signed/
-// unsigned distinction, done here with the same `mov b,a`/`ral`/
-// `mov a,b`/`rar` software-SRA idiom for just the top byte.
+// No variable-count shift instruction - loop `rhs` times, one bit at a time, via shiftOneBit().
+// `isUnsigned` only matters for `>>`, using the same `mov b,a`/`ral`/`mov a,b`/`rar` software-
+// SRA idiom for the top byte as genWideShift().
 void I8080Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
     genExpr(lhs);                          // ac = value to shift
-    code_ << "    lhld ac\n    push h\n";  // saved on the real stack across evaluating the count - see
-                                            // genBinary()'s own header comment on why not a named cell
+    code_ << "    lhld ac\n    push h\n";  // saved on the real stack across evaluating the count
     genExpr(rhs);                           // ac = shift count
     code_ << "    lhld ac\n    mov c,l\n";  // c = shift count (always small; low byte is enough)
     code_ << "    pop h\n    shld bc\n";     // bc = value (restored only now, after the count is safely in c)
@@ -1532,11 +1290,9 @@ void I8080Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLef
     copy16("ac", "bc");
 }
 
-// Textbook shift-and-add multiply (no hardware multiply - see
-// I8080Codegen.h's own header comment): `bc` is the multiplicand
-// (doubled each iteration), `dx` the multiplier (halved each
-// iteration, consumed one bit at a time), `ac` the accumulating
-// product. Only verified against non-negative operands.
+// Textbook shift-and-add multiply (no hardware multiply): `bc` is the multiplicand (doubled
+// each iteration), `dx` the multiplier (halved each iteration), `ac` the accumulating product.
+// Only verified against non-negative operands.
 void I8080Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);                          // ac = multiplicand
     code_ << "    lhld ac\n    push h\n";  // saved on the real stack across evaluating the multiplier
@@ -1561,16 +1317,12 @@ void I8080Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << Ldone << ":\n";
 }
 
-// Repeated subtraction (no hardware divide - see I8080Codegen.h's own
-// header comment): `dx` is the running remainder (starts as the
-// dividend), `bc` the fixed divisor, `ac` the quotient, counting how
-// many times `bc` was subtracted out of `dx` before it would've gone
-// negative. The core loop only handles non-negative operands, so a
-// signed operand is divided via its absolute value instead: `ptr`'s
-// own low/high byte holds the dividend's/divisor's original sign (0/1)
-// while the unsigned core runs, then the quotient's sign (1 iff those
-// two signs differed) and the remainder's sign (always the dividend's
-// own original sign) are restored on its result afterward.
+// Repeated subtraction (no hardware divide): `dx` is the running remainder (starts as the
+// dividend), `bc` the fixed divisor, `ac` the quotient, counting how many times `bc` was
+// subtracted out of `dx` before it would go negative. The core loop only handles non-negative
+// operands, so a signed operand is divided via its absolute value: `ptr`'s low/high byte holds
+// the dividend's/divisor's original sign while the unsigned core runs, then the quotient's sign
+// (1 iff the two signs differed) and the remainder's sign (the dividend's) are restored after.
 void I8080Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);                          // ac = dividend
     code_ << "    lhld ac\n    push h\n";  // saved on the real stack across evaluating the divisor
@@ -1610,24 +1362,20 @@ void I8080Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool want
     code_ << Lloop << ":\n";
     loadPair("d", "dx");
     code_ << "    lhld bc\n";
-    // Tentative dx - bc; carry (borrow) set afterward means dx < bc,
-    // so this round's subtraction can't happen - stop.
-    code_ << "    mov a,e\n    sub l\n    mov c,a\n";  // c = tentative low result (c is scratch here, not "the
-                                                        // divisor" - bc's own value was already consumed into HL)
+    // Tentative dx - bc; carry (borrow) set afterward means dx < bc, so this round's
+    // subtraction can't happen - stop.
+    code_ << "    mov a,e\n    sub l\n    mov c,a\n";  // c = tentative low result
     code_ << "    mov a,d\n    sbb h\n";
     code_ << "    jc " << Ldone << "\n";
     // Commit: dx -= bc.
     code_ << "    mov d,a\n    mov e,c\n";
     storePair("dx", "d");
-    // Quotient += 1 - a real 16-bit increment (`inx h`), unlike the
-    // 6502's own carry-chained inc16() workaround.
-    code_ << "    lhld ac\n    inx h\n    shld ac\n";
+    code_ << "    lhld ac\n    inx h\n    shld ac\n";  // quotient += 1
     code_ << "    jmp " << Lloop << "\n";
     code_ << Ldone << ":\n";
     if (!isUnsigned) {
-        // Quotient is negative iff the two original signs differed;
-        // the remainder always takes the dividend's own original
-        // sign (same rule as every other backend's signed div/mod).
+        // Quotient is negative iff the two original signs differed; the remainder always takes
+        // the dividend's original sign.
         code_ << "    lda ptr\n    mov b,a\n    lda ptr+1\n    xra b\n";
         std::string Lskip = newLabel();
         code_ << "    jz " << Lskip << "\n";
@@ -1648,10 +1396,8 @@ void I8080Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const 
     err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
 }
 
-// `==`/`!=` need no sign handling at all: a-b (full 16 bits, borrow
-// chained from low into high byte) is zero iff a==b, checked the same
-// "OR the two result bytes together" way genLogicalNot() checks a
-// value for zero.
+// `==`/`!=` need no sign handling: a-b (16 bits, borrow chained low into high byte) is zero
+// iff a==b.
 void I8080Codegen::emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, bool wantEqual) {
     genExpr(lhs);
     code_ << "    lhld ac\n    push h\n";  // saved on the real stack across evaluating rhs
@@ -1668,13 +1414,9 @@ void I8080Codegen::emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs,
     code_ << Ldone << ":\n";
 }
 
-// Signed 16-bit "a < b" via the standard bias trick (see
-// I8080Codegen.h's own header comment on why the 8080, unlike every
-// other backend here, has no hardware overflow flag to combine with
-// the result's sign bit instead): flipping just the top bit of each
-// operand's high byte maps the signed range onto the unsigned one
-// while preserving order, so a plain unsigned compare (the final
-// borrow out of the high-byte subtraction) is all that's left to do.
+// Signed 16-bit "a < b" via the bias trick: flipping the top bit of each operand's high byte
+// maps the signed range onto the unsigned one while preserving order, leaving a plain unsigned
+// compare (the final borrow) to do.
 void I8080Codegen::emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert, bool isUnsigned) {
     genExpr(a);
     code_ << "    lhld ac\n    push h\n";  // saved on the real stack across evaluating b
@@ -1730,12 +1472,9 @@ void I8080Codegen::genLogicalNot(const ir::Expr &rhs) {
     code_ << Ldone << ":\n";
 }
 
-// After genExpr(e) just left `e`'s own value - `ac`, if narrow, or
-// `wordCountOf(e.type)` words on the real stack (LSW on top) if wide
-// (see ../z80/Z80Codegen.h's own header comment on this convention) -
-// this leaves the real Z flag set exactly as a plain `ora h` would,
-// with any wide stack space already released, ready for an
-// immediate `jz`/`jnz`.
+// After genExpr(e) leaves `e`'s value - `ac` if narrow, or `wordCountOf(e.type)` words on the
+// real stack (LSW on top) if wide - this sets Z exactly as a plain `ora h` would, with any wide
+// stack space released, ready for an immediate `jz`/`jnz`.
 void I8080Codegen::testTruthy(const ir::Expr &e) {
     if (!isWide(e.type)) {
         code_ << "    lhld ac\n    mov a,l\n    ora h\n";
@@ -1760,13 +1499,8 @@ std::string I8080Codegen::buildAssembleCommand(const std::string &, const std::s
 std::optional<std::string> I8080Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "raw") return assembleI8080(asmText);
-    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
-    // (see generate()'s own `objectMode` comment) - this backend's
-    // own assembler builds one format-neutral ObjectFile exactly
-    // once (see I8080Assembler.h's own `assembleI8080Object`), and
-    // whichever of these names was asked for just picks that
-    // format's own FileFormatWriter (see
-    // fileformat/FileFormat.h) to serialize it.
+    // `coff`/`elf`/`macho`/`aout`/`objraw`: builds one format-neutral ObjectFile, then picks
+    // that format's FileFormatWriter to serialize it.
     if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleI8080Object(asmText);
         return makeFileFormatWriter(*kind)->write(obj);

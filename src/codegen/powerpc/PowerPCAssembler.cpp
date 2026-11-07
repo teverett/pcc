@@ -19,8 +19,7 @@ namespace {
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("PowerPCAssembler: " + msg); }
 
 // --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
-// Same Syllable/Group shape as every other backend's own assembler -
-// see M68kAssembler.cpp's own comment.
+// Shared Syllable/Group expression shape, as in M68kAssembler.cpp.
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
     char sign = 0;
@@ -29,14 +28,10 @@ struct Syllable {
     std::vector<Syllable> group;
 };
 
-// One operand, classified from a bare expression - see
-// PowerPCAssembler.h's own comment on why there's no real
-// `0(r4)`/`%hi()`/`%lo()` PowerPC syntax here. `Reg` comes from
-// recognizing a bare register name; `Imm` from a bare (optionally
-// signed) number; anything else (a label, or `label+N`) is `Mem` - an
-// absolute address, resolved to the label's own full 32-bit value and
-// then (for `lis`/`ori` specifically - see encodeInstr()) split into
-// its upper/lower half.
+// One operand, classified from a bare expression. `Reg` comes from a bare
+// register name; `Imm` from a bare (optionally signed) number; anything else
+// (a label, or `label+N`) is `Mem` - resolved to a full address and, for
+// `lis`/`ori` specifically, split into its upper/lower half.
 struct Operand {
     enum Kind { Reg, Imm, Mem } kind = Imm;
     int reg = -1;
@@ -79,16 +74,10 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
     return result;
 }
 
-// This dialect's own fixed register numbering (not a real PowerPC ABI
-// register-name table in full - just the handful PowerPCCodegen.cpp
-// ever emits - see PowerPCCodegen.h's own header comment on each
-// register's role): `r0`=0, `sp`=1, `t0`=3, `t1`=4, `t2`=5, `fp`=31 -
-// the real PowerPC register numbers those names carry in every actual
-// PowerPC assembler too (`r31` is also real-world PowerPC's own usual
-// frame-pointer choice when a function needs one), so the encoded bit
-// patterns below match genuine PowerPC object code exactly, even
-// though this dialect only ever names this one subset of the 32 GPRs.
-// Returns -1 if `name` isn't one of them.
+// This dialect's fixed register numbering, matching the real PowerPC
+// register numbers for this subset of the 32 GPRs (r31 is also real-world
+// PowerPC's usual frame-pointer choice). Returns -1 if `name` isn't one of
+// them.
 int regNumber(const std::string &lower) {
     static const std::unordered_map<std::string, int> names = {
         {"r0", 0}, {"sp", 1}, {"t0", 3}, {"t1", 4}, {"t2", 5}, {"t3", 6},
@@ -193,12 +182,9 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
-// One pending fixup `assemblePowerPCObject()` (see
-// PowerPCAssembler.h's own header comment) turns into a real
-// ObjRelocation once assembly is done - `offset` into `bytes()`,
-// `symbolName` the reference that couldn't be resolved locally (or
-// the reserved pseudo-symbol ".." for a same-file address's own
-// needed base-shift), `kind` one of kPowerPCRelocHi/Lo/Branch.
+// One pending fixup, turned into a real ObjRelocation once assembly is done.
+// `symbolName` is either the unresolved reference or the pseudo-symbol ".."
+// for a same-file address's own base-shift.
 struct Relocation {
     uint32_t offset;
     std::string symbolName;
@@ -243,13 +229,9 @@ class Assembler {
                 orgBase_ = evalExpr(line.exprList.at(0));
                 return;
             case Line::Dw:
-                // Each word's own expression goes through the exact same
-                // external-name/base-shift tracking as `lis`/`ori`'s own
-                // Hi/Lo immediate (see encodeInstr()) - a bare symbol here
-                // (an array initializer's address-of-function/global
-                // element) resolves and relocates as a plain additive
-                // 32-bit word (kPowerPCRelocAbs32), rather than the split
-                // Hi/Lo pair an instruction's own immediate field needs.
+                // A bare symbol here resolves and relocates as a plain
+                // additive 32-bit word (kPowerPCRelocAbs32), not the split
+                // Hi/Lo pair an instruction's immediate field needs.
                 for (const auto &e : line.exprList) {
                     std::string externalName;
                     bool needsBaseShift = false;
@@ -274,14 +256,10 @@ class Assembler {
         }
     }
 
-    // `externalName`/`needsBaseShift` mirror ../m68k/M68kAssembler.cpp's
-    // own `evalExpr` exactly - see PowerPCAssembler.h's own header
-    // comment on why *any* local `lis`/`ori` address reference, not
-    // just an external one, needs a relocation here once
-    // `allowExternal_` is set (a `b`/`bl` branch target never sets
-    // `needsBaseShift` at all - its own caller never passes that
-    // out-param, since a same-object branch displacement needs no
-    // relocation regardless of where this object ends up linked).
+    // Mirrors M68kAssembler.cpp's evalExpr(): externalName/needsBaseShift
+    // track whether an address reference needs a relocation once
+    // allowExternal_ is set. A b/bl branch target never sets
+    // needsBaseShift, since a same-object branch needs no relocation.
     uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
@@ -348,23 +326,15 @@ class Assembler {
         return static_cast<uint16_t>(v & 0xFFFF);
     }
 
-    // The signed/unsigned decimal `op`'s own exprList already carries
-    // (e.g. `li t0,-4`), masked to 16 bits.
     uint16_t evalImm(const Operand &op) {
         if (op.kind == Operand::Reg) fail("expected an immediate or label operand, not a register");
         int32_t v = static_cast<int32_t>(evalExpr(op.expr));
         return imm16Of(v);
     }
 
-    // `lis`/`ori`'s own immediate operand: a plain number is used
-    // exactly as PowerPCCodegen.cpp already computed it (that half of
-    // a literal it split itself - see IntLit's own codegen); a label
-    // (`Mem`) instead has its own full resolved address split into
-    // its upper (`lis`) or lower (`ori`) 16 bits automatically here -
-    // see PowerPCAssembler.h's own header comment on why this dialect
-    // needs no `%hi`/`%lo` syntax at all. `externalName`/
-    // `needsBaseShift` just thread through to `evalExpr()` - only a
-    // `Mem` operand (a real label reference) can ever set either one.
+    // A plain number is used as-is (already split by the caller); a label
+    // (`Mem`) has its full resolved address split into its upper (`lis`) or
+    // lower (`ori`) 16 bits here.
     uint16_t evalHiLo(const Operand &op, bool hi, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         if (op.kind == Operand::Reg) fail("expected an immediate or label operand, not a register");
@@ -383,26 +353,20 @@ class Assembler {
     }
 
     // --- PowerPC instruction formats ------------------------------------
-    // D-form, direct field order (arithmetic: addi/addis/li/lis) -
-    // opcode(6) rD/rT(5) rA(5) imm16 - the encoded field order matches
-    // the dialect's own mnemonic operand order (dest first).
+    // D-form, direct field order (addi/addis/li/lis): encoded field order
+    // matches mnemonic operand order (dest first).
     void emitDArith(uint8_t opcode, uint8_t rT, uint8_t rA, uint16_t imm) {
         emit32((static_cast<uint32_t>(opcode) << 26) | (static_cast<uint32_t>(rT) << 21) |
                (static_cast<uint32_t>(rA) << 16) | imm);
     }
-    // D-form, swapped field order (the logical-immediate family -
-    // `ori` is the only one this dialect ever emits) - opcode(6)
-    // rS(5) rA(5) imm16 - real PowerPC's own well-known asymmetry: the
-    // mnemonic's own first (destination) operand is encoded in the
-    // *second* register field, not the first, unlike every arithmetic
-    // D-form instruction above.
+    // D-form, swapped field order (ori): PowerPC's logical-immediate family
+    // encodes the destination in the second register field, not the first.
     void emitDLogical(uint8_t opcode, uint8_t rADest, uint8_t rSSrc, uint16_t imm) {
         emit32((static_cast<uint32_t>(opcode) << 26) | (static_cast<uint32_t>(rSSrc) << 21) |
                (static_cast<uint32_t>(rADest) << 16) | imm);
     }
-    // D-form compare: opcode(6) BF(3)=0 /(1)=0 L(1)=0 rA(5) rest(16) -
-    // `cmpw`/`cmpwi` always compare word-sized signed operands in crf0
-    // here, the only condition register field this dialect ever uses.
+    // cmpw/cmpwi always compare in crf0, the only condition field this
+    // dialect uses.
     void emitDCompareReg(uint8_t opcode, uint8_t rA, uint8_t rB) {
         emit32((static_cast<uint32_t>(opcode) << 26) | (static_cast<uint32_t>(rA) << 16) |
                (static_cast<uint32_t>(rB) << 11));
@@ -410,43 +374,31 @@ class Assembler {
     void emitDCompareImm(uint8_t opcode, uint8_t rA, uint16_t imm) {
         emit32((static_cast<uint32_t>(opcode) << 26) | (static_cast<uint32_t>(rA) << 16) | imm);
     }
-    // X-form, direct field order (arithmetic: add/subf/mullw/divw/neg)
-    // - opcode(6)=31 rD/rT(5) rA(5) rB(5) XO(10) Rc(1) - same "mnemonic
-    // order matches field order" convention as emitDArith() above.
+    // X-form, direct field order (add/subf/mullw/divw/neg).
     void emitXArith(uint8_t rT, uint8_t rA, uint8_t rB, uint16_t xo) {
         emit32((31u << 26) | (static_cast<uint32_t>(rT) << 21) | (static_cast<uint32_t>(rA) << 16) |
                (static_cast<uint32_t>(rB) << 11) | (static_cast<uint32_t>(xo) << 1));
     }
-    // X-form, swapped field order (the logical family - and/or/xor/
-    // nor/slw/srw) - opcode(6)=31 rS(5) rA(5) rB(5) XO(10) Rc(1) - same
-    // real-hardware asymmetry as emitDLogical() above: the mnemonic's
-    // own destination operand lands in the *second* register field.
+    // X-form, swapped field order (and/or/xor/nor/slw/srw): same
+    // destination-in-second-field asymmetry as emitDLogical().
     void emitXLogical(uint8_t rADest, uint8_t rSSrc, uint8_t rB, uint16_t xo) {
         emit32((31u << 26) | (static_cast<uint32_t>(rSSrc) << 21) | (static_cast<uint32_t>(rADest) << 16) |
                (static_cast<uint32_t>(rB) << 11) | (static_cast<uint32_t>(xo) << 1));
     }
-    // XFX-form (mflr/mtlr - the only two SPR-move instructions this
-    // dialect ever emits, always against SPR 8, the link register).
+    // XFX-form (mflr/mtlr), always against SPR 8 (the link register).
     void emitMoveLr(uint32_t base, uint8_t reg) { emit32(base | (static_cast<uint32_t>(reg) << 21)); }
 
-    // Unconditional branch (b/bl) - I-form: opcode(6)=18 LI(24) AA(1)=0
-    // LK(1) - `rel` is the byte displacement from this instruction's
-    // own address to the target, real PowerPC PC-relative semantics
-    // (no branch-delay slot to account for, unlike MIPS - see
-    // PowerPCAssembler.h's own header comment).
+    // Unconditional branch (b/bl), I-form. `rel` is the PC-relative byte
+    // displacement; real PowerPC has no branch-delay slot.
     void emitBranch(uint32_t rel, bool link) {
         if (stage_ == 2 && (static_cast<int32_t>(rel) < -(1 << 25) || static_cast<int32_t>(rel) >= (1 << 25))) {
             fail("branch target out of 24-bit range");
         }
         emit32((18u << 26) | (rel & 0x03FFFFFCu) | (link ? 1u : 0u));
     }
-    // Conditional branch (beq/bne/blt/bgt/ble/bge, all against crf0) -
-    // B-form: opcode(6)=16 BO(5) BI(5) BD(14) AA(1)=0 LK(1)=0. The
-    // range check only applies in stage 2 - see Assembler::run()'s own
-    // two-pass comment: a forward reference resolves to a placeholder
-    // 0 in stage 1 (see resolveSyllable()), which would otherwise look
-    // like a wildly out-of-range displacement purely as an artifact of
-    // not having the real address yet.
+    // Conditional branch (beq/bne/blt/bgt/ble/bge), always against crf0. The
+    // range check only applies in stage 2, since a stage-1 forward reference
+    // resolves to a placeholder 0 (see resolveSyllable()).
     void emitCondBranch(uint8_t bo, uint8_t bi, uint32_t rel) {
         int32_t srel = static_cast<int32_t>(rel);
         if (stage_ == 2 && (srel < -32768 || srel > 32767)) fail("conditional branch target out of 16-bit range");
@@ -456,25 +408,18 @@ class Assembler {
 
     void encodeInstr(const std::string &mnemonic, const std::vector<Operand> &ops) {
         // --- immediate load/arith (D-form, direct) ---
-        // `li` never takes a label operand in this dialect (only
-        // PowerPCCodegen.cpp's own pre-split literal halves and small
-        // boolean/comparison constants - see its own `genExpr()`), so
-        // it never needs a relocation here.
+        // `li` never takes a label operand in this dialect, so it never
+        // needs a relocation.
         if (mnemonic == "li") {
             uint8_t rT = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint16_t imm = evalHiLo(requireOperand(ops, 1, mnemonic), /*hi=*/false);
             emitDArith(14, rT, 0, imm);
             return;
         }
-        // `lis` - the upper-half half of a `lis`/`ori` address-load
-        // pair (see loadAddress() in ../PowerPCCodegen.cpp): a `Mem`
-        // operand (a real label) needs a relocation in object mode -
-        // either against ".." (this object's own base, if the label
-        // is resolvable locally) or against the label's own name (if
-        // it's undefined here, deferred to the linker) - see
-        // PowerPCAssembler.h's own `kPowerPCRelocHi` comment. A plain
-        // `Imm` operand (PowerPCCodegen.cpp's own already-split
-        // literal half) never needs one.
+        // `lis`: the upper half of a `lis`/`ori` address-load pair. A `Mem`
+        // operand (a label) needs a relocation in object mode, against ".."
+        // if resolvable locally or the label's own name if deferred to the
+        // linker. A plain `Imm` operand never needs one.
         if (mnemonic == "lis") {
             uint8_t rT = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             const Operand &immOp = requireOperand(ops, 1, mnemonic);
@@ -496,11 +441,8 @@ class Assembler {
             return;
         }
         // --- immediate load/arith (D-form, swapped) ---
-        // `ori` - the lower-half of the same `lis`/`ori` pair above;
-        // same relocation treatment, `kPowerPCRelocLo` instead of
-        // `kPowerPCRelocHi` - see PowerPCLinkerFactory.cpp's own paired
-        // Hi/Lo patch functions for how the two sites' own carry gets
-        // computed correctly.
+        // `ori`: the lower half of the lis/ori pair above; same relocation
+        // treatment with kPowerPCRelocLo instead of kPowerPCRelocHi.
         if (mnemonic == "ori") {
             uint8_t rADest = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rSSrc = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
@@ -528,26 +470,20 @@ class Assembler {
             emitDCompareImm(11, rA, imm);
             return;
         }
-        // cmplw - the unsigned counterpart to cmpw, same X-form shape
-        // (opcode 31, crfD/L both 0) with XO=32 instead of cmpw's own
-        // XO=0 - signed vs. unsigned `long long` comparison (see
-        // PowerPCCodegen.cpp's own genWideCompare()) needs both.
+        // cmplw: unsigned counterpart to cmpw (XO=32 vs 0); needed for
+        // signed vs. unsigned comparison (see genWideCompare()).
         if (mnemonic == "cmplw") {
             uint8_t rA = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rB = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
             emit32((31u << 26) | (static_cast<uint32_t>(rA) << 16) | (static_cast<uint32_t>(rB) << 11) | (32u << 1));
             return;
         }
-        // --- shift-by-constant (slwi - a convenience alias for the
-        // literal fixed-count left shift PowerPCCodegen.cpp's own
-        // array-index scaling needs, encoded as the real `rlwinm`
-        // special case GNU/real assemblers use for it: rD = rS << n,
-        // n in [0,31]) ---
+        // slwi: rlwinm special case for a fixed left shift (SH=n, MB=0,
+        // ME=31-n).
         if (mnemonic == "slwi") {
             uint8_t rADest = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rSSrc = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
             uint8_t n = static_cast<uint8_t>(evalImm(requireOperand(ops, 2, mnemonic)) & 0x1F);
-            // rlwinm rA,rS,SH,MB,ME with SH=n, MB=0, ME=31-n.
             uint8_t sh = n;
             uint8_t mb = 0;
             uint8_t me = static_cast<uint8_t>(31 - n);
@@ -556,13 +492,8 @@ class Assembler {
                    (static_cast<uint32_t>(me) << 1));
             return;
         }
-        // srwi rA,rS,n - logical right shift by an immediate count
-        // (the `rlwinm` special case for SH=32-n, MB=n, ME=31, the
-        // real GNU/standard assembler alias) - a narrower-than-
-        // native-int Var/Slot's own unsigned narrowing and the
-        // `long long` divide/shift algorithms both need this
-        // alongside slwi/srawi (see narrowT0To()/genWideDivMod()/
-        // genWideShift()).
+        // srwi: rlwinm special case for a logical right shift (SH=32-n,
+        // MB=n, ME=31).
         if (mnemonic == "srwi") {
             uint8_t rADest = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rSSrc = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
@@ -576,15 +507,11 @@ class Assembler {
             return;
         }
         // --- X-form arithmetic (direct field order) ---
+        // mulhwu gives the high 32 bits of an unsigned 32x32 product (mullw
+        // only gives the low 32); needed for genWideMul()'s cross term.
+        // divwu is divw's unsigned counterpart.
         static const std::unordered_map<std::string, uint16_t> xArith = {
-            {"add", 266}, {"mullw", 235}, {"divw", 491},
-            // mulhwu (XO=11) gives the HIGH 32 bits of an unsigned
-            // 32x32 product (mullw only ever gives the low 32) -
-            // PowerPCCodegen.cpp's own genWideMul() needs it for the
-            // cross-multiply carry term, the same role MIPS's
-            // `mult`+`mfhi` or i386's `mul`'s own `edx` plays.
-            // divwu (XO=459) is divw's unsigned counterpart.
-            {"mulhwu", 11}, {"divwu", 459},
+            {"add", 266}, {"mullw", 235}, {"divw", 491}, {"mulhwu", 11}, {"divwu", 459},
         };
         if (auto it = xArith.find(mnemonic); it != xArith.end()) {
             uint8_t rT = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
@@ -593,10 +520,8 @@ class Assembler {
             emitXArith(rT, rA, rB, it->second);
             return;
         }
-        // subf rD,rA,rB = rB - rA (real PowerPC semantics - note the
-        // operand meaning, not just the field order, is "backwards"
-        // from a textbook subtract - see PowerPCCodegen.cpp's own
-        // comment on how genBinary() accounts for it).
+        // subf rD,rA,rB = rB - rA (PowerPC's operand order is reversed from
+        // a textbook subtract).
         if (mnemonic == "subf") {
             uint8_t rT = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rA = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
@@ -636,33 +561,22 @@ class Assembler {
             emit32(0x4E800020u);
             return;
         }
-        // --- count register (the indirect-call idiom - see
-        // PowerPCCodegen.cpp's own CallPtr case) ---
-        // mtctr rS - a real `mtspr 9,rS` (spr 9 is CTR): opcode 31,
-        // rS<<21, spr split across bits 20-16/15-11 (9 fits entirely
-        // in the low half, so the high half is 0), XO=467, exactly
-        // the same field layout as `mtlr` above (spr 8) with the base
-        // word's spr bits changed from 8 to 9 (0x7C0803A6 -> 0x7C0903A6).
+        // --- count register (the indirect-call idiom) ---
+        // mtctr: real `mtspr 9,rS` (SPR 9 is CTR) - same field layout as
+        // mtlr above (SPR 8) with the SPR bits changed from 8 to 9.
         if (mnemonic == "mtctr") {
             emitMoveLr(0x7C0903A6u, requireReg(requireOperand(ops, 0, mnemonic), mnemonic));
             return;
         }
-        // bctrl - Branch to Count Register, with Link: opcode 19,
-        // BO=10100 (branch always), BI=0, XO=528, LK=1 - the real
-        // documented PowerPC encoding 0x4E800421, the standard
-        // second half of the `mtctr`/`bctrl` indirect-call idiom
-        // (same relationship to `blr`'s own 0x4E800020 as `bctr`'s
-        // XO field, 528, has to `bclr`'s, 16: 528<<1 = 0x420, so
-        // bctrl's low halfword is 0x421 = 0x420 | the LK bit).
+        // bctrl: Branch to Count Register, With Link (0x4E800421) - the
+        // standard second half of the mtctr/bctrl indirect-call idiom.
         if (mnemonic == "bctrl") {
             if (!ops.empty()) fail("'bctrl' takes no operand");
             emit32(0x4E800421u);
             return;
         }
-        // --- dedicated zero-displacement load/store - see
-        // PowerPCCodegen.h's own header comment: `ldind addrReg,
-        // destReg` / `stind addrReg,srcReg`, real `lwz`/`stw`
-        // underneath with a fixed displacement of 0. ---
+        // --- dedicated zero-displacement load/store ---
+        // ldind/stind: real lwz/stw with a fixed zero displacement.
         if (mnemonic == "ldind") {
             uint8_t rA = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rT = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
@@ -675,16 +589,9 @@ class Assembler {
             emitDArith(36, rS, rA, 0);
             return;
         }
-        // --- dedicated displacement load/store - see
-        // PowerPCCodegen.h's own header comment on slotDisp(): real
-        // `lwz`/`stw` underneath, exactly like `ldind`/`stind` above
-        // except the displacement is this dialect's own third operand
-        // (a plain signed immediate, never a register or label) rather
-        // than always 0 - PowerPCCodegen.cpp's only use of real
-        // PowerPC's own `d(rA)` displacement addressing, for a frame-
-        // relative Local/Param access whose offset is a compile-time
-        // constant. `ldindd addrReg,destReg,disp` / `stindd
-        // addrReg,srcReg,disp`. ---
+        // --- dedicated displacement load/store ---
+        // ldindd/stindd: real lwz/stw with an explicit signed-immediate
+        // displacement, used for frame-relative Local/Param access.
         if (mnemonic == "ldindd") {
             uint8_t rA = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rT = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
@@ -699,15 +606,10 @@ class Assembler {
             emitDArith(36, rS, rA, imm);
             return;
         }
-        // Byte/halfword load (zero- or sign-extending into a full
-        // register)/store (writing only that many low bytes), same
-        // `addrReg,reg[,disp]` shape as ldindd/stindd above - real
-        // LBZ(34)/LHZ(40)/LHA(42, sign-extending)/STB(38)/STH(44) - a
-        // narrower-than-native-int Var/Slot's own load/store (see
-        // PowerPCCodegen.cpp's loadOperand()/storeOperand()). PowerPC
-        // has no sign-extending byte load at all (real ISA fact - no
-        // "LBA"), so a signed `char`'s own sign-extension happens via
-        // `srawi` after an ordinary LBZ instead (see narrowT0To()).
+        // Byte/halfword load (zero/sign-extending)/store: real
+        // LBZ(34)/LHZ(40)/LHA(42, sign-extending)/STB(38)/STH(44). PowerPC
+        // has no sign-extending byte load, so a signed char extends via
+        // srawi after an ordinary LBZ instead (see narrowT0To()).
         static const std::unordered_map<std::string, uint8_t> sized = {
             {"ldindb", 34}, {"ldindh", 42}, {"ldindhu", 40}, {"stindb", 38}, {"stindh", 44},
         };
@@ -718,10 +620,8 @@ class Assembler {
             emitDArith(it->second, rT, rA, imm);
             return;
         }
-        // srawi rA,rS,SH - arithmetic shift right by an immediate
-        // count (M-form special case, XO=824 - see narrowT0To()'s own
-        // use for sign-extending a byte/halfword already in a
-        // register).
+        // srawi: arithmetic right shift by an immediate count (M-form,
+        // XO=824).
         if (mnemonic == "srawi") {
             uint8_t rADest = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rSSrc = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
@@ -731,16 +631,10 @@ class Assembler {
             return;
         }
         // --- branches ---
-        // A branch target defined in *this* object is already a valid
-        // PC-relative displacement regardless of where this object
-        // ends up linked (both its own address and this instruction's
-        // own are shifted by the same base) - no relocation needed at
-        // all, unlike an absolute-address load (`lis`/`ori` above).
-        // Only a genuinely cross-object `bl` target (undefined here)
-        // needs deferring - see PowerPCAssembler.h's own
-        // `kPowerPCRelocBranch` comment, and
-        // ../arm64/Arm64Assembler.cpp's own identical `b`/`bl`
-        // handling this is ported from.
+        // A same-object branch target is already a valid PC-relative
+        // displacement regardless of link address, unlike an
+        // absolute-address load (lis/ori above); only a genuinely
+        // cross-object bl target needs deferring.
         if (mnemonic == "b" || mnemonic == "bl") {
             const Operand &target = requireOperand(ops, 0, mnemonic);
             if (target.kind != Operand::Mem) fail("'" + mnemonic + "': target must be a label");
@@ -755,11 +649,9 @@ class Assembler {
             emitBranch(rel, mnemonic == "bl");
             return;
         }
+        // {BO, BI}: BO=12 is "branch if true", BO=4 is "branch if false";
+        // BI selects crf0's LT(0)/GT(1)/EQ(2) bit.
         static const std::unordered_map<std::string, std::pair<uint8_t, uint8_t>> condBranches = {
-            // {BO, BI}: BO=12 is "branch if true", BO=4 is "branch if
-            // false"; BI selects crf0's LT(0)/GT(1)/EQ(2) bit - see
-            // PowerPCCodegen.cpp's own genCompare() for why each
-            // comparison operator picks the branch it does.
             {"blt", {12, 0}}, {"bge", {4, 0}}, {"bgt", {12, 1}}, {"ble", {4, 1}}, {"beq", {12, 2}}, {"bne", {4, 2}},
         };
         if (auto it = condBranches.find(mnemonic); it != condBranches.end()) {
@@ -782,10 +674,8 @@ class Assembler {
     bool allowExternal_;
 };
 
-// Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - see PowerPCAssembler.h's own
-// `assemblePowerPCObject` comment, and ../m68k/M68kAssembler.cpp's own
-// `buildObjectFile` for the identical algorithm this is ported from.
+// Builds the format-neutral ObjectFile from a completed object-mode
+// Assembler.
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kPowerPCCoffMachine;

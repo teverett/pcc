@@ -36,16 +36,8 @@ std::string typeText(Type t) {
     return prefix + base + std::string(t.ptrDepth, '*');
 }
 
-// Flags an explicit `(type)expr` cast that either narrows the value
-// (the target's own real storage width, per this compile's active
-// `widths`, is smaller than the source's) or keeps the same width
-// but flips signedness (so the same bit pattern reads as a different
-// value) - both silently reinterpret the value rather than convert
-// it, the two classes GCC/Clang's own `-Wconversion`/`-Wsign-
-// conversion` warn about. An implicit conversion (assignment, a
-// `return`, a call argument) is NOT checked here - only an explicit
-// cast, which is the one place a programmer is asserting "I know
-// this is fine," worth a warning if it might not be.
+// Warns on an explicit cast that narrows the value or flips signedness at
+// the same width; implicit conversions are not checked.
 void warnRiskyCast(Type from, Type to, int line, const TypeWidths &widths) {
     if (from == to) return;
     int fromWidth = widthOf(from, widths);
@@ -64,15 +56,10 @@ int alignUp(int value, int align) {
     return ((value + align - 1) / align) * align;
 }
 
-// Assigns every Local Slot reached from `s` its own frameOffset, in
-// real storage units (see IR.h's own comment on Slot::frameOffset),
-// in declaration order, and returns the next unused offset - a
-// LocalDecl can only ever appear as a Stmt (never nested inside an
-// Expr, by this subset's own grammar), so walking Block/If/While/
-// LocalDecl's own sub-statements is exhaustive; nothing else here can
-// contain one. The caller starts `nextOffset` at widthOf(Int, widths)
-// - one native int's worth of reserved space below the frame pointer,
-// the same reservation every backend's own prologue already expects.
+// Assigns every Local Slot reached from `s` its frameOffset in declaration
+// order and returns the next unused offset. `nextOffset` starts at
+// widthOf(Int, widths): one native int's reserved space every backend's
+// prologue expects below the frame pointer.
 int assignFrameOffsets(ir::Stmt *s, int nextOffset, const TypeWidths &widths) {
     if (!s) return nextOffset;
     switch (s->kind) {
@@ -103,8 +90,6 @@ int assignFrameOffsets(ir::Stmt *s, int nextOffset, const TypeWidths &widths) {
     return nextOffset;
 }
 
-// Wraps `inner` in an ir::Convert to `target`, unless it's already
-// exactly that type - see IR.h's own comment on ExprKind::Convert.
 ir::ExprPtr wrapConvert(ir::ExprPtr inner, Type target, int line) {
     if (inner->type == target) return inner;
     auto conv = std::make_unique<ir::Expr>();
@@ -115,9 +100,7 @@ ir::ExprPtr wrapConvert(ir::ExprPtr inner, Type target, int line) {
     return conv;
 }
 
-// Integer promotion: a sub-Int-rank operand becomes signed Int before
-// any unary/binary op - see Type.h's own header comment for why this
-// (deliberately simplified) rule never needs a target's real widths.
+// Integer promotion: a sub-Int-rank operand becomes signed Int.
 ir::ExprPtr promote(ir::ExprPtr e, int line) {
     if (rank(e->type.base) < rank(BaseType::Int)) {
         return wrapConvert(std::move(e), Type{BaseType::Int, false}, line);
@@ -142,12 +125,9 @@ class Builder {
             ir::StmtPtr body = buildStmt(*fn.body);
             popScope();
             int reserved = widthOf(Type{BaseType::Int, false}, widths_);
-            // Rounded up to the native int width (even when the last
-            // local is itself narrower) so a backend's own `sub
-            // sp,sp,frameSize`-style reservation always leaves the
-            // stack pointer at the same alignment it started at -
-            // several targets (e.g. ARM) fault, or silently
-            // misbehave, on a misaligned word access otherwise.
+            // Rounds up to native int width so the stack pointer stays
+            // aligned after a backend's frame reservation (some targets
+            // fault on misaligned word access otherwise).
             irFn->frameSize = alignUp(assignFrameOffsets(body.get(), reserved, widths_), reserved) - reserved;
 
             ir::FunctionBody fb;
@@ -165,15 +145,8 @@ class Builder {
             if (globalByName_.count(g.name)) err(g.line, "redeclaration of global '" + g.name + "'");
             ir::Slot *slot = allocSlot(ir::SlotKind::Global, g.name, g.arraySize);
             slot->type = g.type;
-            // An 'extern' declaration registers the name's kind (data)
-            // right here, in this same first pass, before any '&name'/
-            // array-initializer element in this file gets resolved
-            // below - see this function's own header comment on why
-            // that ordering is exactly what makes '&name'/array-init
-            // resolution sound again. It has no initializer of its
-            // own (the grammar doesn't allow one) and isn't really
-            // this file's own storage, same as the lazily-created kind
-            // resolveExternalVar makes on a first unannounced use.
+            // Registers an 'extern' global's kind (data) before any
+            // '&name'/array-init element elsewhere in this file is resolved.
             if (g.isExternDecl) {
                 slot->isExternal = true;
                 slot->sourceFile = g.sourceFile;
@@ -182,11 +155,8 @@ class Builder {
             }
             slot->hasInit = g.hasInit;
             slot->initValue = g.initValue;
-            // arrayInit is resolved in a second pass below, once
-            // every global/function name in this file is registered
-            // - an element can forward-reference a function or
-            // global declared later in the same file (see
-            // resolveArrayInit).
+            // arrayInit is resolved in a second pass below, so a forward
+            // reference to a later name in this file still resolves.
             slot->hasAddress = g.hasAddress;
             slot->address = g.address;
             slot->sourceFile = g.sourceFile;
@@ -199,13 +169,8 @@ class Builder {
             irFn->sourceName = fn.name;
             irFn->returnType = fn.returnType;
             irFn->sourceFile = fn.sourceFile;
-            // Same reasoning as an 'extern' global above, for the
-            // function side: registers this name as a FUNCTION, not
-            // data, before any '&name'/array-init element referring
-            // to it is resolved - no param slots to allocate (there's
-            // no body to call it against here, and resolveFunc never
-            // checks an external function's own argument count
-            // anyway - see resolveFunc's own comment).
+            // Registers an 'extern' function's name before any '&name'/
+            // array-init element referring to it is resolved.
             if (fn.isExternDecl) {
                 irFn->isExternal = true;
                 funcByName_[fn.name] = irFn.get();
@@ -214,20 +179,10 @@ class Builder {
             }
             irFn->hasAddress = fn.hasAddress;
             irFn->address = fn.address;
-            // Each param's own frameOffset, in real storage units,
-            // past a fixed two-native-`int`-widths reservation for
-            // whatever a backend's own call sequence keeps there
-            // (saved frame pointer/return address) - see IR.h's own
-            // comment on Slot::frameOffset. Unlike a Local (packed by
-            // its own real width - see assignFrameOffsets), every
-            // param reserves AT LEAST one native `int`'s width: the
-            // caller can only ever push/pass a whole native word per
-            // argument (there's no narrower "push a byte" on a target
-            // whose calling convention pushes arguments at all), so a
-            // narrower-than-int param still occupies a full slot,
-            // same as C's own default-argument-promotion convention.
-            // Only a WIDER type (`long`/`long long`, when wider than
-            // the native int) takes more than one slot's worth.
+            // Params start past a two-native-int reservation for the saved
+            // frame pointer/return address. Each param occupies at least one
+            // native int's width (a caller pushes whole words), wider only
+            // for a type wider than int.
             int intWidth = widthOf(Type{BaseType::Int, false}, widths_);
             int paramOffset = 2 * intWidth;
             for (size_t i = 0; i < fn.params.size(); i++) {
@@ -235,12 +190,8 @@ class Builder {
                 p->type = fn.params[i].type;
                 p->ownerFunctionName = fn.name;
                 p->paramIndex = static_cast<int>(i);
-                // No alignUp here, unlike a Local's own packing below:
-                // a caller's own push sequence lays params back-to-
-                // back with no gap at all (there's no hardware
-                // alignment requirement on any of these stack-passed
-                // calling conventions), so rounding up here would
-                // claim space the caller never actually reserved.
+                // No alignUp: the caller's push sequence lays params
+                // back-to-back with no gap.
                 int w = std::max(widthOf(p->type, widths_), intWidth);
                 p->frameOffset = paramOffset;
                 paramOffset += w;
@@ -249,40 +200,24 @@ class Builder {
             funcByName_[fn.name] = irFn.get();
             prog_.functions.push_back(std::move(irFn));
         }
-        // An object file (allowExternal_) never needs its own `main`
-        // - only a final, directly-runnable program does. If this
-        // file happens to define one anyway, its own signature is
-        // still checked, same as always.
+        // Only a directly-runnable program needs its own `main`; an object
+        // file (allowExternal_) doesn't. A defined main is still checked.
         if (!allowExternal_ && !funcByName_.count("main")) throw std::runtime_error("no 'main' function defined");
         if (funcByName_.count("main") && !funcByName_["main"]->params.empty()) {
             throw std::runtime_error("'main' must take no parameters");
         }
 
-        // Second pass: every global's own arrayInit, now that every
-        // global/function name in this file is registered (so an
-        // element can name one declared later in the same file).
         for (const auto &g : prog.globals) {
             globalByName_[g.name]->arrayInit = resolveArrayInit(g.arrayInit, g.line);
         }
     }
 
-    // Resolves each AST-level ArrayInitElem to its IR form: a plain
-    // literal passes through unchanged; a symbol element is resolved
-    // exactly the same way buildAddressableOperand resolves a bare
-    // "&name" expression - try a variable first (this scope's locals,
-    // if any are active, then this file's globals, including any
-    // 'extern' global declared in this same file), then a function
-    // (same: including any 'extern' function declared here). A name
-    // that's neither is a hard error, NOT a guess: resolveExternalFunc/
-    // resolveExternalVar used to be tried here as a silent fallback,
-    // but there is genuinely no way to tell a function address from a
-    // data address apart for a name this file has no other
-    // information about at all (no call site, no local definition) -
-    // see this file's own header comment, and docs/using.md's
-    // "extern declarations", for why the real fix is requiring the
-    // file to say which one it means, not guessing either way. Shared
-    // between a global's own initializer (no active scope) and a
-    // LocalDecl's (scopes_ may have locals in it).
+    // Resolves each ArrayInitElem to IR form: a literal passes through; a
+    // symbol is tried as a variable then a function (same order as
+    // buildAddressableOperand's "&name"). An unresolvable name is a hard
+    // error rather than a guess, since there's no way to tell a function
+    // address from a data address apart otherwise — the file must declare
+    // it 'extern'.
     std::vector<ir::ArrayInitElem> resolveArrayInit(const std::vector<ArrayInitElem> &elems, int line) {
         std::vector<ir::ArrayInitElem> out;
         out.reserve(elems.size());
@@ -309,11 +244,8 @@ class Builder {
         return out;
     }
 
-    // Looks up `name`, creating (and caching) an external one on a
-    // miss - only when allowExternal_ is set; otherwise `nullptr`,
-    // for the caller to turn into the usual "undefined" error. A
-    // repeat reference to the same unresolved name reuses the same
-    // external Function/Slot rather than creating a new one each time.
+    // Creates (and caches) an external Function on a miss, only when
+    // allowExternal_ is set; otherwise nullptr.
     ir::Function *resolveExternalFunc(const std::string &name) {
         if (!allowExternal_) return nullptr;
         auto it = funcByName_.find(name);
@@ -358,11 +290,9 @@ class Builder {
         scopes_.back()[sourceName] = slot;
     }
 
-    // Local scopes and this-file globals only - no external-var
-    // auto-creation, no error on a miss. Used by resolveVar below and
-    // by buildAddressableOperand, which has to tell "not a variable
-    // at all" (worth trying as a function name) apart from "not
-    // declared anywhere".
+    // Local scopes and this-file globals only; no external-var
+    // auto-creation. Lets callers distinguish "not a variable" (try a
+    // function name) from "not declared anywhere".
     ir::Slot *resolveVarOrNull(const std::string &name) {
         for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
             auto found = it->find(name);
@@ -386,10 +316,8 @@ class Builder {
             err(line, "call to undefined function '" + name + "'");
         }
         ir::Function *fn = it->second;
-        // An external function has no real parameter list to check
-        // against (there's no other file's own signature left to see
-        // once compilation is really separate) - the call site's own
-        // argument count is trusted as-is.
+        // An external function has no parameter list to check against;
+        // the call site's argument count is trusted as-is.
         if (!fn->isExternal && fn->params.size() != argc) {
             err(line, "'" + name + "' expects " + std::to_string(fn->params.size()) + " argument(s), got " +
                           std::to_string(argc));
@@ -397,47 +325,21 @@ class Builder {
         return fn;
     }
 
-    // An external global lazily auto-created by resolveVar/resolveExternalVar
-    // (a plain, unambiguous, non-'&' reference - never one explicitly
-    // declared 'extern' in this file, which already states its real
-    // arraySize up front, see registerGlobalsAndFunctions) starts out
-    // shaped like a plain scalar (arraySize == 0): there's no
-    // declaration in this file to learn its real shape from. Indexing it anywhere in this
-    // file is conclusive proof it's actually array-shaped (only an
-    // array can be indexed) - mark it so retroactively, since the
-    // first reference might come before or after any particular
-    // indexed one. The exact size is never needed outside the one
-    // file that actually *defines* it (only that file's own trailer-
-    // emitted storage cares); every other file only needs to know
-    // "is this array-shaped at all", to pick the right addressing
-    // mode (see Pdp7Codegen.cpp/I8086Codegen.cpp's own
-    // computeElementAddress) - so an arbitrary nonzero placeholder is
-    // enough. A bare `&name` (no subscript) never needs this: an
-    // array's own address and its Slot's own address are the same
-    // instruction either way, array-shaped or not.
+    // A lazily auto-created external global starts shaped as a scalar
+    // (arraySize == 0), since there's no declaration here to learn its real
+    // shape from. Indexing it anywhere in this file proves it's
+    // array-shaped; mark it retroactively (any nonzero placeholder works —
+    // only "is this an array at all" matters for addressing, never the
+    // real size).
     void markIndexedIfExternal(ir::Slot *slot) {
         if (slot->isExternal && slot->arraySize == 0) slot->arraySize = 1;
     }
 
-    // `slot[idx]` on a plain pointer VARIABLE (arraySize==0, a real
-    // pointer type - see Type.h's own header comment on
-    // Type::ptrDepth) means exactly `*(slot+idx)`, never a real
-    // array's own Index codegen: a backend's Index/genIndexAddr-style
-    // code scales/widths its access by `slot->type` directly (not by
-    // this expression's own `.type`), which already correctly means
-    // "this array's own element type" for a real array - but for a
-    // pointer variable `slot->type` instead names the POINTER's own
-    // type, so reusing that same Index codegen would scale/width by
-    // the pointer's own size instead of its pointee's. Lowering to a
-    // real `*(slot+idx)` shape here - exactly the already-correct,
-    // zero-backend-changes-needed pointer-arithmetic/dereference
-    // machinery buildPointerBinary()/the Unary "*"/DerefAssign cases
-    // below already provide - sidesteps that entirely, rather than
-    // teaching every backend's own Index codegen a second, pointer-
-    // variable-shaped way to compute the same thing. Returns the
-    // scaled `slot+idx` pointer value itself (type: same as `slot`'s
-    // own) - callers wrap it in a deref themselves, same as `&p[i]`
-    // (which IS exactly `p+i`, nothing more) doesn't need to.
+    // `slot[idx]` on a plain pointer variable means `*(slot+idx)`, not a
+    // real array's Index codegen: Index scales by slot->type, which for a
+    // pointer variable is the pointer's own type, not its pointee. Lowering
+    // to pointer arithmetic here reuses the existing +/deref machinery
+    // instead. Returns the scaled `slot+idx` value itself; callers deref it.
     ir::ExprPtr buildPointerIndexAddr(ir::Slot *slot, const Expr &idxExpr, int line) {
         auto ptrVar = std::make_unique<ir::Expr>();
         ptrVar->kind = ir::ExprKind::Var;
@@ -447,22 +349,11 @@ class Builder {
         return buildPointerBinary("+", std::move(ptrVar), buildExpr(idxExpr), line);
     }
 
-    // Resolves a Var/Index/function-name operand without the "bare
-    // array" check below - used only for `&`, where a bare array
-    // name is exactly the point (&arr means the array's own address),
-    // and where a bare function name is also valid (&f means f's own
-    // entry address, never a call - see IR.h's ExprKind::Func).
-    //
-    // A bare IDENT that isn't a variable in this file (its own
-    // globals, or an 'extern' global declared here) is tried as a
-    // function name next (this file's own, a call site elsewhere in
-    // it that already registered it, or an 'extern' function declared
-    // here). A name that's none of those is a hard error, NOT a
-    // guess: see resolveArrayInit's own comment (this resolves a bare
-    // "&name" the exact same way) for why falling back to
-    // resolveExternalFunc/resolveExternalVar here used to silently
-    // guess the wrong kind half the time, and why the real fix is
-    // requiring an explicit 'extern' declaration instead.
+    // Resolves a Var/Index/function-name operand for `&`, skipping the
+    // bare-array check below: &arr is the array's address, &f is f's entry
+    // address (never a call). A bare IDENT is tried as a variable, then a
+    // function; see resolveArrayInit for why an unresolved name errors
+    // rather than guessing.
     ir::ExprPtr buildAddressableOperand(const Expr &e) {
         auto out = std::make_unique<ir::Expr>();
         out->line = e.line;
@@ -485,11 +376,8 @@ class Builder {
                             e.name + "(...);' or 'extern <type> " + e.name + "[N];'");
         }
         if (e.kind == ExprKind::Index) {
-            // Only ever reached for a REAL array (`&arr[i]`) - `&p[i]`
-            // on a plain pointer variable is intercepted one level up,
-            // in the Unary "&" case below, before this is ever called
-            // (see its own comment on why: `&p[i]` is exactly `p+i`
-            // itself, not a further address-of).
+            // Only reached for a real array; `&p[i]` on a pointer variable
+            // is intercepted earlier, in the Unary "&" case below.
             out->kind = ir::ExprKind::Index;
             out->slot = resolveVar(e.name, e.line);
             out->type = out->slot->type;
@@ -500,19 +388,10 @@ class Builder {
         err(e.line, "'&' requires a plain variable, array element, or function name, e.g. &x, &arr[i], or &f");
     }
 
-    // Pointer arithmetic/comparison - called once at least one of
-    // lhs/rhs is a real pointer (ptrDepth>0). Handles exactly the
-    // operators real C defines on a pointer operand: ptr +/- int
-    // (scaled by the pointee's own width - an unscaled add/sub of two
-    // native words would walk `int` BYTES, not `int` ELEMENTS, now
-    // that a pointer tracks a real pointee type instead of being a
-    // plain untyped int - see Type.h's own header comment), ptr - ptr
-    // of the same type (address difference, itself scaled down to an
-    // element count), and every comparison operator (raw, unsigned,
-    // native-word address compare - a pointer's own storage is always
-    // exactly one native int's width, see Type.h's widthOf()).
-    // Anything else involving a pointer operand is rejected, same as
-    // real C.
+    // Pointer arithmetic/comparison, called once either operand is a real
+    // pointer: ptr +/- int (scaled by pointee width), ptr - ptr of the same
+    // type (scaled address difference), and comparisons (unsigned
+    // native-word compare). Anything else on a pointer operand is rejected.
     ir::ExprPtr buildPointerBinary(const std::string &op, ir::ExprPtr lhs, ir::ExprPtr rhs, int line) {
         if (op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=") {
             Type word = Type{BaseType::Int, true};
@@ -535,16 +414,9 @@ class Builder {
         if (lhsPtr && rhsPtr) {
             if (op != "-") err(line, "'+' between two pointers is invalid - did you mean '-'?");
             if (lhs->type != rhs->type) err(line, "'-' between pointers to different types");
-            // Both the raw address difference and the division below
-            // stay at a pointer's own real width (plain native `int` -
-            // see Type.h's own header comment on a pointer's own
-            // storage) rather than some wider result type: lhs/rhs are
-            // themselves narrow pointer-typed operands, and tagging a
-            // Binary node with a WIDER .type than its own children's
-            // actual type would wrongly route a backend's wide
-            // (`long`/`long long`) codegen onto them (that codegen
-            // assumes every operand it's handed is already that same
-            // wide type - see e.g. Pdp7Codegen.cpp's genWideExpr).
+            // Stays at native int width, not a wider result type: tagging
+            // this node wider than its actual operands would wrongly route
+            // it through a backend's wide (long/long long) codegen.
             int elemWidth = widthOf(pointeeOf(lhs->type), widths_);
             Type nativeInt = Type{BaseType::Int, false};
             auto diff = std::make_unique<ir::Expr>();
@@ -587,18 +459,11 @@ class Builder {
         return out;
     }
 
-    // A wide (`long`/`long long`) type here means wider than this
-    // target's own native int - see Type.h's widthOf(). Used to reject
-    // CompoundAssign/CompoundDerefAssign/Ternary on a wide target (see
-    // their own call sites below): these three compute their "new
-    // value" directly in a backend's normal native-width register the
-    // same way an ordinary narrow Var/Index read/store already does
-    // (sign/zero-extend on load, truncate on store - no per-operator
-    // codegen beyond what already exists for that), but a wide target
-    // would need a second, genuinely new multi-word instruction
-    // sequence per operator per backend that compound assignment/
-    // `++`/`--`/ternary on a `long long` doesn't currently justify -
-    // see docs/pdp-c-compiler.md's own note on this.
+    // "Wide" means wider than the target's native int. CompoundAssign/
+    // CompoundDerefAssign/Ternary reject a wide target: they compute their
+    // result in a normal native-width register, and a wide target would
+    // need a multi-word instruction sequence per operator per backend that
+    // isn't implemented.
     bool isWideType(Type t) const {
         return widthOf(t, widths_) > widthOf(Type{BaseType::Int, false}, widths_);
     }
@@ -611,11 +476,8 @@ class Builder {
         }
     }
 
-    // Scales an already-promoted int-typed step by `ptrType`'s own
-    // pointee width - the one-liner multiply ptr+int above needs, and
-    // the exact same one CompoundAssign/CompoundDerefAssign's own
-    // `p += n`/`p++`/`p--` lowering (further below) needs too, so it's
-    // factored out rather than duplicated.
+    // Scales a promoted int-typed step by ptrType's pointee width; shared
+    // by ptr+int and CompoundAssign's p+=n/p++/p--.
     ir::ExprPtr scaleStepForPointer(Type ptrType, ir::ExprPtr step, int line) {
         int elemWidth = widthOf(pointeeOf(ptrType), widths_);
         if (elemWidth == 1) return step;
@@ -634,25 +496,12 @@ class Builder {
         return scaled;
     }
 
-    // Shared by CompoundAssign/CompoundDerefAssign below: builds the
-    // already-ready-to-combine `rhs` operand for `target <op>= e.rhs`
-    // (or, for '++'/'--', e.rhs is already IntLit(1) - see BuildAst.cpp's
-    // own makeIncDec). For a pointer target with '+'/'-', this is the
-    // step scaled by the pointee's width (stays plain native-int typed,
-    // exactly like ptr+int's own rhs above - the backend does a single
-    // native-word add/sub, same as it already does for Binary ptr+int).
-    // Otherwise it's converted straight to `targetType` (NOT promoted
-    // first): computing +,-,*,&,^,|,<<,>> directly at a sub-int target's
-    // own width is bit-for-bit identical to promoting first and
-    // truncating the result back afterward (both are closed under
-    // truncation - shifts' low bits never depend on bits above the
-    // original width either direction, and +/-/* are ordinary modular
-    // arithmetic); only '/','%' can differ, and only when `targetType`
-    // is narrower than the backend's native int - see each backend's own
-    // CompoundAssign codegen comment for how that one case widens/
-    // narrows around the divide using the same extend/truncate it
-    // already has for ExprKind::Convert, rather than needing a genuine
-    // narrow-width divide instruction.
+    // Builds the rhs for `target <op>= e.rhs`. For a pointer target with
+    // +/-, scales the step by pointee width (native-int typed). Otherwise
+    // converts straight to targetType without promoting first: this is
+    // bit-identical to promoting-then-truncating for +,-,*,&,^,|,<<,>>;
+    // only '/','%' at a sub-int target can differ, handled by each
+    // backend's own CompoundAssign codegen.
     ir::ExprPtr buildCompoundRhs(Type targetType, const std::string &op, const Expr &rhsAst, int line) {
         if (isPointer(targetType) && (op == "+" || op == "-")) {
             ir::ExprPtr rhs = promote(buildExpr(rhsAst), line);
@@ -684,10 +533,7 @@ class Builder {
             case ExprKind::Index: {
                 ir::Slot *slot = resolveVar(e.name, e.line);
                 if (slot->arraySize == 0 && isPointer(slot->type)) {
-                    // `p[i]` is exactly `*(p+i)` for a plain pointer
-                    // VARIABLE - see buildPointerIndexAddr()'s own
-                    // comment on why this goes through the dereference
-                    // machinery instead of a real array's own Index.
+                    // `p[i]` is `*(p+i)` for a pointer variable.
                     ir::ExprPtr sum = buildPointerIndexAddr(slot, *e.lhs, e.line);
                     out->kind = ir::ExprKind::Unary;
                     out->op = "*";
@@ -705,8 +551,7 @@ class Builder {
             case ExprKind::Assign: {
                 ir::Slot *slot = resolveVar(e.name, e.line);
                 if (e.lhs && slot->arraySize == 0 && isPointer(slot->type)) {
-                    // `p[i] = rhs` is exactly `*(p+i) = rhs` - see
-                    // buildPointerIndexAddr()'s own comment.
+                    // `p[i] = rhs` is `*(p+i) = rhs`.
                     ir::ExprPtr sum = buildPointerIndexAddr(slot, *e.lhs, e.line);
                     out->kind = ir::ExprKind::DerefAssign;
                     Type pointee = pointeeOf(sum->type);
@@ -728,10 +573,7 @@ class Builder {
             case ExprKind::CompoundAssign: {
                 ir::Slot *slot = resolveVar(e.name, e.line);
                 if (e.lhs && slot->arraySize == 0 && isPointer(slot->type)) {
-                    // `p[i] op= rhs` (including `p[i]++`/`p[i]--`,
-                    // built with op="+"/"-") is exactly
-                    // `*(p+i) op= rhs` - see buildPointerIndexAddr()'s
-                    // own comment.
+                    // `p[i] op= rhs` (incl. p[i]++/p[i]--) is `*(p+i) op= rhs`.
                     ir::ExprPtr sum = buildPointerIndexAddr(slot, *e.lhs, e.line);
                     out->kind = ir::ExprKind::CompoundDerefAssign;
                     Type pointee = pointeeOf(sum->type);
@@ -772,20 +614,12 @@ class Builder {
                 out->kind = ir::ExprKind::DerefAssign;
                 out->lhs = buildExpr(*e.lhs);
                 if (isPointer(out->lhs->type)) {
-                    // A real pointer (ptrDepth>0) stores through at
-                    // its own pointee type/width - see every backend's
-                    // own genExpr DerefAssign case, which now reads
-                    // this type instead of always writing a full
-                    // native word.
                     Type pointee = pointeeOf(out->lhs->type);
                     out->type = pointee;
                     out->rhs = wrapConvert(buildExpr(*e.rhs), pointee, e.line);
                 } else {
-                    // A plain int used as an untyped address (the
-                    // original, still-supported style - see Type.h's
-                    // own header comment) keeps writing a full native
-                    // word, exactly as before real pointer types
-                    // existed.
+                    // A plain int used as an untyped address writes a full
+                    // native word.
                     out->type = Type{BaseType::Int, false};
                     out->rhs = buildExpr(*e.rhs);
                 }
@@ -795,11 +629,8 @@ class Builder {
                 out->kind = ir::ExprKind::Unary;
                 out->op = e.op;
                 if (e.op == "&") {
-                    // `&p[i]` on a plain pointer VARIABLE is exactly
-                    // `p+i` - already a complete pointer VALUE, not
-                    // something to take a further address of (unlike
-                    // `&arr[i]`, a real array's own element address) -
-                    // see buildPointerIndexAddr()'s own comment.
+                    // `&p[i]` on a pointer variable is `p+i` itself, not a
+                    // further address-of (unlike &arr[i] for a real array).
                     if (e.rhs->kind == ExprKind::Index) {
                         if (ir::Slot *slot = resolveVar(e.rhs->name, e.rhs->line);
                             slot->arraySize == 0 && isPointer(slot->type)) {
@@ -812,11 +643,8 @@ class Builder {
                 }
                 ir::ExprPtr operand = buildExpr(*e.rhs);
                 if (e.op == "*") {
-                    // A real pointer dereferences at its own pointee
-                    // type/width; a plain int used as an untyped
-                    // address keeps reading a full native word,
-                    // exactly as before real pointer types existed -
-                    // see DerefAssign's own identical comment above.
+                    // A plain int used as an untyped address reads a full
+                    // native word.
                     out->type =
                         isPointer(operand->type) ? pointeeOf(operand->type) : Type{BaseType::Int, false};
                     out->rhs = std::move(operand);
@@ -837,9 +665,7 @@ class Builder {
                 ir::ExprPtr lhs = buildExpr(*e.lhs);
                 ir::ExprPtr rhs = buildExpr(*e.rhs);
                 if (e.op == "&&" || e.op == "||") {
-                    // Truth-testing is width-independent - no
-                    // conversion needed on either operand, pointer or
-                    // not.
+                    // Truth-testing is width-independent; no conversion needed.
                     out->kind = ir::ExprKind::Binary;
                     out->op = e.op;
                     out->type = Type{BaseType::Int, false};
@@ -853,9 +679,8 @@ class Builder {
                 out->kind = ir::ExprKind::Binary;
                 out->op = e.op;
                 if (e.op == "<<" || e.op == ">>") {
-                    // The RHS promotes on its own for its own
-                    // evaluation but never affects the result type -
-                    // see Type.h's own header comment.
+                    // rhs promotes for its own evaluation but never affects
+                    // the result type.
                     lhs = promote(std::move(lhs), e.line);
                     rhs = promote(std::move(rhs), e.line);
                     out->type = lhs->type;
@@ -867,21 +692,10 @@ class Builder {
                 rhs = promote(std::move(rhs), e.line);
                 bool isComparison = e.op == "==" || e.op == "!=" || e.op == "<" || e.op == "<=" || e.op == ">" ||
                                      e.op == ">=";
-                // A comparison between two values already known at
-                // compile time (most commonly two `sizeof`s, or a
-                // `sizeof` against a literal - see IR.h's own
-                // ExprKind::Sizeof comment: it's already an IntLit by
-                // this point) never needs any actual comparison
-                // *instruction* at all, wide or narrow - the C
-                // standard already settles it during translation. The
-                // result is always a plain narrow `int` 0/1 regardless
-                // of how wide `lhs`/`rhs`'s own static type is (`long`/
-                // `long long` for `sizeof`), so folding it away here
-                // keeps that width from ever reaching a backend that
-                // can't actually do wide arithmetic at all (see
-                // MCS51Codegen.cpp's own requireNarrow()) purely to
-                // decide something this compile-time comparison
-                // already knows regardless of target.
+                // A comparison between two already-constant operands (e.g.
+                // two sizeofs) is folded here so its result's width never
+                // depends on a wide (long/long long) comparison some
+                // backends can't actually emit.
                 if (isComparison && lhs->kind == ir::ExprKind::IntLit && rhs->kind == ir::ExprKind::IntLit) {
                     long a = lhs->intValue, b = rhs->intValue;
                     long result = 0;
@@ -902,11 +716,8 @@ class Builder {
                 out->lhs = std::move(lhs);
                 out->rhs = std::move(rhs);
                 if (isComparison) {
-                    // The comparison itself happens at `common`
-                    // (both operands now share it, so codegen reads
-                    // either side's .type.isUnsigned to pick a signed
-                    // or unsigned compare) but the result is always a
-                    // plain int 0/1, same as real C.
+                    // Compares at `common` (codegen reads .isUnsigned to
+                    // pick signed/unsigned), result is always int 0/1.
                     out->type = Type{BaseType::Int, false};
                 } else {
                     out->type = common;
@@ -921,13 +732,8 @@ class Builder {
                 bool thenPtr = isPointer(thenE->type);
                 bool elsePtr = isPointer(elseE->type);
                 if (thenPtr || elsePtr) {
-                    // Permissive, no-cross-checking pointer typing -
-                    // same style as this file's existing pointer/
-                    // untyped-int interop elsewhere (see Type.h's own
-                    // header comment): the branch that IS a pointer
-                    // decides the result type; the other branch is only
-                    // converted if it's also a pointer (matching depth),
-                    // otherwise left as-is.
+                    // The pointer branch decides the result type; the other
+                    // branch converts only if it's also a pointer.
                     out->type = thenPtr ? thenE->type : elseE->type;
                     if (thenPtr && elsePtr) elseE = wrapConvert(std::move(elseE), out->type, e.line);
                     else if (!thenPtr && elsePtr) thenE = wrapConvert(std::move(thenE), out->type, e.line);
@@ -955,10 +761,8 @@ class Builder {
                 out->func = resolveFunc(e.name, e.args.size(), e.line);
                 for (size_t i = 0; i < e.args.size(); i++) {
                     ir::ExprPtr arg = buildExpr(*e.args[i]);
-                    // An external function has no real parameter
-                    // list in this file to convert against - see
-                    // resolveFunc's own comment; its argument's
-                    // built-in type passes through unchanged.
+                    // An external function has no parameter list to
+                    // convert against; its argument type passes through.
                     if (!out->func->isExternal) {
                         arg = wrapConvert(std::move(arg), out->func->params[i]->type, e.line);
                     }
@@ -968,14 +772,9 @@ class Builder {
                 return out;
             }
             case ExprKind::CallPtr:
-                // No per-callee ABI slot to put an argument in until
-                // the callee is known - which, by definition, this
-                // kind never is at compile time (see IR.h's
-                // ExprKind::CallPtr) - so, unlike Call above, this
-                // subset only supports a bare (expr)() with no
-                // arguments at all. There's likewise no callee
-                // signature to learn a real return type from here;
-                // the result stays plain int, same as today.
+                // No callee is known at compile time, so there's no ABI
+                // slot for an argument and no signature for a real return
+                // type (stays plain int); only a 0-argument (expr)() works.
                 if (!e.args.empty()) {
                     err(e.line, "a call through a computed function address ((expr)(...)) can't take "
                                  "arguments - there's no per-callee calling-convention slot to put one in "
@@ -992,14 +791,9 @@ class Builder {
                 return wrapConvert(std::move(inner), e.type, e.line);
             }
             case ExprKind::Sizeof: {
-                // sizeof(expr) never evaluates expr - it's built here
-                // purely to learn its static type (still raising any
-                // unrelated semantic error, e.g. an undefined
-                // variable, exactly as real C requires even though it
-                // never runs) and then discarded; only its `.type` is
-                // kept. See Type.h's own header comment on why no
-                // width table is needed anywhere else in this pass -
-                // this is the one place it is.
+                // sizeof(expr) builds expr only to learn its static type
+                // (still raising any unrelated semantic error) and discards
+                // it; only `.type` is kept.
                 Type measured = e.sizeofIsType ? e.type : buildExpr(*e.rhs)->type;
                 out->kind = ir::ExprKind::IntLit;
                 out->type = Type{BaseType::Long, true};
@@ -1007,22 +801,10 @@ class Builder {
                 return out;
             }
             case ExprKind::StringLit: {
-                // Lowers to exactly what `&arrayName` already means
-                // for a real declared char array (see
-                // buildAddressableOperand's Var case and every
-                // backend's own genAddrOf) - a synthetic, anonymous
-                // global char array holding the decoded bytes plus a
-                // trailing NUL, and this expression's own value is
-                // that array's address. No new IR node kind, no
-                // codegen changes anywhere: every backend already
-                // emits a literal char-array global and takes a bare
-                // array's address correctly, from the char/short/
-                // long work this same session added. Each occurrence
-                // gets its own global (no string pooling), and the
-                // pointer this produces, like every other pointer in
-                // this language, is just a plain int - see Type.h's
-                // own header comment on why there's no separate
-                // pointer type to decay to here.
+                // Lowers to a synthetic anonymous global char array (bytes
+                // plus trailing NUL) and takes its address, same as
+                // &arrayName for a declared array. Each occurrence gets its
+                // own global; no string pooling.
                 ir::Slot *slot = allocSlot(ir::SlotKind::Global, "__strlit" + std::to_string(nextStringLitId_++),
                                             static_cast<int>(e.name.size()) + 1);
                 slot->type = Type{BaseType::Char, false};

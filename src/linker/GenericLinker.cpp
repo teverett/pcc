@@ -67,15 +67,7 @@ void patchRel32(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value
 ObjectFile GenericLinker::merge(const std::vector<ObjectFile> &userObjects) const {
     if (userObjects.empty()) fail("no object files given");
     for (const auto &obj : userObjects) {
-        // `machineType == 0` is tolerated unconditionally: a.out's
-        // own real header has no machine-id field at all (see
-        // ../fileformat/aout/AoutFormat.h's own header
-        // comment), so AoutFileFormatReader::read() can only ever
-        // report 0 - this is that format's own real, structural
-        // limitation, not a weaker check for every other format
-        // (which always carries this backend's own real non-zero
-        // `machineType` - see e.g. ../codegen/z80/Z80Assembler.h's
-        // own `kZ80CoffMachine`).
+        // machineType == 0 is tolerated: a.out objects have no machine-id field, so it reads as 0.
         if (obj.machineType != 0 && obj.machineType != config_.machineType) {
             std::ostringstream msg;
             msg << "object's machine type 0x" << std::hex << obj.machineType << " doesn't match this target's own 0x"
@@ -88,7 +80,6 @@ ObjectFile GenericLinker::merge(const std::vector<ObjectFile> &userObjects) cons
     objects.push_back(config_.entryObject);
     objects.insert(objects.end(), userObjects.begin(), userObjects.end());
 
-    // --- layout: sequentially by byte, from the base address. ---
     std::vector<uint32_t> objectBase(objects.size());
     uint32_t cursor = config_.baseAddress;
     for (size_t i = 0; i < objects.size(); i++) {
@@ -97,13 +88,8 @@ ObjectFile GenericLinker::merge(const std::vector<ObjectFile> &userObjects) cons
     }
     std::vector<uint8_t> image(cursor - config_.baseAddress, 0);
 
-    // --- a second, independent sequential layout over the Harvard
-    // data address space (see GenericLinkerConfig::dataBaseAddress's
-    // own comment) - every `dataSize`/`dataBase` here is always 0 for
-    // a von-Neumann target, exactly mirroring the code layout above
-    // but with nothing to copy into any image (a data-space
-    // reservation is never backed by real bytes - see
-    // ObjectFile::dataSize's own comment). ---
+    // Independent sequential layout over the Harvard data address space; always 0-sized for a
+    // von-Neumann target, and never backed by real bytes (a data-space reservation only).
     std::vector<uint32_t> dataBase(objects.size());
     uint32_t dataCursor = config_.dataBaseAddress;
     for (size_t i = 0; i < objects.size(); i++) {
@@ -115,10 +101,6 @@ ObjectFile GenericLinker::merge(const std::vector<ObjectFile> &userObjects) cons
                    image.begin() + static_cast<long>(objectBase[i] - config_.baseAddress));
     }
 
-    // --- global symbol table - see GenericLinker.h's own header
-    // comment on the g_/p_/fn_ (pdp7's own uppercase G_/P_/FN_ - see
-    // Pdp7Codegen.h's own label()) cross-file-visibility convention.
-    // ---
     auto isGlobalName = [](const std::string &name) {
         return name.rfind("g_", 0) == 0 || name.rfind("p_", 0) == 0 || name.rfind("fn_", 0) == 0 ||
                name.rfind("G_", 0) == 0 || name.rfind("P_", 0) == 0 || name.rfind("FN_", 0) == 0;
@@ -140,12 +122,8 @@ ObjectFile GenericLinker::merge(const std::vector<ObjectFile> &userObjects) cons
         }
     }
 
-    // --- resolve and patch every relocation. `value`/`siteFinalAddr`
-    // stay in the same packed-byte scale as `image`/`objectBase`
-    // right up until the moment they're handed to a patch function -
-    // see GenericLinkerConfig::addressUnitBytes's own comment for why
-    // only that final division (a no-op for every byte-addressed
-    // target, `addressUnitBytes == 1`) needs to happen at all. ---
+    // value/siteFinalAddr stay in packed-byte scale until the final division into the patch
+    // function (a no-op when addressUnitBytes == 1).
     for (size_t i = 0; i < objects.size(); i++) {
         for (const auto &r : objects[i].relocations) {
             uint32_t idx = objectBase[i] - config_.baseAddress + r.offset;
@@ -156,12 +134,6 @@ ObjectFile GenericLinker::merge(const std::vector<ObjectFile> &userObjects) cons
             if (r.symbolName == "..") {
                 value = objectBase[i];
             } else if (r.symbolName == "..d") {
-                // This object's own linked data-space base - the
-                // data-space counterpart of `".."` above, for a
-                // Harvard target's own same-object data address
-                // reference (see ObjSymbol::isData's own comment on
-                // why even a same-file data reference needs
-                // rebasing, same reasoning as `".."` for code).
                 value = dataBase[i];
             } else {
                 auto it = globalSymbols.find(r.symbolName);
@@ -176,10 +148,6 @@ ObjectFile GenericLinker::merge(const std::vector<ObjectFile> &userObjects) cons
         }
     }
 
-    // --- build the linked ObjectFile. `textBytes` is already the
-    // packed-byte image exactly as every not-yet-linked object's own
-    // `.textBytes` is (see ObjectFile.h's own `unitBits`/`base`
-    // comment) - no decode/unpack step needed at all. ---
     ObjectFile linked;
     linked.unitBits = config_.outputUnitBits;
     linked.base = config_.baseAddress / config_.addressUnitBytes;
@@ -188,16 +156,8 @@ ObjectFile GenericLinker::merge(const std::vector<ObjectFile> &userObjects) cons
     linked.symbols.reserve(globalSymbols.size());
     for (auto &kv : globalSymbols) {
         bool isData = globalSymbolIsData[kv.first];
-        // A code symbol's own linked value is left relative to
-        // `.text`'s own start, not absolute (see ObjectFile.h's own
-        // header comment) - subtract the base this function just
-        // added, undoing it, the same way every not-yet-linked
-        // object's own symbol table is already relative to its own
-        // `org 0`. Only a code address is in the packed-byte scale
-        // `addressUnitBytes` describes at all; a data address is
-        // already the real, final, absolute value with nothing to
-        // convert (Harvard data is always byte-addressed 1:1 - see
-        // ObjSymbol::isData's own comment).
+        // Code symbols are left relative to .text's start (matching org 0); data addresses are
+        // already final absolute values (Harvard data is always byte-addressed 1:1).
         uint32_t value = isData ? kv.second : (kv.second - config_.baseAddress) / config_.addressUnitBytes;
         linked.symbols.push_back({kv.first, value, /*isDefined=*/true, isData});
     }

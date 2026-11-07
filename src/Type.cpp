@@ -2,13 +2,6 @@
 
 namespace pcc {
 
-// Rank is the fixed ISO C conversion-rank order (char < short < int <
-// long < long long) - the standard defines it this way regardless of
-// what widths an implementation actually picks, which is what lets
-// commonType() below stay target-independent (see Type.h's own comment
-// and ../docs/ir.md's type-system note for the simplifications this
-// buys pcc: no width table is needed just to rank two types against
-// each other).
 int rank(BaseType base) {
     switch (base) {
         case BaseType::Char:

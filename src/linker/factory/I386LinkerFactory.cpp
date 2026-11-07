@@ -9,28 +9,13 @@
 namespace pcc {
 
 namespace {
-// Real Multiboot header fields - see I386Codegen.cpp's own
-// `generate()` comment for why each has the value it does.
 constexpr uint32_t kMbMagic = 0x1BADB002;
 constexpr uint32_t kMbFlags = 0x10000;
 constexpr uint32_t kMbChecksum = static_cast<uint32_t>(-(static_cast<int64_t>(kMbMagic) + kMbFlags));
 
-// Verbatim copy of I386Codegen.cpp's own whole-program entry
-// sequence (Multiboot header, both 8259 PICs masked, `call fn_main`,
-// halt loop) - see that file's own `generate()` comment. `org 0` -
-// this object is placed first by GenericLinker::merge() (see that
-// class's own header comment), always exactly at `kI386LoadAddr`, so
-// the header's own `header_addr`/`load_addr` fields (which must be
-// real, already-linked addresses, not offsets) are written as
-// `kI386LoadAddr` directly rather than through any label - the
-// header must be the very first thing in the linked image. Likewise
-// `entry_addr` (where execution starts) is `kI386LoadAddr` plus this
-// 32-byte header's own fixed size, rather than `dd _start` - the
-// shared `dd`/`dw`/`db` directive path (see I386Assembler.cpp's own
-// `processLine`) never records a relocation for its own operands, so
-// a label reference there wouldn't get this object's own base-shift
-// added once linked (unlike every `mov`/`add`/moffs32 label
-// reference, which does - see I386Assembler.cpp's own `emitAbs32`).
+// The entry object is placed first, always exactly at kI386LoadAddr, so header_addr/load_addr and
+// entry_addr are written as literal already-linked addresses: `dd` operands are never relocated,
+// so a label reference here would not get the base-shift that `mov`/`add`/moffs32 do.
 std::string entryAsm() {
     uint32_t entryAddr = kI386LoadAddr + 32;
     return "org 0\n"

@@ -6,12 +6,7 @@
 namespace pcc {
 
 namespace {
-// Zeroes every segment register, sets up a stack growing down from
-// `0x7C00` (the boot-sector load address itself - same convention as
-// a bare-metal boot sector that never grows past its own load point),
-// then calls `main` and halts - the exact sequence I8086Codegen.cpp's
-// own whole-program (`--format=raw`) mode used to emit inline, before
-// real separate compilation existed.
+// Stack grows down from 0x7C00, the boot-sector load address.
 constexpr const char *kEntryAsm =
     "BITS 16\n"
     "ORG 0\n"

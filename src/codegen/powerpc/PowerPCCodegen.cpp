@@ -13,23 +13,18 @@ namespace {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
-// Where the whole program is loaded and starts executing - the test
-// harness sets the simulated CPU's PC here directly, same idea as
-// MipsCodegen.cpp's own kBaseAddress.
+// Where the whole program is loaded and starts executing; the test harness
+// sets the simulated CPU's PC here directly.
 constexpr uint32_t kBaseAddress = 0x00100000u;
 
-// Where this backend's own entry sequence points r1 before calling
-// main() - comfortably above the loaded program and its data,
-// growing down into otherwise-unused RAM.
+// Where this backend's entry sequence points r1 before calling main(),
+// above the loaded program, growing down.
 constexpr uint32_t kInitialSP = 0x00200000u;
 }  // namespace
 
-// A literal element's own decimal text; a symbol element is the
-// referenced Slot's or Function's own label, written out bare - "dw"
-// (PowerPCAssembler.cpp's Line::Dw) already evaluates any expr
-// operand, symbol included, and now also records the same external-
-// name/base-shift relocation (kPowerPCRelocAbs32) a label used as
-// `lis`/`ori`'s own split address immediate already gets.
+// A literal element's decimal text; a symbol element is the referenced
+// Slot's or Function's label. "dw" also records the same external-name/
+// base-shift relocation a lis/ori address immediate gets.
 std::string PowerPCCodegen::arrayElemText(const ir::ArrayInitElem &e) {
     if (!e.isSymbol) return std::to_string(static_cast<int32_t>(static_cast<uint32_t>(e.value)));
     return e.slot ? label(e.slot) : label(e.func);
@@ -96,25 +91,16 @@ std::string PowerPCCodegen::generate(const ir::Program &prog, bool objectMode) {
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // Real separate compilation (`--format=coff`/`elf`/`macho`/
-    // `aout` from a single file - see IRBuilder.h's `allowExternal`)
-    // means `prog` may not define `main` at all. `objectMode` (see
-    // Codegen.h) means no object file ever emits this entry sequence
-    // itself - PowerPCLinkerFactory.cpp is solely responsible for
-    // synthesizing exactly one, once every object is merged and
-    // `main`'s linked address is resolvable (see Linker.h). An object
-    // file's own base is `org 0` - it's the linker's job to place it,
-    // not this backend's (see PowerPCAssembler.h's own header
-    // comment).
+    // `objectMode` means no object file emits this entry sequence itself;
+    // PowerPCLinkerFactory.cpp synthesizes it once every object is merged.
+    // An object file's base is `org 0` - placement is the linker's job.
     code_ << "org " << (objectMode ? 0 : kBaseAddress) << "\n\n";
     if (!objectMode) {
         code_ << "_start:\n";
         code_ << "    lis sp," << static_cast<int32_t>((kInitialSP >> 16) & 0xFFFFu) << "\n";
         code_ << "    ori sp,sp," << static_cast<int32_t>(kInitialSP & 0xFFFFu) << "\n";
         code_ << "    bl " << label(mainFn) << "\n";
-        // The result sits in t0 the moment execution reaches `halt` -
-        // see PowerPCCodegen.h's own header comment on why that's the
-        // authoritative place to read it from.
+        // The result sits in t0 the moment execution reaches `halt`.
         code_ << "halt:\n    b halt\n\n";
     }
 
@@ -122,12 +108,9 @@ std::string PowerPCCodegen::generate(const ir::Program &prog, bool objectMode) {
 
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        // An external global (real separate compilation - see IR.h's
-        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
-        // defined in this file at all - it must never get a local
-        // storage word here, only ever be referenced by name (see
-        // label()) in code, letting the assembler's own undefined-
-        // symbol handling defer it to a relocation.
+        // An external global isn't defined in this file; it must never get
+        // a storage word here, only be referenced by name, letting the
+        // assembler's undefined-symbol handling defer it to a relocation.
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
@@ -154,40 +137,20 @@ std::string PowerPCCodegen::generate(const ir::Program &prog, bool objectMode) {
     return out.str();
 }
 
-// Single-file-only - see MipsCodegen.cpp's own version of this same
-// comment (no `--format=coff` here either).
+// Single-file-only, as in MipsCodegen.cpp (no `--format=coff` here).
 std::map<std::string, std::string> PowerPCCodegen::perFileAsm() const { return perFileAsm_; }
 
-// Every function here saves/restores the real hardware link register
-// (via `mflr`/`mtlr` through `r0`, the only way to get at it - unlike
-// MIPS's own `$ra`, a plain GPR, PowerPC's link register isn't
-// directly memory-addressable) around its own body, whether or not it
-// happens to call anything else - a non-leaf function's own call to
-// another function overwrites the link register outright, so without
-// this save/restore a caller's own eventual `blr` would return into
-// whatever its *own* last call last returned to, not back to its own
-// caller. Always saving/restoring (leaf or not) is simpler than
-// tracking which functions are actually non-leaf, and costs only two
-// real instructions (plus the stack push/pop) on either side - same
-// reasoning as MipsCodegen.cpp's own version of this same comment.
+// Saves/restores the link register (via `mflr`/`mtlr` through `r0` -
+// PowerPC's LR isn't directly memory-addressable) around every function,
+// leaf or not, since any call overwrites LR.
 //
-// This same prologue also gives every call its own real frame: after
-// the caller has already pushed its arguments onto `sp` (see
-// ExprKind::Call below) and `bl` has set the link register, `sp`
-// still points at argument 0, untouched by `bl` itself (a real
-// PowerPC call is only ever a branch-and-link, never a hardware stack
-// push). The prologue pushes the saved return address and the
-// caller's own `fp` below that, in that order, then points `fp` at
-// the second of those two pushed words - so `fp+0` is the caller's
-// `fp`, `fp+4` is the saved return address, and `fp+8+4*i` is
-// argument i, exactly matching slotDisp()'s own Param displacement.
-// `addi sp,sp,-4*frameSize` then reserves this call's own Locals
-// below `fp`, matching slotDisp()'s own Local displacement. Every
-// activation gets its own `fp` this way, chained back through the
-// stack to its caller's, which is what makes direct and mutual
-// recursion safe - unlike this backend's own previous model, where
-// every Local/Param was one shared memory cell every call (recursive
-// or not) stepped on identically.
+// The prologue pushes the saved return address then the caller's `fp`,
+// then points `fp` at the second pushed word: `fp+0` is the caller's `fp`,
+// `fp+4` is the saved return address, `fp+8+4*i` is argument i (matching
+// slotDisp()'s Param displacement). `addi sp,sp,-4*frameSize` then reserves
+// this call's Locals below `fp` (matching slotDisp()'s Local displacement)
+// - each call gets its own `fp`, chained through the stack, making
+// recursion safe.
 void PowerPCCodegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
     code_ << "    mflr r0\n";
@@ -202,13 +165,9 @@ void PowerPCCodegen::genFunction(const ir::FunctionBody &fn) {
     code_ << "    blr\n\n";
 }
 
-// Restores `fp` and the link register from the words genFunction()'s
-// own prologue saved them to, and leaves `sp` pointing at argument 0
-// again (the same place it pointed right on entry, before the
-// prologue's own two pushes and `addi sp,sp,-4*frameSize`) - the
-// caller, not this function, is responsible for popping the arguments
-// it itself pushed (see ExprKind::Call below), the same caller-cleans-
-// up convention I386Codegen.cpp's own `add esp,N` after `call` uses.
+// Restores `fp` and the link register, leaving `sp` at argument 0 again.
+// The caller, not the callee, pops the arguments it pushed (caller-cleans-
+// up convention, as in I386Codegen.cpp).
 void PowerPCCodegen::emitEpilogue() {
     code_ << "    ldind fp,t2\n";
     code_ << "    addi sp,fp,4\n";
@@ -270,11 +229,8 @@ void PowerPCCodegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            // A `return` statement is its own early exit from the
-            // function, bypassing genFunction()'s own fall-through
-            // epilogue entirely, so it needs that same frame teardown
-            // inline, before `blr` - see emitEpilogue()'s own comment.
-            // `t0` (this return value) is never touched by it.
+            // An early exit needs the same frame teardown inline before
+            // `blr`; `t0` (the return value) is never touched by it.
             emitEpilogue();
             code_ << "    blr\n";
             return;
@@ -336,10 +292,8 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Stores at e.type's own width/signedness - the pointee
-            // type of a real typed pointer, or plain native-int-width
-            // for the still-supported untyped-int-as-address style -
-            // see IRBuilder.cpp's own DerefAssign comment.
+            // Stores at e.type's width/signedness - the pointee type, or
+            // native-int width for untyped-int-as-address.
             genExpr(*e.lhs);  // t0 = pointer value
             code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
             genExpr(*e.rhs);  // t0, or t1:t0 if wide
@@ -353,15 +307,11 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
                 genCompoundThroughT2(e);
                 return;
             }
-            // Plain scalar target - loadSlotValue()/storeSlotValue()
-            // address it afresh every call with no side effect (a
-            // Global's own address load, or just `fp+slotDisp`), so
-            // there's no address to hold across `e.rhs`'s own
-            // evaluation at all - same order as the existing non-
-            // indexed Assign case above (rhs first, then the slot
-            // access).
+            // loadSlotValue/storeSlotValue re-address a plain scalar target
+            // fresh each time (no side effect to preserve), so rhs
+            // evaluates first, same order as plain Assign above.
             genExpr(*e.rhs);  // t0 = rhs
-            code_ << "    or t1,t0,t0\n";  // t1 = t0 (real PowerPC "mr" idiom)
+            code_ << "    or t1,t0,t0\n";  // t1 = t0 ("or rX,rY,rY" is PowerPC's register-move idiom)
             loadSlotValue("t0", e.slot);  // t0 = old
             if (e.yieldOld) code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
             genCompoundOp(e.op, e.type);
@@ -372,7 +322,7 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
         }
         case ir::ExprKind::CompoundDerefAssign: {
             genExpr(*e.lhs);  // t0 = pointer value
-            code_ << "    or t2,t0,t0\n";  // t2 = t0 (real PowerPC "mr" idiom)
+            code_ << "    or t2,t0,t0\n";  // t2 = t0
             genCompoundThroughT2(e);
             return;
         }
@@ -401,11 +351,9 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                // Loads at e.type's own width/signedness - see
-                // DerefAssign's identical comment above.
+                // Loads at e.type's width/signedness - see DerefAssign above.
                 genExpr(*e.rhs);  // t0 = pointer value
-                code_ << "    or t2,t0,t0\n";  // t2 = t0 (real PowerPC "mr" idiom - see genBinary()'s own
-                                                // header comment on why r0 can't be used as a zero register here)
+                code_ << "    or t2,t0,t0\n";  // t2 = t0
                 loadOperand("t2", "t0", e.type);
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
@@ -421,16 +369,11 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            // Pushes arguments right-to-left so argument 0 ends up
-            // closest to the saved return address once genFunction()'s
-            // own prologue runs in the callee (see its own comment,
-            // and slotDisp()'s Param displacement) - `bl` itself never
-            // touches `sp`, so it's still pointing at argument 0 the
-            // instant control reaches the callee. This function (the
-            // caller) cleans the arguments back off afterward, since
-            // the callee's own epilogue only ever restores `sp` to
-            // where it was on entry - argument 0's own address, not
-            // any address above it.
+            // Pushes arguments right-to-left so argument 0 ends up closest
+            // to the saved return address once the callee's prologue runs
+            // (`bl` never touches `sp`). The caller cleans the arguments
+            // back off afterward, since the callee's epilogue only
+            // restores `sp` to where it was on entry.
             int totalBytes = 0;
             for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
@@ -447,20 +390,12 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::CallPtr: {
-            // e.args is always empty here - IRBuilder.cpp rejects any
-            // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr): there's no per-callee
-            // p_<fn>_<i> cell to write one into until the callee is
-            // known, which it never is at compile time for this kind.
-            // Real PowerPC has no single-instruction indirect call -
-            // `bl`'s own target is always a compile-time-relative
-            // displacement, never a register. The standard two-
-            // instruction idiom every real PowerPC compiler uses
-            // instead: `mtctr` moves the callee's own address into
-            // the Count Register, then `bctrl` branches to whatever
-            // address CTR holds and sets the link register, exactly
-            // like `bl` does for a compile-time-known target.
-            genExpr(*e.lhs);  // t0 = the callee's own entry address
+            // Real PowerPC has no single-instruction indirect call - `bl`'s
+            // target is always a compile-time-relative displacement, never
+            // a register - so this uses the standard two-instruction idiom:
+            // `mtctr` moves the callee's address into the Count Register,
+            // then `bctrl` branches to it and sets the link register.
+            genExpr(*e.lhs);  // t0 = the callee's entry address
             code_ << "    mtctr t0\n";
             code_ << "    bctrl\n";
             return;
@@ -470,27 +405,19 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Intrinsic: {
-            // No real portable notion of interrupt enable/disable on
-            // a bare-metal target with no exception/interrupt setup
-            // done at all here - treated as a no-op, same reasoning
-            // (and the same choice) as MipsCodegen.cpp's own
-            // Intrinsic case.
+            // No interrupt setup exists on this bare-metal target, so
+            // interrupt enable/disable is a no-op, as in MipsCodegen.cpp.
             (void)e;
             return;
         }
     }
 }
 
-// `t2` holds the computed address, no zero-page-style placement
-// restriction the way the 6502 backend's own `ptr` has. `arraySize >
-// 0` means `slot` itself is the array, so the base address is either
-// a compile-time-known label (a Global) or `fp+slotDisp(slot)` (a
-// Local - see slotDisp()'s own comment on why a Local array's element
-// i sits at a *decreasing* address as i increases, the opposite of a
-// Global array's own increasing-address layout, hence `subf` below
-// rather than `add`). `arraySize == 0` means `slot` is a plain
-// pointer variable instead, so the base comes from *reading* that
-// variable's own stored value first (loadSlotValue, not an address).
+// `arraySize > 0` means `slot` itself is the array, so the base address is
+// either a compile-time-known label (a Global) or `fp+slotDisp(slot)` (a
+// Local - a decreasing address as the index increases, hence `subf` below
+// rather than `add`). `arraySize == 0` means `slot` is a plain pointer
+// variable, so the base comes from reading its stored value instead.
 void PowerPCCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // t0 = index
     int shift = elemShift(slot->type);
@@ -517,12 +444,8 @@ void PowerPCCodegen::genIndex(const ir::Expr &e) {
 void PowerPCCodegen::genCompoundOp(const std::string &op, Type type) {
     bool isUnsigned = type.isUnsigned;
     if (op == "+") { code_ << "    add t0,t1,t0\n"; return; }
-    // "subf rT,rA,rB" = rB - rA (see genIndexAddr()'s own comment on
-    // this convention) - t0 = t0 - t1 = old - rhs.
+    // subf t0,t1,t0 = t0 - t1 = old - rhs.
     if (op == "-") { code_ << "    subf t0,t1,t0\n"; return; }
-    // Real hardware `mullw` (see genMul()'s own identical form) - a
-    // full 32x32->32 product, commutative, so t1*t0 = rhs*old is the
-    // same value as old*rhs.
     if (op == "*") { code_ << "    mullw t0,t1,t0\n"; return; }
     if (op == "&") { code_ << "    and t0,t1,t0\n"; return; }
     if (op == "|") { code_ << "    or t0,t1,t0\n"; return; }
@@ -532,14 +455,10 @@ void PowerPCCodegen::genCompoundOp(const std::string &op, Type type) {
         code_ << "    " << insn << " t0,t0,t1\n";
         return;
     }
-    // "/" or "%" - real hardware `divw`/`divwu` (see genDivMod()'s own
-    // identical form): t0 = old, t1 = rhs (divisor); "%" recovers the
-    // remainder via a real multiply-subtract the same way genDivMod()
-    // already does, since classic PowerPC has no direct remainder
-    // instruction. t5 (never t2) holds the quotient scratch - t2 is
-    // this backend's own dedicated address register (see
-    // genCompoundThroughT2()'s own comment), which a caller still
-    // needs intact for the store right after this call returns.
+    // "/" or "%": t0 = old, t1 = rhs (divisor). "%" recovers the remainder
+    // via multiply-subtract, since PowerPC has no remainder instruction.
+    // t5 (never t2) holds the quotient scratch, since t2 is this backend's
+    // dedicated address register, still needed intact for the store after.
     const char *divInsn = isUnsigned ? "divwu" : "divw";
     if (op == "%") {
         code_ << "    " << divInsn << " t5,t0,t1\n";  // t5 = old / rhs
@@ -550,18 +469,13 @@ void PowerPCCodegen::genCompoundOp(const std::string &op, Type type) {
     }
 }
 
-// t2 must already hold the resolved address on entry, and nothing
-// else live - mirrors genExpr()'s own indexed-Assign case, which
-// already stashes t2 on the real hardware stack across `e.rhs`'s own
-// evaluation for the identical reason: that evaluation can
-// recursively reach arbitrary codegen (calls included), which may
-// freely use every other register. PowerPC has no dedicated push/pop,
-// so this uses the same `addi sp,sp,-4`/`stind sp,...` idiom every
-// other stack-held temporary in this backend already uses.
+// t2 must already hold the resolved address on entry; it is stashed on the
+// real hardware stack (PowerPC has no dedicated push/pop) across evaluating
+// `e.rhs`, which may recursively clobber every other register.
 void PowerPCCodegen::genCompoundThroughT2(const ir::Expr &e) {
     code_ << "    addi sp,sp,-4\n    stind sp,t2\n";
     genExpr(*e.rhs);               // t0 = rhs
-    code_ << "    or t1,t0,t0\n";   // t1 = t0 (real PowerPC "mr" idiom) - rhs, held across the t2 reload below
+    code_ << "    or t1,t0,t0\n";   // t1 = rhs, held across the t2 reload below
     code_ << "    ldind sp,t2\n    addi sp,sp,4\n";  // t2 = address
     loadOperand("t2", "t0", e.type);  // t0 = old
     if (e.yieldOld) code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
@@ -572,18 +486,16 @@ void PowerPCCodegen::genCompoundThroughT2(const ir::Expr &e) {
         code_ << "    ldind sp,t0\n    addi sp,sp,4\n";  // t0 = old
         code_ << "    or t4,t0,t0\n";                 // t4 = old, preserved across the store below
         code_ << "    or t0,t3,t3\n";                  // t0 = new (storeOperand always stores from t0)
-        storeOperand("t2", "t0", e.type);                 // t2 still addresses the target (loadOperand never moves it - e.type is never wide)
+        storeOperand("t2", "t0", e.type);
         code_ << "    or t0,t4,t4\n";                       // t0 = old (final result)
     } else {
         storeOperand("t2", "t0", e.type);  // t0 already = new; t2 still addresses the target
     }
 }
 
-// Stores `slot->arrayInit` into this Local array's own frame slots -
-// a Local array's own address isn't a compile-time-resolvable label
-// the way a Global array's is, so (unlike declareArray()'s own `dw`
-// trailer line) this has to run as real code, one element at a time,
-// every time this declaration is reached.
+// A Local array's address isn't a compile-time-resolvable label the way a
+// Global array's is, so (unlike declareArray()'s `dw` trailer line) this
+// runs as real code, one element at a time, each time this is reached.
 void PowerPCCodegen::genLocalArrayInit(const ir::Slot *slot) {
     int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
@@ -623,12 +535,12 @@ void PowerPCCodegen::genAddrOf(const ir::Expr &operand) {
     }
     if (operand.kind == ir::ExprKind::Index) {
         genIndexAddr(operand.slot, *operand.lhs);
-        code_ << "    or t0,t2,t2\n";  // t0 = t2 (real PowerPC "mr" idiom)
+        code_ << "    or t0,t2,t2\n";  // t0 = t2
         return;
     }
     if (operand.kind == ir::ExprKind::Func) {
         loadAddress("t2", label(operand.func));
-        code_ << "    or t0,t2,t2\n";  // t0 = t2 (real PowerPC "mr" idiom)
+        code_ << "    or t0,t2,t2\n";  // t0 = t2
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");
@@ -705,12 +617,9 @@ void PowerPCCodegen::narrowT0To(Type to) {
     }
 }
 
-// An implicit or explicit type conversion. Every arithmetic/
-// comparison operand narrower than `int` is already promoted by
-// IRBuilder before any Binary/Unary ever sees it, so the only real
-// work here is crossing the native-int/`long long` boundary (sign/
-// zero-extending t0 into t1, or just dropping t1), or re-truncating+
-// re-extending t0 for a narrower target - see narrowT0To().
+// IRBuilder already promotes any operand narrower than `int`, so the only
+// real work here is crossing the native-int/`long long` boundary (sign/
+// zero-extending t0 into t1, or dropping t1), or re-narrowing t0.
 void PowerPCCodegen::genConvert(const ir::Expr &e) {
     Type from = e.lhs->type;
     Type to = e.type;
@@ -730,10 +639,9 @@ void PowerPCCodegen::genConvert(const ir::Expr &e) {
     }
 }
 
-// `long long` add/sub (lhs OP rhs) - PowerPC has no single carry flag
-// GPR instruction this dialect exposes, so the carry/borrow out of
-// the low-word op is recovered the same way a comparison already
-// materializes a boolean here: `cmplw`+a conditional branch.
+// `long long` add/sub. This dialect exposes no carry-flag instruction, so
+// the carry/borrow out of the low-word op is recovered via `cmplw` plus a
+// conditional branch, the same way a comparison materializes a boolean.
 void PowerPCCodegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd) {
     genExpr(lhs);  // t1:t0 = lhs
     code_ << "    addi sp,sp,-8\n    stind sp,t0\n    stindd sp,t1,4\n";
@@ -761,9 +669,8 @@ void PowerPCCodegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool i
     }
 }
 
-// `long long` multiply, keeping the low 64 bits of the true 128-bit
-// product - the standard 32-on-32 cross-multiply decomposition, using
-// `mullw` (low 32) and `mulhwu` (high 32) three times.
+// `long long` multiply, keeping the low 64 bits of the true 128-bit product
+// via the standard 32-on-32 cross-multiply decomposition.
 void PowerPCCodegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     code_ << "    addi sp,sp,-8\n    stind sp,t0\n    stindd sp,t1,4\n";
@@ -790,11 +697,9 @@ void PowerPCCodegen::genNegate64() {
     code_ << Ldone << ":\n";
 }
 
-// Classic bit-serial shift/compare/subtract long division - see
-// I386Codegen.cpp's/MipsCodegen.cpp's own genWideDivMod() for the
-// algorithm, ported onto the stack with $sp playing the role `ebx`/
-// `$sp`+ldind-with-displacement plays there (this backend's own
-// `ldindd`/`stindd` already take a displacement, same as MIPS's).
+// Classic bit-serial shift/compare/subtract long division, as in
+// I386Codegen.cpp's/MipsCodegen.cpp's genWideDivMod(), using the stack for
+// scratch state via `ldindd`/`stindd`'s displacement.
 void PowerPCCodegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    addi sp,sp,-8\n    stind sp,t1\n    stindd sp,t0,4\n";
@@ -1022,9 +927,8 @@ void PowerPCCodegen::genBinary(const ir::Expr &e) {
     genCompare(op, *e.lhs, *e.rhs);
 }
 
-// Real hardware multiply (`mullw`) - a full 32x32->32 product, no
-// operand-size limitation the way the 68000's own `MULS.W` has.
-// Signedness doesn't matter for the low-order 32 bits mullw keeps.
+// mullw's low-order 32 bits are the same whether operands are signed or
+// unsigned.
 void PowerPCCodegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     code_ << "    addi sp,sp,-4\n    stind sp,t0\n";
@@ -1033,13 +937,9 @@ void PowerPCCodegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << "    mullw t0,t1,t0\n";
 }
 
-// Real hardware divide (`divw`/`divwu`) gives only the quotient -
-// unlike MIPS's own `div` (which leaves both quotient and remainder
-// ready to pull out of HI/LO), classic PowerPC has no remainder
-// instruction at all, so `%` is synthesized the standard way: divide
-// for the quotient, `mullw` to multiply the quotient back out by the
-// divisor, then `subf` to recover the remainder as `dividend -
-// quotient * divisor`.
+// `divw`/`divwu` give only the quotient - unlike MIPS's `div` (HI/LO) -
+// so `%` is synthesized: divide, `mullw` the quotient back out, `subf` to
+// recover the remainder as `dividend - quotient * divisor`.
 void PowerPCCodegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     const char *divInsn = isUnsigned ? "divwu" : "divw";
     genExpr(lhs);
@@ -1055,12 +955,8 @@ void PowerPCCodegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wa
     code_ << "    subf t0,t2,t1\n";                // t0 = t1 - t2 = dividend - quotient*divisor
 }
 
-// PowerPC has no single compare-and-set instruction the way MIPS's
-// own `slt` is - a comparison here always needs `cmpw`/`cmplw` plus a
-// real conditional branch to decide which boolean value to
-// materialize, the same "compare, then branch to decide" shape as the
-// 68000's own CMP+Bcc. `isUnsigned` (the shared operand type's own
-// signedness) picks `cmpw` vs `cmplw`.
+// PowerPC has no compare-and-set instruction (unlike MIPS's `slt`), so this
+// needs `cmpw`/`cmplw` plus a conditional branch to materialize the boolean.
 void PowerPCCodegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs) {
     if (isWide(lhs.type)) {
         genWideCompare(op, lhs, rhs, lhs.type.isUnsigned);
@@ -1135,13 +1031,8 @@ std::string PowerPCCodegen::buildAssembleCommand(const std::string &, const std:
 std::optional<std::string> PowerPCCodegen::assembleInProcess(const std::string &asmText,
                                                                const std::string &format) const {
     if (format == "raw") return assemblePowerPC(asmText);
-    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
-    // (see generate()'s own `objectMode` comment) - this backend's
-    // own assembler builds one format-neutral ObjectFile exactly once
-    // (see PowerPCAssembler.h's own `assemblePowerPCObject`), and
-    // whichever of these five names was asked for just picks that
-    // format's own FileFormatWriter (see
-    // fileformat/FileFormat.h) to serialize it.
+    // `coff`/`elf`/`macho`/`aout`/`objraw`: builds one format-neutral
+    // ObjectFile, then picks that format's FileFormatWriter to serialize it.
     if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assemblePowerPCObject(asmText);
         return makeFileFormatWriter(*kind)->write(obj);

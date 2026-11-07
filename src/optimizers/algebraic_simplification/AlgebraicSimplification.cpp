@@ -37,9 +37,7 @@ ir::ExprPtr makeShift(const std::string &op, ir::ExprPtr operand, long amount, i
     return shift;
 }
 
-// n's own log2, or nullopt if n isn't a positive power of two - the
-// only shape where `x * n` and `x << log2(n)` compute the identical
-// bit pattern for every possible value of x.
+// n's log2, or nullopt if n isn't a positive power of two.
 std::optional<long> log2OfPowerOfTwo(long n) {
     if (n <= 0 || (n & (n - 1)) != 0) return std::nullopt;
     long k = 0;
@@ -50,22 +48,15 @@ std::optional<long> log2OfPowerOfTwo(long n) {
     return k;
 }
 
-// `op` is `e`'s own operator, with exactly one of lhs/rhs an IntLit
-// (both-literal is ConstantFolding's job, run separately - see
-// AlgebraicSimplification.h) and `litVal` that literal's value.
-// Returns true if an identity applies - for a non-commutative op
-// (`/`, `-`, `<<`, `>>`) the literal must be on the rhs for any of
-// these to hold, which `literalWasLhs` lets the caller check first.
+// `op` is e's operator with exactly one of lhs/rhs an IntLit of value
+// `litVal`; `literalWasLhs` says which side.
 bool hasIdentityRewrite(const std::string &op, long litVal, bool literalWasLhs) {
-    // "*"/"+"/"|"/"^" are commutative, so their identities hold with
-    // the literal on either side.
+    // "*"/"+"/"|"/"^" are commutative: identity holds on either side.
     if (op == "*") return litVal == 1 || litVal == -1 || log2OfPowerOfTwo(litVal).has_value();
     if (op == "+" || op == "|" || op == "^") return litVal == 0;
     if (literalWasLhs) {
-        // "-"/"/"/"<<"/">>" aren't commutative, and there's no
-        // identity for the literal on their left anyway (`0 - x` is
-        // `-x`, not `x`; `1 / x` and `k << x` aren't `x` for any k),
-        // so only `x <op> literal` applies past this point.
+        // "-"/"/"/"<<"/">>" aren't commutative and have no identity with
+        // the literal on the left.
         return false;
     }
     if (op == "/") return litVal == 1 || litVal == -1;
@@ -73,10 +64,7 @@ bool hasIdentityRewrite(const std::string &op, long litVal, bool literalWasLhs) 
     return false;
 }
 
-// Rewrites `nonLit <op> litVal` (or `litVal <op> nonLit`, per
-// `literalWasLhs`) into its cheaper equivalent. Only called once
-// hasIdentityRewrite has already confirmed one applies, so every
-// branch here is a direct match.
+// Only called once hasIdentityRewrite confirms a rewrite applies.
 ir::ExprPtr applyIdentityRewrite(const std::string &op, ir::ExprPtr nonLit, long litVal, int line, Type type) {
     if (op == "*") {
         if (litVal == 1) return nonLit;
@@ -87,8 +75,7 @@ ir::ExprPtr applyIdentityRewrite(const std::string &op, ir::ExprPtr nonLit, long
     return nonLit;  // "/" by 1, "+"/"|"/"^"/"-" with 0, "<<"/">>" by 0
 }
 
-// Folds `e`'s own children first, then tries to rewrite `e` itself in
-// place - same bottom-up shape as ConstantFolding::foldExpr.
+// Simplifies children first, then tries to rewrite `e` itself in place.
 void simplifyExpr(ir::ExprPtr &e, bool &changed) {
     if (!e) return;
     simplifyExpr(e->lhs, changed);

@@ -21,9 +21,8 @@ void put32(std::string &out, uint32_t v) {
 }
 void putBytes(std::string &out, const void *data, size_t n) { out.append(static_cast<const char *>(data), n); }
 
-// COFF's symbol Name field is a fixed 8 bytes: a short name goes
-// there directly (NUL-padded); a longer one instead gets 4 zero bytes
-// followed by a 4-byte offset into the string table.
+// Symbol Name is a fixed 8 bytes: <=8 chars go there NUL-padded; longer names get 4 zero bytes
+// then a 4-byte string-table offset.
 void putSymbolName(std::string &out, const std::string &name, uint32_t stringTableOffset) {
     if (name.size() <= 8) {
         char buf[8] = {0};
@@ -51,10 +50,7 @@ uint32_t get32(const std::string &bytes, size_t offset) {
            (static_cast<uint32_t>(static_cast<uint8_t>(bytes[offset + 3])) << 24);
 }
 
-// Mirrors putSymbolName above: a short name sits directly in the
-// 8-byte field (NUL-padded); a long one is flagged by a leading 4
-// zero bytes, with the real name read from the string table at the
-// offset the following 4 bytes give.
+// Inverse of putSymbolName.
 std::string getSymbolName(const std::string &bytes, size_t nameFieldOffset, const std::string &stringTable) {
     need(bytes, nameFieldOffset, 8);
     uint32_t firstWord = get32(bytes, nameFieldOffset);
@@ -73,13 +69,10 @@ std::string getSymbolName(const std::string &bytes, size_t nameFieldOffset, cons
 }  // namespace
 
 std::string CoffFormatWriter::write(const ObjectFile &obj) const {
-    // Build the string table (for symbol names > 8 chars) first, so
-    // each long name's offset is known before writing the symbol
-    // table itself. Offset 0 in the string table is reserved (means
-    // "no name" by COFF convention), so real names start at offset 4
-    // - which the leading 4-byte total-length field itself occupies.
+    // Built first so each long name's string-table offset is known before the symbol table is
+    // written. Offset 0 is reserved ("no name"); the leading 4-byte length field occupies it.
     std::string stringTable;
-    put32(stringTable, 0);  // placeholder; patched to the real total length below
+    put32(stringTable, 0);  // placeholder; patched below
     std::vector<uint32_t> nameOffsets(obj.symbols.size(), 0);
     std::unordered_map<std::string, uint32_t> symbolIndex;  // name -> index, for relocations below
     for (size_t i = 0; i < obj.symbols.size(); i++) {
@@ -90,7 +83,6 @@ std::string CoffFormatWriter::write(const ObjectFile &obj) const {
             stringTable.push_back('\0');
         }
     }
-    // Patch the leading length field now that the real size is known.
     uint32_t stringTableLen = static_cast<uint32_t>(stringTable.size());
     stringTable[0] = static_cast<char>(stringTableLen & 0xFF);
     stringTable[1] = static_cast<char>((stringTableLen >> 8) & 0xFF);
@@ -100,7 +92,7 @@ std::string CoffFormatWriter::write(const ObjectFile &obj) const {
     constexpr uint32_t kFileHeaderSize = 20;
     constexpr uint32_t kSectionHeaderSize = 40;
     constexpr uint32_t kRelocationSize = 10;  // VirtualAddress(4) + SymbolTableIndex(4) + Type(2)
-    constexpr uint32_t kNumSections = 2;      // ".text" (code), ".bss" (Harvard data reservation - see below)
+    constexpr uint32_t kNumSections = 2;      // ".text", ".bss"
 
     uint32_t textOffset = kFileHeaderSize + kNumSections * kSectionHeaderSize;
     uint32_t relocOffset = textOffset + static_cast<uint32_t>(obj.textBytes.size());
@@ -110,7 +102,7 @@ std::string CoffFormatWriter::write(const ObjectFile &obj) const {
 
     std::string out;
 
-    // --- IMAGE_FILE_HEADER (20 bytes) ---
+    // IMAGE_FILE_HEADER
     put16(out, obj.machineType);
     put16(out, static_cast<uint16_t>(kNumSections));
     put32(out, 0);                   // TimeDateStamp
@@ -119,7 +111,7 @@ std::string CoffFormatWriter::write(const ObjectFile &obj) const {
     put16(out, 0);                      // SizeOfOptionalHeader - none (object file)
     put16(out, 0);                       // Characteristics
 
-    // --- IMAGE_SECTION_HEADER (40 bytes) for ".text" ---
+    // IMAGE_SECTION_HEADER for ".text"
     char name[8] = {'.', 't', 'e', 'x', 't', 0, 0, 0};
     putBytes(out, name, 8);
     put32(out, 0);                                            // PhysicalAddress/VirtualSize
@@ -132,14 +124,8 @@ std::string CoffFormatWriter::write(const ObjectFile &obj) const {
     put16(out, 0);                                                      // NumberOfLinenumbers
     put32(out, 0x60000020);  // IMAGE_SCN_CNT_CODE | MEM_EXECUTE | MEM_READ
 
-    // --- IMAGE_SECTION_HEADER (40 bytes) for ".bss" - a pure size
-    // reservation in a Harvard target's own second, data address
-    // space (see ObjectFile::dataSize's own comment); `0` for every
-    // von-Neumann target, which never has any symbol pointing into
-    // it. No raw file bytes of its own at all (PointerToRawData=0,
-    // SizeOfRawData=0 - a real IMAGE_SCN_CNT_UNINITIALIZED_DATA
-    // section never has any), same reasoning this project's own
-    // a.out writer's `a_bss`/real ELF's SHT_NOBITS already use. ---
+    // IMAGE_SECTION_HEADER for ".bss": pure size reservation, no raw file bytes
+    // (PointerToRawData/SizeOfRawData=0), same as IMAGE_SCN_CNT_UNINITIALIZED_DATA.
     char bssName[8] = {'.', 'b', 's', 's', 0, 0, 0, 0};
     putBytes(out, bssName, 8);
     put32(out, obj.dataSize);  // PhysicalAddress/VirtualSize
@@ -152,10 +138,8 @@ std::string CoffFormatWriter::write(const ObjectFile &obj) const {
     put16(out, 0);                    // NumberOfLinenumbers
     put32(out, 0xC0000080);  // IMAGE_SCN_CNT_UNINITIALIZED_DATA | MEM_READ | MEM_WRITE
 
-    // --- .text raw bytes ---
     if (!obj.textBytes.empty()) putBytes(out, obj.textBytes.data(), obj.textBytes.size());
 
-    // --- relocation table (10 bytes/entry, IMAGE_RELOCATION shape) ---
     for (const auto &r : obj.relocations) {
         auto it = symbolIndex.find(r.symbolName);
         if (it == symbolIndex.end()) fail("relocation references unknown symbol '" + r.symbolName + "'");
@@ -164,20 +148,16 @@ std::string CoffFormatWriter::write(const ObjectFile &obj) const {
         put16(out, r.type);
     }
 
-    // --- symbol table (18 bytes/entry) ---
     for (size_t i = 0; i < obj.symbols.size(); i++) {
         putSymbolName(out, obj.symbols[i].name, nameOffsets[i]);
         put32(out, obj.symbols[i].value);  // Value
-        // SectionNumber: 0 (undefined), 1 (.text), or 2 (.bss - see
-        // that section header's own comment above) depending on
-        // which address space this symbol actually lives in.
+        // SectionNumber: 0 (undefined), 1 (.text), or 2 (.bss).
         put16(out, !obj.symbols[i].isDefined ? 0 : (obj.symbols[i].isData ? 2 : 1));
         put16(out, 0);                                        // Type
         out.push_back(static_cast<char>(2));  // StorageClass = C_EXT (external/global)
         out.push_back(static_cast<char>(0));   // NumberOfAuxSymbols
     }
 
-    // --- string table ---
     out += stringTable;
 
     return out;
@@ -199,12 +179,8 @@ ObjectFile CoffFormatReader::read(const std::string &bytes) const {
     uint32_t symTableOffset = get32(bytes, 8);
     uint32_t numSymbols = get32(bytes, 12);
 
-    // ".text" (section 1 in the symbol table's own SectionNumber
-    // field - see write() above's own layout) and ".bss" (section 2,
-    // a pure Harvard-data-space size reservation, never any raw bytes
-    // of its own - see that function's own comment) are always
-    // written in that fixed order, never found by name/type the way
-    // fileformat/elf/ElfFormat.cpp's own reader more flexibly does.
+    // ".text" and ".bss" are always written in this fixed order (unlike ElfFormat.cpp's
+    // reader, which finds sections by type).
     size_t sectionHeaderOffset = kFileHeaderSize;
     need(bytes, sectionHeaderOffset, kSectionHeaderSize);
     uint32_t sizeOfRawData = get32(bytes, sectionHeaderOffset + 16);
@@ -220,10 +196,7 @@ ObjectFile CoffFormatReader::read(const std::string &bytes) const {
     obj.textBytes.assign(bytes.begin() + static_cast<long>(pointerToRawData),
                           bytes.begin() + static_cast<long>(pointerToRawData + sizeOfRawData));
 
-    // String table: immediately after the symbol table, a 4-byte
-    // total-length prefix followed by that many more bytes (see
-    // write() above's own layout) - read it first since symbol names
-    // may point into it.
+    // String table immediately follows the symbol table: a 4-byte length prefix then that many bytes.
     size_t stringTableOffset = symTableOffset + static_cast<size_t>(numSymbols) * kSymbolSize;
     need(bytes, stringTableOffset, 4);
     uint32_t stringTableLen = get32(bytes, stringTableOffset);
@@ -240,9 +213,6 @@ ObjectFile CoffFormatReader::read(const std::string &bytes) const {
         obj.symbols.push_back({name, value, /*isDefined=*/sectionNumber != 0, /*isData=*/sectionNumber == 2});
     }
 
-    // Relocations reference symbols by table index (SymbolTableIndex)
-    // - resolved back to a name immediately, since a linker only ever
-    // wants to look relocations up by name.
     obj.relocations.reserve(numRelocations);
     for (uint16_t i = 0; i < numRelocations; i++) {
         size_t relOffset = pointerToRelocations + static_cast<size_t>(i) * kRelocationSize;

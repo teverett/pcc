@@ -9,24 +9,10 @@
 namespace pcc {
 
 namespace {
-// Mirrors PIC18Codegen.cpp's own whole-program `generate()` entry
-// sequence (minus `goto START`'s own real reset-vector placement,
-// which GenericLinker.cpp's own `config_.baseAddress` already
-// supplies by laying this object out first - see GenericLinker.h's
-// own header comment): clear FSR0H (this target's own pointer only
-// ever needs its low byte set - see PIC18Codegen.h's own header
-// comment), point SP at SSTACK, point NFP at FSTACK+1 (`fn_main`'s
-// own prologue - see PIC18Codegen.h's own header comment on `FP`/
-// `NFP`/`FSTACK` - expects NFP to already hold its new frame's own
-// address; the one leftover byte at FSTACK+0 is where that same
-// prologue saves the "caller's FP" it will never meaningfully read
-// back, since `main` has no real caller to return to here), call
-// fn_main, then halt in a self-branch. `SP`/`SSTACK`/`FP`/`NFP`/
-// `FSTACK` are the same fixed compile-time equates
-// (0x09/0x0A/0x22/0x23/0x24) PIC18Codegen.cpp's own object-mode
-// `generate()` declares identically in every user object - see
-// PIC18Assembler.h's own `kPIC18DataBaseAddress` comment for why that
-// needs no relocation at all.
+// Must mirror PIC18Codegen.cpp's object-mode entry sequence: clear
+// FSR0H, point SP at SSTACK, point NFP at FSTACK+1 (fn_main's prologue
+// expects NFP to already hold its new frame's address), call fn_main,
+// halt.
 constexpr const char *kEntryAsm =
     "FSR0H = 0xEA\n"
     "SP = 9\n"
@@ -45,27 +31,11 @@ constexpr const char *kEntryAsm =
     "HALT:\n"
     "    goto HALT\n";
 
-// GOTO/CALL's own 20-bit absolute *word* address `k` (see
-// PIC18Assembler.h's own `kPIC18RelocGotoCallLo` comment): `value`
-// (always a *byte* address - every GenericLinker-based target lays
-// out `.text` byte-wise) is first divided by two - exact, since every
-// PIC18 object's own `.textBytes` size, and therefore every object's
-// own linked base address, is always an even number of bytes (every
-// instruction here is a whole 16-bit word - see
-// ../../codegen/pic18/PIC18Assembler.cpp's own `buildObjectFile`) -
-// before it's even the right unit to add onto `k`'s own baked-in
-// local word offset.
-//
-// Patched high-nibble-first, then mid, then low - the three
-// relocations for one GOTO/CALL are always pushed in exactly that
-// order (see PIC18Assembler.cpp's own `controlAddr20`), mirroring
-// ../../codegen/i8008/I8008LinkerFactory.cpp's own Hi-before-Lo carry
-// technique: each one reads whichever lower byte(s) are still in
-// their *original*, not-yet-patched state to compute the carry its
-// own addition produces, since by the time a lower-order patch
-// actually runs here, the higher-order one has already consumed the
-// carry it needed - patching low-to-high instead would have nothing
-// left to read once a carry mattered.
+// GOTO/CALL's 20-bit word address k. value is a byte address, halved
+// to get the word address (always exact: every instruction is one
+// 16-bit word). Patched high-nibble, then mid, then low, each reading
+// the lower byte(s) in their still-original, not-yet-patched state to
+// compute the carry its own addition produces.
 void patchGotoCallHiNibble(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t) {
     uint32_t addVal = value >> 1;
     uint32_t origLo = image[siteOffset - 3];
@@ -76,9 +46,7 @@ void patchGotoCallHiNibble(std::vector<uint8_t> &image, uint32_t siteOffset, uin
     uint32_t hiNibble = ((image[siteOffset] & 0x0F) + ((addVal >> 16) & 0xF) + carryIntoHi) & 0xF;
     image[siteOffset] = static_cast<uint8_t>(0xF0 | hiNibble);
 }
-// The second word's own low byte (k bits 8-15) - reads word1's own
-// low byte (still original - patched last, see `patchGotoCallLo`
-// below) for the one carry this byte's own addition can produce.
+// k bits 8-15. Reads word1's still-original low byte for the carry.
 void patchGotoCallMid(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t) {
     uint32_t addVal = value >> 1;
     uint32_t origLo = image[siteOffset - 2];
@@ -86,37 +54,24 @@ void patchGotoCallMid(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t
     uint32_t midSum = image[siteOffset] + ((addVal >> 8) & 0xFF) + carryIntoMid;
     image[siteOffset] = static_cast<uint8_t>(midSum & 0xFF);
 }
-// The first word's own low byte (k bits 0-7) - a plain truncating
-// add, always correct on its own (mod-256 addition commutes with
-// truncation); the two higher-order patches above have already read
-// this byte's own pre-patch value by the time this one actually runs.
+// k bits 0-7. Patched last, after the higher-order patches have
+// already read this byte's pre-patch value for their carries.
 void patchGotoCallLo(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t) {
     uint32_t addVal = value >> 1;
     image[siteOffset] = static_cast<uint8_t>(image[siteOffset] + (addVal & 0xFF));
 }
 
-// Every data-space reference's own plain single-byte additive patch
-// (see PIC18Assembler.h's own `kPIC18RelocDataAbs8` comment) - unlike
-// the GOTO/CALL kinds above, no word-vs-byte shift and no carry chain
-// at all, since this field is already byte-addressed and this
-// backend's own scope restriction (see PIC18Codegen.h's own header
-// comment) never lets a real linked address reach anywhere near this
-// byte's own high nibble. The one thing worth checking for here
-// instead: this chip's real Access Bank GPR window is only 96 bytes
-// (0x00-0x5F) wide, shared by every linked object's own globals/
-// locals/params combined (unlike a single, per-object compile, which
-// can only ever check *its own* usage - see PIC18Assembler.cpp's own
-// `Line::Res` comment on why that per-object check is skipped in
-// object mode) - so this is the one, real, authoritative place that
-// limit is ever actually enforced for a linked, multi-object program.
+// Plain single-byte additive patch for data-space addresses. This is
+// the only place that enforces the real chip's 96-byte Access Bank GPR
+// window (0x00-0x5F) across every linked object's combined globals,
+// locals and params.
 void patchDataAbs8(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t) {
     uint32_t sum = image[siteOffset] + (value & 0xFF);
     if (sum > 0x5F) {
         std::ostringstream msg;
         msg << "PIC18LinkerFactory: linked data-space address 0x" << std::hex << sum
             << " overflows this chip's real 96-byte Access Bank GPR window (0x00-0x5F) - too many globals/"
-               "locals/params across every linked object for this target (see PIC18Codegen.h's own header "
-               "comment)";
+               "locals/params across every linked object for this target";
         throw std::runtime_error(msg.str());
     }
     image[siteOffset] = static_cast<uint8_t>(sum);
@@ -133,10 +88,8 @@ std::unique_ptr<TargetLinker> makePIC18Linker() {
     config.relocPatchers[kPIC18RelocGotoCallLo] = patchGotoCallLo;
     config.relocPatchers[kPIC18RelocDataAbs8] = patchDataAbs8;
     config.outputFormats = {"flat", "coff", "elf", "aout"};
-    // Real Access Bank address 0x22 - see PIC18Assembler.h's own
-    // header comment on why this backend's own data-space linking
-    // begins right after the fixed pseudo-register equate region
-    // (0x00-0x21), not at 0x00 itself.
+    // Data-space linking begins at 0x22, right after the fixed
+    // pseudo-register equate region (0x00-0x21).
     config.dataBaseAddress = kPIC18DataBaseAddress;
     return std::make_unique<GenericLinker>(std::move(config));
 }

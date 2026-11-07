@@ -16,11 +16,8 @@ void collectExprSlots(const ir::Expr *e, std::unordered_set<ir::Slot *> &used) {
     for (const auto &arg : e->args) collectExprSlots(arg.get(), used);
 }
 
-// Only LocalDecl's own `declSlot` field is excluded (a declaration by
-// itself isn't a use) - every other appearance of a Slot, in any
-// Expr anywhere in the function, counts: a read, a write (Assign's
-// target), an array index base, or an `&`-taken address all make a
-// local's storage observably necessary.
+// LocalDecl's own declSlot field is excluded (a declaration isn't a use);
+// any other appearance (read, write, index base, &-taken) counts.
 void collectStmtSlots(const ir::Stmt *s, std::unordered_set<ir::Slot *> &used) {
     if (!s) return;
     switch (s->kind) {
@@ -50,12 +47,8 @@ void collectStmtSlots(const ir::Stmt *s, std::unordered_set<ir::Slot *> &used) {
     }
 }
 
-// Whether evaluating `e` can do anything beyond compute a value - a
-// call (this function has no idea what the callee does) or an
-// embedded assignment (the grammar allows assignment as an
-// expression, e.g. `x = (y = 5)`). If so, a LocalDecl initializer
-// built from it has to survive even once the variable it initializes
-// turns out to be dead.
+// A call or embedded assignment (e.g. `x = (y = 5)`) must survive even once
+// the variable it initializes turns out to be dead.
 bool hasSideEffect(const ir::Expr *e) {
     if (!e) return false;
     switch (e->kind) {
@@ -75,11 +68,8 @@ bool hasSideEffect(const ir::Expr *e) {
     return false;
 }
 
-// Drops every statement after the first `return` within the same
-// block (it can never run) and every bare `;` (Empty) statement, then
-// recurses into whatever block structure remains. Pass 1 of 2 - see
-// DeadCodeElimination::run()'s own comment for why this has to finish
-// completely before pass 2 (removeDeadDecls) starts.
+// Drops statements after the first `return` in a block and bare `;`
+// statements, then recurses. Pass 1 of 2; see run()'s comment on ordering.
 void removeUnreachable(ir::Stmt *s, bool &changed) {
     if (!s) return;
     switch (s->kind) {
@@ -117,11 +107,10 @@ void removeUnreachable(ir::Stmt *s, bool &changed) {
     }
 }
 
-// Pass 2: drops (or neuters down to a bare expression statement, if
-// its initializer has a side effect) every LocalDecl whose slot isn't
-// in `used` - computed from the tree as pass 1 left it, so a decl
-// whose only "use" was itself inside now-removed unreachable code is
-// correctly treated as dead too.
+// Pass 2: drops (or reduces to a bare expression statement, if its
+// initializer has a side effect) every LocalDecl whose slot isn't in
+// `used`, computed after pass 1 so a decl used only from removed
+// unreachable code is correctly treated as dead.
 void removeDeadDecls(ir::Stmt *s, const std::unordered_set<ir::Slot *> &used, bool &changed) {
     if (!s) return;
     switch (s->kind) {
@@ -168,10 +157,9 @@ void removeDeadDecls(ir::Stmt *s, const std::unordered_set<ir::Slot *> &used, bo
 bool DeadCodeElimination::run(ir::Program &prog) const {
     bool changed = false;
     for (auto &fb : prog.functionBodies) {
-        // Pass 1 must fully settle which statements are even reachable
-        // before pass 2 decides which locals are used - otherwise a
-        // local referenced only from code pass 1 is about to delete
-        // would wrongly look "used" and survive.
+        // Pass 1 must settle reachability before pass 2 collects uses, or a
+        // local referenced only from soon-to-be-removed code would wrongly
+        // survive.
         removeUnreachable(fb.body.get(), changed);
 
         std::unordered_set<ir::Slot *> used;

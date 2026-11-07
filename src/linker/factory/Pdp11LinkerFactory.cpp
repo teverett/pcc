@@ -6,27 +6,16 @@
 namespace pcc {
 
 namespace {
-// This dialect's own PC-relative (mode 067) extension-word formula -
-// see Pdp11Assembler.h's own `kPdp11RelocRel16` comment for exactly
-// why this differs from GenericLinker.h's own shared
-// `RelocKinds::patchRel16` (no +2: the extension word's own address
-// *is* the site this displacement is relative to, confirmed directly
-// from Pdp11Assembler.cpp's own `emitEAExtension`'s `Mem` case -
-// `target - extAddr`, where `extAddr` is that same word's own
-// address). Kept local to this file rather than added to the shared
-// `RelocKinds` namespace, same precedent as M6502LinkerFactory.cpp's
-// own locally-scoped `AbsLo8`/`AbsHi8` - a one-off variant only this
-// target needs.
+// Mode-067 PC-relative extension word: the displacement is relative to
+// the extension word's own address, with no +2 adjustment (unlike the
+// shared RelocKinds::patchRel16).
 void patchRel16NoAdj(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t siteFinalAddr) {
     int32_t rel = static_cast<int32_t>(value) - static_cast<int32_t>(siteFinalAddr);
     image[siteOffset] = static_cast<uint8_t>(rel & 0xFF);
     image[siteOffset + 1] = static_cast<uint8_t>((rel >> 8) & 0xFF);
 }
 
-// `0xE000` is the same initial-stack-pointer value as
-// Pdp11Codegen.cpp's own (private) `kInitialSp` - comfortably above
-// the loaded program and its data, same reasoning as that file's own
-// comment.
+// 0xE000 must match Pdp11Codegen.cpp's private kInitialSp.
 constexpr const char *kEntryAsm =
     "org 0\n"
     "_start:\n"

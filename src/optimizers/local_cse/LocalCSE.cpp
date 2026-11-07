@@ -10,10 +10,7 @@ namespace pcc {
 
 namespace {
 
-// Same check DeadCodeElimination.cpp's own `hasSideEffect` makes, plus
-// `CallPtr` (a call through a computed address - just as side-effecting
-// as a direct `Call`, which that helper doesn't otherwise need to tell
-// apart from one since it only cares about "any side effect at all").
+// Same as DeadCodeElimination.cpp's hasSideEffect, plus CallPtr.
 bool hasSideEffect(const ir::Expr *e) {
     if (!e) return false;
     switch (e->kind) {
@@ -34,20 +31,13 @@ bool hasSideEffect(const ir::Expr *e) {
     return false;
 }
 
-// Only a `Binary`/`Index` is ever considered as its own CSE candidate
-// - see LocalCSE.h's own comment for why a bare `Var`/`IntLit`/`Unary`
-// isn't. A nested side effect rules out the whole subtree, the same
-// conservative bar every other optimizer here uses.
 bool isEligible(const ir::Expr *e) {
     if (e->kind != ir::ExprKind::Binary && e->kind != ir::ExprKind::Index) return false;
     return !hasSideEffect(e);
 }
 
-// Every `Slot` an eligible (side-effect-free) subtree reads - exactly
-// DeadCodeElimination.cpp's own `collectExprSlots` shape, duplicated
-// here rather than shared, matching every other optimizer in this
-// directory being self-contained. Used only to decide which recorded
-// candidates a later write invalidates.
+// Every Slot a subtree reads, for deciding which recorded candidates a
+// later write invalidates.
 void collectDeps(const ir::Expr *e, std::unordered_set<ir::Slot *> &deps) {
     if (!e) return;
     if (e->slot) deps.insert(e->slot);
@@ -56,16 +46,10 @@ void collectDeps(const ir::Expr *e, std::unordered_set<ir::Slot *> &deps) {
     for (const auto &arg : e->args) collectDeps(arg.get(), deps);
 }
 
-// A canonical string for `e`'s own shape - two subtrees get the same
-// key iff they're textually identical (same kind/op, same literal
-// values, same `Slot`/`Function` identity, recursively) - exactly
-// "syntactic (not flow-sensitive) matching" as LocalCSE.h promises:
-// no normalization of a commutative operator's operand order, no
-// reasoning about two different `Slot`s that might alias. Only ever
-// called on an eligible (side-effect-free) subtree, so the four
-// side-effecting kinds below can't actually occur inside one; the
-// fallback exists only so a bug elsewhere can never cause a false
-// match instead of a loud one.
+// Canonical key for `e`'s shape: two subtrees match iff textually identical
+// (no commutative-operand normalization, no alias reasoning). Only called
+// on an eligible subtree, so the side-effecting cases below can't occur;
+// their fallback just avoids a silent false match if that invariant breaks.
 std::string exprKey(const ir::Expr *e) {
     if (!e) return "_";
     switch (e->kind) {
@@ -91,9 +75,7 @@ std::string exprKey(const ir::Expr *e) {
     return "?" + std::to_string(reinterpret_cast<std::uintptr_t>(e));
 }
 
-// Human-readable rendering of an eligible (Binary/Index) subexpression,
-// for the console message only - never used for matching (exprKey is
-// the canonical key for that).
+// For the console message only; exprKey is the canonical match key.
 std::string describeExpr(const ir::Expr *e) {
     if (!e) return "?";
     switch (e->kind) {
@@ -121,12 +103,9 @@ ir::ExprPtr makeVarRead(ir::Slot *slot, int line) {
     return v;
 }
 
-// Wraps `original` (moved as-is, unchanged) into `temp = original` -
-// still evaluates at exactly `original`'s own program point, still
-// produces exactly the same value (an Assign expression's own value
-// is the value stored - already relied on by this subset's own
-// support for a nested assignment like `x = (y = 5)`), just also
-// stores it for every later occurrence to read back out.
+// Wraps `original` into `temp = original`: evaluates at the same program
+// point and to the same value (an Assign's value is the value stored),
+// while also storing it for later occurrences to read.
 ir::ExprPtr makeAssignWrap(ir::ExprPtr original, ir::Slot *temp) {
     auto assign = std::make_unique<ir::Expr>();
     assign->kind = ir::ExprKind::Assign;
@@ -137,12 +116,11 @@ ir::ExprPtr makeAssignWrap(ir::ExprPtr original, ir::Slot *temp) {
     return assign;
 }
 
-// `type` is the cached subexpression's own resolved type (see IR.h's
-// ExprKind::Convert/Expr::type) - the temp has to store and reload it
-// at that same width/signedness, not always a plain int.
+// `type` is the cached subexpression's resolved type: the temp must store
+// and reload at that width/signedness, not always plain int.
 ir::Slot *makeTempSlot(ir::Program &prog, int &tempCounter, Type type) {
     auto slot = std::make_unique<ir::Slot>();
-    slot->id = static_cast<int>(prog.slots.size());  // every Slot id is unique; see IR.h's own comment
+    slot->id = static_cast<int>(prog.slots.size());  // every Slot id must be unique
     slot->sourceName = "__cse" + std::to_string(tempCounter++);
     slot->kind = ir::SlotKind::Local;
     slot->type = type;
@@ -151,13 +129,9 @@ ir::Slot *makeTempSlot(ir::Program &prog, int &tempCounter, Type type) {
     return raw;
 }
 
-// A bare declaration (no initializer) just reserves the temp's own
-// frame storage - genStmt's own LocalDecl case stores a zero into it
-// right here, immediately overwritten by the real value the very
-// first time the wrapped assignment below it runs. Inserted at the
-// very front of its own scope's statement list, so it's always well
-// before either occurrence - see run()'s own comment for why main.cpp
-// has to recompute frame layout after this pass runs.
+// A bare declaration just reserves frame storage; inserted at the front of
+// the scope's statement list so it precedes both occurrences. main.cpp
+// must recompute frame layout after this pass runs.
 ir::StmtPtr makeTempDecl(ir::Slot *slot, int line) {
     auto decl = std::make_unique<ir::Stmt>();
     decl->kind = ir::StmtKind::LocalDecl;
@@ -166,11 +140,9 @@ ir::StmtPtr makeTempDecl(ir::Slot *slot, int line) {
     return decl;
 }
 
-// One subexpression recorded so far in the current scope: either
-// still waiting for a second sighting (`tempSlot` null, `firstLoc`
-// pointing at its one-and-only occurrence so far, ready to be wrapped
-// the moment a second one shows up), or already promoted (`tempSlot`
-// set - every further sighting just becomes a read of it).
+// One subexpression recorded in the current scope: waiting for a second
+// sighting (tempSlot null, firstLoc pointing at the one occurrence so far),
+// or already promoted (tempSlot set).
 struct Avail {
     ir::ExprPtr *firstLoc = nullptr;
     ir::Slot *tempSlot = nullptr;
@@ -191,19 +163,10 @@ void cseExpr(ir::ExprPtr &e, std::unordered_map<std::string, Avail> &avail, std:
               size_t &i, ir::Program &prog, int &tempCounter, bool &changed) {
     if (!e) return;
 
-    // `&operand` needs operand's own real lvalue location, never a
-    // cached copy of its value - rewriting it into a temp's own read
-    // would take that temp's address instead of the real one, and
-    // wrapping an earlier plain occurrence elsewhere into `temp =
-    // operand` so THIS read can become a temp read would just move
-    // the same problem onto that occurrence (see IRBuilder.cpp's
-    // buildAddressableOperand: operand is always exactly a Var or an
-    // Index, never anything CSE could safely stand in for). So
-    // operand itself is never treated as a CSE candidate in either
-    // direction here - skipped entirely, not just left ineligible.
-    // An Index's own index sub-expression has no such restriction
-    // (`&arr[i+1]` only needs `i+1`'s VALUE, not its own address), so
-    // that still gets the normal treatment below.
+    // `&operand` needs operand's real lvalue location, not a cached value
+    // copy, so operand itself is skipped as a CSE candidate entirely. An
+    // Index's own index sub-expression (e.g. i+1 in &arr[i+1]) has no such
+    // restriction and still gets the normal treatment below.
     if (e->kind == ir::ExprKind::Unary && e->op == "&") {
         if (e->rhs && e->rhs->kind == ir::ExprKind::Index) {
             cseExpr(e->rhs->lhs, avail, body, i, prog, tempCounter, changed);
@@ -211,23 +174,15 @@ void cseExpr(ir::ExprPtr &e, std::unordered_map<std::string, Avail> &avail, std:
         return;
     }
 
-    // Bottom-up, same shape every other optimizer here uses - a
-    // nested candidate is fully resolved (recorded, matched, or
-    // promoted) before its own enclosing expression is even looked
-    // at, so the enclosing one's own key always reflects whatever the
-    // nested one was just rewritten to (see LocalCSE.h's own comment
-    // on the one gap this causes).
+    // Bottom-up: a nested candidate is resolved before its enclosing
+    // expression's key is computed (see LocalCSE.h's gap note).
     cseExpr(e->lhs, avail, body, i, prog, tempCounter, changed);
     cseExpr(e->rhs, avail, body, i, prog, tempCounter, changed);
     for (auto &arg : e->args) cseExpr(arg, avail, body, i, prog, tempCounter, changed);
 
-    // Apply this node's own invalidating effect - after its children,
-    // which (on every backend here) evaluate before it does. A
-    // CompoundAssign writes exactly one slot, same as a plain Assign;
-    // a CompoundDerefAssign writes through an arbitrary pointer, same
-    // as a plain DerefAssign - both need the exact same treatment as
-    // their non-compound counterparts, not the "unlisted kind, no
-    // invalidation at all" default below.
+    // Invalidation after children, which evaluate first. CompoundAssign/
+    // CompoundDerefAssign need the same treatment as their non-compound
+    // counterparts.
     switch (e->kind) {
         case ir::ExprKind::Assign:
         case ir::ExprKind::CompoundAssign:
@@ -262,25 +217,24 @@ void cseExpr(ir::ExprPtr &e, std::unordered_map<std::string, Avail> &avail, std:
         changed = true;
         return;
     }
-    // Second sighting - promote now: wrap the first occurrence where
-    // it already sits, turn this one into a plain read, and reserve
-    // the temp's own storage at the front of this scope.
+    // Second sighting: promote now, wrapping the first occurrence in place,
+    // turning this one into a plain read, and reserving the temp's storage
+    // at the front of this scope.
     std::cerr << "local-cse: line " << line << ": hoisted repeated subexpression `"
                << describeExpr(e.get()) << "` into a temporary\n";
     ir::Slot *temp = makeTempSlot(prog, tempCounter, e->type);
     *it->second.firstLoc = makeAssignWrap(std::move(*it->second.firstLoc), temp);
     e = makeVarRead(temp, line);
     body.insert(body.begin(), makeTempDecl(temp, line));
-    ++i;  // everything in this scope, including the statement we're still walking, just shifted up by one
+    ++i;  // every statement in this scope, including the one we're walking, shifted up by one
     it->second.tempSlot = temp;
     changed = true;
 }
 
 void cseVisit(ir::Stmt *s, ir::Program &prog, int &tempCounter, bool &changed);
 
-// The actual CSE engine, scoped to exactly one Block's own statement
-// list - see LocalCSE.h's own comment on why a nested If/While body
-// never shares this scope's `avail` table in either direction.
+// The CSE engine, scoped to one Block's own statement list; a nested
+// If/While body never shares this scope's avail table.
 void cseBlock(std::vector<ir::StmtPtr> &body, ir::Program &prog, int &tempCounter, bool &changed) {
     std::unordered_map<std::string, Avail> avail;
     for (size_t i = 0; i < body.size(); i++) {
@@ -313,11 +267,8 @@ void cseBlock(std::vector<ir::StmtPtr> &body, ir::Program &prog, int &tempCounte
     }
 }
 
-// Finds every Block reachable from `s` (each becoming its own fresh
-// `cseBlock` scope) without otherwise touching anything - `s` itself,
-// when it isn't a Block (a brace-less single-statement If/While
-// body), is deliberately left untouched: see LocalCSE.h's own "within
-// one Block's own statement list" scoping.
+// Finds every Block reachable from `s`, each becoming its own cseBlock
+// scope; a brace-less single-statement If/While body is left untouched.
 void cseVisit(ir::Stmt *s, ir::Program &prog, int &tempCounter, bool &changed) {
     if (!s) return;
     switch (s->kind) {

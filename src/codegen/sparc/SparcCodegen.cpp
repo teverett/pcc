@@ -13,25 +13,17 @@ namespace {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
-// Where the whole program is loaded and starts executing - the test
-// harness sets the simulated CPU's PC here directly, same idea as
-// PowerPCCodegen.cpp's own kBaseAddress. Must match
-// SparcAssembler.h's own `kSparcBaseAddress` exactly (duplicated
-// there, same convention as every other migrated backend - see that
-// file's own comment).
+// Where the whole program is loaded and starts executing; the simulator sets the CPU's
+// PC here directly. Must match SparcAssembler.h's kSparcBaseAddress.
 constexpr uint32_t kBaseAddress = 0x00004000u;
 
-// Where this backend's own entry sequence points `sp` before calling
-// main() - comfortably above the loaded program and its data,
-// growing down into otherwise-unused RAM.
+// Where the entry sequence points `sp` before calling main() - above the loaded program
+// and its data, growing down into unused RAM.
 constexpr uint32_t kInitialSP = 0x00100000u;
 }  // namespace
 
-// A Local's or Param's own effective address, relative to `fp` - see
-// SparcCodegen.h's own header comment and genFunction()'s own comment
-// for the exact frame layout this implements. Never called for a
-// Global (which keeps its own fixed, name-derived label instead -
-// see loadAddress()/label()).
+// A Local's or Param's effective address, relative to `fp` - see genFunction() for the
+// frame layout. Never called for a Global, which uses a fixed label instead.
 void SparcCodegen::loadSlotAddr(const std::string &reg, const ir::Slot *slot) {
     int off = slotFrameByteOffset(slot);
     if (off == 0) {
@@ -53,26 +45,17 @@ void SparcCodegen::loadImmediate(const std::string &reg, int32_t v) {
     code_ << "    or " << reg << "," << lo << "," << reg << "\n";
 }
 
-// A literal element's own decimal text; a symbol element is the
-// referenced Slot's or Function's own label, written out bare - "dw"
-// (SparcAssembler.cpp's Line::Dw) already evaluates any expr operand,
-// symbol included, and now also records the same external-name/base-
-// shift relocation (kSparcRelocAbs32) a label used as `sethi`/`or`'s
-// own split address immediate already gets.
+// A literal element's decimal text; a symbol element is the referenced Slot's or
+// Function's label, written out bare - `dw` evaluates and relocates it as kSparcRelocAbs32.
 std::string SparcCodegen::arrayElemText(const ir::ArrayInitElem &e) {
     if (!e.isSymbol) return std::to_string(static_cast<int32_t>(static_cast<uint32_t>(e.value)));
     return e.slot ? label(e.slot) : label(e.func);
 }
 
-// Only ever called for a Global array now - its storage is one fixed
-// trailer blob for the whole run, so its own initializer is just data,
-// resolved once by the assembler/linker. A Local array instead gets a
-// fresh frame slot on every call (see genFunction()'s own comment), so
-// its own initializer has to be stored at runtime instead - see
-// genLocalArrayInit() below. `elemType`'s own width picks `db`/`dh`/
-// `dw` (a `long long` element - `w==8` - splits into two `dw`s, low
-// word then high, same convention as MipsCodegen.cpp's own version of
-// this same function).
+// Only called for a Global array - its storage is one fixed trailer blob, resolved once
+// by the assembler/linker. A Local array gets a fresh frame slot per call instead, so its
+// initializer is stored at runtime (see genLocalArrayInit()). `elemType`'s width picks
+// `db`/`dh`/`dw` (a `long long` element, `w==8`, splits into two `dw`s: low word, high).
 void SparcCodegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values,
                                    Type elemType) {
     if (values.empty()) return;
@@ -96,14 +79,9 @@ void SparcCodegen::declareArray(const std::string &lbl, const std::vector<ir::Ar
     trailer_.push_back(line.str());
 }
 
-// Stores a Local array's own initializer into its freshly reserved
-// frame slots, one element per call - see declareArray()'s own
-// comment on why a Local can't just get a static trailer blob the way
-// a Global does. Element i's own address is `slot`'s own base address
-// (its first byte, at `fp-frameOffset`) minus `w*i` (its own element
-// width) - see genIndexAddr()'s own comment on exactly this same
-// base-minus-scaled-index shape for a Local array's own indexed
-// read/write.
+// Stores a Local array's initializer into its freshly reserved frame slots, one element
+// per call. Element i's address is the array's base (`fp-frameOffset`) minus `w*i`,
+// matching genIndexAddr()'s base-minus-scaled-index addressing for a Local array.
 void SparcCodegen::genLocalArrayInit(const ir::Slot *slot) {
     int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
@@ -141,13 +119,9 @@ void SparcCodegen::movReg(const std::string &dst, const std::string &src) {
     code_ << "    or g0," << src << "," << dst << "\n";
 }
 
-// Loads/stores `slot`'s own scalar value - a Global goes through its
-// own fixed label address (loadAddress()) plus loadOperand()/
-// storeOperand(); a Local or Param instead goes straight through
-// loadOperandDisp()/storeOperandDisp() at `slotFrameByteOffset()`, no
-// separate address computation needed since that offset is already a
-// compile-time constant folded into the load/store instruction's own
-// displacement field.
+// Loads/stores `slot`'s scalar value - a Global goes through its fixed label address
+// plus loadOperand()/storeOperand(); a Local or Param goes directly through
+// loadOperandDisp()/storeOperandDisp() at `slotFrameByteOffset()`.
 void SparcCodegen::loadSlotValue(const ir::Slot *slot) {
     if (slot->kind == ir::SlotKind::Global) {
         loadAddress("t2", label(slot));
@@ -171,15 +145,10 @@ std::string SparcCodegen::generate(const ir::Program &prog, bool objectMode) {
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // Real separate compilation (`--format=coff`/`elf`/`macho`/
-    // `aout` from a single file - see IRBuilder.h's `allowExternal`)
-    // means `prog` may not define `main` at all. `objectMode` (see
-    // Codegen.h) means no object file ever emits this entry sequence
-    // itself - SparcLinkerFactory.cpp is solely responsible for
-    // synthesizing exactly one, once every object is merged and
-    // `main`'s linked address is resolvable (see Linker.h). An object
-    // file's own base is `org 0` - it's the linker's job to place it,
-    // not this backend's (see SparcAssembler.h's own header comment).
+    // Real separate compilation means `prog` may not define `main` at all. In
+    // `objectMode`, no object file emits this entry sequence itself - the linker
+    // synthesizes exactly one once every object is merged and `main`'s address is
+    // resolvable. An object file's base is `org 0`; placing it is the linker's job.
     code_ << "org " << (objectMode ? 0 : kBaseAddress) << "\n\n";
     if (!objectMode) {
         code_ << "_start:\n";
@@ -188,9 +157,7 @@ std::string SparcCodegen::generate(const ir::Program &prog, bool objectMode) {
         code_ << "    sethi " << hi << ",sp\n";
         code_ << "    or sp," << lo << ",sp\n";
         code_ << "    call " << label(mainFn) << "\n";
-        // The result sits in t0 the moment execution reaches `halt` -
-        // see SparcCodegen.h's own header comment on why that's the
-        // authoritative place to read it from.
+        // The result sits in t0 the moment execution reaches `halt`.
         code_ << "halt:\n    ba halt\n\n";
     }
 
@@ -198,12 +165,9 @@ std::string SparcCodegen::generate(const ir::Program &prog, bool objectMode) {
 
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        // An external global (real separate compilation - see IR.h's
-        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
-        // defined in this file at all - it must never get a local
-        // storage word here, only ever be referenced by name (see
-        // label()) in code, letting the assembler's own undefined-
-        // symbol handling defer it to a relocation.
+        // An external global isn't defined in this file - it must never get a storage
+        // word here, only be referenced by name, letting the assembler defer it to a
+        // relocation.
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
@@ -230,46 +194,25 @@ std::string SparcCodegen::generate(const ir::Program &prog, bool objectMode) {
     return out.str();
 }
 
-// Single-file-only - see PowerPCCodegen.cpp's own version of this same
-// comment (no `--format=coff` here either).
 std::map<std::string, std::string> SparcCodegen::perFileAsm() const { return perFileAsm_; }
 
-// Every function here gives its own call activation a real per-call
-// frame on the hardware stack, addressed through `fp` - see
-// SparcCodegen.h's own header comment on why a real register-window
-// `save`/`restore` isn't used for this instead. The prologue:
+// Every function gives its own call activation a per-call frame on the hardware stack,
+// addressed through `fp`. The prologue:
 //
-//   sub sp,4,sp ; stind sp,lr  - push the return address `call` (or
-//                                CallPtr's own `jmpl`) just left in
-//                                `lr`, freeing `lr` for this
-//                                function's own calls
-//   sub sp,4,sp ; stind sp,fp  - push the caller's own `fp`
-//   or g0,sp,fp                - fp now addresses this call's own
-//                                saved-fp word
-//   sub sp,4*frameSize,sp      - reserve this call's own Locals
-//                                (only emitted when frameSize > 0 -
-//                                `frameSize` is already IRBuilder's
-//                                own real byte count, not a word
-//                                count - see IR.h's own comment)
+//   sub sp,4,sp ; stind sp,lr  - push the return address left in `lr`, freeing it for
+//                                this function's own calls
+//   sub sp,4,sp ; stind sp,fp  - push the caller's `fp`
+//   or g0,sp,fp                - fp now addresses this call's saved-fp word
+//   sub sp,4*frameSize,sp      - reserve this call's Locals (only when frameSize > 0)
 //
-// leaves exactly this layout relative to `fp`: `[fp+0]` the caller's
-// own `fp`, `[fp+4]` the return address, `[fp+8+4*i]` the caller's
-// own i'th pushed argument (see the Call case's own comment on why
-// argument 0 ends up closest to `fp+8`) - loadSlotAddr()/
-// loadOperandDisp()/storeOperandDisp() compute both the Param and the
-// Local case from this same `fp`. Every word below this call's own
-// reserved Locals is free for this call's own further
-// `sub sp,4,sp`/`add sp,4,sp` temp spills (see genBinary() and
-// friends) - always balanced, so `sp` is back at `fp-frameSize` by the
-// time emitEpilogue() below runs.
+// leaves this layout relative to `fp`: `[fp+0]` the caller's `fp`, `[fp+4]` the return
+// address, `[fp+8+4*i]` the caller's i'th pushed argument - loadSlotAddr()/
+// loadOperandDisp()/storeOperandDisp() compute both the Param and Local case from this
+// `fp`. Every word below the reserved Locals is free for temp spills, always balanced so
+// `sp` is back at `fp-frameSize` by the time emitEpilogue() runs.
 //
-// Because every call gets its own freshly pushed frame, a Local or
-// Param is no longer one cell shared by every activation of a
-// function - direct recursion (a function calling itself) and mutual
-// recursion (two or more functions calling each other in a cycle)
-// both get their own independent storage per call, limited only by
-// how much of the real hardware stack is left (see kInitialSP), not
-// by any fixed, call-depth-independent cell count.
+// Because every call gets its own pushed frame, direct and mutual recursion each get
+// independent storage per call, limited only by the hardware stack (kInitialSP).
 void SparcCodegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
     code_ << "    sub sp,4,sp\n    stind sp,lr\n";
@@ -281,15 +224,10 @@ void SparcCodegen::genFunction(const ir::FunctionBody &fn) {
     code_ << "    retl\n\n";
 }
 
-// Undoes genFunction()'s own prologue exactly, right before a `retl` -
-// see that function's own comment for the frame layout this reads
-// back. Order matters only in that `fp` itself must still hold *this*
-// call's own frame address when `[fp+0]`/`[fp+4]` are read and when
-// the new `sp` is computed from it - both happen before `fp` itself is
-// overwritten with the caller's own value. Never touches `t0`/`t1`,
-// which by now already hold this function's own return value (an
-// IR-level `void` function simply leaves them as whatever they last
-// were, same as every other backend's own untyped "ac").
+// Undoes genFunction()'s prologue, right before a `retl`. `fp` must still hold this
+// call's frame address when `[fp+0]`/`[fp+4]` are read and the new `sp` computed, before
+// `fp` itself is overwritten. Never touches `t0`/`t1`, which already hold the return
+// value by now.
 void SparcCodegen::emitEpilogue() {
     code_ << "    add fp,4,t2\n    ldind t2,t3\n";  // t3 = saved lr, at [fp+4]
     code_ << "    ldind fp,t2\n";                   // t2 = saved fp, at [fp+0]
@@ -350,10 +288,8 @@ void SparcCodegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            // A `return` statement is its own early exit from the
-            // function, bypassing genFunction()'s own fall-through
-            // epilogue entirely, so it needs that same frame teardown
-            // inlined here too - see emitEpilogue()'s own comment.
+            // An early exit bypasses genFunction()'s fall-through epilogue, so the same
+            // frame teardown is inlined here too.
             emitEpilogue();
             code_ << "    retl\n";
             return;
@@ -415,12 +351,9 @@ void SparcCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Stores through at e.type's own width/signedness - the
-            // pointee type of a real typed pointer, or a plain native
-            // int word for the still-supported untyped-int-as-address
-            // style - see IRBuilder.cpp's own DerefAssign comment.
-            // storeOperand() already handles a wide (8-byte) pointee
-            // too, storing t0/t1 at addrReg/addrReg+4.
+            // Stores at e.type's width/signedness - the pointee type of a typed pointer,
+            // or a plain int word for untyped-int-as-address. storeOperand() handles a
+            // wide (8-byte) pointee too, storing t0/t1 at addrReg/addrReg+4.
             genExpr(*e.lhs);  // t0 = pointer value
             code_ << "    sub sp,4,sp\n    stind sp,t0\n";
             genExpr(*e.rhs);  // t0, or t1:t0 if wide
@@ -434,13 +367,9 @@ void SparcCodegen::genExpr(const ir::Expr &e) {
                 genCompoundThroughT2(e);
                 return;
             }
-            // Plain scalar target - loadSlotValue()/storeSlotValue()
-            // address it afresh every call with no side effect (a
-            // Global's own fixed-label address load, or just a
-            // compile-time `fp`-relative displacement), so there's no
-            // address to hold across `e.rhs`'s own evaluation at all -
-            // same order as the existing non-indexed Assign case above
-            // (rhs first, then the slot access).
+            // Plain scalar target - loadSlotValue()/storeSlotValue() address it afresh
+            // with no side effect, so there's no address to hold across `e.rhs`'s
+            // evaluation.
             genExpr(*e.rhs);  // t0 = rhs
             movReg("t1", "t0");  // t1 = rhs
             loadSlotValue(e.slot);  // t0 = old
@@ -482,8 +411,7 @@ void SparcCodegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                // Loads at e.type's own width/signedness - see
-                // DerefAssign's identical comment above.
+                // Loads at e.type's width/signedness - see DerefAssign above.
                 genExpr(*e.rhs);  // t0 = pointer value
                 movReg("t2", "t0");
                 loadOperand("t2", e.type);
@@ -501,21 +429,12 @@ void SparcCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            // Pushed right-to-left, so argument 0 ends up closest to
-            // the stack top at the moment `call` runs - exactly the
-            // same cdecl-style shape as I386Codegen.cpp's own `Call`
-            // case, just with "push" spelled out as this dialect's
-            // own `sub sp,4,sp`/`stind sp,t0` pair. Once the callee's
-            // own prologue has pushed `lr` and `fp` (see genFunction()'s
-            // own comment), argument 0 sits at `fp+8`, argument i at
-            // `fp+8+4*i` - see loadSlotAddr()'s own Param case. The
-            // caller cleans the arguments back off afterwards (`call`
-            // itself never touches `sp`). A wide (`long long`)
-            // argument pushes both words (high first, so its low word
-            // ends up at the lower address, matching a wide Param's
-            // own frameOffset/frameOffset+4 layout) - every argument
-            // still reserves at least one native int's worth, matching
-            // IRBuilder.cpp's own Param-offset layout.
+            // Pushed right-to-left, so argument 0 ends up closest to the stack top when
+            // `call` runs. Once the callee's prologue has pushed `lr` and `fp`, argument
+            // 0 sits at `fp+8`, argument i at `fp+8+4*i`. The caller cleans the arguments
+            // off afterwards (`call` never touches `sp`). A wide (`long long`) argument
+            // pushes both words, high first, so its low word ends up at the lower
+            // address, matching a wide Param's frameOffset/frameOffset+4 layout.
             int totalBytes = 0;
             for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
@@ -532,25 +451,12 @@ void SparcCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::CallPtr: {
-            // e.args is always empty here - IRBuilder.cpp rejects any
-            // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr): the callee isn't known
-            // until runtime for this kind, so there's no declared
-            // parameter list a caller could even match its own pushed
-            // arguments against.
-            // "jmpl t0,lr" is the real SPARC JMPL instruction
-            // (SparcAssembler.cpp's own new `jmpl rs1,rd` mnemonic):
-            // it transfers control to whatever address t0 holds and
-            // leaves the address of this jmpl instruction itself in
-            // lr, exactly the same return-address convention a direct
-            // `call` already leaves there (see
-            // SparcAssembler.cpp's own `encodeRetl()` comment on
-            // `retl`'s "lr+8" assumption) - so a function reached this
-            // way returns correctly with the exact same `retl`
-            // epilogue every function already uses regardless of how
-            // it was called. The assembler synthesizes the
-            // real delay-slot `nop` right after it automatically,
-            // same as `call` already relies on.
+            // e.args is always empty here - the callee isn't known until runtime, so
+            // there's no declared parameter list to match pushed arguments against.
+            // "jmpl t0,lr" transfers control to whatever address t0 holds and leaves the
+            // address of this instruction in lr, the same return-address convention a
+            // direct `call` leaves, so the callee's `retl` epilogue returns correctly
+            // regardless of how it was called.
             genExpr(*e.lhs);  // t0 = the callee's own entry address
             code_ << "    jmpl t0,lr\n";
             return;
@@ -560,40 +466,26 @@ void SparcCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Intrinsic: {
-            // No real portable notion of interrupt enable/disable on
-            // a bare-metal target with no trap table set up at all
-            // here - treated as a no-op, same reasoning (and the same
-            // choice) as PowerPCCodegen.cpp's own Intrinsic case.
+            // No trap table is set up on this bare-metal target, so interrupt
+            // enable/disable is a no-op.
             (void)e;
             return;
         }
     }
 }
 
-// `t2` holds the computed address, no zero-page-style placement
-// restriction the way the 6502 backend's own `ptr` has. `arraySize >
-// 0` means the base is a compile-time-known address (a Global's own
-// label, or a Local's own `fp`-relative address - either way, the
-// array's first byte); otherwise `slot` is a plain pointer variable,
-// so the base instead comes from *reading* that variable's own stored
-// value first (its own Global/Local/Param address, same distinction
-// as every other slot access - see loadSlotValue()).
+// `t2` holds the computed address. `arraySize > 0` means the base is a compile-time-known
+// address (a Global's label, or a Local's `fp`-relative address - the array's first
+// byte); otherwise `slot` is a plain pointer variable, so the base comes from reading
+// that variable's own stored value first.
 //
-// `elemShift(slot->type)` scales the index by the element type's own
-// width (1/2/4/8 bytes), replacing the old fixed "always 4 bytes"
-// shift. A Global array's elements sit at *increasing* addresses as
-// the index grows (`label+i*w`, the ordinary layout); a Local array's
-// elements instead sit at *decreasing* addresses from its own first
-// byte (`base-i*w`), because `base` itself is already
-// `fp-frameOffset` and later elements (index i>0) occupy the *larger*
-// frameOffset values `frameOffset+i*w` (see IR.h's own comment on
-// Slot::frameOffset), which this backend's own `fp-frameOffset`
-// addressing turns into the *smaller* (more negative) address. Adding
-// the scaled index here instead of subtracting it would silently
-// read/write the wrong element for any index past 0 - the same bug
-// this migration specifically guards against on every other frame-
-// pointer-based backend (see e.g. I386Codegen.cpp's own
-// `computeElementAddr()`).
+// `elemShift(slot->type)` scales the index by the element width (1/2/4/8 bytes). A
+// Global array's elements sit at increasing addresses as the index grows (`label+i*w`);
+// a Local array's elements sit at decreasing addresses from its first byte (`base-i*w`),
+// because `base` is already `fp-frameOffset` and later elements occupy larger
+// frameOffset values, which `fp-frameOffset` addressing turns into smaller addresses.
+// Adding the scaled index instead of subtracting it would read/write the wrong element
+// for any index past 0.
 void SparcCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // t0 = index
     int shift = elemShift(slot->type);
@@ -627,9 +519,6 @@ void SparcCodegen::genCompoundOp(const std::string &op, Type type) {
     bool isUnsigned = type.isUnsigned;
     if (op == "+") { code_ << "    add t0,t1,t0\n"; return; }
     if (op == "-") { code_ << "    sub t0,t1,t0\n"; return; }
-    // Real hardware `smul` (see genMul()'s own identical form) - a
-    // full 32x32->32 product, commutative, so this is the same value
-    // as old*rhs regardless of operand order.
     if (op == "*") { code_ << "    smul t0,t1,t0\n"; return; }
     if (op == "&") { code_ << "    and t0,t1,t0\n"; return; }
     if (op == "|") { code_ << "    or t0,t1,t0\n"; return; }
@@ -639,15 +528,9 @@ void SparcCodegen::genCompoundOp(const std::string &op, Type type) {
         code_ << "    " << insn << " t0,t1,t0\n";
         return;
     }
-    // "/" or "%" - SPARC's divide always treats its first register
-    // operand as the dividend whose own sign bits the Y register must
-    // be seeded from first (see genDivMod()'s own comment) - t5 is a
-    // free scratch register here (only ever needed by the wide
-    // helpers elsewhere), used to swap old/rhs into t1/t0 so the exact
-    // same divide sequence genDivMod() already uses applies unchanged.
-    // This clobbers t2 (the sign-seed/quotient scratch, same as
-    // genDivMod()) - callers that still need t2's own address
-    // afterward preserve it themselves around this call.
+    // "/" or "%" - t5 is free scratch here, used to swap old/rhs into t1/t0 so the same
+    // divide sequence as genDivMod() applies unchanged. Clobbers t2; callers that still
+    // need t2 afterward must preserve it around this call.
     movReg("t5", "t0");  // t5 = old
     movReg("t0", "t1");  // t0 = rhs (divisor)
     movReg("t1", "t5");  // t1 = old (dividend)
@@ -667,14 +550,9 @@ void SparcCodegen::genCompoundOp(const std::string &op, Type type) {
     }
 }
 
-// t2 must already hold the resolved address on entry, and nothing
-// else live - mirrors genExpr()'s own indexed-Assign case, which
-// already stashes t2 on the real hardware stack across `e.rhs`'s own
-// evaluation for the identical reason: that evaluation can
-// recursively reach arbitrary codegen (calls included), which may
-// freely use every other register. t2 is stashed a second time around
-// genCompoundOp() itself, since its own "/"/"%" case needs t2 as
-// scratch (see that function's own comment).
+// t2 must already hold the resolved address on entry, with nothing else live; it is
+// stashed on the stack across `e.rhs`'s evaluation and again around genCompoundOp(),
+// since either can clobber it.
 void SparcCodegen::genCompoundThroughT2(const ir::Expr &e) {
     code_ << "    sub sp,4,sp\n    stind sp,t2\n";
     genExpr(*e.rhs);                 // t0 = rhs
@@ -691,7 +569,7 @@ void SparcCodegen::genCompoundThroughT2(const ir::Expr &e) {
         code_ << "    ldind sp,t0\n    add sp,4,sp\n";  // t0 = old
         movReg("t4", "t0");                           // t4 = old, preserved across the store below
         movReg("t0", "t3");                            // t0 = new (storeOperand always stores from t0)
-        storeOperand("t2", e.type);                       // t2 still addresses the target (loadOperand never moves it - e.type is never wide)
+        storeOperand("t2", e.type);                       // t2 still addresses the target
         movReg("t0", "t4");                                // t0 = old (final result)
     } else {
         storeOperand("t2", e.type);  // t0 already = new; t2 still addresses the target
@@ -721,10 +599,9 @@ void SparcCodegen::genAddrOf(const ir::Expr &operand) {
     err(operand.line, "internal: unhandled addressable-operand kind");
 }
 
-// Loads a value of `type` from the address already in `addrReg` into
-// `t0` (or `t1:t0` for a `long long`), using this dialect's own
-// sign-/zero-extending byte/halfword load mnemonics (real SPARC
-// LDUB/LDSB/LDUH/LDSH) for a narrower-than-int source.
+// Loads a value of `type` from the address already in `addrReg` into `t0` (or `t1:t0`
+// for a `long long`), using this dialect's sign-/zero-extending byte/halfword load
+// mnemonics for a narrower-than-int source.
 void SparcCodegen::loadOperand(const std::string &addrReg, Type type) {
     int w = widthOfType(type);
     if (w == 1) {
@@ -753,12 +630,9 @@ void SparcCodegen::storeOperand(const std::string &addrReg, Type type) {
     }
 }
 
-// The same loads/stores as loadOperand()/storeOperand() above, but
-// directly at `fp+disp` (no separate address computation) - the
-// Local/Param fast path every scalar access through `fp` uses (see
-// loadSlotValue()/storeSlotValue()), by folding `disp` straight into
-// the load/store instruction's own displacement field (see
-// SparcAssembler.cpp's own `dispOf()`).
+// The same loads/stores as loadOperand()/storeOperand(), but directly at `fp+disp`
+// (no separate address computation) - the Local/Param fast path, folding `disp` into
+// the load/store instruction's own displacement field.
 void SparcCodegen::loadOperandDisp(int disp, Type type) {
     int w = widthOfType(type);
     if (w == 1) {
@@ -796,16 +670,13 @@ void SparcCodegen::narrowT0To(Type to) {
         code_ << "    sll t0,16,t0\n";
         code_ << "    " << (to.isUnsigned ? "srl" : "sra") << " t0,16,t0\n";
     }
-    // 4 bytes (Int/Long): t0 already holds the full value. 8 never
-    // reaches here - see genConvert()'s own isWide() branches.
+    // 4 bytes (Int/Long): t0 already holds the full value. 8 never reaches here.
 }
 
-// An implicit or explicit type conversion. Every arithmetic/
-// comparison operand narrower than `int` is already promoted by
-// IRBuilder before any Binary/Unary ever sees it, so the only real
-// work here is crossing the native-int/`long long` boundary (sign/
-// zero-extending t0 into t1, or just dropping t1), or re-truncating+
-// re-extending t0 for a narrower target - see narrowT0To().
+// An implicit or explicit type conversion. Every arithmetic/comparison operand narrower
+// than `int` is already promoted by IRBuilder, so the only work here is crossing the
+// int/`long long` boundary (sign/zero-extending t0 into t1, or dropping t1), or
+// re-truncating+re-extending t0 for a narrower target.
 void SparcCodegen::genConvert(const ir::Expr &e) {
     Type from = e.lhs->type;
     Type to = e.type;
@@ -826,14 +697,9 @@ void SparcCodegen::genConvert(const ir::Expr &e) {
     // fromWide && toWide: the bit pattern is already correct.
 }
 
-// `long long` add/sub (lhs OP rhs) - SPARC has no single carry flag
-// this dialect's own `cmp` reads back out directly (`cmp` only ever
-// feeds a conditional *branch*, not a carry-consuming add - see
-// SparcCodegen.h's own header comment), so the carry/borrow out of the
-// low-word operation is recovered the same "compare, then branch to
-// decide" way every other comparison here already works: an unsigned
-// `cmp`+branch test on the low words decides whether the high-word add
-// needs that extra +1.
+// `long long` add/sub (lhs OP rhs) - `cmp` only feeds a conditional branch, never a
+// carry-consuming add, so the carry/borrow out of the low-word operation is recovered
+// via an unsigned `cmp`+branch test deciding whether the high-word add needs +1.
 void SparcCodegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd) {
     genExpr(lhs);  // t1:t0 = lhs
     code_ << "    sub sp,8,sp\n    stind sp,t0\n    stind sp,t1,4\n";
@@ -861,16 +727,11 @@ void SparcCodegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isA
     }
 }
 
-// `long long` multiply, keeping the low 64 bits of the true 128-bit
-// product - the standard 32-on-32 cross-multiply decomposition, using
-// the real hardware `smul`/`umul` three times (each a genuine
-// 32x32->64 product, the high half read back with `rdy` - see
-// SparcAssembler.cpp's own `encodeRdy()`) and discarding whatever each
-// cross term's own high half leaves (that overflow only ever affects
-// bit 64 and beyond). The low-order 32 bits of a product never depend
-// on signedness, so a plain `smul` (not `umul`) is used throughout -
-// only the high half of the final `lhs_lo*rhs_lo` term would ever
-// differ, and that term's own high half is discarded here anyway.
+// `long long` multiply, keeping the low 64 bits of the true 128-bit product - the
+// standard 32-on-32 cross-multiply decomposition, using `smul` three times (each a
+// 32x32->64 product, high half read back with `rdy`) and discarding each cross term's
+// high half. The low-order 32 bits of a product don't depend on signedness, so plain
+// `smul` (not `umul`) is used throughout.
 void SparcCodegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);  // t1:t0 = lhs
     code_ << "    sub sp,8,sp\n    stind sp,t0\n    stind sp,t1,4\n";
@@ -897,15 +758,10 @@ void SparcCodegen::genNegate64() {
     code_ << Ldone << ":\n";
 }
 
-// Classic bit-serial shift/compare/subtract long division - see
-// I386Codegen.cpp's/MipsCodegen.cpp's own genWideDivMod() for the
-// algorithm; ported here onto the real hardware stack (`sp` playing
-// the role `ebx`/MIPS's own `$sp` plays there), using this dialect's
-// own displacement-operand `ldind`/`stind` form throughout instead of
-// a separately computed address. `isUnsigned` false divides
-// *magnitudes*: lhs/rhs's own sign bits are read directly out of the
-// pushed operand words, each negated in place if its own sign bit was
-// set, then restored on the result per C's truncating-division rule.
+// Classic bit-serial shift/compare/subtract long division, using the stack for scratch
+// and displacement-operand `ldind`/`stind` throughout. `isUnsigned` false divides
+// magnitudes: lhs/rhs sign bits are read out of the pushed operand words, each negated
+// in place if set, then restored on the result per C's truncating-division rule.
 void SparcCodegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    sub sp,8,sp\n    stind sp,t1\n    stind sp,t0,4\n";  // [sp]=lhs_hi,[sp+4]=lhs_lo
@@ -1001,9 +857,8 @@ void SparcCodegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool 
     }
 }
 
-// A `long long` shifted by a runtime count - a counted loop of 1-bit
-// shifts, each carrying the bit that crosses the word boundary by
-// hand (no hardware 64-bit shift).
+// A `long long` shifted by a runtime count - a counted loop of 1-bit shifts, each
+// carrying the bit that crosses the word boundary by hand.
 void SparcCodegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    sub sp,8,sp\n    stind sp,t0\n    stind sp,t1,4\n";
@@ -1025,11 +880,9 @@ void SparcCodegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool i
     code_ << Ldone << ":\n";
 }
 
-// A `long long` comparison - compare the high words first (signed or
-// unsigned per `isUnsigned`), falling back to an always-unsigned
-// compare of the low words only when the high words are equal - the
-// standard big-number ordered-comparison idiom (see
-// I386Codegen.cpp's own genWideCompare()).
+// A `long long` comparison - compare the high words first (signed or unsigned per
+// `isUnsigned`), falling back to an unsigned compare of the low words only when the high
+// words are equal.
 void SparcCodegen::genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs,
                                      bool isUnsigned) {
     genExpr(lhs);
@@ -1048,10 +901,8 @@ void SparcCodegen::genWideCompare(const std::string &op, const ir::Expr &lhs, co
         code_ << Ldone << ":\n";
         return;
     }
-    // t0 = (hi differ) ? hiCompare(t4,t6) : loCompareUnsigned(t3,t5) -
-    // the standard big-number ordered-comparison idiom: once the high
-    // words are equal, the remaining 32 bits are a plain unsigned
-    // magnitude regardless of the overall type's own signedness.
+    // t0 = (hi differ) ? hiCompare(t4,t6) : loCompareUnsigned(t3,t5) - once the high
+    // words are equal, the remaining 32 bits are a plain unsigned magnitude.
     std::string LhiDiff = newLabel(), Ldone = newLabel(), Lt = newLabel(), Lf = newLabel();
     code_ << "    cmp t4,t6\n    bne " << LhiDiff << "\n";
     std::string loBranch = op == "<" ? "bltu" : op == ">" ? "bgtu" : op == "<=" ? "bleu" : "bgeu";
@@ -1071,11 +922,9 @@ void SparcCodegen::genWideCompare(const std::string &op, const ir::Expr &lhs, co
 
 void SparcCodegen::genBinary(const ir::Expr &e) {
     const std::string &op = e.op;
-    // Every arithmetic/bitwise/comparison operand here already
-    // shares one common type (IRBuilder's own usual-arithmetic-
-    // conversion pass) - `e.lhs->type` names it, except for shift
-    // (only the LHS's own type matters) and &&/|| (width-independent,
-    // handled by genLogicalAnd/Or below).
+    // Every arithmetic/bitwise/comparison operand already shares one common type;
+    // `e.lhs->type` names it, except for shift (only the LHS's type matters) and &&/||
+    // (width-independent, handled by genLogicalAnd/Or below).
     Type operandType = e.lhs->type;
     bool wide = isWide(operandType);
     bool isUnsigned = operandType.isUnsigned;
@@ -1154,9 +1003,8 @@ void SparcCodegen::genBinary(const ir::Expr &e) {
     genCompare(op, *e.lhs, *e.rhs);
 }
 
-// Real hardware multiply (`smul`) - a full 32x32->32 product, no
-// operand-size limitation the way the 68000's own `MULS.W` has.
-// Signedness doesn't matter for the low-order 32 bits `smul` keeps.
+// Real hardware multiply (`smul`) - a full 32x32->32 product. Signedness doesn't matter
+// for the low-order 32 bits `smul` keeps.
 void SparcCodegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     code_ << "    sub sp,4,sp\n    stind sp,t0\n";
@@ -1165,18 +1013,12 @@ void SparcCodegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << "    smul t1,t0,t0\n";
 }
 
-// Real hardware divide (`sdiv`/`udiv`) gives only the quotient, and
-// (like every SPARC V8 32-bit divide) treats the dividend as a 64-bit
-// `Y:rs1` pair under the hood - `sra t1,31,t2` then `wry t2,g0` seeds
-// Y with the dividend's own sign bits first for the signed form (real
-// SPARC's own standard idiom; skipping this gives a silently wrong
-// result whenever the dividend is negative), or `wry g0,g0` seeds an
-// all-zero high half for the unsigned form. There is no remainder
-// instruction at all (same situation as PowerPC's own classic
-// `divw`), so `%` is synthesized the standard way: `sdiv`/`udiv` for
-// the quotient, `smul`/`umul` to multiply the quotient back out by the
-// divisor, then `sub` to recover the remainder as
-// `dividend - quotient * divisor`.
+// Real hardware divide (`sdiv`/`udiv`) gives only the quotient, treating the dividend as
+// a 64-bit `Y:rs1` pair: `sra t1,31,t2` then `wry t2,g0` seeds Y with the dividend's sign
+// bits for the signed form (skipping this gives a wrong result for a negative dividend),
+// or `wry g0,g0` seeds an all-zero high half for unsigned. There is no remainder
+// instruction, so `%` is synthesized as `sdiv`/`udiv` for the quotient, `smul`/`umul` to
+// multiply back out, then `sub` to recover `dividend - quotient * divisor`.
 void SparcCodegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    sub sp,4,sp\n    stind sp,t0\n";
@@ -1198,14 +1040,10 @@ void SparcCodegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool want
     code_ << "    sub t1,t2,t0\n";    // t0 = t1 - t2 = dividend - quotient*divisor
 }
 
-// SPARC has no single compare-and-set instruction - a comparison here
-// always needs `cmp` (real `subcc rs1,rs2,%g0`) plus a real
-// conditional branch to decide which boolean value to materialize,
-// the same "compare, then branch to decide" shape as PowerPC's own
-// `cmpw`+`bc` (see PowerPCCodegen.h's own header comment).
-// `isUnsigned` (the shared operand type's own signedness) picks the
-// plain or unsigned branch family for the ordered comparisons;
-// `==`/`!=` need no such choice (a bit-for-bit compare either way).
+// SPARC has no compare-and-set instruction - a comparison needs `cmp` (`subcc
+// rs1,rs2,%g0`) plus a conditional branch to decide which boolean value to materialize.
+// `isUnsigned` picks the plain or unsigned branch family for ordered comparisons;
+// `==`/`!=` need no such choice.
 void SparcCodegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs) {
     if (isWide(lhs.type)) {
         genWideCompare(op, lhs, rhs, lhs.type.isUnsigned);
@@ -1280,12 +1118,8 @@ std::string SparcCodegen::buildAssembleCommand(const std::string &, const std::s
 std::optional<std::string> SparcCodegen::assembleInProcess(const std::string &asmText,
                                                               const std::string &format) const {
     if (format == "raw") return assembleSparc(asmText);
-    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
-    // (see generate()'s own `objectMode` comment) - this backend's
-    // own assembler builds one format-neutral ObjectFile exactly once
-    // (see SparcAssembler.h's own `assembleSparcObject`), and whichever
-    // of these five names was asked for just picks that format's own
-    // FileFormatWriter (see fileformat/FileFormat.h) to serialize it.
+    // `coff`/`elf`/`macho`/`aout`/`objraw`: builds one format-neutral ObjectFile, then
+    // picks that format's FileFormatWriter to serialize it.
     if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleSparcObject(asmText);
         return makeFileFormatWriter(*kind)->write(obj);

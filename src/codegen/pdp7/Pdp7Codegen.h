@@ -11,50 +11,31 @@
 
 namespace pcc {
 
-// Generates PDP-7 assembly (as.s / as7 / pdp-assembler syntax) for
-// the IR built by IRBuilder (see IR.h: every name is already
-// resolved to a Slot/Function by the time this runs, so this class
-// is pure instruction selection - no symbol table of its own). See
-// ../../../README.md for the exact instruction-level conventions
-// this relies on (verified against the real pdp7 simulator, not
-// just inferred from the opcode table): dac leaves AC unchanged,
-// sza/sma/sad skip in the directions their names say, dac/lac move
-// whole 18-bit words, and the testmul.s-style "mul" / "lacq" pair
-// gives a direct hardware multiply.
+// Generates PDP-7 assembly for the IR built by IRBuilder; names are
+// already resolved to Slot/Function, so this is pure instruction
+// selection with no symbol table of its own.
 //
-// Every function gets a real per-call activation record on a
-// software stack (see the fixed `__sp`/`__fp` cells this class
-// declares in generate()): there is no hardware stack pointer and no
-// indexed/displacement addressing mode on this target at all, only
-// one accumulator plus direct/indirect memory addressing (a "law"
-// instruction and one "i" indirection bit), so the whole frame
-// mechanism - pushing/popping through `__sp`, the frame pointer
-// `__fp`, where a Local/Param physically lives, and even where a
-// function's own return address lives across a nested call - is
-// built entirely out of that one indirection bit. See emitPrologue()/
-// emitEpilogueAndReturn()/pushAC()/popAC()'s own comments for the
-// exact layout and arithmetic, and emitLoadSlotAddress()'s comment
-// for how a Slot::frameOffset (see IR.h) becomes a real address.
-// Direct and mutual/indirect recursion both work: every activation's
-// Param/Local storage, and every value an expression needs to
-// survive across a nested call (e.g. the `n` in `n * fact(n - 1)`),
-// lives in that call's own frame or its own stack slot, never in a
-// cell permanently shared by every call the way a Global's storage
-// still deliberately is.
+// Every function gets a per-call activation record on a software
+// stack built from `__sp`/`__fp` (declared in generate()): this
+// target has no hardware stack pointer and no indexed/displacement
+// addressing mode, only one accumulator plus direct/indirect memory
+// addressing (a "law" instruction and one "i" indirection bit), so
+// the whole frame mechanism is built out of that one indirection bit.
+// See emitPrologue()/emitEpilogueAndReturn()/pushAC()/popAC() for the
+// layout, and emitLoadSlotAddress() for how Slot::frameOffset becomes
+// a real address. Direct and mutual recursion both work: every
+// activation's Param/Local storage lives in that call's own frame or
+// stack slot, never in a cell shared across calls the way a Global's
+// storage is.
 //
-// pdp7as truncates every label to 8 characters (Assembler.cpp's
-// truncate8()), so every label here is a short synthetic
-// "<letter><N>" name: "G_<name>" for a Global Slot, "FN_<name>" for
-// an ir::Function, and "T<N>"/"N<N>"/"J<N>" (this class's own
-// counters) for codegen-internal scratch cells, literal constants
-// and jump targets not in the IR at all (pure implementation detail
-// of this backend's own expression-evaluation strategy) - plus a
-// small fixed set of "__"-prefixed global cells (`__sp`, `__fp`,
-// `__stmp`, `__stmp2`, `__addr`, `__retval`, `__retaddr`) this frame
-// mechanism itself needs, shared by every function (safe to share:
-// each one's live range is always a single short, call-free
-// instruction sequence - see pushAC()/popAC()'s own comments). A
-// Local or Param never gets a label at all any more - see
+// pdp7as truncates labels to 8 characters, so every label here is a
+// short synthetic name: "G_<name>" for a Global Slot, "FN_<name>" for
+// an ir::Function, and "T<N>"/"N<N>"/"J<N>" for codegen-internal
+// scratch cells, literal constants and jump targets, plus a fixed set
+// of "__"-prefixed global cells (`__sp`, `__fp`, `__stmp`, `__stmp2`,
+// `__addr`, `__retval`, `__retaddr`) shared by every function (safe
+// since each one's live range is a single short, call-free
+// instruction sequence). A Local or Param never gets a label - see
 // emitLoadSlotAddress().
 class Pdp7Codegen : public Backend {
    public:
@@ -79,140 +60,86 @@ class Pdp7Codegen : public Backend {
     void genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
     void emitEq(const ir::Expr &lhs, const ir::Expr &rhs, bool negate);
     void emitLt(const ir::Expr &lhs, const ir::Expr &rhs, bool negate);
-    // Tests the signed less-than of two already-materialized cells,
-    // jumping to `Ltrue`/`Lfalse` accordingly. Deliberately NOT a
-    // plain "subtract then test sign" (`sma` alone) - that overflows
-    // whenever A and B have opposite signs and are far enough apart
-    // (e.g. the most-negative vs. most-positive 18-bit value), which
-    // the unsigned-via-sign-bit-flip trick elsewhere in this file
-    // routinely produces. Differing signs are decided directly, with
-    // no subtraction at all; same-sign operands fall through to the
-    // subtract-and-test-sign path, which is safe there since two
-    // same-sign 18-bit values can never differ by more than the
-    // representable range.
+    // Tests signed less-than of two already-materialized cells,
+    // jumping to `Ltrue`/`Lfalse`. Differing signs are decided
+    // directly (a plain subtract-then-test-sign would overflow when
+    // operands are far enough apart); same-sign operands fall through
+    // to subtract-and-test-sign, safe since same-sign 18-bit values
+    // can't differ by more than the representable range.
     void emitSignedLtCells(const std::string &A, const std::string &B, const std::string &Ltrue,
                             const std::string &Lfalse);
     void genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
 
-    // Masks AC down to `to`'s own real value range and (for a signed
-    // type) re-sign-extends from that range's own top bit - see the
-    // .cpp's own comment on why only `char` ever needs this.
+    // Masks AC down to `to`'s value range and, for a signed type,
+    // re-sign-extends from that range's top bit.
     void narrowAC(Type to);
     int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
-    // `char`/`short`/`int` are all exactly 1 pdp7 word (see
-    // typeWidths()) - only `long` (2 words) and `long long` (4
-    // words) are ever "wide" on this backend.
+    // `char`/`short`/`int` are each 1 pdp7 word; only `long` (2 words)
+    // and `long long` (4 words) are "wide" on this backend.
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
 
     // --- `long`/`long long` (wide) support --------------------------------
     //
-    // A wide value is represented as `widthOfType(type)` consecutive
-    // pdp7 words - word 0 (the low-order word) first, each
-    // subsequent word one order higher - the exact same "element i"
-    // addressing arithmetic a Global/Local array's own element i
-    // already uses (see emitLoadSlotAddress()'s/declareArray()'s own
-    // comments), since a wide scalar is really just a tiny fixed-size
-    // array under the hood here. genExpr()'s own single-AC contract
-    // doesn't generalize to more than one word at once on a machine
-    // with exactly one accumulator and no general registers, so a
-    // wide value is instead left PUSHED on the real software stack
-    // (see pushAC()/popAC()) when produced, word 0 (low) on TOP (most
-    // recently pushed) - every genExpr()/genStmt() call site checks
-    // `isWide(e.type)` and branches to the matching wide helper
-    // below instead of the plain single-AC path.
+    // A wide value is `widthOfType(type)` consecutive pdp7 words, word
+    // 0 (low) first. genExpr()'s single-AC contract doesn't generalize
+    // to multiple words, so a wide value is instead left PUSHED on the
+    // software stack when produced, word 0 on TOP; every genExpr()/
+    // genStmt() call site checks `isWide(e.type)` and branches to the
+    // matching wide helper instead of the plain single-AC path.
     //
-    // Multiply and divide/modulo are NOT implemented for a wide
-    // operand - see genWideMulDivErr()'s own comment for why.
+    // Multiply and divide/modulo are not implemented for a wide
+    // operand - see genWideMulDivErr().
 
-    // Pushes a wide value's own `widthOfType(type)` words, reading
-    // them from consecutive memory starting at `baseAddr` (already in
-    // AC on entry - typically from emitLoadSlotAddress()) - word 0
-    // (low) is read and pushed LAST, so it ends up on top, per this
-    // file's own "word 0 on top" convention. `baseAddr` is left in
-    // `__addr` throughout (never relies on AC surviving the pushes).
+    // Pushes a wide value's `widthOfType(type)` words from consecutive
+    // memory starting at `baseAddr` (in AC on entry); word 0 is read
+    // and pushed last so it ends up on top.
     void pushWideFromAddress(Type type);
-    // The reverse: pops a wide value's own words off the stack
-    // (word 0/low first, since it's on top) into consecutive memory
-    // starting at the address already in AC on entry (left in
-    // `__addr`).
+    // Reverse of pushWideFromAddress(): pops the words (word 0 first)
+    // into consecutive memory starting at the address in AC on entry.
     void popWideToAddress(Type type);
-    // Pushes `widthOfType(type)` words representing the wide
-    // sign/zero-extension of `value` (a plain, already-evaluated
-    // narrow literal) - word 0 (low) pushed last.
+    // Pushes `widthOfType(type)` words of the wide sign/zero-extension
+    // of `value`; word 0 pushed last.
     void pushWideLiteral(Type type, long value);
     // Generalizes genExpr() for a wide-typed expression: leaves its
-    // `widthOfType(e.type)` words pushed on the stack (word 0/low on
-    // top), instead of in AC. Every expression kind this language's
-    // own type-checking pass (IRBuilder.cpp) can ever give a wide
-    // type is handled directly here (Var, IntLit, Assign, Convert,
-    // Unary -/~, and the wide arithmetic/bitwise binary operators);
+    // words pushed on the stack (word 0 on top) instead of in AC.
+    // Handles every expression kind IRBuilder.cpp can give a wide type
+    // (Var, IntLit, Assign, Convert, Unary -/~, wide binary ops);
     // anything else reaching here is a compile-time error.
     void genWideExpr(const ir::Expr &e);
-    // Pops two wide operands (rhs word 0 on top, then lhs word 0 on
-    // top beneath it - i.e. evaluated and pushed lhs-then-rhs, same
-    // left-to-right order every narrow binary op here already uses)
-    // and pushes a `wordCount`-word wide +/- result, carry/borrow
-    // ripple-chained via the real link bit (`cll`/`tad`/`snl` - see
-    // this file's own .cpp comment on why each carry-detecting `tad`
-    // needs its own fresh `cll` immediately before it, not a shared
-    // one across the whole chain).
+    // Pops two wide operands (lhs then rhs were pushed, so rhs is on
+    // top) and pushes a `wordCount`-word +/- result, carry/borrow
+    // ripple-chained via the link bit (`cll`/`tad`/`snl`).
     void genWideAddSub(bool isAdd, int wordCount);
-    // Pops one wide operand and pushes its 2's-complement negation
-    // (`~x + 1`, word-by-word, reusing genWideAddSub()'s own carry
-    // chain against an all-zero "0" operand pushed first).
+    // Pops one wide operand and pushes its 2's-complement negation.
     void genWideNegate(int wordCount);
-    // Pops two wide operands and pushes their bitwise and/xor (word-
-    // by-word, each word independent - no carry chain needed) or or
-    // (De Morgan, same `~a & ~b` identity the narrow case already
-    // uses - see genBitwise()'s own comment).
+    // Pops two wide operands and pushes their bitwise and/xor
+    // (word-by-word) or or (De Morgan `~a & ~b`, as genBitwise() uses
+    // for the narrow case).
     void genWideBitwise(const std::string &op, int wordCount);
-    // Pops two wide operands and leaves a plain narrow 0/1 result in
-    // AC - compares from the most-significant word down, short-
-    // circuiting on the first word where the two operands differ
-    // (same "compare from the top" idea as a real multi-digit
-    // decimal comparison): the sign only matters in the top word
-    // (`isUnsigned` picks whether that one word's own comparison
-    // treats its sign bit as a real sign or just another value bit,
-    // via the same sign-bit-flip trick emitLt()'s unsigned path
-    // uses), every lower word's own comparison is always unsigned
-    // (once the higher words are confirmed equal, the remaining
-    // value is a plain non-negative magnitude).
+    // Pops two wide operands and leaves a narrow 0/1 result in AC:
+    // compares from the most-significant word down, short-circuiting
+    // on the first differing word. Only the top word's comparison can
+    // be signed (`isUnsigned` picks that); every lower word is always
+    // compared unsigned, since once the higher words are equal the
+    // remaining value is a non-negative magnitude.
     void genWideCompare(const std::string &op, int wordCount, bool isUnsigned);
     [[noreturn]] void genWideMulDivErr(int line, const std::string &opName);
-    // dest = a + b + (the current 0/1 content of `carryCell`),
-    // leaving `carryCell` updated to this word's own carry-out -
-    // shared by genWideAddSub() (the ripple-carry chain itself, and
-    // subtraction's own "negate rhs first" step) and genWideNegate().
-    // `carry1Cell`/`carry2Cell` are this helper's own private scratch
-    // (its two-stage carry capture - see the .cpp's own comment on
-    // why one `tad` can't directly capture "carry from a+b+carryIn"
-    // in a single step here) - never read by the caller.
+    // dest = a + b + carryCell, updating carryCell to this word's
+    // carry-out. `carry1Cell`/`carry2Cell` are private scratch for the
+    // two-stage carry capture, never read by the caller.
     void emitWideAddWithCarry(const std::string &dest, const std::string &a, const std::string &b,
                                const std::string &carryCell, const std::string &carry1Cell,
                                const std::string &carry2Cell);
 
     // Branch fusion for an `If`/`While` condition: jumps to `Lfalse`
-    // when `cond` is false, otherwise falls straight through into
-    // whatever code follows (the true-branch's own, placed right
-    // after the call site - same fall-through convention genStmt's
-    // `If`/`While` cases already use for the non-fused case). For a
-    // plain comparison (`==`/`!=`/`</>/<=`/`>=`) or an `&&` of such,
-    // this skips genCompare()'s own "materialize a real 0/1 value,
-    // then test it" dance entirely (the generic path any OTHER
-    // condition shape - `||`, a bare variable, a call, bitwise,
-    // ... - still goes through below) - that materialize-then-test
-    // round trip costs ~7 words beyond the comparison itself, pure
-    // overhead when the only thing the caller ever does with the
-    // 0/1 value is immediately re-test it. Only uses instructions
-    // this file's own other methods already rely on and have
-    // verified against the real pdp7 simulator (`sma`/`sad` - see
-    // emitLt()'s/emitEq()'s own comments); deliberately does NOT use
-    // `spa` (`>=`/`<=`'s otherwise-natural complement to `sma`),
-    // since nothing in this file uses or has verified it yet - see
-    // this method's own .cpp comment for the safe fallback that
-    // avoids it.
+    // when `cond` is false, else falls through. For a plain comparison
+    // or an `&&` of such, skips genCompare()'s materialize-then-test
+    // step and branches directly; any other condition shape (`||`, a
+    // bare variable, a call, bitwise, ...) falls back to the generic
+    // path below. Avoids `spa`, using only `sma`/`sad` as elsewhere in
+    // this file.
     void genCondBranch(const ir::Expr &cond, const std::string &Lfalse);
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
@@ -226,64 +153,38 @@ class Pdp7Codegen : public Backend {
     // --- Compound assignment ('+=' etc., prefix/postfix '++'/'--') and
     // ternary -------------------------------------------------------------
     //
-    // `CompoundAssign`/`CompoundDerefAssign` (see IR.h) can never be
-    // wide here - IRBuilder.cpp's own rejectIfWide() rejects a wide
-    // target before this backend ever sees one - so these only ever
-    // need to produce a single AC-full result, the same narrow
-    // contract every other case in genExpr()'s own switch already has.
+    // `CompoundAssign`/`CompoundDerefAssign` can never be wide here
+    // (IRBuilder.cpp's rejectIfWide() rejects a wide target first), so
+    // these only ever produce a single AC-full result.
     //
-    // Consumes e.rhs's own value, already evaluated into AC by the
-    // caller, and leaves it wherever this file's own existing narrow
-    // Binary codegen for e.op (genBinary/genBitwise/genShift/genMul/
-    // genDivMod) already stashes its own second operand before
-    // combining it with the first - the exact same per-operator cell
-    // each of those already uses (`__stmp2` for `+`/`-`/`&`/`^`/`|`, a
-    // fresh cell doubling as the `mul` instruction's own inline
-    // operand word for `*` - see genMul()'s own comment on that
-    // convention, `__dm_b` for `/`/`%`, a fresh cell for `<<`/`>>`'s
-    // own shift count) - `+`/`-`/`|` pre-apply their own negation/
-    // complement here, exactly where genBinary()/genBitwise() already
-    // do it, so finishCompoundOp() below never needs to know which
-    // operator it's finishing beyond its own final combining step.
-    // Returns that cell's own label, for finishCompoundOp() to read
-    // back once the target's own old value is available in AC.
+    // Consumes e.rhs's value (already in AC) and stashes it in
+    // whichever per-operator cell the matching narrow Binary codegen
+    // (genBinary/genBitwise/genShift/genMul/genDivMod) uses for its
+    // second operand (`__stmp2` for `+`/`-`/`&`/`^`/`|`, a fresh cell
+    // for `*`'s inline operand, `__dm_b` for `/`/`%`, a fresh cell for
+    // `<<`/`>>`'s shift count); `+`/`-`/`|` pre-apply their own
+    // negation/complement here. Returns that cell's label, for
+    // finishCompoundOp() to read back.
     std::string prepareCompoundRhs(const ir::Expr &e);
-    // AC must already hold the target's own OLD value on entry; leaves
-    // AC holding `old <e.op> rhs` afterward, using the exact same per-
-    // operator instruction sequence this file's own narrow Binary
-    // codegen already emits for that operator (see prepareCompoundRhs()'s
-    // own comment for which cell each operator reads `rhsCell` as).
+    // AC must hold the target's OLD value on entry; leaves AC holding
+    // `old <e.op> rhs`, via the same instruction sequence the narrow
+    // Binary codegen emits for that operator.
     void finishCompoundOp(const ir::Expr &e, const std::string &rhsCell);
-    // Shared by CompoundAssign's own indexed branch (slot[idx] <op>=
-    // rhs) and CompoundDerefAssign: the target's own address must
-    // already be pushed on top of the real stack by the caller -
-    // computeElementAddress()'s own pushed element address, or, for
-    // CompoundDerefAssign, the pointer value itself pushed the same
-    // way DerefAssign's own case already does - BEFORE this runs, so
-    // it survives whatever e.rhs's own evaluation might do (including
-    // a nested call); see storeThroughStackedAddress()'s own comment
-    // on why pushing the address first, rather than computing it
-    // fresh after, is what makes this safe against double-evaluating
-    // an indexed/pointer target's own sub-expression. Resolves that
-    // one address exactly once: loads the old value through it,
-    // combines it with rhs via prepareCompoundRhs()/finishCompoundOp(),
-    // and stores the new value back through the SAME address - never
-    // recomputed - leaving AC holding whichever of the two (old or
-    // new) e.yieldOld selects.
+    // Shared by CompoundAssign's indexed branch and
+    // CompoundDerefAssign: the target address must already be pushed
+    // on the stack by the caller, before e.rhs is evaluated, so it
+    // survives a nested call in rhs. Resolves that address once: loads
+    // the old value, combines it with rhs via prepareCompoundRhs()/
+    // finishCompoundOp(), stores the new value back through the same
+    // address, leaving AC holding old or new per e.yieldOld.
     void genCompoundThroughStackedAddress(const ir::Expr &e);
 
-    // A Global gets a *name*-based label (never `id`) - real separate
-    // compilation means the file calling a function and the file
-    // defining it compile with completely independent `id`
-    // sequences, so only a label computable from stable information
-    // (a global's own source name, already unique program-wide) can
-    // mean the same thing on both sides. A Function is the same idea,
-    // keyed on its own source name. A Local or Param gets no label at
-    // all any more - every reference to one is frame-pointer-relative
-    // (see emitLoadSlotAddress()), computed fresh at every call, so
-    // two overlapping activations of the same function (direct or
-    // mutual recursion) never share storage the way they would with a
-    // single fixed cell.
+    // A Global/Function gets a name-based label (never `id`), since
+    // separate compilation gives caller and definer independent `id`
+    // sequences but the same source name. A Local/Param gets no label
+    // - every reference is frame-pointer-relative (emitLoadSlotAddress()),
+    // computed fresh per call, so overlapping activations never share
+    // storage.
     static std::string label(const ir::Slot *slot) { return "G_" + slot->sourceName; }
     static std::string label(const ir::Function *fn) { return "FN_" + fn->sourceName; }
 
@@ -296,225 +197,121 @@ class Pdp7Codegen : public Backend {
 
     // --- Software stack / frame mechanics --------------------------------
     //
-    // `__sp` (current top-of-stack address) and `__fp` (current
-    // function's own frame pointer) are the two fixed global cells
-    // (declared in generate(), alongside `__one`/`__zero`) everything
-    // below is built from. The stack grows downward (toward lower
-    // addresses) from a fixed high-memory base picked well above
-    // where this backend's own code+data naturally grows from
-    // `kPdp7BaseAddress` (see generate()'s own `__sp` initializer) -
-    // the two regions only collide if a program's combined code+data
-    // and worst-case call depth together exceed the 13-bit direct-
-    // addressing window this target's own "law"/memory-reference
-    // instructions are limited to, exactly the same kind of real,
-    // accepted hardware ceiling every other static allocation on this
-    // target already has.
+    // `__sp` (top-of-stack address) and `__fp` (current frame pointer)
+    // are fixed global cells declared in generate(). The stack grows
+    // downward from a fixed high-memory base above where code/data
+    // grows from `kPdp7BaseAddress`; the two regions only collide if
+    // combined code+data and worst-case call depth exceed the 13-bit
+    // direct-addressing window.
     //
-    // pushAC()/popAC() are this backend's own emulated push/pop:
-    // "dac __sp i"/"lac __sp i" (store/load through whatever address
-    // `__sp` currently holds - the same one-level indirection
-    // computeElementAddress's array indexing already relies on) do
-    // the actual memory access, decrementing/incrementing `__sp`
-    // itself around it. `__stmp` is purely this pair's own momentary
-    // scratch (stashing the value being pushed/popped while `__sp`'s
-    // own arithmetic runs through AC) - safe to share globally since
-    // a push or pop is always one short, self-contained, call-free
-    // instruction sequence; nothing else's state is ever live through
-    // the middle of one. Because these two already own `__stmp` for
-    // that, any caller that itself needs to hold a second value across
-    // its own call to one of these (e.g. genBinary's own rhs, held
-    // across popAC() to retrieve lhs) uses the separate `__stmp2`
-    // cell instead, never `__stmp` - confusing the two silently
-    // overwrites the caller's own value with pushAC()/popAC()'s
-    // internal one.
+    // pushAC()/popAC() emulate push/pop via "dac/lac __sp i" (through
+    // whatever address `__sp` holds), decrementing/incrementing `__sp`
+    // around it. `__stmp` is their own momentary scratch - safe to
+    // share since a push/pop is a single short, call-free sequence.
+    // Any caller needing a second value live across a call to one of
+    // these must use `__stmp2`, never `__stmp`.
     void pushAC();  // pushes AC's current value; AC is left unspecified
     void popAC();   // pops the top of stack into AC
 
-    // A function's own activation record, once its prologue
-    // (emitPrologue()) has run: `__fp` points at the word holding the
-    // CALLER's own saved `__fp` ("oldFP"); the return address `jms`
-    // wrote into this function's own entry cell (curFunctionLabel_)
-    // sits one word above that, at `__fp+1` (pushed by the prologue
-    // itself, before oldFP); the caller's own pushed arguments sit
-    // above that, in REVERSE push order (see the ir::ExprKind::Call
-    // case in genExpr, which pushes a wide argument's own
-    // `widthOfType` words instead of one) so that param 0 ends up
-    // closest to `__fp` - a param's own address is always
-    // `__fp+frameOffset` (see emitLoadSlotAddress()), the same
-    // width-aware offset IRBuilder.cpp's own assignFrameOffsets()
-    // already computes (2*intWidth for param 0, advancing by each
-    // param's own real word count after that - not a fixed "+2+k",
-    // which only ever worked while every param was exactly one word).
-    // Locals live below `__fp`, in the
-    // `frameSize` words emitPrologue() reserves by decrementing `__sp`
-    // once, in bulk, right after capturing `__fp` - Slot::frameOffset
-    // (see IR.h) is already a 1-based sequential word index in
-    // declaration order, so a Local's own address is `__fp-frameOffset`;
-    // a Local array's element i therefore sits at
-    // `__fp-(frameOffset+i)` - ONE LOWER (not higher) in address as i
-    // increases, the opposite of a Global array's own normal
-    // increasing-address layout (see emitLocalArrayInit()'s own
-    // comment - this sign is exactly the kind of thing that's silently
-    // gotten backwards on other targets migrating locals onto a real
-    // frame).
+    // Once emitPrologue() has run: `__fp` points at the word holding
+    // the caller's saved `__fp` ("oldFP"); the return address sits one
+    // word above that, at `__fp+1`; the caller's pushed arguments sit
+    // above that, in reverse push order, so param 0 is closest to
+    // `__fp` - a param's address is `__fp+frameOffset` (the width-aware
+    // offset IRBuilder.cpp's assignFrameOffsets() computes). Locals
+    // live below `__fp`, in the `frameSize` words emitPrologue()
+    // reserves in bulk; a Local's address is `__fp-frameOffset`, so a
+    // Local array's element i sits at `__fp-(frameOffset+i)` -
+    // decreasing address as i increases, opposite a Global array's
+    // layout (see emitLocalArrayInit()).
     //
-    // Reserving every local this way up front, in emitPrologue(),
-    // rather than only when a given LocalDecl statement actually runs,
-    // matters because a LocalDecl can sit inside an `if`/`while` body
-    // that might not execute on a given call - IRBuilder's own
-    // frameOffset assignment (assignFrameOffsets()) already walks the
-    // whole function body unconditionally for exactly this reason, so
-    // every Local this function could ever declare always has a
-    // stable, reserved address from the moment the function is
-    // entered, regardless of which branches actually run.
+    // Every Local is reserved up front in emitPrologue(), not when its
+    // LocalDecl statement runs, since that statement may sit inside a
+    // conditional that doesn't execute on a given call; IRBuilder's
+    // assignFrameOffsets() walks the whole function body unconditionally
+    // for the same reason.
     void emitPrologue(const ir::Function *fn);
-    // Shared by every `return` (explicit or an implicit fall-through
-    // off the end of the function body - see genFunction()):
-    // `hasValue` is whether AC currently holds this call's own return
-    // value (computed by the caller, immediately before this runs) -
-    // if so, it's stashed in `__retval` before anything else here
-    // touches AC, and reloaded into AC as the very last step, right
-    // before the final indirect jump, so it survives the teardown
-    // below intact. Teardown: `__sp` is reset straight to `__fp`
-    // (discarding this call's own locals - and anything else still
-    // below `__fp` - in one step, since nothing there is still needed),
-    // then oldFP and the return address are popped back off (in that
-    // order - see this comment's own frame layout above) into `__fp`
-    // and `__retaddr` respectively, and finally "jmp __retaddr i"
-    // - an indirect jump through whatever address `__retaddr` now
-    // holds - returns to the caller.
+    // Shared by every `return` (explicit or implicit fall-through):
+    // `hasValue` is whether AC holds this call's return value - if so
+    // it's stashed in `__retval` before teardown and reloaded into AC
+    // as the last step before the final indirect jump. Teardown resets
+    // `__sp` to `__fp` (discarding this call's locals), pops oldFP into
+    // `__fp` and the return address into `__retaddr`, then
+    // "jmp __retaddr i" returns to the caller.
     void emitEpilogueAndReturn(bool hasValue, Type retType);
 
     // --- Leaf fast path ---------------------------------------------------
     //
-    // A function that makes NO call (`Call`/`CallPtr`) anywhere in its
-    // own body, and declares no Local/Param array, can never be
-    // re-entered while it's running (the only way a call's own
-    // activation could ever be live twice at once is via some call
-    // chain that reaches it again, and a function with zero calls
-    // never starts one) - true even under real separate compilation,
-    // with zero visibility into any other file's own call graph,
-    // since this needs nothing beyond "does this one function's own
-    // body ever call anything at all". Safe, then, to skip the real
-    // per-call frame entirely and give each of its Params/Locals one
-    // fixed, static storage cell instead - exactly this backend's old,
-    // pre-recursion convention, for exactly the functions it was
-    // always correct for. This matters a lot in practice, not just in
-    // principle: the real software-stack frame (emitPrologue()/
-    // emitEpilogueAndReturn(), ~35 words together) and every frame-
-    // relative Local/Param access (emitLoadSlot()/emitStoreSlot() via
-    // `__fp`, 4-6 words vs. a static cell's 1) this skips are most of
-    // this backend's own code-size cost per function - confirmed
-    // directly: enabling this dropped a real multi-file kernel link
-    // (sys/icreat_test.c + sys/s1/s2/s4/s5/s6/s8.c) from well past the
-    // pdp7's 8192-word limit to comfortably under it.
+    // A function that makes no call (`Call`/`CallPtr`) anywhere in its
+    // body, and declares no Local/Param array, can never be re-entered
+    // while running, so it's safe to skip the per-call frame and give
+    // each Param/Local one fixed static storage cell instead - this
+    // skips most of the frame's code-size cost per function.
     //
-    // `currentFunctionIsLeaf_` is set once, in genFunction(), for
-    // whichever function is currently being generated - every other
-    // method below that behaves differently for a Local/Param
-    // (emitLoadSlotAddress()/emitLoadSlot()/emitStoreSlot(), the
-    // `Return` case, genFunction()'s own default-return fallthrough)
-    // just reads it, rather than re-deriving it.
+    // `currentFunctionIsLeaf_` is set once per function in
+    // genFunction(); every method that treats a Local/Param
+    // differently just reads it.
     bool currentFunctionIsLeaf_ = false;
 
-    // A Local/Param's own static cell when `currentFunctionIsLeaf_` -
-    // `id` (unique within this one file's own IR, which is all a
-    // Local/Param ever needs: nothing outside this function, let
-    // alone another file, ever references one by name) rather than
-    // `sourceName` the way a Global's label is (see label()'s own
-    // comment on why a Global needs name-stability across files and a
-    // Local never does).
+    // A Local/Param's static cell when `currentFunctionIsLeaf_` - keyed
+    // on `id` (unique within this file's IR) rather than `sourceName`,
+    // since nothing outside this function ever references one by name.
     static std::string leafLabel(const ir::Slot *slot) { return "LF" + std::to_string(slot->id); }
 
-    // True iff `fn`/`body` qualify for the leaf fast path above - see
-    // that section's own comment for exactly what disqualifies one.
+    // True iff `fn`/`body` qualify for the leaf fast path above.
     static bool computeIsLeaf(const ir::Function *fn, const ir::Stmt *body);
 
-    // The leaf equivalent of emitPrologue(): every Param was pushed by
-    // the caller in REVERSE order (see the `Call` case in genExpr),
-    // so Param 0 is on top of the stack right now, Param 1 next, and
-    // so on - popping them off in declaration order both reads each
-    // one AND fully reclaims its stack slot in the same step (a leaf
-    // function has no stacked Locals to reclaim later the way
-    // emitEpilogueAndReturn()'s bulk "__sp = __fp" does, since every
-    // Local here is a static cell, not a stack slot, so there's
-    // nothing left for emitLeafReturn() to tear down).
+    // The leaf equivalent of emitPrologue(): Params were pushed by the
+    // caller in reverse order, so Param 0 is on top; popping them off
+    // in declaration order both reads each one and reclaims its stack
+    // slot (a leaf function has no stacked Locals, so there's nothing
+    // left for emitLeafReturn() to tear down).
     void emitLeafParamBinding(const ir::Function *fn);
     // The leaf equivalent of emitEpilogueAndReturn(): AC already holds
-    // the return value, if any (same contract as
-    // emitEpilogueAndReturn()'s own `hasValue`), and there's no frame
-    // to tear down at all - just jump back through this function's
-    // own entry cell, exactly like this backend's old, pre-recursion
-    // convention's bare `jmp i curFunctionLabel_`.
+    // the return value, if any, and there's no frame to tear down -
+    // just jump back through this function's entry cell.
     void emitLeafReturn(bool hasValue);
 
-    // Leaves `slot`'s own address in AC: a Global's fixed address
-    // (`law`, unchanged from before) or a Local/Param's own frame-
-    // relative address, computed fresh from `__fp` plus a compile-time
-    // constant offset (see emitPrologue()'s own comment for exactly
-    // which) - never a label, since neither has one any more.
+    // Leaves `slot`'s address in AC: a Global's fixed address (`law`)
+    // or a Local/Param's frame-relative address computed from `__fp`
+    // plus a constant offset - never a label.
     void emitLoadSlotAddress(const ir::Slot *slot);
-    // Leaves `slot`'s own current *value* in AC: a Global reads
-    // directly (`lac`); a Local/Param goes through emitLoadSlotAddress()
-    // plus one level of `i` indirection (through the shared `__addr`
-    // scratch cell - safe for the same reason `__stmp` is, see
-    // pushAC()'s own comment: computing an address and immediately
-    // dereferencing it is always one short, call-free sequence).
+    // Leaves `slot`'s current value in AC: a Global reads directly
+    // (`lac`); a Local/Param goes through emitLoadSlotAddress() plus
+    // one level of `i` indirection via the shared `__addr` scratch.
     void emitLoadSlot(const ir::Slot *slot);
-    // Stores AC's current value into `slot`; leaves AC unchanged
-    // afterward (matching a plain `dac`'s own "leaves AC unchanged"
-    // contract, which every existing call site already relies on) - a
+    // Stores AC's current value into `slot`; leaves AC unchanged. A
     // Global stores directly; a Local/Param stashes the value in
     // `__stmp` first (computing the destination address needs AC),
-    // then stores through it the same way emitLoadSlot() reads.
+    // then stores through it.
     void emitStoreSlot(const ir::Slot *slot);
     // AC = the base address to index `slot` from: `slot`'s own address
-    // (it's a declared array) or `slot`'s own *value* (it's a plain
-    // variable holding a pointer) - see computeElementAddress()'s own
-    // comment on why indexing a pointer parameter needs this
-    // distinction.
+    // if it's a declared array, or `slot`'s value if it's a pointer
+    // variable (see computeElementAddress()).
     void emitSlotBaseAddress(const ir::Slot *slot);
-    // Stores a Local array's own `arrayInit` values into its reserved
-    // frame words at the point its LocalDecl statement actually runs
-    // (unlike a Global array, whose initializer is just baked into
-    // static data once - a Local's frame slot is only reserved, not
-    // pre-filled, by the prologue, so this has to actually run, every
-    // call, at the declaration's own point in program order, same as
-    // a scalar Local's own initializer expression already does). Element
-    // i's own address is `__fp-(slot->frameOffset+i)` - see this
-    // class's own frame-layout comment above emitPrologue() for why
-    // that's MINUS i, not plus.
+    // Stores a Local array's `arrayInit` values into its reserved
+    // frame words when its LocalDecl statement runs (a Local's frame
+    // slot is only reserved, not pre-filled, by the prologue). Element
+    // i's address is `__fp-(slot->frameOffset+i)`.
     void emitLocalArrayInit(const ir::Slot *slot);
-    // Precondition: the target address is on top of the stack (pushed
-    // earlier - see e.g. ir::ExprKind::DerefAssign's own genExpr()
-    // case) and AC holds the value to store. Pops that address and
-    // stores AC's current value through it (via `__addr`), leaving AC
-    // unchanged - same contract as emitStoreSlot(). Pushing the
-    // address *before* evaluating the value (rather than computing it
-    // fresh right before the store) is what makes this safe even when
-    // evaluating the value involves a nested call: a stack slot, pushed
-    // before that call and popped after, is never the OTHER, textually
-    // identical call site's own address temp the way a single static
-    // cell would be under recursion.
+    // Precondition: the target address is on top of the stack and AC
+    // holds the value to store. Pops that address and stores AC
+    // through it (via `__addr`), leaving AC unchanged. Pushing the
+    // address before evaluating the value is what makes this safe
+    // even when that evaluation involves a nested call.
     void storeThroughStackedAddress();
     // Pops an address off the stack into the shared `__addr` scratch
-    // cell and returns "__addr" - the label to use as that
-    // instruction's own operand, with a trailing " i" for the
-    // indirection bit (see e.g. genIndex()).
+    // cell and returns "__addr", the operand label (with a trailing
+    // " i" for the indirection bit added by the caller).
     std::string popAddressIntoScratch();
 
-    // Emits code that computes &slot[idxExpr] and leaves it pushed on
-    // top of the stack (not in a fixed temp cell - see
-    // storeThroughStackedAddress()'s own comment on why a stack slot,
-    // not a static one, is what makes this safe across a call that
-    // might happen while the caller still needs this address, e.g. an
-    // indexed Assign's own rhs); used by both an Index read and an
-    // indexed Assign. Needs `law` (slot's address, when slot is
-    // itself the array - see emitSlotBaseAddress()) or `lac` (slot's
-    // *value*, when slot is a plain pointer variable instead) plus
-    // one level of `i` indirection to dereference the final, runtime-
-    // computed address, since a PDP-7 instruction's own address field
-    // is fixed at assemble time.
+    // Emits code computing &slot[idxExpr] and leaves it pushed on the
+    // stack (not a fixed temp cell, so it survives a call during the
+    // caller's own evaluation); used by both an Index read and an
+    // indexed Assign. Uses `law` (slot's address, when slot is the
+    // array itself) or `lac` (slot's value, when slot is a pointer
+    // variable) plus one level of `i` indirection to dereference the
+    // runtime-computed address.
     void computeElementAddress(const ir::Slot *slot, const ir::Expr &idxExpr);
 
     std::ostringstream code_;
@@ -528,10 +325,7 @@ class Pdp7Codegen : public Backend {
     std::string curFunctionLabel_;
     bool needDivMod_ = false;
 
-    // (continueLabel, breakLabel) for the innermost active loop - see
-    // genStmt's While/Break/Continue cases, and e.g.
-    // I8086Codegen.h's own loopLabels_ for the same pattern on
-    // another backend.
+    // (continueLabel, breakLabel) for the innermost active loop.
     std::vector<std::pair<std::string, std::string>> loopLabels_;
 };
 

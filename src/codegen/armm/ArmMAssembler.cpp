@@ -19,8 +19,6 @@ namespace {
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("ArmMAssembler: " + msg); }
 
 // --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
-// Same Syllable/Group shape as every other backend's own assembler -
-// see M68kAssembler.cpp's own comment.
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
     char sign = 0;
@@ -29,14 +27,8 @@ struct Syllable {
     std::vector<Syllable> group;
 };
 
-// One operand, classified from a bare expression - see
-// ArmMAssembler.h's own comment on why there's no real
-// `[Rn, #0]`/`{reglist}` ARM syntax here. `Reg` comes from
-// recognizing a bare register name (`r0`-`r3`, `sp`, `lr`); `Imm`
-// from a bare (optionally signed) number; anything else (a label, or
-// `label+N`) is `Mem` - an absolute address, resolved to the label's
-// own full 32-bit value and then (for `movw`/`movt` specifically -
-// see encodeInstr()) split into its lower/upper half.
+// Reg: a bare register name. Imm: a bare signed number. Mem: a label or
+// label+N, resolved to a full 32-bit address (split into halves for movw/movt).
 struct Operand {
     enum Kind { Reg, Imm, Mem } kind = Imm;
     int reg = -1;
@@ -48,11 +40,7 @@ struct Line {
     enum Kind { None, Equate, Org, Dw, Instr } kind = None;
     std::string equateName;
     std::vector<std::vector<Syllable>> exprList;  // Equate (1)/Org (1)/Dw (N)
-    // Element width in bytes for a `Dw`-kind line - 1 for `db`
-    // (char-sized globals/array elements), 2 for `dh` (`short`), 4
-    // for `dw` (every native-int-or-wider slot - a `long long`'s own
-    // own two halves are emitted as two separate `dw` elements by
-    // ArmMCodegen.cpp, never one 8-byte directive).
+    // 1 for db, 2 for dh, 4 for dw; long long is emitted as two dw elements.
     int dataWidth = 4;
     std::string mnemonic;                           // Instr
     std::vector<Operand> operands;                  // Instr
@@ -85,18 +73,9 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
     return result;
 }
 
-// This dialect's own fixed register numbering (not a full ARM
-// register-name table - just the handful ArmMCodegen.cpp ever emits,
-// see ArmMCodegen.h's own header comment on each register's role):
-// `r0`-`r3`=0-3, `r7`=7 (the frame pointer), `sp`=13, `lr`=14 - the
-// real ARM register numbers those names carry, so the encoded bit
-// patterns below match genuine Thumb object code exactly, even
-// though this dialect only ever names this one subset of the 16
-// GPRs. `r7`, like `r0`-`r3`, is always encodable in every Thumb-1
-// "low register" instruction form this file emits (every one of
-// their operand fields is 3 bits wide, and 7 fits in 3 bits same as
-// 0-3 do) - no encoding function below needs its own extra case for
-// it. Returns -1 if `name` isn't one of them.
+// Maps the subset of registers this dialect names to their real ARM numbers
+// (sp=13, lr=14), so encoded bits match genuine Thumb object code. Returns -1
+// if not found.
 int regNumber(const std::string &lower) {
     static const std::unordered_map<std::string, int> names = {
         {"r0", 0}, {"r1", 1}, {"r2", 2}, {"r3", 3}, {"r4", 4}, {"r5", 5},
@@ -203,12 +182,9 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
-// One pending fixup `assembleArmMObject()` (see ArmMAssembler.h's own
-// header comment) turns into a real ObjRelocation once assembly is
-// done - `offset` into `bytes()`, `symbolName` the reference that
-// couldn't be resolved locally (or the reserved pseudo-symbol ".."
-// for a same-file address's own needed base-shift), `kind` one of
-// kArmMRelocMovWLo/MovTHi/Branch.
+// A pending fixup turned into a real ObjRelocation once assembly is done.
+// symbolName is either an unresolved reference or ".." for a same-file
+// address's base-shift.
 struct Relocation {
     uint32_t offset;
     std::string symbolName;
@@ -216,13 +192,9 @@ struct Relocation {
 };
 
 // --- Two-pass assembly ----------------------------------------------------
-// Unlike every other backend's own assembler here, a single dialect
-// mnemonic doesn't always mean a single fixed-size real instruction:
-// the conditional-branch mnemonics below are two real instructions
-// (6 bytes), and most others are one 16-bit Thumb-1 instruction (2
-// bytes) except the handful of wide Thumb-2 ones (4 bytes) - see
-// ArmMAssembler.h's own header comment. `instrSize()` is consulted
-// in both passes so the offset-tracking stays correct regardless.
+// A dialect mnemonic may expand to more than one real instruction (the
+// conditional branches below emit 6 bytes); each encode function advances
+// offset_ by its own real size, in both passes.
 class Assembler {
    public:
     explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
@@ -277,11 +249,8 @@ class Assembler {
         }
     }
 
-    // `externalName`/`needsBaseShift` mirror
-    // ../m68k/M68kAssembler.cpp's own `evalExpr` exactly - see
-    // ArmMAssembler.h's own header comment on why *any* local address
-    // reference, not just an external one, needs a relocation here
-    // once `allowExternal_` is set.
+    // Once allowExternal_ is set, any local address reference also needs a
+    // relocation (for the base-shift), not just a genuinely external one.
     uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
@@ -355,14 +324,9 @@ class Assembler {
         return evalExpr(op.expr);
     }
 
-    // `movw`/`movt`'s own immediate operand: a plain number is used
-    // exactly as ArmMCodegen.cpp already computed it (that half of a
-    // literal it split itself); a label (`Mem`) instead has its own
-    // full resolved address split into its lower (`movw`) or upper
-    // (`movt`) 16 bits automatically here - see ArmMAssembler.h's
-    // own header comment. `externalName`/`needsBaseShift` are
-    // forwarded straight from the underlying `evalExpr()` call - see
-    // that function's own comment.
+    // A plain number is used as-is (already split by ArmMCodegen.cpp); a
+    // label operand's full address is split into its lower (movw) or upper
+    // (movt) 16 bits here.
     uint16_t evalHiLo(const Operand &op, bool hi, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         if (op.kind == Operand::Reg) fail("expected an immediate or label operand, not a register");
@@ -381,15 +345,8 @@ class Assembler {
         emit16(static_cast<uint16_t>(0x2000 | (rd << 8) | imm));
     }
 
-    // MOVW/MOVT Rd,#imm16 (T3/T1 32-bit encodings) - imm16 =
-    // imm4:i:imm3:imm8. This non-contiguous split (see
-    // ArmMAssembler.h's own header comment on why it needs its own
-    // dedicated relocation kind, not one of GenericLinker.h's shared
-    // ones) is exactly why a linked program's own patch function
-    // (ArmMLinkerFactory.cpp's `patchArmMMovWLo`/`patchArmMMovTHi`)
-    // has to extract/reinsert the same four sub-fields, rather than
-    // just adding into one contiguous 16-bit field the way
-    // ../arm64/Arm64Assembler.cpp's own `movz`/`movk` can.
+    // MOVW/MOVT Rd,#imm16 (T3/T1 32-bit encodings) - imm16 = imm4:i:imm3:imm8,
+    // a non-contiguous split the linker's patch functions must also honor.
     void encodeMovWT(bool isMovt, const std::vector<Operand> &ops) {
         const std::string &mnemonic = isMovt ? "movt" : "movw";
         uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
@@ -487,12 +444,8 @@ class Assembler {
 
     // LDRB/STRB Rt,[Rn,#0] (T1, imm5=0): 0111 1/0 00000 Rn Rt.
     // LDRH/STRH Rt,[Rn,#0] (T1, imm5=0): 1000 1/0 00000 Rn Rt.
-    // Both are always zero-extending loads on real hardware - a
-    // signed narrower-than-native-int value is re-sign-extended by
-    // ArmMCodegen.cpp's own `asr`-after-`lsl` idiom once loaded (no
-    // register-offset LDRSB/LDRSH form is reachable with a fixed #0
-    // displacement, unlike A32's own immediate-form sign-extending
-    // loads - see ArmCodegen.h's own `ldindsb`/`ldindsh`).
+    // Always zero-extending; a signed value is re-sign-extended afterward via
+    // ArmMCodegen.cpp's lsl/asr idiom since no sign-extending form exists here.
     void encodeLdStIndNarrow(bool isLoad, bool isByte, const std::vector<Operand> &ops) {
         const std::string &mnemonic = isLoad ? (isByte ? "ldindb" : "ldindh") : (isByte ? "stindb" : "stindh");
         uint8_t rn = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
@@ -511,25 +464,11 @@ class Assembler {
         emit16(static_cast<uint16_t>(base | (1u << r)));
     }
 
-    // BL <label> (T1, 32-bit wide call - always this one form, no
-    // short alternative exists in Thumb at all) / B <label> (wide
-    // T4 unconditional form, chosen unconditionally here - see
-    // ArmMCodegen.h's own header comment - instead of ever picking
-    // the short T2 form).
-    //
-    // Both share the same odd `S`/`I1`/`I2`/`J1`/`J2` offset-mangling
-    // scheme (`imm32 = S:I1:I2:imm10:imm11:0`, `I1 = NOT(J1 XOR S)`,
-    // `I2 = NOT(J2 XOR S)`); only the two fixed bits distinguishing
-    // "BL" from plain "B.W" differ between the two halfword2 bases.
-    // `target` resolved to a label defined in *this* object is
-    // already a valid PC-relative offset regardless of where this
-    // object ends up linked (both its own address and this
-    // instruction's own are shifted by the same base) - no
-    // relocation needed at all, unlike an absolute-address load
-    // (MOVW/MOVT above). Only a genuinely cross-object target
-    // (undefined here) needs deferring, via `kArmMRelocBranch` - see
-    // ../arm64/Arm64Assembler.cpp's own identical reasoning for its
-    // own `b`/`bl`.
+    // BL/wide-B (T1/T4): both use the S/I1/I2/J1/J2 offset-mangling scheme
+    // (imm32 = S:I1:I2:imm10:imm11:0, I1 = NOT(J1 XOR S), I2 = NOT(J2 XOR S));
+    // only the fixed bits distinguishing BL from B.W differ.
+    // A same-object target needs no relocation (both it and this instruction
+    // shift by the same link base); only a genuinely external target does.
     void encodeWideBranch(uint16_t halfword2Base, const Operand &target, const std::string &mnemonic) {
         if (target.kind != Operand::Mem) fail("'" + mnemonic + "': target must be a label");
         std::string externalName;
@@ -557,39 +496,25 @@ class Assembler {
     void encodeBl(const std::vector<Operand> &ops) { encodeWideBranch(0xD000, requireOperand(ops, 0, "bl"), "bl"); }
     void encodeBWide(const std::vector<Operand> &ops) { encodeWideBranch(0x9000, requireOperand(ops, 0, "b"), "b"); }
 
-    // BLX Rm (T1 "BLX (register)" - a real, single 16-bit Thumb-1
-    // instruction, universal across every M-profile core including
-    // baseline, unlike `bl`'s own label-only wide Thumb-2 form above):
-    // 0100 0111 1 Rm(4) 000 - branches to the address in Rm (which
-    // must be even - a real Thumb target always is, every label this
-    // dialect ever resolves being halfword-aligned) and sets `lr` to
-    // the return address, exactly like `bl` does for a label target.
+    // BLX Rm (T1): 0100 0111 1 Rm(4) 000 - branches to Rm and sets lr, like
+    // bl does for a label target.
     void encodeBlx(const std::vector<Operand> &ops) {
         uint8_t rm = requireReg(requireOperand(ops, 0, "blx"), "blx");
         emit16(static_cast<uint16_t>(0x4780 | (rm << 3)));
     }
 
-    // The conditional-branch dialect mnemonics
-    // (`beq`/`bne`/`blt`/`ble`/`bgt`/`bge`) each expand to two real
-    // instructions: a short `Bcc` using the *inverted* condition,
-    // with a fixed +2-byte displacement that always lands exactly
-    // after the `B.W` immediately following it (so it only ever
-    // fires when the real condition is false, skipping that `B.W`
-    // entirely), then the real wide unconditional `B.W <target>`
-    // (which therefore runs exactly when the real condition is
-    // true) - see ArmMCodegen.h's own header comment on why this
-    // sidesteps the trickier 32-bit wide conditional-branch encoding
-    // altogether. Short `Bcc` (T1): 1101 cond imm8 - the fixed skip-
-    // ahead displacement (+2 bytes, relative to pc+4) is imm8=1.
+    // Each conditional-branch mnemonic expands to a short Bcc on the inverted
+    // condition (fixed +2-byte displacement, landing just past the B.W that
+    // follows, so it fires - skipping the B.W - only when the real condition
+    // is false) and then the real wide unconditional B.W <target>.
+    // Short Bcc (T1): 1101 cond imm8.
     void encodeConditionalBranch(uint8_t invertedCond, const std::vector<Operand> &ops, const std::string &mnemonic) {
         const Operand &target = requireOperand(ops, 0, mnemonic);
         emit16(static_cast<uint16_t>(0xD000 | (invertedCond << 8) | 1));
         encodeWideBranch(0x9000, target, mnemonic);
     }
 
-    // The full instruction vocabulary ../ArmMCodegen.cpp ever emits -
-    // see ArmMAssembler.h's own header comment. Not a general Thumb
-    // encoder: exactly these mnemonic/operand-shape combinations.
+    // Exactly the mnemonics ArmMCodegen.cpp emits, not a general Thumb encoder.
     void encodeInstr(const std::string &mnemonic, const std::vector<Operand> &ops) {
         if (mnemonic == "movs") return encodeMovs(ops);
         if (mnemonic == "movw") return encodeMovWT(/*isMovt=*/false, ops);
@@ -631,11 +556,10 @@ class Assembler {
         if (mnemonic == "bl") return encodeBl(ops);
         if (mnemonic == "blx") return encodeBlx(ops);
         if (mnemonic == "b") return encodeBWide(ops);
+        // Inverted Thumb condition codes, since encodeConditionalBranch's short
+        // Bcc tests the opposite of the mnemonic's own condition.
         static const std::unordered_map<std::string, uint8_t> condBranch = {
-            // Thumb condition codes, inverted (what encodeConditionalBranch's
-            // own short Bcc actually tests): beq<->bne, blt<->bge, bgt<->ble.
             {"beq", 0x1}, {"bne", 0x0}, {"blt", 0xA}, {"bge", 0xB}, {"bgt", 0xD}, {"ble", 0xC},
-            // Unsigned orderings - blo<->bhs, bhi<->bls.
             {"blo", 0x2}, {"bhs", 0x3}, {"bhi", 0x9}, {"bls", 0x8},
         };
         if (auto it = condBranch.find(mnemonic); it != condBranch.end()) {
@@ -654,10 +578,7 @@ class Assembler {
     bool allowExternal_;
 };
 
-// Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - see ArmMAssembler.h's own `assembleArmMObject`
-// comment, and ../m68k/M68kAssembler.cpp's own `buildObjectFile` for
-// the identical algorithm this is ported from.
+// Builds the format-neutral ObjectFile from a completed object-mode Assembler.
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kArmMCoffMachine;

@@ -9,14 +9,9 @@ namespace pcc {
 
 namespace {
 
-// Every Slot `e` itself names - a read, a write target, an array
-// index base, or an &-taken address all count, exactly like
-// DeadCodeElimination.cpp's own collectExprSlots (duplicated here
-// rather than shared, matching every optimizer in this directory
-// being self-contained). Only ever adds a Global Slot to `live` (a
-// Local/Param can't be referenced from outside its own function, so
-// it's irrelevant to this pass), queuing each newly-discovered one in
-// `worklist` so its own array initializer gets followed too.
+// Only adds a Global Slot to `live` (Local/Param can't be referenced
+// outside their own function), queuing each newly-discovered one so its
+// own array initializer gets followed too.
 void collectLiveGlobals(const ir::Expr *e, std::unordered_set<ir::Slot *> &live, std::vector<ir::Slot *> &worklist) {
     if (!e) return;
     if (e->slot && e->slot->kind == ir::SlotKind::Global && live.insert(e->slot).second) {
@@ -52,7 +47,7 @@ void collectLiveGlobals(const ir::Stmt *s, std::unordered_set<ir::Slot *> &live,
         case ir::StmtKind::Continue:
         case ir::StmtKind::Empty:
         case ir::StmtKind::Asm:
-            return;  // see UnusedGlobalElimination.h's own comment on asm{}'s blind spot
+            return;  // asm{} blind spot; see UnusedGlobalElimination.h
     }
 }
 
@@ -64,10 +59,8 @@ bool UnusedGlobalElimination::run(ir::Program &prog) const {
 
     for (const auto &fb : prog.functionBodies) collectLiveGlobals(fb.body.get(), live, worklist);
 
-    // Fixpoint: a global reached only through another global's own
-    // array initializer is live too, but only once that other global
-    // is itself confirmed live - never the other way around (a dead
-    // global's own initializer doesn't keep anything else alive).
+    // Fixpoint: a global reached through another global's array
+    // initializer is live only once that other global is confirmed live.
     while (!worklist.empty()) {
         ir::Slot *g = worklist.back();
         worklist.pop_back();

@@ -14,44 +14,26 @@ namespace {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
-// Where the whole program is loaded and starts executing - the test
-// harness sets the simulated CPU's PC here directly, same convention
-// (and the same reason) as M68kCodegen.cpp's/MipsCodegen.cpp's own
-// kBaseAddress.
+// Where the whole program is loaded; the simulator sets the PC here directly.
 constexpr uint32_t kBaseAddress = 0x1000u;
 
-// Where this backend's own entry sequence points `sp` before calling
-// main() - comfortably above the loaded program and its data.
+// Initial sp, set before calling main(); comfortably above the loaded program.
 constexpr uint32_t kInitialSP = 0x100000u;
 }  // namespace
 
 void ArmMCodegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": dw 0"); }
 
-// A literal element is its own decimal text; a symbol element (a
-// dispatch-table address-of-function/global, see IR.h's
-// ArrayInitElem) is the referenced Slot's or Function's own label,
-// written out bare - `dw`'s own expression evaluator
-// (ArmMAssembler.cpp's Line::Dw) already resolves a bare symbol the
-// same way `loadAddress`'s own label operand already does for an
-// address loaded into a register.
+// A literal element is its decimal text; a symbol element is the referenced
+// Slot's/Function's label, resolved later by the dw expression evaluator.
 std::string ArmMCodegen::arrayElemText(const ir::ArrayInitElem &e, Type elemType) {
     if (!e.isSymbol) {
-        // A `long long` literal element needs its own two "dw"s (low
-        // word, high word) - handled by the caller, which never asks
-        // for this text in that case; every narrower width still
-        // fits one directive's own operand.
+        // A long long literal needs two dw's (low/high word); handled by the caller.
         (void)elemType;
         return std::to_string(static_cast<int32_t>(static_cast<uint32_t>(e.value)));
     }
-    // A symbol element always means a plain native-int-width address
-    // (the dispatch-table idiom - see AST.h's ArrayInitElem). A
-    // function's own address needs the same Thumb interworking bit
-    // genAddrOf()'s own `ExprKind::Func` case sets on `&f` - calling
-    // through this slot later means `BLX (register)` on whatever
-    // value sits here, which raises a UsageFault if bit 0 isn't 1 (no
-    // ARM state to switch to on M-profile, Thumb is the only one) -
-    // a plain data Slot's own address is never called through, so it
-    // never needs this.
+    // A function's address gets its low bit set (+1) for Thumb interworking:
+    // BLX (register) raises a UsageFault if bit 0 isn't 1, since M-profile has
+    // no ARM state. A plain data Slot is never called through, so it needs no bit.
     if (e.slot) return label(e.slot);
     return label(e.func) + "+1";
 }
@@ -99,10 +81,6 @@ void ArmMCodegen::loadFrameByteAddr(const std::string &reg, int bytesFromFp) {
     code_ << "    " << (bytesFromFp > 0 ? "adds" : "subs") << " " << reg << "," << reg << ",r3\n";
 }
 
-// A Param's own frameOffset already accounts for the real two-native-
-// int-width reservation and each param's own (at-least-int-width)
-// size - see IR.h's own comment on Slot::frameOffset - so it's used
-// directly here, in bytes, the same as a Local's.
 void ArmMCodegen::loadFrameAddr(const std::string &reg, const ir::Slot *slot) {
     int bytesFromFp = slot->kind == ir::SlotKind::Param ? slot->frameOffset : -slot->frameOffset;
     loadFrameByteAddr(reg, bytesFromFp);
@@ -125,9 +103,7 @@ void ArmMCodegen::loadArrayInitElem(const std::string &reg, const ir::ArrayInitE
         loadAddress(reg, label(e.slot));
         return;
     }
-    // Same Thumb-interworking-bit requirement as
-    // arrayElemText()'s own identical comment, for a Local array's
-    // literal initializer instead of a Global's.
+    // Same Thumb-interworking bit requirement as arrayElemText().
     loadAddress(reg, label(e.func));
     code_ << "    adds " << reg << "," << reg << ",1\n";
 }
@@ -137,52 +113,28 @@ std::string ArmMCodegen::generate(const ir::Program &prog, bool objectMode) {
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // Real separate compilation (`--format=coff`/`elf`/`macho`/
-    // `aout` from a single file - see IRBuilder.h's `allowExternal`)
-    // means `prog` may not define `main` at all. `objectMode` (see
-    // Codegen.h) means no object file ever emits this entry sequence
-    // itself - ArmMLinkerFactory.cpp is solely responsible for
-    // synthesizing exactly one, once every object is merged and
-    // `main`'s linked address is resolvable (see Linker.h). An object
-    // file's own base is `org 0` - it's the linker's job to place it,
-    // not this backend's (see ArmMAssembler.h's own header comment).
+    // In object mode, prog may not define main at all; ArmMLinkerFactory.cpp
+    // synthesizes this entry sequence once instead, after linking.
     code_ << "org " << (objectMode ? 0 : kBaseAddress) << "\n\n";
     if (!objectMode) {
         code_ << "_start:\n";
-        // `movw`/`movt` can't target `sp` directly (Rd==13 is
-        // UNPREDICTABLE for the T32 "MOV (immediate)" encoding they
-        // use - see ArmMAssembler.cpp's own encodeMovWT()), so the
-        // initial stack pointer is built in a scratch register first
-        // and moved into `sp` with the plain register-to-register
-        // "MOV (register)" form instead, which has no such
-        // restriction (it's the real, standard way every real Thumb
-        // reset handler sets up its own initial `sp`).
+        // movw/movt can't target sp directly (Rd==13 is UNPREDICTABLE), so the
+        // initial sp is built in a scratch register and moved into sp instead.
         loadImm32("r0", kInitialSP);
         code_ << "    mov sp,r0\n";
         code_ << "    bl " << label(mainFn) << "\n";
-        // The result sits in r0 the moment execution reaches `halt` -
-        // see ArmMCodegen.h's own header comment on why that's the
-        // authoritative place to read it from.
         code_ << "halt:\n    b halt\n\n";
     }
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
 
-    // Running byte offset within the data segment, used only to pad
-    // ahead of a global whose own type is wider than 1 byte - see
-    // ArmCodegen.cpp's own identical comment on why an unaligned
-    // `ldindh`/`ldind`/`stindh`/`stind` would otherwise silently
-    // round down and clobber a neighboring global. A `long long`
-    // only ever needs word (4-byte) alignment, same reasoning.
+    // Pads ahead of a global wider than 1 byte, so an unaligned ldind/stind
+    // doesn't round down and clobber a neighboring global.
     size_t dataOffset = 0;
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        // An external global (real separate compilation - see IR.h's
-        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
-        // defined in this file at all - it must never get a local
-        // storage word here, only ever be referenced by name (see
-        // label()) in code, letting the assembler's own undefined-
-        // symbol handling defer it to a relocation.
+        // An external global is never defined here; only referenced by name,
+        // letting the assembler defer it to a relocation.
         if (slot->isExternal) continue;
         int align = std::min(widthOfType(slot->type), 4);
         size_t padding = (align - (dataOffset % align)) % align;
@@ -219,32 +171,15 @@ std::string ArmMCodegen::generate(const ir::Program &prog, bool objectMode) {
     return out.str();
 }
 
-// Single-file-only - see M68kCodegen.cpp's own version of this same
-// comment (no `--format=coff` here either).
 std::map<std::string, std::string> ArmMCodegen::perFileAsm() const { return perFileAsm_; }
 
-// Every function here saves/restores `lr` around its own body -
-// same reasoning (and the same risk: exactly one link register) as
-// MipsCodegen.cpp's own comment, just one real instruction on either
-// side here (`pushlr`/`poppc`) instead of MIPS's two - already
-// reentrant on its own, since `pushlr`/`poppc` are ordinary real
-// `sp`-relative push/pop. `push r7`/`mov r7,sp` on top of that gives
-// this call its own frame pointer (see this file's own header
-// comment), and one dummy `push r0` per word of `frameSize` reserves
-// this call's own fresh Local storage - the pushed value is never
-// read, only the resulting `sp` displacement matters, so there's no
-// need for this dialect's assembler to grow a `sub sp,#imm`
-// instruction of its own just for this. emitEpilogue() undoes exactly
-// this, in reverse, at every `return` and once more here as the
-// fall-off-the-end default.
 void ArmMCodegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
     code_ << "    pushlr\n";
     code_ << "    push r7\n";
     code_ << "    mov r7,sp\n";
-    // `fn.func->frameSize` is now a real byte count (see IR.h's own
-    // comment on Function::frameSize) - round up to whole words
-    // since each `push` here reserves exactly one.
+    // frameSize is a byte count; round up to whole words since each push below
+    // reserves one word, with no sub sp,#imm available to reserve exactly.
     frameSize_ = (fn.func->frameSize + 3) / 4;
     for (int i = 0; i < frameSize_; i++) code_ << "    push r0\n";
     genStmt(*fn.body);
@@ -309,9 +244,7 @@ void ArmMCodegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            // Early exit - genFunction()'s own fall-off-the-end
-            // epilogue never runs for this path, so it needs this
-            // same frame teardown inline.
+            // Early exit: the fall-off-the-end epilogue never runs for this path.
             emitEpilogue();
             return;
         }
@@ -323,12 +256,8 @@ void ArmMCodegen::genStmt(const ir::Stmt &s) {
                 loadFrameAddr("r2", s.declSlot);
                 storeOperand("r2", s.declSlot->type);
             }
-            // No "else" case for a bare, uninitialized scalar: its
-            // own frame word already exists (genFunction()'s own
-            // reserve-pushes already made room for it) - same as a
-            // real, ordinary C automatic variable, its value is
-            // simply whatever was already in that stack slot until
-            // something assigns it.
+            // An uninitialized scalar's frame word already exists (reserved
+            // by genFunction()); nothing to emit.
             return;
         }
         case ir::StmtKind::ExprStmt: {
@@ -386,10 +315,8 @@ void ArmMCodegen::genExpr(const ir::Expr &e) {
                 genCompoundThroughR2(e);
                 return;
             }
-            // A plain scalar target still needs its address computed
-            // (ARM has no absolute-addressing memory operand - see
-            // this file's own header comment), so it goes through the
-            // exact same held-address tail as the indexed form above.
+            // A plain scalar target still needs its address computed (ARM has
+            // no absolute-addressing operand), so it shares the indexed tail.
             loadSlotAddr("r2", e.slot);
             genCompoundThroughR2(e);
             return;
@@ -402,11 +329,9 @@ void ArmMCodegen::genExpr(const ir::Expr &e) {
         }
         case ir::ExprKind::Ternary: {
             genExpr(*e.lhs);
-            // The condition's own type (unlike the ternary's result
-            // type, which is already capped to the native width - see
-            // IRBuilder.cpp's own rejectIfWide()) can still be wide, so
-            // this reuses If/While's own wide-OR-then-compare idiom,
-            // not just a bare r0 test.
+            // The condition's type can still be wide even though the result
+            // type is capped to native width, so this reuses the If/While
+            // wide-OR-then-compare idiom.
             if (isWide(e.lhs->type)) code_ << "    orr r0,r1\n";
             code_ << "    cmp r0,0\n";
             std::string Lelse = newLabel();
@@ -420,10 +345,8 @@ void ArmMCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Stores at e.type's own width/signedness - the pointee
-            // type of a real typed pointer, or plain native-int-width
-            // for the still-supported untyped-int-as-address style -
-            // see IRBuilder.cpp's own DerefAssign comment.
+            // Stores at e.type's width/signedness: the pointee type, or plain
+            // native-int-width for the untyped-int-as-address style.
             genExpr(*e.lhs);  // r0 = pointer value
             code_ << "    push r0\n";
             genExpr(*e.rhs);  // r0, or r0:r1 if wide
@@ -442,8 +365,7 @@ void ArmMCodegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                // Loads at e.type's own width/signedness - see
-                // DerefAssign's identical comment above.
+                // Loads at e.type's width/signedness, as DerefAssign above.
                 genExpr(*e.rhs);  // r0 = pointer value
                 code_ << "    mov r2,r0\n";
                 loadOperand("r2", e.type);
@@ -457,22 +379,11 @@ void ArmMCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            // Arguments are pushed onto the real stack, last-declared
-            // one first, so the first argument ends up closest to the
-            // return address `bl` is about to set `lr` for - matching
-            // the address every Param already addresses itself by
-            // (see this file's own header comment: paramIndex 0 is
-            // `r7+8`, the lowest positive offset). Each callee lays
-            // them into ITS OWN frame itself; nothing here needs to
-            // know anything about the callee's own parameter count or
-            // names beyond `e.args.size()`. The caller cleans the
-            // pushed words back off afterward with one dummy `pop r1`
-            // per pushed word (no `add sp,#imm` instruction exists in
-            // this dialect - see genFunction()'s own identical
-            // reasoning for the Local-frame reserve/release). A wide
-            // (`long long`) argument pushes its high word first so
-            // its low word ends up closer to `r7`, matching a wide
-            // Param's own frameOffset/frameOffset+4 layout.
+            // Arguments push last-declared first, so the first argument ends
+            // up closest to the return address (matching paramIndex 0 = r7+8).
+            // The caller cleans up afterward with one dummy pop per pushed
+            // word (no add sp,#imm here). A wide argument pushes its high word
+            // first so its low word ends up closer to r7.
             int pushedWords = 0;
             for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
@@ -489,22 +400,11 @@ void ArmMCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::CallPtr: {
-            // e.args is always empty here - IRBuilder.cpp rejects any
-            // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr): there's no per-callee
-            // p_<fn>_<i> cell to write one into until the callee is
-            // known, which it never is at compile time for this kind.
-            // `blx r2` is this dialect's own real Thumb-1 "BLX
-            // (register)" encoding (see ArmMAssembler.cpp's own
-            // encodeBlx()) - a real near call through whatever address
-            // r2 holds, setting `lr` to the return address exactly
-            // like `bl` does. r2's own bit 0 must be 1 (the real
-            // ARMv7-M interworking rule `BLX (register)` enforces - a
-            // UsageFault otherwise), which it already is here: `e.lhs`
-            // only ever evaluates to a value that itself traces back
-            // to genAddrOf()'s own `ExprKind::Func` case (there's
-            // nothing else in this subset that's callable at all),
-            // which already set that bit - see its own comment.
+            // e.args is always empty: the callee is unknown at compile time, so
+            // there's no p_<fn>_<i> cell to write arguments into.
+            // blx r2 calls through whatever address r2 holds; r2's bit 0 must
+            // already be 1 (ARMv7-M interworking), which genAddrOf()'s Func
+            // case guarantees since nothing else here is callable.
             genExpr(*e.lhs);  // r0 = the callee's own entry address
             code_ << "    mov r2,r0\n";
             code_ << "    blx r2\n";
@@ -515,11 +415,7 @@ void ArmMCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Intrinsic: {
-            // No real portable notion of interrupt enable/disable on
-            // a bare-metal Cortex-M with no NVIC/exception setup done
-            // at all here - treated as a no-op, same reasoning (and
-            // the same choice) as M68kCodegen.cpp's/MipsCodegen.cpp's
-            // own Intrinsic case.
+            // No NVIC/exception setup here, so interrupt enable/disable is a no-op.
             (void)e;
             return;
         }
@@ -532,22 +428,15 @@ void ArmMCodegen::genExpr(const ir::Expr &e) {
     }
 }
 
-// `r2` holds the computed address, no zero-page-style placement
-// restriction the way the 6502 backend's own `ptr` has. `arraySize >
-// 0` means the base is the array's own first word - a compile-time-
-// known label for a Global, or (see loadFrameAddr()) a runtime
-// r7-relative address for a Local/Param; otherwise `slot` is a plain
-// pointer variable, so the base instead comes from *reading* that
-// variable's own stored value first (again from a label or an r7-
-// relative address, depending on `slot->kind`). A Local/Param array's
-// own element i sits *below* element 0 (addresses decrease as the
-// index increases - see this file's own header comment), the mirror
-// image of a Global array's increasing-address layout, so this is
-// base-minus-scaled-index there, not base-plus.
+// arraySize > 0 means slot is the array itself (base = its first word);
+// otherwise slot is a pointer variable, so the base is read from its stored
+// value. A Local/Param array's element i sits below element 0 (addresses
+// decrease as the index increases), the opposite of a Global array, so this
+// is base-minus-scaled-index there, not base-plus.
 void ArmMCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // r0 = index
     int shift = elemShift(slot->type);
-    if (shift > 0) code_ << "    lsli r0,r0," << shift << "\n";  // r0 *= the element type's own width
+    if (shift > 0) code_ << "    lsli r0,r0," << shift << "\n";  // r0 *= element width
     if (slot->arraySize > 0) {
         if (slot->kind == ir::SlotKind::Global) {
             loadAddress("r2", label(slot));
@@ -559,7 +448,7 @@ void ArmMCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
         return;
     }
     loadSlotAddr("r1", slot);
-    code_ << "    ldind r1,r1\n";  // r1 = the pointer variable's own stored value
+    code_ << "    ldind r1,r1\n";  // r1 = the pointer variable's stored value
     code_ << "    adds r2,r1,r0\n";
 }
 
@@ -568,15 +457,9 @@ void ArmMCodegen::genIndex(const ir::Expr &e) {
     loadOperand("r2", e.slot->type);
 }
 
-// Stores arrayInit into `slot`'s own frame slots - every call needs
-// this re-run, since (unlike a Global's one static trailer) a
-// Local's storage is this activation's own fresh frame region, not
-// pre-set to anything; arrayInit is always fully populated up to
-// arraySize, so this always leaves the whole array in a known state,
-// same as a Global array's static trailer always did. An element's
-// own address is slot->frameOffset+i*widthOfType(slot->type) bytes
-// below r7, the same arithmetic loadFrameAddr() uses for the array's
-// own first word, just advanced by i element widths.
+// Unlike a Global's static trailer, a Local's frame storage is fresh per
+// activation, so arrayInit must be re-stored on every call. Element i's
+// address is slot->frameOffset+i*widthOfType(slot->type) bytes below r7.
 void ArmMCodegen::genLocalArrayInit(const ir::Slot *slot) {
     int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
@@ -593,11 +476,8 @@ void ArmMCodegen::genLocalArrayInit(const ir::Slot *slot) {
 
 void ArmMCodegen::narrowR0To(Type to) {
     int w = widthOfType(to);
-    // Re-truncate+re-extend by shifting the unwanted high bits out
-    // and back in - zero-fill (`lsr`) for unsigned, sign-fill
-    // (`asr`) for signed - this dialect's own version of
-    // ArmCodegen.cpp's identical idiom (no dedicated sign/zero-
-    // extend instruction here either).
+    // Shifts the unwanted high bits out and back in: lsr (zero-fill) for
+    // unsigned, asr (sign-fill) for signed - no dedicated extend instruction here.
     if (w == 1) {
         code_ << "    lsli r0,r0,24\n";
         code_ << "    movs r1,24\n    " << (to.isUnsigned ? "lsr" : "asr") << " r0,r1\n";
@@ -607,13 +487,8 @@ void ArmMCodegen::narrowR0To(Type to) {
     }
 }
 
-// `addrReg` holds the already-computed effective address (r2, by
-// this backend's own convention - see loadSlotAddr()/genIndexAddr());
-// loads into r0 (or r0:r1, for a `long long`), sign- or zero-
-// extending a narrower-than-native-int value per its own
-// signedness. `ldindb`/`ldindh` always zero-extend (see
-// ArmMAssembler.cpp's own comment) - a signed source needs an
-// additional re-sign-extend via narrowR0To().
+// ldindb/ldindh always zero-extend; a signed source needs re-sign-extending
+// via narrowR0To() afterward.
 void ArmMCodegen::loadOperand(const std::string &addrReg, Type type) {
     int w = widthOfType(type);
     if (w == 1) {
@@ -625,10 +500,8 @@ void ArmMCodegen::loadOperand(const std::string &addrReg, Type type) {
     } else if (w == 4) {
         code_ << "    ldind " << addrReg << ",r0\n";
     } else {
-        // `subs` has no immediate form in this dialect (see
-        // ArmMAssembler.cpp's own comment) - the high word's own
-        // address is computed into the scratch register r6 instead
-        // of mutating `addrReg` itself and subtracting back.
+        // subs has no immediate form here, so the high word's address is
+        // computed into scratch r6 instead of mutating addrReg itself.
         code_ << "    ldind " << addrReg << ",r0\n";
         code_ << "    adds r6," << addrReg << ",4\n";
         code_ << "    ldind r6,r1\n";
@@ -650,12 +523,6 @@ void ArmMCodegen::storeOperand(const std::string &addrReg, Type type) {
     }
 }
 
-// An implicit or explicit type conversion (see IR.h's ExprKind::
-// Convert). Every arithmetic/comparison operand narrower than `int`
-// is already promoted by IRBuilder before any Binary/Unary ever sees
-// it, so the only real work here is crossing the native-int/`long
-// long` boundary, or re-truncating+re-extending r0 for a narrower
-// target - see narrowR0To().
 void ArmMCodegen::genConvert(const ir::Expr &e) {
     Type from = e.lhs->type;
     Type to = e.type;
@@ -677,16 +544,12 @@ void ArmMCodegen::genConvert(const ir::Expr &e) {
     // to do.
 }
 
+// Two's complement negate of r0:r1 in place.
 void ArmMCodegen::genNegate64() {
-    // Two's complement negate of r0:r1 in place.
     code_ << "    mvn r0,r0\n    mvn r1,r1\n";
     code_ << "    movs r4,1\n    adds r0,r0,r4\n    movs r4,0\n    adc r1,r4\n";
 }
 
-// `long long` add/sub (lhs OP rhs) - evaluate lhs into r0:r1,
-// stashing its two words on the stack while rhs evaluates into
-// r4:r5, then ripple the carry/borrow across the word pair with
-// `adc`/`sbc`.
 void ArmMCodegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd) {
     genExpr(lhs);
     code_ << "    push r1\n    push r0\n";  // stack (top->bottom): lhs_lo, lhs_hi
@@ -700,54 +563,32 @@ void ArmMCodegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAd
     }
 }
 
-// 32x32->64 unsigned widening multiply: {r1:r0} = r6(a) * r4(b),
-// both consumed - the caller must place `a` in r6 and `b` in r4
-// before calling (never as a parameter string, to sidestep the
-// aliasing hazard of this function's own internal register choice
-// overwriting a not-yet-read operand - see genWideMul()'s own
-// comment on why it stages operands this way). Bit-serial shift-
-// and-add (32 iterations), since this dialect has no real `UMULL`:
-// `a` is consumed 1 bit at a time (shifted right, via the register-
-// form `lsr` - `r3` always holds the fixed shift amount 1); `b`'s
-// own current doubled value (r4:r5, growing to 64 bits as the loop
-// progresses, via the `lsl`+`adc` carry-chained doubling trick also
-// used by genWideDivMod()/genWideShift()) is added into the 64-bit
-// accumulator (r0:r1) whenever the consumed bit of `a` is 1.
-// Clobbers r0-r6.
+// 32x32->64 unsigned widening multiply: {r1:r0} = r6(a) * r4(b). No real UMULL
+// here, so this is bit-serial shift-and-add (32 iterations): a (r6) is
+// consumed one bit at a time via lsr, testing the carry bit it leaves behind
+// (bhs/blo) directly; b's doubling value (r4:r5, grown via the lsl+adc
+// carry-chain trick) is added into the accumulator (r0:r1) whenever that bit
+// is 1. Clobbers r0-r6.
 void ArmMCodegen::genMul64() {
-    code_ << "    movs r5,0\n";  // r5 = b's own high word (b, r4, is only ever 32 bits wide)
+    code_ << "    movs r5,0\n";  // r5 = b's high word
     code_ << "    movs r0,0\n    movs r1,0\n";
     code_ << "    movs r2,0\n";  // r2 = iteration count-up (0..32)
-    code_ << "    movs r3,1\n";  // r3 = the fixed amount (1) every shift/increment below uses
+    code_ << "    movs r3,1\n";
     std::string Lloop = newLabel(), LdoAdd = newLabel(), LskipAdd = newLabel(), Ldone = newLabel();
     code_ << Lloop << ":\n";
     code_ << "    cmp r2,32\n    beq " << Ldone << "\n";
     code_ << "    adds r2,r2,r3\n";
-    // Consume `a`'s own low bit by shifting it out - the carry flag
-    // this leaves behind (`lsr`'s own last-bit-shifted-out
-    // convention) IS that bit, tested directly via `bhs`/`blo`
-    // (literally the carry-set/carry-clear condition codes - see
-    // ArmMAssembler.cpp's own `condBranch` table) with no separate
-    // AND/compare needed.
     code_ << "    lsr r6,r3\n    bhs " << LdoAdd << "\n    b " << LskipAdd << "\n";
     code_ << LdoAdd << ":\n";
     code_ << "    adds r0,r0,r4\n    adc r1,r5\n";
     code_ << LskipAdd << ":\n";
-    // Double `b` (r4:r5) by 1 bit for the next iteration - `adds
-    // r4,r4,r4` is a self-add, doubling r4 while leaving its own old
-    // top bit in the carry flag for `adc r5,r5` to fold in (same
-    // carry-chained-doubling trick genWideDivMod()/genWideShift()
-    // also use).
     code_ << "    adds r4,r4,r4\n    adc r5,r5\n";
     code_ << "    b " << Lloop << "\n";
     code_ << Ldone << ":\n";
 }
 
-// `long long` comparison - compare the high words first (per
-// `isUnsigned`, since that's where the sign bit lives); only if
-// those are equal does the low word's own comparison matter, and at
-// that point it's always unsigned regardless of the overall type's
-// signedness.
+// Compares high words first (sign lives there); the low word's comparison,
+// reached only when the high words are equal, is always unsigned.
 void ArmMCodegen::genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push r1\n    push r0\n";
@@ -777,61 +618,46 @@ void ArmMCodegen::genWideCompare(const std::string &op, const ir::Expr &lhs, con
     code_ << Ldone << ":\n";
 }
 
-// `long long` multiply, keeping the low 64 bits of the true 128-bit
-// product: result_lo:result_hi = lo(lhs)*lo(rhs) (the full 64-bit
-// product, via genMul64()) plus the two cross terms
-// lhs_hi*rhs_lo/lhs_lo*rhs_hi folded into the high word only (each
-// one's own overflow past bit 64 would only ever affect bit 64 and
-// beyond, which a 64-bit result doesn't keep anyway - truncating
-// `muls` is exactly right for them, same reasoning as
-// ArmCodegen.cpp's own `genWideMul()`).
+// result_lo:result_hi = lo(lhs)*lo(rhs) (full 64-bit, via genMul64()) plus the
+// two cross terms lhs_hi*rhs_lo/lhs_lo*rhs_hi folded into the high word only
+// (truncating muls is correct there since anything past bit 64 is discarded).
 void ArmMCodegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     code_ << "    push r1\n    push r0\n";  // stash lhs: top->bottom = lhs_lo, lhs_hi
     genExpr(rhs);
     code_ << "    mov r6,r0\n    mov r5,r1\n";  // r6=rhs_lo, r5=rhs_hi
     code_ << "    pop r4\n    pop r2\n";        // r4=lhs_lo, r2=lhs_hi
-    // Cross terms, computed now (before genMul64() clobbers r4/r6):
-    // r3 = lhs_hi*rhs_lo, then r2 = rhs_hi*lhs_lo, summed into r2 -
-    // r4 (lhs_lo) and r6 (rhs_lo) are left untouched for genMul64().
+    // Cross terms computed before genMul64() clobbers r4/r6.
     code_ << "    mov r3,r2\n    muls r3,r6\n";  // r3 = lhs_hi*rhs_lo
     code_ << "    mov r2,r5\n    muls r2,r4\n";  // r2 = rhs_hi*lhs_lo
     code_ << "    adds r2,r2,r3\n";
-    code_ << "    push r2\n";  // stash the cross-term sum across genMul64()'s own full clobber
-    genMul64();                 // {r1:r0} = r6(rhs_lo) * r4(lhs_lo), the full 64-bit low*low product
+    code_ << "    push r2\n";  // stash the cross-term sum across genMul64()'s clobber
+    genMul64();                 // {r1:r0} = r6(rhs_lo) * r4(lhs_lo)
     code_ << "    pop r2\n";
     code_ << "    adds r1,r1,r2\n";
 }
 
-// A `long long` shifted by a runtime count - no instruction here
-// shifts more than 32 bits at once, so this is a counted loop of
-// 1-bit shifts (r6 = count). `<<` doubles r0:r1 via the self-add
-// carry-chained-doubling trick (same as genMul64()'s own `b`
-// doubling); `>>` needs the opposite direction, which this dialect's
-// register-form `lsr`/`asr` can do directly but without a carry-
-// chain analogue of `adc` for the *downward* direction, so the bit
-// crossing the r1/r0 boundary is captured by hand into r4 (the
-// high word's own old bit 0) before shifting, then OR'd into r0's
-// own new top bit via a precomputed 0x80000000 mask (r3, set up
-// once before the loop with `lsli`) - `isUnsigned` only matters
-// here, picking `asr` (sign-preserving) or `lsr` (zero-filling) for
-// r1's own shift.
+// No instruction shifts more than 32 bits, so this is a counted loop of 1-bit
+// shifts (r6 = count). << doubles r0:r1 via self-add carry-chaining; >> has no
+// such chain for the downward direction, so the bit crossing the r1/r0
+// boundary is captured by hand and OR'd into r0's top bit via a 0x80000000
+// mask. isUnsigned picks asr (sign-preserving) or lsr (zero-filling) for r1.
 void ArmMCodegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push r1\n    push r0\n";
-    genExpr(rhs);  // r0 = shift count (already promoted to a plain int)
+    genExpr(rhs);  // r0 = shift count
     code_ << "    mov r6,r0\n";
     code_ << "    pop r0\n    pop r1\n";  // r0:r1 restored = the value being shifted
-    code_ << "    movs r5,1\n";            // r5 = the fixed amount (1) every shift/decrement below uses
+    code_ << "    movs r5,1\n";
     std::string Lloop = newLabel(), Ldone = newLabel();
-    if (!isLeft) code_ << "    movs r3,1\n    lsli r3,r3,31\n";  // r3 = 0x80000000, used only by the '>>' path
+    if (!isLeft) code_ << "    movs r3,1\n    lsli r3,r3,31\n";  // r3 = 0x80000000, for the >> path
     code_ << Lloop << ":\n";
     code_ << "    cmp r6,0\n    beq " << Ldone << "\n    subs r6,r6,r5\n";
     if (isLeft) {
         code_ << "    adds r0,r0,r0\n    adc r1,r1\n";
     } else {
         std::string LskipOr = newLabel();
-        code_ << "    mov r4,r1\n    and r4,r5\n";  // r4 = r1's own old bit 0 (the bit crossing into r0)
+        code_ << "    mov r4,r1\n    and r4,r5\n";  // r4 = r1's old bit 0, crossing into r0
         code_ << "    " << (isUnsigned ? "lsr" : "asr") << " r1,r5\n";
         code_ << "    lsr r0,r5\n";
         code_ << "    cmp r4,0\n    beq " << LskipOr << "\n";
@@ -842,18 +668,11 @@ void ArmMCodegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool is
     code_ << Ldone << ":\n";
 }
 
-// Classic bit-serial shift/compare/subtract long division (no
-// instruction here is wide enough for a genuine 64/64 divide) -
-// same overall shape as ArmCodegen.cpp's own `genWideDivMod()`, just
-// adapted to this dialect's much smaller register file (no spare
-// register for a separate quotient accumulator) via the standard
-// restoring-division trick of building the quotient into the bits
-// vacated by the dividend as it shifts left: r0:r1 start as the
-// dividend and finish as the quotient; r4:r5 is the remainder
-// (starts 0); r2:r3 is the divisor. `isUnsigned` false divides
-// *magnitudes* (each operand's own sign bit, read before negating,
-// is stashed on the stack across the whole loop and restored on the
-// result afterward per C's truncating-division rule).
+// Bit-serial restoring long division: r0:r1 start as the dividend and finish
+// as the quotient (built into the bits vacated as it shifts left); r4:r5 is
+// the remainder (starts 0); r2:r3 is the divisor. Signed division works on
+// magnitudes, with each operand's original sign stashed on the stack and
+// reapplied to the result afterward per C's truncating-division rule.
 void ArmMCodegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push r1\n    push r0\n";
@@ -863,8 +682,8 @@ void ArmMCodegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool w
 
     if (!isUnsigned) {
         code_ << "    movs r4,31\n";
-        code_ << "    mov r5,r1\n    lsr r5,r4\n";  // r5 = dividend's own sign (0/1)
-        code_ << "    mov r6,r3\n    lsr r6,r4\n";  // r6 = divisor's own sign (0/1)
+        code_ << "    mov r5,r1\n    lsr r5,r4\n";  // r5 = dividend's sign (0/1)
+        code_ << "    mov r6,r3\n    lsr r6,r4\n";  // r6 = divisor's sign (0/1)
         code_ << "    push r5\n    push r6\n";       // stack (top->bottom): divisorSign, dividendSign
         std::string LskipNegN = newLabel(), LskipNegD = newLabel();
         code_ << "    cmp r5,0\n    beq " << LskipNegN << "\n";
@@ -882,22 +701,19 @@ void ArmMCodegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool w
     std::string LhiDiff = newLabel(), LsubYes = newLabel(), LsubNo = newLabel();
     code_ << Lloop << ":\n    cmp r6,64\n    beq " << Ldone << "\n    adds r6,r6,1\n";
 
-    // Shift {remainder:dividend} left by 1 as one combined 128-bit
-    // value, via the carry-chained-doubling trick (self-add on r0,
-    // `adc` on r1/r4/r5 in sequence) - the bit that overflows out of
-    // the dividend half (r1's own old top bit) lands, via the
-    // carry chain, directly into the remainder's own new bit 0.
+    // Shift {remainder:dividend} left by 1 as one 128-bit value via the
+    // carry-chain; the dividend's old top bit lands in the remainder's bit 0.
     code_ << "    adds r0,r0,r0\n    adc r1,r1\n    adc r4,r4\n    adc r5,r5\n";
 
     // if (remainder >= divisor) { remainder -= divisor; quotient bit = 1 }
-    // (always an unsigned magnitude compare - both operands were
-    // already negated to non-negative above for the signed case).
+    // (always an unsigned magnitude compare, since signed operands were
+    // already negated to non-negative above).
     code_ << "    cmp r5,r3\n    bne " << LhiDiff << "\n";
     code_ << "    cmp r4,r2\n    bhs " << LsubYes << "\n    b " << LsubNo << "\n";
     code_ << LhiDiff << ":\n    bhi " << LsubYes << "\n    b " << LsubNo << "\n";
     code_ << LsubYes << ":\n";
     code_ << "    subs r4,r4,r2\n    sbc r5,r3\n";
-    code_ << "    adds r0,r0,1\n";  // set the quotient bit the shift above just vacated at r0's own bit 0
+    code_ << "    adds r0,r0,1\n";  // set the quotient bit the shift above vacated at bit 0
     code_ << LsubNo << ":\n";
     code_ << "    b " << Lloop << "\n";
 
@@ -930,18 +746,9 @@ void ArmMCodegen::genAddrOf(const ir::Expr &operand) {
         return;
     }
     if (operand.kind == ir::ExprKind::Func) {
-        // The real ARMv7-M function-pointer value, not a bare code
-        // address: `fn_<name>` itself is always even (every Thumb
-        // instruction, hence every function entry point, is 2-byte
-        // aligned), but `BX`/`BLX (register)` - the only way this
-        // address is ever actually branched to (see this file's own
-        // `ExprKind::CallPtr` case) - loads the target register's own
-        // bit 0 straight into `EPSR.T` and raises a UsageFault if it
-        // isn't 1; M-profile has no ARM (A32) state to switch to at
-        // all, Thumb is the only state, so this bit must always be
-        // set on a value headed for one of those instructions. Adding
-        // 1 is exactly OR-ing in that bit, since the address itself is
-        // always even.
+        // BLX (register) loads the target's bit 0 into EPSR.T and faults if
+        // it isn't 1 (M-profile has no ARM state); the label is always even,
+        // so +1 sets that bit.
         loadAddress("r2", label(operand.func));
         code_ << "    adds r2,r2,1\n";
         code_ << "    mov r0,r2\n";
@@ -950,15 +757,7 @@ void ArmMCodegen::genAddrOf(const ir::Expr &operand) {
     err(operand.line, "internal: unhandled addressable-operand kind");
 }
 
-// Entry: r0 = old, r1 = rhs (both already at `type`'s own width/
-// signedness). Every instruction shape here is exactly the one
-// genBinary()/genMul()/genDivMod() already use for that same operator
-// at native width - this assembler's own ALU-op/add-sub encoders take
-// their register operands as plain bitfields (see ArmMAssembler.cpp's
-// own encodeAluOp2()/encodeAddSubReg3()), so which actual register
-// holds which operand is free to pick; "+"/"-"/"*"/"&"/"|"/"^"/shift
-// all come out as a direct substitution of r0/r1 for old/rhs with no
-// register shuffling needed at all.
+// Entry: r0 = old, r1 = rhs (both at type's width/signedness).
 void ArmMCodegen::genCompoundOp(const std::string &op, Type type) {
     bool isUnsigned = type.isUnsigned;
     if (op == "+") { code_ << "    adds r0,r0,r1\n"; return; }
@@ -972,27 +771,16 @@ void ArmMCodegen::genCompoundOp(const std::string &op, Type type) {
         code_ << "    " << insn << " r0,r1\n";
         return;
     }
-    // "/" or "%" - genDivModCore() expects r1=dividend,r0=divisor (the
-    // roles genDivMod()'s own operand evaluation already leaves them
-    // in); r3 (free here - e.rhs has already fully evaluated) swaps
-    // r0/r1 into that order from this helper's own r0=old,r1=rhs entry.
+    // "/" or "%": genDivModCore() expects r1=dividend,r0=divisor, so swap
+    // from this function's r0=old,r1=rhs entry via scratch r3.
     code_ << "    mov r3,r0\n    mov r0,r1\n    mov r1,r3\n";
     genDivModCore(/*wantRemainder=*/op == "%", isUnsigned);
 }
 
-// r2 must already hold the resolved address on entry. The address is
-// stashed on the real hardware stack across evaluating e.rhs (the
-// same mechanism Assign's own indexed case and DerefAssign already
-// use for the identical problem - genExpr(*e.rhs) can reach arbitrary
-// nested codegen that may use r0 through r7), never recomputed
-// afterward, so an indexed/pointer target's own address sub-
-// expression is evaluated exactly once. rhs is likewise stashed on
-// the stack (not just left in a register) across loadOperand(), since
-// that call's own narrowR0To() for a narrower-than-int signed type
-// clobbers r1 - see their own comments. The address is stashed again
-// across genCompoundOp() itself, since its own "/"/"%" path
-// (genDivModCore()) uses r2 as its own quotient scratch, exactly the
-// register this helper otherwise holds the address in.
+// r2 must already hold the resolved address on entry; it's stashed on the
+// stack (never recomputed) across evaluating e.rhs, since genExpr() may
+// clobber r0-r7, and again across genCompoundOp() since its "/"/"%" path
+// uses r2 as scratch.
 void ArmMCodegen::genCompoundThroughR2(const ir::Expr &e) {
     code_ << "    push r2\n";   // stash address
     genExpr(*e.rhs);              // r0 = rhs
@@ -1021,10 +809,8 @@ void ArmMCodegen::genCompoundThroughR2(const ir::Expr &e) {
 
 void ArmMCodegen::genBinary(const ir::Expr &e) {
     const std::string &op = e.op;
-    // Every arithmetic/bitwise/comparison operand here already
-    // shares one common type (IRBuilder's own usual-arithmetic-
-    // conversion pass - see Type.h), except shift (only the LHS's own
-    // type matters) and &&/|| (width-independent, handled below).
+    // lhs/rhs share one common type (usual arithmetic conversions), except
+    // shift (only lhs's type matters) and &&/|| (width-independent, below).
     Type operandType = e.lhs->type;
     bool wide = isWide(operandType);
     bool isUnsigned = operandType.isUnsigned;
@@ -1103,8 +889,6 @@ void ArmMCodegen::genBinary(const ir::Expr &e) {
     genCompare(op, *e.lhs, *e.rhs);
 }
 
-// Real hardware multiply (`MULS`) - a full 32x32->32 product, no
-// operand-size limitation the way the 68000's own `MULS.W` has.
 void ArmMCodegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     code_ << "    push r0\n";
@@ -1113,13 +897,9 @@ void ArmMCodegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << "    muls r0,r1\n";
 }
 
-// Software restoring-by-repeated-subtraction divide/remainder - see
-// ArmMCodegen.h's own header comment on why there's no hardware fast
-// path. The unsigned path is a plain repeated-subtraction loop on
-// the operands as-is; the signed path works on absolute values
-// first, then reapplies the sign C's own truncating-toward-zero
-// division needs: the quotient is negative iff the operands' signs
-// differ, and the remainder always takes the dividend's own sign.
+// Signed division works on absolute values, then reapplies the sign C's
+// truncating-toward-zero rule needs: the quotient is negative iff the
+// operands' signs differ, and the remainder takes the dividend's sign.
 void ArmMCodegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push r0\n";
@@ -1128,19 +908,14 @@ void ArmMCodegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantR
     genDivModCore(wantRemainder, isUnsigned);
 }
 
-// The repeated-subtraction loop itself, factored out of genDivMod()
-// so genCompoundOp() can reuse it too - entry convention r1=dividend,
-// r0=divisor (exactly what genDivMod()'s own operand evaluation above
-// already leaves them in), result in r0.
+// Entry: r1=dividend, r0=divisor; result in r0.
 void ArmMCodegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
     std::string Lloop = newLabel();
     std::string LloopDone = newLabel();
 
     if (isUnsigned) {
-        // r1 = remainder (starts as the dividend), r2 = quotient
-        // (starts 0), r0 = divisor. Repeated subtraction: while
-        // remainder>=divisor (unsigned), remainder-=divisor,
-        // quotient+=1.
+        // r1 = remainder (starts as dividend), r2 = quotient (starts 0),
+        // r0 = divisor. Repeated subtraction while remainder >= divisor.
         code_ << "    movs r2,0\n";
         code_ << Lloop << ":\n";
         code_ << "    cmp r1,r0\n    blo " << LloopDone << "\n";
@@ -1156,18 +931,15 @@ void ArmMCodegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
     std::string LrhsAbsDone = newLabel();
     std::string LnegateDone = newLabel();
 
-    // r3 = 1 if the result (whichever one wantRemainder picks) needs
-    // negating, else 0 - computed from the *original* signs before
-    // either operand is overwritten by its own absolute value.
+    // r3 = 1 if the result needs negating, computed from the original signs
+    // before either operand is overwritten by its absolute value.
     if (wantRemainder) {
         code_ << "    movs r3,0\n";
         code_ << "    cmp r1,0\n    bge " << LlhsAbsDone << "\n";
         code_ << "    movs r3,1\n";
         code_ << LlhsAbsDone << ":\n";
     } else {
-        // r3 = (lhs<0) XOR (rhs<0), built from two independent sign
-        // tests (no real XOR-of-booleans instruction needed: the
-        // second test just flips r3 via a second small branch).
+        // r3 = (lhs<0) XOR (rhs<0), via two independent sign tests.
         code_ << "    movs r3,0\n";
         code_ << "    cmp r1,0\n    bge " << LlhsAbsDone << "\n";
         code_ << "    movs r3,1\n";
@@ -1178,8 +950,6 @@ void ArmMCodegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
         code_ << LrhsAbsDone << ":\n";
     }
 
-    // Take absolute values of the dividend/divisor themselves - sign
-    // already captured above.
     std::string LabsLhsDone = newLabel();
     code_ << "    cmp r1,0\n    bge " << LabsLhsDone << "\n";
     code_ << "    neg r1,r1\n";
@@ -1190,9 +960,7 @@ void ArmMCodegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
     code_ << "    neg r0,r0\n";
     code_ << LabsRhsDone << ":\n";
 
-    // r1 = |remainder| (starts as |lhs|), r2 = quotient (starts 0),
-    // r0 = |divisor|. Repeated subtraction: while remainder>=divisor,
-    // remainder-=divisor, quotient+=1.
+    // r1 = |remainder| (starts as |lhs|), r2 = quotient, r0 = |divisor|.
     code_ << "    movs r2,0\n";
     code_ << Lloop << ":\n";
     code_ << "    cmp r1,r0\n    blt " << LloopDone << "\n";
@@ -1207,12 +975,8 @@ void ArmMCodegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
     code_ << LnegateDone << ":\n";
 }
 
-// `CMP` sets the real condition codes for `Rn - Rm` directly in
-// hardware (same as 68000's own `CMP.L` - see M68kCodegen.h's own
-// header comment) - `isUnsigned` picks the unsigned branch mnemonic
-// (`blo`/`bls`/`bhi`/`bhs` - see ArmMAssembler.cpp's own
-// `condBranch` table) instead of the signed one for the ordered
-// operators, no sign/overflow fixup needed either way.
+// CMP sets condition codes for Rn-Rm in hardware; isUnsigned picks the
+// unsigned branch mnemonic (blo/bls/bhi/bhs) over the signed one.
 void ArmMCodegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs) {
     if (isWide(lhs.type)) {
         genWideCompare(op, lhs, rhs, lhs.type.isUnsigned);
@@ -1239,10 +1003,8 @@ void ArmMCodegen::genCompare(const std::string &op, const ir::Expr &lhs, const i
     code_ << Ldone << ":\n";
 }
 
-// A wide (`long long`) operand's truthiness needs both words - `orr
-// r0,r1` folds them together before the usual "cmp r0,0" (the
-// combined value is discarded immediately after, so clobbering r0
-// this way is safe).
+// A wide operand's truthiness needs both words: orr r0,r1 folds them
+// together before the usual cmp r0,0.
 void ArmMCodegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     if (isWide(lhs.type)) code_ << "    orr r0,r1\n";
@@ -1290,13 +1052,8 @@ std::string ArmMCodegen::buildAssembleCommand(const std::string &, const std::st
 std::optional<std::string> ArmMCodegen::assembleInProcess(const std::string &asmText,
                                                             const std::string &format) const {
     if (format == "raw") return assembleArmM(asmText);
-    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
-    // (see generate()'s own `objectMode` comment) - this backend's
-    // own assembler builds one format-neutral ObjectFile exactly once
-    // (see ArmMAssembler.h's own `assembleArmMObject`), and whichever
-    // of these five names was asked for just picks that format's own
-    // FileFormatWriter (see fileformat/FileFormat.h) to
-    // serialize it.
+    // coff/elf/macho/aout/objraw: build one format-neutral ObjectFile, then
+    // serialize it with that format's FileFormatWriter.
     if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleArmMObject(asmText);
         return makeFileFormatWriter(*kind)->write(obj);

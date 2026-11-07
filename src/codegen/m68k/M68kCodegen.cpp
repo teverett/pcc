@@ -13,28 +13,17 @@ namespace {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
-// Where the whole program is loaded and starts executing - the test
-// harness sets the simulated CPU's PC here directly (see
-// tests/run_tests.sh's own qemu-system-m68k invocation), so unlike
-// real 68000 hardware (which reads its initial SSP/PC from the reset
-// vector at address 0) this backend never needs to lay one out.
+// Load address; the test harness sets the simulated CPU's PC here directly
+// instead of via a reset vector.
 constexpr uint32_t kBaseAddress = 0x1000;
 
-// Where this backend's own entry sequence points A7 (the real
-// hardware stack pointer, used by PUSH/POP-equivalent moves and by
-// JSR/RTS) before calling main() - comfortably above the loaded
-// program and its data, growing down into otherwise-unused RAM
-// (tests/run_tests.sh gives the simulator 16MB).
+// Initial A7 (stack pointer), set before calling main(); grows down into unused RAM.
 constexpr uint32_t kInitialSP = 0x100000;
 }  // namespace
 
-// A literal element is its own decimal text; a symbol element (a
-// dispatch-table address-of-function/global, see IR.h's
-// ArrayInitElem) is the referenced Slot's or Function's own label,
-// written out bare - `dl`'s own expression evaluator
-// (M68kAssembler.cpp's Line::Dl) already resolves a bare symbol the
-// same way `leal label,a0` already does for an address held in a
-// register (see genAddrOf).
+// A literal element is its decimal text; a symbol element is the referenced
+// Slot's or Function's label, resolved by `dl`'s expression evaluator the same
+// way `leal label,a0` resolves one into a register.
 std::string M68kCodegen::arrayElemText(const ir::ArrayInitElem &e) {
     if (!e.isSymbol) return std::to_string(static_cast<int32_t>(static_cast<uint32_t>(e.value)));
     return e.slot ? label(e.slot) : label(e.func);
@@ -43,11 +32,8 @@ std::string M68kCodegen::arrayElemText(const ir::ArrayInitElem &e) {
 void M68kCodegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType) {
     if (values.empty()) return;
     int w = widthOfType(elemType);
-    // No 64-bit data directive in this dialect - a `long long`
-    // array's own literal elements are emitted as two "dl"s (low
-    // dword, then high) per element instead; a symbol element always
-    // means a plain native-int-width address (the dispatch-table
-    // idiom - see AST.h's ArrayInitElem), so it still gets one "dl".
+    // No 64-bit data directive: a `long long` literal element emits two dl's (low,
+    // then high); a symbol element is always native-int width, so it still gets one dl.
     const char *directive = w == 1 ? "db" : w == 2 ? "dw" : "dl";
     std::ostringstream line;
     line << lbl << ": " << directive << " ";
@@ -66,12 +52,8 @@ void M68kCodegen::declareArray(const std::string &lbl, const std::vector<ir::Arr
         first = false;
     }
     trailer_.push_back(line.str());
-    // 68000 memory accesses need an even address (an odd one takes a
-    // real hardware address-error exception) - every `dl`/`dw`
-    // elsewhere in this dialect is already an even number of bytes,
-    // so a `db` array is the only shape that can leave the running
-    // offset odd; pad it back to even here, once, rather than at
-    // every later data declaration's own call site.
+    // 68000 memory accesses need an even address (odd ones fault); only a `db`
+    // array can leave the running offset odd, so pad it back to even here.
     if (w == 1 && (values.size() % 2) != 0) trailer_.push_back("db 0");
 }
 
@@ -80,25 +62,16 @@ std::string M68kCodegen::generate(const ir::Program &prog, bool objectMode) {
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // Real separate compilation (`--format=coff`/`elf`/`macho`/
-    // `aout` from a single file - see IRBuilder.h's `allowExternal`)
-    // means `prog` may not define `main` at all. `objectMode` (see
-    // Codegen.h) means no object file ever emits this entry sequence
-    // itself - M68kLinkerFactory.cpp is solely responsible for
-    // synthesizing exactly one, once every object is merged and
-    // `main`'s linked address is resolvable (see Linker.h). An object
-    // file's own base is `org 0` - it's the linker's job to place it,
-    // not this backend's (see M68kAssembler.h's own header comment).
+    // objectMode: no entry sequence is emitted here; M68kLinkerFactory synthesizes
+    // one after linking, once main's address is resolvable. An object file's base
+    // is org 0; placing it is the linker's job.
     code_ << "org " << (objectMode ? 0 : kBaseAddress) << "\n\n";
     if (!objectMode) {
         code_ << "_start:\n";
         code_ << "    movel " << kInitialSP << ",a7\n";
         code_ << "    jsr " << label(mainFn) << "\n";
-        // The result sits in D0 the moment execution reaches `halt` -
-        // see M68kCodegen.h's own header comment on why that's the
-        // authoritative place to read it from (a real, directly
-        // inspectable 32-bit register, unlike the 6502 backend's own
-        // memory-resident "ac" - see that file's own comment).
+        // The result sits in D0 once execution reaches `halt`, a directly
+        // inspectable register.
         code_ << "halt:\n    bra halt\n\n";
     }
 
@@ -106,12 +79,8 @@ std::string M68kCodegen::generate(const ir::Program &prog, bool objectMode) {
 
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        // An external global (real separate compilation - see IR.h's
-        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
-        // defined in this file at all - it must never get a local
-        // storage word here, only ever be referenced by name (see
-        // label()) in code, letting the assembler's own undefined-
-        // symbol handling defer it to a relocation.
+        // An external global is never defined here; it's only referenced by name,
+        // letting the assembler defer it to a relocation.
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
@@ -127,7 +96,7 @@ std::string M68kCodegen::generate(const ir::Program &prog, bool objectMode) {
             } else {
                 const char *directive = w == 1 ? "db" : w == 2 ? "dw" : "dl";
                 trailer_.push_back(lbl + ": " + directive + " " + std::to_string(v) + "  ; " + slot->sourceName);
-                if (w == 1) trailer_.push_back("db 0");  // keep the running offset even - see declareArray()
+                if (w == 1) trailer_.push_back("db 0");  // keep the running offset even
             }
         }
     }
@@ -138,17 +107,12 @@ std::string M68kCodegen::generate(const ir::Program &prog, bool objectMode) {
     return out.str();
 }
 
-// Single-file-only - see M6502Codegen.cpp's own version of this same
-// comment (no `--format=coff` here either).
 std::map<std::string, std::string> M68kCodegen::perFileAsm() const { return perFileAsm_; }
 
 void M68kCodegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
-    // Real per-call frame (see M68kCodegen.h's own header comment):
-    // `linkl a6,-N` pushes the caller's `a6`, points this call's own
-    // `a6` at that saved value, and reserves N bytes below it for
-    // this function's own Locals (frameSize is already a real byte
-    // count - see IR.h's own Function::frameSize).
+    // `linkl a6,-N` pushes the caller's a6, points this call's a6 at it, and
+    // reserves N bytes of locals below it.
     code_ << "    linkl a6," << (-fn.func->frameSize) << "\n";
 
     genStmt(*fn.body);
@@ -258,7 +222,7 @@ void M68kCodegen::genExpr(const ir::Expr &e) {
         case ir::ExprKind::Assign: {
             if (e.lhs) {  // slot[idx] = rhs
                 genIndexAddr(e.slot, *e.lhs);  // a0 = target address
-                code_ << "    pushl a0\n";     // a0 is really pushed via d0's own slot width - see pushl's own note
+                code_ << "    pushl a0\n";
                 genExpr(*e.rhs);
                 code_ << "    popl a0\n";
                 storeIndirect(e.slot->type);
@@ -269,10 +233,8 @@ void M68kCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Stores through at e.type's own width/signedness - the
-            // pointee type of a real typed pointer, or a plain native
-            // int word for the still-supported untyped-int-as-address
-            // style - see IRBuilder.cpp's own DerefAssign comment.
+            // Stores at e.type's width/signedness: the pointee type, or a plain
+            // int word for untyped-int-as-address.
             genExpr(*e.lhs);  // d0 = pointer value
             code_ << "    movel d0,a0\n";
             code_ << "    pushl a0\n";
@@ -287,10 +249,8 @@ void M68kCodegen::genExpr(const ir::Expr &e) {
                 genCompoundThroughA0(e);
                 return;
             }
-            // Plain scalar target - operandOf(slot) is a stable frame/
-            // absolute operand, never a clobberable register, so no
-            // address needs to be held across rhs's own evaluation at
-            // all.
+            // operandOf(slot) is a stable frame/absolute operand, so no address
+            // needs preserving across rhs's evaluation.
             std::string mem = operandOf(e.slot);
             genExpr(*e.rhs);  // d0 = rhs
             code_ << "    movel d0,d1\n";
@@ -333,8 +293,7 @@ void M68kCodegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                // Loads at e.type's own width/signedness - see
-                // DerefAssign's identical comment above.
+                // Loads at e.type's width/signedness (see DerefAssign above).
                 genExpr(*e.rhs);  // d0 = pointer value
                 code_ << "    movel d0,a0\n";
                 loadIndirect(e.type);
@@ -348,20 +307,11 @@ void M68kCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            // Real stack-passed arguments, pushed right-to-left so
-            // param 0 ends up closest to the return address JSR is
-            // about to push (see M68kCodegen.h's own `addr()` comment)
-            // - each call's own arguments land in that call's own
-            // frame this way, never in a shared per-function cell.
-            // Caller cleans up its own pushed arguments afterwards
-            // (`adda <N>,a7`) - same cdecl-style convention as
-            // I386Codegen.cpp's own identical `Call` case. Every
-            // argument reserves at least one native int's worth (the
-            // same "no narrower than a native word" rule IRBuilder.cpp's
-            // own param-offset layout already applies), and a wide
-            // (`long long`) argument pushes its high word first so its
-            // low word ends up at the lower address, matching a wide
-            // Param's own frameOffset/frameOffset+4 layout.
+            // Arguments are pushed right-to-left so param 0 ends up closest to the
+            // return address; the caller cleans up with `adda <N>,a7` afterward
+            // (cdecl-style). Each argument reserves at least one native int; a wide
+            // argument pushes its high word first so its low word lands at the
+            // lower address, matching a wide Param's layout.
             int totalBytes = 0;
             for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
@@ -378,14 +328,9 @@ void M68kCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::CallPtr: {
-            // e.args is always empty here - IRBuilder.cpp rejects any
-            // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr): there's no per-callee
-            // p_<fn>_<i> cell to write one into until the callee is
-            // known, which it never is at compile time for this kind.
-            // "jsrind a0" is M68kAssembler.cpp's new (An)-indirect
-            // JSR encoding (mode 0b010) - a real near call through
-            // whatever address a0 holds.
+            // e.args is always empty here (IRBuilder rejects arguments on
+            // CallPtr). "jsrind a0" is the (An)-indirect JSR encoding, a call
+            // through whatever address a0 holds.
             genExpr(*e.lhs);  // d0 = the callee's own entry address
             code_ << "    movel d0,a0\n";
             code_ << "    jsrind a0\n";
@@ -396,15 +341,8 @@ void M68kCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Intrinsic: {
-            // No real portable notion of interrupt enable/disable on
-            // a bare-metal 68000 with no vector table set up at all
-            // (see generate()'s own comment) - RTE/the SR interrupt-
-            // mask bits exist, but there's nothing here for `ion`/
-            // `iof` to meaningfully enable or disable. Treated as a
-            // no-op rather than a hard error (matching this
-            // intrinsic's own "do whatever this target's version of
-            // enable/disable interrupts is" spirit, for a target
-            // where that's simply nothing).
+            // No vector table is set up, so there's nothing for ion/iof to
+            // meaningfully toggle; treated as a no-op.
             (void)e;
             return;
         }
@@ -417,25 +355,15 @@ void M68kCodegen::genExpr(const ir::Expr &e) {
     }
 }
 
-// See M68kCodegen.h's own header comment: `A0` holds the computed
-// address, no zero-page-style placement restriction the way the
-// 6502 backend's own `ptr` has (see that file's own
-// genIndexAddr()). `slot->arraySize > 0` means the base is a
-// compile-time-known address (a Global's own label, loaded via
-// `leal`, or a Local's own frame-relative storage - see addr()); a
-// Global array's elements sit at increasing addresses as the index
-// increases, but a Local array's own elements sit at *decreasing*
-// addresses (addr(slot) is the array's first word, closest to `a6`;
-// later words are further below it - see M68kCodegen.h's own
-// `addr()` comment), so a Local array indexes base-minus-scaled-
-// index, not base-plus (`suba` instead of `adda`). Otherwise `slot`
-// is a plain pointer variable, so the base instead comes from
-// *reading* that variable's own stored value first.
+// A0 holds the computed address. For an array (slot->arraySize > 0), the base is a
+// compile-time-known address: a Global array's elements sit at increasing
+// addresses as the index increases, but a Local array's elements sit at
+// decreasing addresses (addr(slot) is the first word, closest to a6), so a Local
+// array indexes base-minus-scaled-index, not base-plus. Otherwise `slot` is a
+// plain pointer variable, so the base comes from reading its stored value.
 void M68kCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // d0 = index
-    // d0 *= widthOf(slot->type) via repeated doubling - this array's
-    // own element width, not a fixed "always 4 bytes" - needing no
-    // extra register at all, same shape as the old fixed ×4.
+    // d0 *= element width, via repeated doubling.
     for (int i = elemDoublings(slot->type); i > 0; i--) code_ << "    addl d0,d0\n";
     if (slot->arraySize > 0) {
         if (slot->kind == ir::SlotKind::Global) {
@@ -455,36 +383,25 @@ void M68kCodegen::genCompoundOp(const std::string &op, Type type) {
     bool isUnsigned = type.isUnsigned;
     if (op == "+") { code_ << "    addl d1,d0\n"; return; }
     if (op == "-") { code_ << "    subl d1,d0\n"; return; }
-    // MULS.W/MULU.W Dn,Dn (see genMul()'s own identical form) - this
-    // target's only hardware multiply, 16-bit operands in, correct
-    // 32-bit product out (see M68kCodegen.h's own header comment on
-    // this limitation).
+    // MULS.W/MULU.W Dn,Dn: 16-bit operands in, correct 32-bit product out.
     if (op == "*") { code_ << "    " << (isUnsigned ? "muluw" : "mulsw") << " d1,d0\n"; return; }
     if (op == "&") { code_ << "    andl d1,d0\n"; return; }
     if (op == "|") { code_ << "    orl d1,d0\n"; return; }
-    // EOR.L Dn,<ea> - d1 is the source register field, d0 the
-    // destination, same role EOR always plays in genBinary()'s own
-    // "^" case.
+    // EOR.L Dn,<ea>: d1 is the source, d0 the destination.
     if (op == "^") { code_ << "    eorl d1,d0\n"; return; }
     if (op == "<<" || op == ">>") {
         code_ << "    " << (op == "<<" ? "lsll" : (isUnsigned ? "lsrl" : "asrl")) << " d1,d0\n";
         return;
     }
-    // "/" or "%" - DIVS.W/DIVU.W <ea>,Dn: d1 is the word-sized
-    // divisor, d0 the long dividend and destination (quotient in the
-    // low word, remainder in the high word afterward - see
-    // genDivMod()'s own identical form).
+    // "/" or "%" - DIVS.W/DIVU.W <ea>,Dn: d1 the divisor, d0 the
+    // dividend/destination (quotient low word, remainder high word).
     code_ << "    " << (isUnsigned ? "divuw" : "divsw") << " d1,d0\n";
     if (op == "%") code_ << "    swapl d0\n";
     code_ << "    " << (isUnsigned ? "andl 65535,d0\n" : "extl d0\n");
 }
 
-// A0 must already hold the resolved address on entry, and nothing
-// else live - mirrors genExpr()'s own indexed-Assign case, which
-// already stashes A0 on the real hardware stack (A7) across `e.rhs`'s
-// own evaluation for the identical reason: that evaluation can
-// recursively reach arbitrary codegen (calls included), which may
-// freely use every data register and A0 itself.
+// A0 must hold the resolved address on entry; it's stashed on the stack across
+// e.rhs's evaluation since that can recursively clobber every register.
 void M68kCodegen::genCompoundThroughA0(const ir::Expr &e) {
     code_ << "    pushl a0\n";
     genExpr(*e.rhs);              // d0 = rhs
@@ -499,20 +416,16 @@ void M68kCodegen::genCompoundThroughA0(const ir::Expr &e) {
         code_ << "    popl d0\n";       // d0 = old
         code_ << "    movel d0,d3\n";    // d3 = old, preserved across the store below
         code_ << "    movel d2,d0\n";     // d0 = new (storeIndirect always stores from d0)
-        storeIndirect(e.type);               // a0 still addresses the target (loadIndirect never bumps it - e.type is never wide)
+        storeIndirect(e.type);               // a0 still addresses the target (e.type is never wide)
         code_ << "    movel d3,d0\n";          // d0 = old (final result)
     } else {
         storeIndirect(e.type);  // d0 already = new; a0 still addresses the target
     }
 }
 
-// Stores each of a Local array's own initializer values directly into
-// its own frame slots (no static trailer storage - unlike a Global
-// array's `declareArray()`, a Local's storage is this call's own
-// frame, freshly reserved by `linkl` every time this function runs).
-// `MOVE.L` accepts an immediate or absolute-label source going
-// straight into a frame-relative destination, so each element needs
-// only one instruction.
+// Stores each initializer value directly into its frame slot (unlike a Global
+// array's static declareArray()); MOVE accepts an immediate/label source straight
+// into a frame-relative destination, one instruction per element.
 void M68kCodegen::genLocalArrayInit(const ir::Slot *slot) {
     int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
@@ -545,8 +458,7 @@ void M68kCodegen::narrowD0To(Type to) {
         code_ << "    extl d0\n";
         if (to.isUnsigned) code_ << "    andl 65535,d0\n";
     }
-    // 4 bytes (Int/Long): D0 already holds the full value, nothing to
-    // do. 8 bytes never reaches here - see genConvert().
+    // 4 bytes: nothing to do. 8 bytes never reaches here.
 }
 
 void M68kCodegen::loadOperand(const std::string &mem, const std::string &highMem, Type type) {
@@ -579,11 +491,8 @@ void M68kCodegen::storeOperand(const std::string &mem, const std::string &highMe
     }
 }
 
-// `A0` already holds the effective address (see genIndexAddr()) - the
-// indirect-addressing counterpart of loadOperand()/storeOperand()
-// above. The wide case bumps A0 by 4 between the low and high word -
-// never needed again afterward by either call site (genIndex()/the
-// indexed-Assign case in genExpr()).
+// A0 already holds the effective address. The wide case bumps A0 by 4 between
+// the low and high word.
 void M68kCodegen::loadIndirect(Type type) {
     int w = widthOfType(type);
     if (w == 1) {
@@ -614,12 +523,8 @@ void M68kCodegen::storeIndirect(Type type) {
     }
 }
 
-// An implicit or explicit type conversion (see IR.h's ExprKind::
-// Convert) - see I386Codegen.cpp's own genConvert() for the full
-// reasoning (every arithmetic/comparison operand narrower than `int`
-// is already promoted by IRBuilder, so the only real work here is
-// crossing the native-int/`long long` boundary, or re-truncating a
-// narrower target).
+// Only real work is crossing the int/long long boundary, or re-truncating a
+// narrower target; narrower operands are already promoted by IRBuilder.
 void M68kCodegen::genConvert(const ir::Expr &e) {
     Type from = e.lhs->type;
     Type to = e.type;
@@ -632,13 +537,8 @@ void M68kCodegen::genConvert(const ir::Expr &e) {
         if (from.isUnsigned) {
             code_ << "    movel 0,d1\n";
         } else {
-            // Sign-extend D0's own sign into all of D1 - 68000 has no
-            // single "extend D0 into D1" instruction the way `cdq`
-            // is on i386, so this is built from what's already here:
-            // shift a copy of D0 right by 31 arithmetic bit positions
-            // (one bit at a time is enough since only the sign matters
-            // - the real value is discarded), leaving D1 all-0s or
-            // all-1s per D0's own sign.
+            // 68000 has no cdq-equivalent, so sign-extend D0 into D1 by
+            // arithmetic-shifting a copy right 31 bits, leaving D1 all-0s or all-1s.
             code_ << "    movel d0,d1\n";
             code_ << "    movel 31,d2\n    asrl d2,d1\n";
         }
@@ -649,11 +549,8 @@ void M68kCodegen::genConvert(const ir::Expr &e) {
     // to do.
 }
 
-// `long long` add/sub (lhs OP rhs): evaluate both into D0:D1 (lo:hi),
-// stashing lhs's two words on the stack while rhs evaluates, then
-// ripple the carry/borrow across the word pair with ADDX/SUBX - the
-// real-hardware generalization of a native add/sub one word wider,
-// same idiom I386Codegen.cpp's genWideAdd() uses with adc/sbb.
+// Evaluates both operands into D0:D1, stashing lhs on the stack while rhs
+// evaluates, then ripples carry/borrow across the word pair with ADDX/SUBX.
 void M68kCodegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd) {
     genExpr(lhs);  // d0:d1 = lhs
     code_ << "    pushl d1\n    pushl d0\n";  // stack (top->bottom): lhs_lo, lhs_hi
@@ -667,24 +564,11 @@ void M68kCodegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAd
     }
 }
 
-// `long long` multiply: 68000 has no 32x32 hardware multiply at all
-// (only MULS.W/MULU.W, 16x16->32 - see genMul()/M68kCodegen.h's own
-// header comment on that instruction's own operand-size limitation,
-// which a `long long`'s own 32-bit halves essentially never satisfy).
-// Instead of relying on that narrow primitive, this is a genuine
-// shift-and-add multiply over the full 64 bits, bit by bit - exactly
-// the same algorithm a hardware multiplier circuit itself implements,
-// just unrolled into a software loop; correct for any operand
-// magnitude. Two's-complement multiplication is sign-agnostic at the
-// bit-pattern level (the same circuit/algorithm produces the correct
-// low 64 result bits whether the operands are "meant" to be signed or
-// unsigned - only the *interpretation* of the result differs), so no
-// sign handling is needed here at all, unlike genWideDivMod().
-// Addressed via `a0` over a small stack-resident scratch block, same
-// idiom as genWideDivMod(): [a0+0/4] the multiplicand (shifted left
-// each iteration), [a0+8/12] the multiplier (shifted right, consumed
-// bit by bit from the low end), [a0+16/20] the result being
-// accumulated. Leaves the result in D0(lo):D1(hi).
+// 68000 has no 32x32 hardware multiply, so this is a full 64-bit shift-and-add
+// multiply, one bit at a time. Two's-complement multiplication is sign-agnostic at
+// the bit-pattern level, so no sign handling is needed (unlike genWideDivMod()).
+// Scratch block at [a0]: +0/4 multiplicand, +8/12 multiplier, +16/20 result.
+// Leaves the result in D0(lo):D1(hi).
 void M68kCodegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     code_ << "    pushl d1\n    pushl d0\n";  // mcand_hi, mcand_lo (lo on top)
@@ -703,28 +587,19 @@ void M68kCodegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << Lloop << ":\n";
     code_ << "    cmpl 0,d1\n    beq " << Ldone << "\n    subl 1,d1\n";
 
-    // if the multiplier's own bit 0 is set, result += multiplicand
-    // (64-bit add via ADD/ADDX, same ripple-carry idiom as
-    // genWideAdd()).
+    // if multiplier's bit 0 is set, result += multiplicand (ADD/ADDX ripple-carry).
     code_ << "    movel [a0+8],d0\n    andl 1,d0\n    cmpl 0,d0\n    beq " << LnoAdd << "\n";
     code_ << "    movel [a0+16],d0\n    movel [a0+0],d2\n    addl d2,d0\n    movel d0,[a0+16]\n";
     code_ << "    movel [a0+20],d0\n    movel [a0+4],d2\n    addxl d2,d0\n    movel d0,[a0+20]\n";
     code_ << LnoAdd << ":\n";
 
-    // multiplicand <<= 1 - ADD.L Dn,Dn doubles Dn and sets X/C from
-    // the bit that overflows out of bit 31; ADDX.L Dn,Dn then doubles
-    // the high word while folding that same carry in, giving a
-    // correct 64-bit left shift by 1 in two instructions, no separate
-    // bit-extraction needed (contrast genWideShift()'s own `<<`,
-    // which has to extract the carry by hand because it shifts by a
-    // runtime count, not always exactly 1).
+    // multiplicand <<= 1: ADD.L Dn,Dn doubles Dn and sets the carry from bit 31;
+    // ADDX.L folds that carry into the high word, a 64-bit shift in two instructions.
     code_ << "    movel [a0+0],d0\n    addl d0,d0\n    movel d0,[a0+0]\n";
     code_ << "    movel [a0+4],d0\n    addxl d0,d0\n    movel d0,[a0+4]\n";
 
-    // multiplier >>= 1 (plain bit-pattern shift, no sign to preserve -
-    // see this method's own header comment) - the high word's own
-    // outgoing bit 0 has to be carried into the low word's new bit 31
-    // by hand, the same extract-then-OR idiom genWideShift() uses.
+    // multiplier >>= 1: the high word's outgoing bit 0 is carried into the low
+    // word's new bit 31 by hand.
     code_ << "    movel [a0+12],d4\n";                           // d4 = mplier_hi (before shifting)
     code_ << "    movel d4,d0\n    lsrl d3,d0\n    movel d0,[a0+12]\n";  // mplier_hi >>= 1
     code_ << "    andl 1,d4\n    lsll d6,d4\n";                   // d4 = (old mplier_hi & 1) << 31
@@ -743,10 +618,8 @@ void M68kCodegen::genNegate64() {
     code_ << "    addxl d2,d1\n";
 }
 
-// Classic bit-serial shift/compare/subtract long division - see
-// I386Codegen.cpp's own genWideDivMod() for the full algorithm this
-// is a direct translation of (same 9-word scratch layout, same
-// signed-magnitude wrapper), addressed via `a0` instead of `ebx`.
+// Bit-serial shift/compare/subtract long division via a0 over a 9-word scratch
+// block, with a signed-magnitude wrapper.
 void M68kCodegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    pushl d1\n    pushl d0\n";  // lhs_hi, lhs_lo (lhs_lo on top)
@@ -763,17 +636,14 @@ void M68kCodegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool w
     code_ << "    movel d0,[a0+24]\n    movel d0,[a0+28]\n";  // q = 0
     code_ << "    movel 64,d0\n    movel d0,[a0+32]\n";       // 64 iterations
 
-    // d6/d7 are fixed shift counts for the whole routine (register-
-    // count is the only shift form this dialect implements - see
-    // M68kAssembler.cpp's own encodeShift) - neither is ever written
-    // again below, so setting them once up front is enough.
+    // d6/d7 are fixed shift counts for the whole routine, set once since this
+    // dialect only has register-count shifts.
     code_ << "    movel 1,d6\n    movel 31,d7\n";
 
     std::string LskipNegN = newLabel(), LskipNegD = newLabel();
     if (!isUnsigned) {
-        // lhsSign/rhsSign reuse [a0+36]/[a0+40] - the rhs_lo/rhs_hi
-        // staging words, already copied into d_lo/d_hi above and
-        // never read again for that purpose.
+        // lhsSign/rhsSign reuse [a0+36]/[a0+40] (the rhs staging words, already
+        // copied out and not needed again).
         code_ << "    movel [a0+4],d0\n    lsrl d7,d0\n    movel d0,[a0+36]\n";  // lhsSign
         code_ << "    movel [a0+12],d0\n    lsrl d7,d0\n    movel d0,[a0+40]\n";  // rhsSign
         code_ << "    movel [a0+36],d0\n    cmpl 0,d0\n    beq " << LskipNegN << "\n";
@@ -805,10 +675,8 @@ void M68kCodegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool w
     code_ << "    movel [a0+16],d0\n    lsll d6,d0\n    orl d1,d0\n    movel d0,[a0+16]\n";
     code_ << "    movel [a0+20],d0\n    lsll d6,d0\n    orl d3,d0\n    movel d0,[a0+20]\n";
 
-    // if (r >= d) { r -= d; quotient bit = 1 } else { quotient bit = 0 }
-    // (always an unsigned 64-bit magnitude compare, even for a signed
-    // division - both n and d have already been negated to a
-    // non-negative magnitude above.)
+    // if (r >= d) { r -= d; quotient bit = 1 }, always an unsigned magnitude
+    // compare (n/d already negated to non-negative above).
     code_ << "    movel [a0+20],d0\n    movel [a0+12],d1\n    cmpl d1,d0\n    bne " << LhiDiff << "\n";
     code_ << "    movel [a0+16],d0\n    movel [a0+8],d1\n    cmpl d1,d0\n    bcc " << LsubYes << "\n";
     code_ << "    bra " << LsubNo << "\n";
@@ -849,11 +717,8 @@ void M68kCodegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool w
     if (wantRemainder) code_ << "    movel d2,d0\n    movel d3,d1\n";
 }
 
-// A `long long` shifted by a runtime count - no native instruction
-// shifts more than 32 bits at once, so this is a counted loop of
-// 1-bit shifts, each carrying the bit that crosses the word boundary
-// by hand - see I386Codegen.cpp's own genWideShift() for the
-// identical idiom this is translated from.
+// No native instruction shifts more than 32 bits at once, so this is a counted
+// loop of 1-bit shifts, carrying the crossing bit by hand.
 void M68kCodegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    pushl d1\n    pushl d0\n";
@@ -876,12 +741,9 @@ void M68kCodegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool is
     code_ << Ldone << ":\n";
 }
 
-// A `long long` comparison - compare the high words first (using the
-// signed or unsigned branch per `isUnsigned`, since that's where the
-// sign bit lives); only if those are equal does the low word's own
-// comparison matter, and at that point it's always an unsigned
-// compare regardless of the overall type's signedness - see
-// I386Codegen.cpp's own genWideCompare() for the identical idiom.
+// Compares high words first (signed/unsigned per isUnsigned, since that's where
+// the sign bit lives); only if equal does the low word matter, always as an
+// unsigned compare.
 void M68kCodegen::genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    pushl d1\n    pushl d0\n";
@@ -934,11 +796,9 @@ void M68kCodegen::genAddrOf(const ir::Expr &operand) {
 
 void M68kCodegen::genBinary(const ir::Expr &e) {
     const std::string &op = e.op;
-    // Every arithmetic/bitwise/comparison operand here already shares
-    // one common type (IRBuilder's own usual-arithmetic-conversion
-    // pass - see Type.h) - `e.lhs->type` names it, except for shift
-    // (only the LHS's own type matters) and &&/|| (width-independent
-    // truth-testing, handled by genLogicalAnd/Or below).
+    // Operands already share one common type via IRBuilder's usual-arithmetic-
+    // conversion pass, except shift (only LHS's type matters) and &&/||
+    // (width-independent).
     Type operandType = e.lhs->type;
     bool wide = isWide(operandType);
     bool isUnsigned = operandType.isUnsigned;
@@ -990,10 +850,8 @@ void M68kCodegen::genBinary(const ir::Expr &e) {
         code_ << "    pushl d0\n";
         genExpr(*e.rhs);
         code_ << "    popl d1\n";  // d1 = lhs, d0 = rhs
-        // EOR's own source/dest convention (Dn is always the source
-        // here) still gives the right result for this commutative op
-        // regardless of operand order - see M68kAssembler.cpp's own
-        // comment.
+        // EOR's source/dest convention still gives the right result since this op
+        // is commutative.
         code_ << "    " << insn << " d1,d0\n";
         return;
     }
@@ -1022,8 +880,7 @@ void M68kCodegen::genBinary(const ir::Expr &e) {
     genCompare(op, *e.lhs, *e.rhs);
 }
 
-// Real hardware multiply (`MULS.W`/`MULU.W`) - see M68kCodegen.h's own
-// header comment on its own 16-bit-operand limitation.
+// MULS.W/MULU.W: 16-bit-operand hardware multiply.
 void M68kCodegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     bool isUnsigned = lhs.type.isUnsigned;
     genExpr(lhs);
@@ -1033,13 +890,8 @@ void M68kCodegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << "    " << (isUnsigned ? "muluw" : "mulsw") << " d1,d0\n";  // d0 = d0 * d1 = rhs * lhs
 }
 
-// Real hardware divide (`DIVS.W`/`DIVU.W`) - packs a 16-bit quotient
-// and a 16-bit remainder into one 32-bit register (see
-// M68kCodegen.h's own header comment on this instruction family's own
-// operand-size limitation); `SWAP` pulls the needed half into the low
-// word, then either `EXT.L` (signed) or a plain mask (unsigned, since
-// an unsigned 16-bit half's own bit 15 is real magnitude, not a sign
-// to extend) widens it to a real long.
+// DIVS.W/DIVU.W packs a 16-bit quotient and remainder into one register; SWAP
+// pulls the needed half low, then EXT.L (signed) or a mask (unsigned) widens it.
 void M68kCodegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    pushl d0\n";
@@ -1068,12 +920,8 @@ void M68kCodegen::genCompare(const std::string &op, const ir::Expr &lhs, const i
     err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
 }
 
-// `CMP.L <ea>,Dn` sets the real condition codes for `Dn - ea` in
-// hardware (see M68kCodegen.h's own header comment) - `branchIfTrue`
-// (already picked per signedness by genCompare() above - BHI/BLS/
-// BCC/BCS test the carry flag for an unsigned compare, BGT/BLE/BGE/
-// BLT the N^V combination for a signed one) is simply applied, no
-// further fixup needed the way the 6502 backend's own comparisons do.
+// CMP.L <ea>,Dn sets condition codes for Dn-ea; branchIfTrue (BHI/BLS/BCC/BCS
+// unsigned, BGT/BLE/BGE/BLT signed) is applied directly, no fixup needed.
 void M68kCodegen::emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &branchIfTrue) {
     genExpr(lhs);
     code_ << "    pushl d0\n";
@@ -1087,10 +935,8 @@ void M68kCodegen::emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const st
     code_ << Ldone << ":\n";
 }
 
-// A wide (`long long`) operand's truthiness needs both words - `orl
-// d1,d0` folds them together before the usual "cmpl 0,d0" (the
-// combined value is discarded immediately after, so clobbering d0
-// this way is safe).
+// A wide operand's truthiness needs both words: `orl d1,d0` folds them before
+// cmpl, discarding the combined value safely.
 void M68kCodegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     if (isWide(lhs.type)) code_ << "    orl d1,d0\n";
@@ -1139,13 +985,8 @@ std::string M68kCodegen::buildAssembleCommand(const std::string &, const std::st
 std::optional<std::string> M68kCodegen::assembleInProcess(const std::string &asmText,
                                                             const std::string &format) const {
     if (format == "raw") return assembleM68k(asmText);
-    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
-    // (see generate()'s own `objectMode` comment) - this backend's
-    // own assembler builds one format-neutral ObjectFile exactly once
-    // (see M68kAssembler.h's own `assembleM68kObject`), and whichever
-    // of these five names was asked for just picks that format's own
-    // FileFormatWriter (see fileformat/FileFormat.h) to
-    // serialize it.
+    // Other formats: build one format-neutral ObjectFile, then serialize it with
+    // that format's FileFormatWriter.
     if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleM68kObject(asmText);
         return makeFileFormatWriter(*kind)->write(obj);

@@ -9,51 +9,27 @@
 #include <stdexcept>
 #include <vector>
 
-// A small, from-scratch text-level preprocessor - not a full ISO C
-// preprocessor, sized for what this project actually needs: target-
-// conditional kernel code (`#ifdef __PDP7__`), and the handful of
-// directives real C code commonly leans on. Runs line-by-line over
-// the raw source text, entirely before the ANTLR lexer/parser ever
-// see it - `#include` needs real file I/O (open a path, splice its
-// contents in), which doesn't fit naturally into a grammar rule the
-// way `asm { ... }` (an opaque, unparsed span) does.
+// A small, from-scratch text-level preprocessor, run line-by-line over the
+// raw source before ANTLR sees it.
 //
-// Supported: `#include "file"` / `#include <file>`, `#define NAME`
-// / `#define NAME value` (object-like only - no function-like
-// macros with parameters, no token-pasting/stringizing), `#undef`,
-// `#ifdef`/`#ifndef`/`#if`/`#elif`/`#else`/`#endif` (`#if`/`#elif`
-// evaluate a small integer-constant-expression language: `defined`,
-// integer literals, `! - + * / % == != < <= > >= && ||`, parens -
-// real C precedence, undefined identifiers evaluate to 0 same as
-// real cpp). Also predefines `__LINE__`/`__FILE__`/`__DATE__`/
-// `__TIME__` (see below for `__FILE__`'s own caveat) alongside
-// whatever `preprocess()`'s caller seeds (`main.cpp`'s target
-// macros).
+// Supported: #include "file"/<file>, #define NAME [value] (object-like
+// only, no parameters/token-pasting), #undef, #ifdef/#ifndef/#if/#elif/
+// #else/#endif (#if/#elif evaluate defined, integers, real C operators and
+// precedence, with an undefined identifier as 0). Predefines __LINE__/
+// __FILE__/__DATE__/__TIME__ alongside the caller's own seeded macros.
 //
-// Deliberate limitations, not bugs:
-// - Macro expansion rescans (so `#define BAR FOO + 5` then using
-//   `BAR` expands `FOO` too, not just one flat substitution) but caps
-//   at 32 rescans per line rather than real cpp's per-expansion
-//   "blue paint" cycle tracking - a genuinely self-referential chain
-//   (`#define X X`) stops after 32 rounds instead of looping forever,
-//   which is enough for any non-pathological use without the extra
-//   bookkeeping real recursion-proof expansion needs.
-// - `__FILE__`/`__DATE__`/`__TIME__` substitute as a double-quoted
-//   string, matching real C's own `__FILE__` shape - a real string
-//   literal (see grammar/CLexer.g4's own STRINGLIT), so each is valid
-//   anywhere a string literal is, same as writing one directly
-//   (`int p; p = __FILE__;`). `__LINE__` substitutes as a plain
-//   integer literal, valid wherever a `NUMBER` is.
-// - Each `#include`d file's own `#if`/`#ifdef`/.../`#endif` nesting
-//   must balance *within that file* - an `#ifdef` can't open in one
-//   file and `#endif` in another. True of virtually all real-world
-//   C anyway.
-// - Line numbers after a `#include` become approximate for anything
-//   downstream (ANTLR's own parse-error reporting counts newlines in
-//   the final flattened text) - `__LINE__`/`__FILE__` themselves stay
-//   exactly right regardless, since they're substituted using this
-//   preprocessor's own per-physical-line tracking, not re-derived
-//   from the flattened output later.
+// Deliberate limitations:
+// - Macro rescanning is capped at 32 rounds per line rather than tracking
+//   real cpp's "blue paint" cycles, so `#define X X` terminates instead of
+//   looping.
+// - __FILE__/__DATE__/__TIME__ substitute as string literals, __LINE__ as
+//   an integer literal.
+// - #if/#ifdef/.../#endif nesting must balance within a single #include'd
+//   file.
+// - Line numbers after a #include are approximate downstream (ANTLR counts
+//   newlines in the flattened text); __LINE__/__FILE__ themselves stay
+//   correct since they're substituted from this preprocessor's own
+//   per-physical-line tracking.
 
 namespace pcc {
 
@@ -66,31 +42,15 @@ std::string trim(const std::string &s) {
     return s.substr(b, e - b + 1);
 }
 
-// Strips a trailing `// ...` or `/* ... */` comment from one already-
-// single-line piece of text (a `#define`'s own captured value, below)
-// - real cpp strips comments in its own Phase 3, strictly before
-// Phase 4's directive processing, so a macro's value never includes
-// one; this preprocessor runs both in one pass, so it has to do this
-// itself at the one point a macro's value gets captured as its own
-// freestanding string, or a same-line trailing comment becomes part
-// of the replacement text - silently corrupting whatever line the
-// macro is later used on (that line's own rest, past the pasted-in
-// `//`, reads as "still inside a comment" once ANTLR's lexer sees
-// it - confirmed directly: this previously sent `pcc` into a long,
-// seemingly-infinite stall on `#define NAME value // note`). A
-// string literal's own contents (e.g. `#define S "a//b"`) are
-// skipped over rather than scanned for `//`/`/*` - this language's
-// own STRINGLIT escape set (`\\` `\"` `\n` `\t` `\r` `\0` - see
-// grammar/CLexer.g4's own STRINGLIT_ESC) is enough to track whether a
-// given double-quote is the closing one or an escaped one inside the
-// string, so a `//`/`/*` genuinely inside a string literal's own text
-// is left alone.
+// Strips a trailing `//`/`/* */` comment from a directive argument so it
+// doesn't get pasted into a macro's replacement text. Tracks string-literal
+// quoting so `//`/`/*` inside a string (e.g. "a//b") is left alone.
 std::string stripTrailingComment(const std::string &s) {
     bool inString = false;
     for (size_t i = 0; i < s.size(); i++) {
         if (inString) {
             if (s[i] == '\\' && i + 1 < s.size()) {
-                i++;  // skip the escaped character - never ends the string early
+                i++;  // skip escaped character
             } else if (s[i] == '"') {
                 inString = false;
             }
@@ -127,11 +87,8 @@ bool isBuiltinDynamicMacro(const std::string &name) {
     return name == "__LINE__" || name == "__FILE__" || name == "__DATE__" || name == "__TIME__";
 }
 
-// One substitution pass: every macro/builtin-dynamic-macro
-// occurrence gets replaced, left to right. `*changed` is set if
-// anything was substituted, so the caller (expandMacros, below) can
-// rescan the result - a macro's replacement text can itself
-// reference other macros (`#define BAR FOO + 5`), same as real cpp.
+// One left-to-right substitution pass; *changed lets the caller rescan the
+// result, since a macro's replacement text can reference other macros.
 std::string substituteOnePass(const std::string &line, const std::map<std::string, std::string> &macros,
                                const std::string &path, int lineNo, const std::string &dateStr,
                                const std::string &timeStr, bool *changed) {
@@ -172,12 +129,7 @@ std::string substituteOnePass(const std::string &line, const std::map<std::strin
 }
 
 // Repeatedly applies substituteOnePass so a macro's own replacement
-// text gets expanded too (`#define BAR FOO + 5` then using `BAR`
-// expands to `FOO`'s own value, not the literal text "FOO + 5") -
-// real recursive macro expansion, not just one flat substitution.
-// Capped (not real cpp's own per-expansion "blue paint" tracking) -
-// a self-referential chain longer than this is a real but deliberate
-// limitation, not a bug: `#define X X` would otherwise loop forever.
+// expands too, capped at 32 rounds so `#define X X` terminates.
 std::string expandMacros(const std::string &line, const std::map<std::string, std::string> &macros,
                           const std::string &path, int lineNo, const std::string &dateStr,
                           const std::string &timeStr) {
@@ -190,10 +142,9 @@ std::string expandMacros(const std::string &line, const std::map<std::string, st
     return text;
 }
 
-// Resolves every `defined(NAME)` / `defined NAME` in a `#if`/`#elif`
-// expression to a literal "1"/"0" - has to run *before* ordinary
-// macro substitution, same as real cpp, so `defined(FOO)` tests
-// whether FOO is a macro rather than substituting FOO's value first.
+// Resolves every defined(NAME)/defined NAME to "1"/"0", before macro
+// substitution, so `defined(FOO)` tests FOO's macro-ness rather than
+// substituting its value first.
 std::string resolveDefined(const std::string &expr, const std::map<std::string, std::string> &macros) {
     std::string out;
     size_t i = 0;
@@ -231,12 +182,9 @@ std::string resolveDefined(const std::string &expr, const std::map<std::string, 
     return out;
 }
 
-// Tiny recursive-descent evaluator for the already-macro-substituted
-// `#if`/`#elif` expression text - real C operator precedence
-// (lowest to highest: || && == != < <= > >= + - * / % unary ! - +),
-// parens, integer literals, and any leftover identifier (an
-// undefined one, since every macro name was already substituted
-// away) evaluating to 0, same as real cpp.
+// Recursive-descent evaluator for an already-macro-substituted #if/#elif
+// expression, real C operator precedence; any leftover identifier (always
+// undefined, since macros were already substituted) evaluates to 0.
 class ExprEval {
    public:
     explicit ExprEval(const std::string &s) : s_(s) {}
@@ -350,9 +298,9 @@ class ExprEval {
         }
         if (i_ < s_.size() && isIdentStart(s_[i_])) {
             while (i_ < s_.size() && isIdentChar(s_[i_])) i_++;
-            return 0;  // leftover identifier: not a macro (already substituted) -> 0, same as real cpp
+            return 0;
         }
-        return 0;  // empty/garbage operand
+        return 0;
     }
 };
 
@@ -377,12 +325,8 @@ std::string currentTimeStr() {
     return buf;
 }
 
-// One #if/#ifdef/#ifndef nesting level. `outerActive` is the
-// enclosing scope's own active-ness, fixed at push time (nesting
-// guarantees it can't change while this frame is open); `everTaken`
-// tracks whether any branch in this if/elif/.../else chain has
-// matched yet, for #elif/#else; `branchActive` is whether *this*
-// branch is currently emitting.
+// One #if/#ifdef/#ifndef nesting level. `everTaken` tracks whether any
+// branch in this chain has matched yet, for #elif/#else.
 struct CondFrame {
     bool outerActive;
     bool everTaken;
@@ -417,11 +361,6 @@ std::string preprocessFile(const std::string &path, std::map<std::string, std::s
             std::string rest = trim(trimmed.substr(1));
             size_t sp = rest.find_first_of(" \t");
             std::string kw = (sp == std::string::npos) ? rest : rest.substr(0, sp);
-            // Stripped here, once, for every directive - matching real
-            // cpp's own Phase 3 (comments gone) strictly before Phase 4
-            // (directive processing) - see stripTrailingComment's own
-            // comment for why `#define`'s own argument specifically
-            // can't skip this.
             std::string arg = (sp == std::string::npos) ? "" : stripTrailingComment(trim(rest.substr(sp + 1)));
 
             if (kw == "include") {

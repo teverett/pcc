@@ -6,9 +6,7 @@
 namespace pcc {
 
 namespace {
-// `57344` (0xE000) is the same initial-stack value as M16cCodegen.cpp's
-// own (private) `kInitialSp` - the M16C's real hardware SP, used by
-// `jsr.w`/`rts`, needs the same real initial value here.
+// 57344 (0xE000) must match M16cCodegen.cpp's private kInitialSp.
 constexpr const char *kEntryAsm =
     "org 0\n"
     "_start:\n"

@@ -18,9 +18,7 @@ namespace {
 
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("Arm64Assembler: " + msg); }
 
-// --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
-// Same Syllable/Group shape as every other backend's own assembler -
-// see M68kAssembler.cpp's own comment.
+// --- Parsing, via the shared grammar/PccAsm.g4 ----------------------------
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
     char sign = 0;
@@ -29,13 +27,9 @@ struct Syllable {
     std::vector<Syllable> group;
 };
 
-// One operand, classified from a bare expression - see
-// Arm64Assembler.h's own comment on why there's no real `[xn]`
-// bracketed A64 syntax here. `Reg` comes from recognizing a bare
-// register name (carrying its own `width`: 0 for a `w`-named
-// register, 1 for an `x`-named one, `wzr`, or `sp`); `Imm` from a bare
-// (optionally signed) number; anything else (a label, or `label+N`)
-// is `Mem`.
+// A bare register name is `Reg` (carrying its `width`: 0 for a
+// `w`-named register, 1 for `x`/`wzr`/`xzr`/`sp`); a bare signed number
+// is `Imm`; anything else (a label or `label+N`) is `Mem`.
 struct Operand {
     enum Kind { Reg, Imm, Mem } kind = Imm;
     int reg = -1;
@@ -79,14 +73,11 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
     return result;
 }
 
-// This dialect's own register names: every general register, named
-// both ways real A64 assembly names it (`w0`..`w30`, `x0`..`x30`),
-// plus `wzr`/`xzr` (the zero register, number 31) and `sp` (the real
-// hardware stack pointer, also number 31 - A64 itself distinguishes
-// the two purely by which instruction/field it appears in, never by a
-// different bit pattern, so this dialect doesn't need to either - see
-// Arm64Codegen.h's own header comment). Returns false if `lower`
-// isn't one of them.
+// Every general register, named both ways real A64 names it (`w0`..`w30`,
+// `x0`..`x30`), plus `wzr`/`xzr` (number 31) and `sp` (also number 31 -
+// A64 distinguishes the two purely by which instruction/field it
+// appears in, never by a different bit pattern). Returns false if
+// `lower` isn't one of them.
 bool regNumber(const std::string &lower, int &num, int &width) {
     static const std::unordered_map<std::string, std::pair<int, int>> *const names = [] {
         auto *m = new std::unordered_map<std::string, std::pair<int, int>>();
@@ -203,11 +194,9 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
-// One pending fixup `assembleArm64Object()` (see Arm64Assembler.h's
-// own header comment) turns into a real ObjRelocation once assembly
-// is done - `offset` into `bytes()`, `symbolName` the reference that
-// couldn't be resolved locally (or the reserved pseudo-symbol ".."
-// for a same-file address's own needed base-shift), `kind` one of
+// A pending fixup turned into an ObjRelocation once assembly is done.
+// `symbolName` is the unresolved reference, or the reserved pseudo-symbol
+// ".." for a same-file address's base-shift; `kind` is one of
 // kArm64RelocRel26/MovZLo/MovKHi.
 struct Relocation {
     uint32_t offset;
@@ -267,11 +256,8 @@ class Assembler {
         }
     }
 
-    // `externalName`/`needsBaseShift` mirror ../m68k/M68kAssembler.cpp's
-    // own `evalExpr` exactly - see Arm64Assembler.h's own header
-    // comment on why *any* local address reference, not just an
-    // external one, needs a relocation here once `allowExternal_` is
-    // set.
+    // Once `allowExternal_` is set, any local address reference, not just
+    // an external one, needs a relocation.
     uint64_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         uint64_t total = 0;
@@ -313,11 +299,7 @@ class Assembler {
         return 0;
     }
 
-    // --- word emission -------------------------------------------------
-    // Little-endian, unlike MipsAssembler.cpp's own big-endian
-    // `emit32` - real AArch64 instruction words (and this backend's
-    // own `dw` data words) are always little-endian in memory, no
-    // configurable endianness the way classic MIPS has.
+    // --- word emission (little-endian) ----------------------------------
     void emit32(uint32_t v) {
         bytes_.push_back(static_cast<uint8_t>(v & 0xFF));
         bytes_.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
@@ -325,9 +307,7 @@ class Assembler {
         bytes_.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
         offset_ += 4;
     }
-    // `db`/`dh` - byte/halfword data, the new type system's own
-    // narrower-than-`int` global storage (see Arm64Codegen.cpp's own
-    // declareArray()/generate()).
+    // `db`/`dh` - byte/halfword data for narrower-than-`int` global storage.
     void emit8(uint8_t v) {
         bytes_.push_back(v);
         offset_ += 1;
@@ -347,9 +327,8 @@ class Assembler {
         return ops[i];
     }
 
-    // 12-bit unsigned immediate, as every `add`/`sub` (immediate)
-    // operand here needs - plain numbers only (this dialect never
-    // needs a label as an add/sub immediate).
+    // 12-bit unsigned immediate for `add`/`sub` (immediate) - plain
+    // numbers only.
     uint32_t evalImm12(const Operand &op) {
         if (op.kind == Operand::Reg) fail("expected an immediate operand, not a register");
         uint64_t v = evalExpr(op.expr);
@@ -357,13 +336,9 @@ class Assembler {
         return static_cast<uint32_t>(v);
     }
 
-    // `movz`/`movk`'s own 16-bit immediate: a plain number is used
-    // exactly as Arm64Codegen.cpp already computed it (that half of a
-    // literal it split itself - see IntLit's own codegen, same
-    // "already the right half" convention as MipsAssembler.cpp's own
-    // `evalHiLo`); a label (`Mem`) instead has its own full resolved
-    // address split into its own low (`movz`) or high (`movk`) 16
-    // bits automatically here.
+    // `movz`/`movk` immediate: a plain number is used as-is; a label
+    // (`Mem`) has its resolved address split into its low (`movz`) or
+    // high (`movk`) 16 bits automatically.
     uint32_t evalHiLo(const Operand &op, bool hi, std::string *externalName = nullptr,
                       bool *needsBaseShift = nullptr) {
         if (op.kind == Operand::Reg) fail("expected an immediate or label operand, not a register");
@@ -388,12 +363,8 @@ class Assembler {
                (static_cast<uint32_t>(rn) << 5) | rd);
     }
     // Immediate bitfield move (UBFM/SBFM) - `lsl`/`lsr`/`asr
-    // rd,rn,#shift`'s own real encoding underneath: sf opc(2) 100110
-    // N(=sf) immr(6) imms(6) Rn Rd. The new type system's own
-    // narrowW0To()-style re-truncate+re-extend idiom (ArmCodegen.cpp's
-    // own comment) needs these as genuine immediate-shift
-    // instructions, distinct from `lslv`/`lsrv`/`asrv`'s register-
-    // count form above.
+    // rd,rn,#shift` encoding: sf opc(2) 100110 N(=sf) immr(6) imms(6) Rn
+    // Rd. Distinct from `lslv`/`lsrv`/`asrv`'s register-count form above.
     void emitBitfield(uint32_t opc, int sf, uint32_t immr, uint32_t imms, uint8_t rn, uint8_t rd) {
         emit32((static_cast<uint32_t>(sf) << 31) | (opc << 29) | (0b100110u << 23) |
                (static_cast<uint32_t>(sf) << 22) | (immr << 16) | (imms << 10) | (static_cast<uint32_t>(rn) << 5) |
@@ -417,30 +388,19 @@ class Assembler {
         emit32((static_cast<uint32_t>(sf) << 31) | (opc << 29) | (0b100101u << 23) | (hw << 21) |
                ((imm16 & 0xFFFFu) << 5) | rd);
     }
-    // LDR/STR (immediate, unsigned offset), 32-bit transfer, fixed
-    // zero displacement - see Arm64Codegen.h's own header comment on
-    // why every load/store here is always through a freshly computed
-    // address.
+    // LDR/STR (immediate, unsigned offset), fixed zero displacement.
     // `size` (bits31-30): 00=byte,01=halfword,10=word("w"),11=
-    // doubleword("x") - the new type system's own narrower/wider-
-    // than-native-int loads/stores (see Arm64Codegen.cpp's
-    // loadOperand()/storeOperand()); `opc` (bits23-22): 00=store,
-    // 01=load (zero/no sign-extension beyond the loaded width), 11=
-    // load with sign-extension up to the *destination* register's
-    // own width (only valid for size 00/01 - LDRSB/LDRSH with a
-    // 32-bit, i.e. "w", destination; the upper 32 bits of that
-    // destination are then architecturally zeroed, exactly this
-    // backend's header comment on every W-form write - so this is
-    // the one instruction a narrower-than-int Var/Slot's own signed
-    // load needs, no separate extension step).
+    // doubleword("x"); `opc` (bits23-22): 00=store, 01=load (no
+    // sign-extension beyond the loaded width), 11=load with
+    // sign-extension up to the destination register's width (only valid
+    // for size 00/01 - LDRSB/LDRSH with a "w" destination, whose upper 32
+    // bits are then architecturally zeroed).
     void emitLdStImm(uint32_t size, uint32_t opc, uint8_t rn, uint8_t rt) {
         emit32((size << 30) | (0b111u << 27) | (0u << 26) | (0b01u << 24) | (opc << 22) | (0u << 10) |
                (static_cast<uint32_t>(rn) << 5) | rt);
     }
-    // Unconditional branch (immediate) - real A64 has no delay slot
-    // at all (unlike MipsAssembler.cpp's own `emitJ`, which has to
-    // account for one), so the offset is simply (target - this
-    // instruction's own address) / 4.
+    // Unconditional branch (immediate) - A64 has no delay slot, so the
+    // offset is simply (target - this instruction's address) / 4.
     void emitBranchImm(uint32_t opc, int64_t relWords) {
         emit32((opc << 26) | (static_cast<uint32_t>(relWords) & 0x03FFFFFFu));
     }
@@ -448,13 +408,10 @@ class Assembler {
         emit32((static_cast<uint32_t>(sf) << 31) | (0b011010u << 25) | (static_cast<uint32_t>(op) << 24) |
                ((static_cast<uint32_t>(relWords) & 0x7FFFFu) << 5) | rt);
     }
-    // Unconditional branch (register) - the same instruction family
-    // `ret`'s own fixed 0xD65F03C0 encoding above belongs to (there,
-    // `opc`=0b010, Rn hardcoded to x30): `1101011 0 opc(3) 11111
-    // 000000 Rn 00000`, `opc`=0b001 for "BLR Xn" (branch with link to
-    // register, setting x30 to the return address exactly like `bl`
-    // does), with Rn here this dialect's own chosen register rather
-    // than a fixed one.
+    // Unconditional branch (register) - same family as `ret`'s fixed
+    // 0xD65F03C0 encoding (there, `opc`=0b010, Rn=x30): `1101011 0
+    // opc(3) 11111 000000 Rn 00000`, `opc`=0b001 for "BLR Xn" (sets x30
+    // to the return address like `bl` does).
     void emitBranchReg(uint32_t opc, uint8_t rn) {
         emit32((0b1101011u << 25) | (opc << 21) | (0b11111u << 16) | (static_cast<uint32_t>(rn) << 5));
     }
@@ -479,9 +436,7 @@ class Assembler {
         emitLogicalReg(opc, /*N=*/0, sf, rd, rn, rm);
     }
 
-    // The full instruction vocabulary ../Arm64Codegen.cpp ever emits -
-    // see Arm64Assembler.h's own header comment. Not a general A64
-    // encoder: exactly these mnemonic/operand-shape combinations.
+    // Not a general A64 encoder: only the mnemonics Arm64Codegen.cpp emits.
     void encodeInstr(const std::string &mnemonic, const std::vector<Operand> &ops) {
         if (mnemonic == "nop") {
             if (!ops.empty()) fail("'nop' takes no operand");
@@ -510,14 +465,11 @@ class Assembler {
             return;
         }
         if (mnemonic == "movk2" || mnemonic == "movk3") {
-            // `movk2`/`movk3 xd,<imm16>` - the bits32-47/bits48-63
-            // chunks of a genuine 64-bit immediate (hw=2/3 - `movz`/
-            // `movk` above only ever cover hw=0/1, since every label
-            // this backend resolves fits in 32 bits; a `long long`
-            // literal doesn't - see Arm64Codegen.cpp's own
-            // loadImm64()). Always a plain already-shifted-down
-            // number, never a label, so no relocation bookkeeping is
-            // needed here the way movz/movk's own label case has.
+            // `movk2`/`movk3 xd,<imm16>` - the bits32-47/bits48-63 chunks
+            // of a 64-bit immediate (hw=2/3; `movz`/`movk` above only
+            // cover hw=0/1, since every label this backend resolves fits
+            // in 32 bits). Always a plain number, never a label, so no
+            // relocation bookkeeping is needed.
             uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             const Operand &immOp = requireOperand(ops, 1, mnemonic);
             if (immOp.kind == Operand::Mem) fail("'" + mnemonic + "': operand must be a plain number");
@@ -608,8 +560,7 @@ class Assembler {
             uint8_t rn = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
             uint8_t rm = requireReg(requireOperand(ops, 2, mnemonic), mnemonic);
             // DP(2-source) opcode field: UDIV=000010, SDIV=000011,
-            // LSLV=001000, LSRV=001001, ASRV=001010 - the real A64
-            // sequential assignment within this instruction group.
+            // LSLV=001000, LSRV=001001, ASRV=001010.
             static const std::unordered_map<std::string, uint32_t> opcodes = {
                 {"udiv", 0b000010u}, {"sdiv", 0b000011u}, {"lslv", 0b001000u}, {"lsrv", 0b001001u},
                 {"asrv", 0b001010u},
@@ -627,9 +578,7 @@ class Assembler {
         static const std::unordered_map<std::string, uint32_t> csets = {
             {"cseteq", 0b0000}, {"csetne", 0b0001}, {"csetge", 0b1010},
             {"csetlt", 0b1011}, {"csetgt", 0b1100}, {"csetle", 0b1101},
-            // Unsigned counterparts (real A64 condition codes HS/LO/
-            // HI/LS) - the new type system's unsigned compare, see
-            // Arm64Codegen.cpp's own genCompare().
+            // Unsigned counterparts: real A64 condition codes HS/LO/HI/LS.
             {"cseths", 0b0010}, {"csetlo", 0b0011}, {"csethi", 0b1000}, {"csetls", 0b1001},
         };
         if (auto it = csets.find(mnemonic); it != csets.end()) {
@@ -638,15 +587,10 @@ class Assembler {
             emitCsinc(sf, rd, /*rn=*/31, /*rm=*/31, it->second ^ 1u);
             return;
         }
-        // Dedicated zero-displacement load/store - see Arm64Codegen.h's
-        // own header comment: `ldind baseReg,destReg` / `stind
-        // baseReg,srcReg`, real LDR/STR underneath with imm12=0. The
-        // size (word vs doubleword) comes from `destReg`/`srcReg`'s
-        // own width ("w" vs "x") - a plain `int`/`long` load/store
-        // stays 32-bit exactly as before; a `long long` Var/Slot (see
-        // Arm64Codegen.cpp's own isWide()) just names an `x` register
-        // instead, getting a real 64-bit LDR/STR in one instruction -
-        // no multi-word emulation needed at all on this target.
+        // `ldind baseReg,destReg` / `stind baseReg,srcReg` - LDR/STR with
+        // imm12=0. The size (word vs doubleword) comes from
+        // `destReg`/`srcReg`'s width ("w" vs "x"): a `long long` just
+        // names an `x` register, getting a 64-bit LDR/STR in one instruction.
         if (mnemonic == "ldind") {
             uint8_t base = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             const Operand &rtOp = requireOperand(ops, 1, mnemonic);
@@ -661,12 +605,9 @@ class Assembler {
             emitLdStImm(rtOp.width ? 0b11u : 0b10u, 0b00, base, rt);
             return;
         }
-        // `ldindb`/`ldindh` (zero-extending unsigned byte/halfword
-        // load), `ldindsb`/`ldindsh` (sign-extending, to the "w"
-        // destination's own 32 bits - see emitLdStImm()'s own
-        // comment), `stindb`/`stindh` (store, truncating to that
-        // width) - a narrower-than-native-int Var/Slot's own load/
-        // store (see Arm64Codegen.cpp's loadOperand()/storeOperand()).
+        // `ldindb`/`ldindh` (zero-extending unsigned byte/halfword load),
+        // `ldindsb`/`ldindsh` (sign-extending to the "w" destination's 32
+        // bits), `stindb`/`stindh` (store, truncating to that width).
         static const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> sizedLdSt = {
             {"ldindb", {0b00u, 0b01u}}, {"ldindsb", {0b00u, 0b11u}}, {"stindb", {0b00u, 0b00u}},
             {"ldindh", {0b01u, 0b01u}}, {"ldindsh", {0b01u, 0b11u}}, {"stindh", {0b01u, 0b00u}},
@@ -683,15 +624,10 @@ class Assembler {
             uint32_t opc = mnemonic == "b" ? 0b000101u : 0b100101u;
             std::string externalName;
             uint64_t targetAddr = evalExpr(target.expr, &externalName);
-            // A branch target defined in *this* object is already a
-            // valid PC-relative offset regardless of where this object
-            // ends up linked (both its own address and this
-            // instruction's own are shifted by the same base) - no
-            // relocation needed at all, unlike an absolute-address
-            // load (movz/movk above). Only a genuinely cross-object
-            // target (undefined here) needs deferring - see
-            // ../pdp11/Pdp11Assembler.cpp's own identical reasoning for
-            // its own PC-relative addressing mode.
+            // A target defined in this object is already a valid
+            // PC-relative offset regardless of link address, so needs no
+            // relocation. Only a cross-object target (still undefined
+            // here) does.
             if (stage_ == 2 && allowExternal_ && !externalName.empty()) {
                 relocations_.push_back({static_cast<uint32_t>(offset_), externalName, kArm64RelocRel26});
                 emitBranchImm(opc, 0);
@@ -730,10 +666,8 @@ class Assembler {
     bool allowExternal_;
 };
 
-// Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - see Arm64Assembler.h's own `assembleArm64Object`
-// comment, and ../m68k/M68kAssembler.cpp's own `buildObjectFile` for
-// the identical algorithm this is ported from.
+// Builds the format-neutral ObjectFile from a completed object-mode
+// Assembler.
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kArm64CoffMachine;

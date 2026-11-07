@@ -18,9 +18,7 @@ namespace {
 
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("ArmAssembler: " + msg); }
 
-// --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
-// Same Syllable/Group shape as every other backend's own assembler -
-// see M68kAssembler.cpp's own comment.
+// --- Parsing, via the shared grammar/PccAsm.g4 ----------------------------
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
     char sign = 0;
@@ -29,14 +27,9 @@ struct Syllable {
     std::vector<Syllable> group;
 };
 
-// One operand, classified from a bare expression - see
-// ArmAssembler.h's own comment on why there's no real `#imm`/
-// `[Rn, #imm]` ARM syntax here. `Reg` comes from recognizing a bare
-// register name; `Imm` from a bare (optionally signed) number;
-// anything else (a label, or `label+N`) is `Mem` - an absolute
-// address, resolved to the label's own full 32-bit value and then
-// (for `movw`/`movt` specifically - see ArmAssembler.cpp's own
-// encodeInstr()) split into its lower/upper half.
+// A bare register name is `Reg`; a bare signed number is `Imm`; anything
+// else (a label or `label+N`) is `Mem`, an address resolved to its full
+// 32-bit value (split into lower/upper half for `movw`/`movt`).
 struct Operand {
     enum Kind { Reg, Imm, Mem } kind = Imm;
     int reg = -1;
@@ -79,25 +72,16 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
     return result;
 }
 
-// This dialect's own fixed register numbering (not a real ARM
-// register-name table in full - just the handful ArmCodegen.cpp ever
-// emits - see ArmCodegen.h's own header comment on each register's
-// role): `r0`-`r3`=0-3, `fp`=11, `sp`=13, `lr`=14 - the real ARM
-// register numbers those names carry in every actual ARM assembler
-// too (`fp` is the conventional alias for `r11`), so the encoded bit
-// patterns below match genuine A32 object code exactly, even though
-// this dialect only ever names this one subset of the 16 GPRs.
-// Returns -1 if `name` isn't one of them.
+// Register numbers match real ARM (`fp` aliases r11), so encoded bit
+// patterns match genuine A32 object code. Returns -1 if `name` isn't one
+// of these. r4-r10/r12 are scratch registers for the `long long`
+// multi-word arithmetic in ArmCodegen.cpp's genWide*() routines, which
+// never cross a call boundary, so no caller/callee-saved convention
+// applies to them.
 int regNumber(const std::string &lower) {
     static const std::unordered_map<std::string, int> names = {
         {"r0", 0}, {"r1", 1}, {"r2", 2}, {"r3", 3}, {"r4", 4}, {"r5", 5}, {"r6", 6}, {"r7", 7}, {"r8", 8},
         {"r9", 9}, {"r10", 10}, {"fp", 11}, {"r12", 12}, {"sp", 13}, {"lr", 14},
-        // r4-r10/r12 are new scratch registers the `long long`
-        // multi-word arithmetic in ArmCodegen.cpp's own genWideAdd/
-        // genWideMul/genWideDivMod/genWideShift/genWideCompare needs
-        // (this backend never crosses a real call boundary within
-        // those self-contained routines, so no caller-saved/callee-
-        // saved convention applies to them).
     };
     auto it = names.find(lower);
     return it == names.end() ? -1 : it->second;
@@ -198,11 +182,9 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
-// One pending fixup `assembleArmObject()` (see ArmAssembler.h's own
-// header comment) turns into a real ObjRelocation once assembly is
-// done - `offset` into `bytes()`, `symbolName` the reference that
-// couldn't be resolved locally (or the reserved pseudo-symbol ".."
-// for a same-file address's own needed base-shift), `kind` one of
+// A pending fixup turned into an ObjRelocation once assembly is done.
+// `symbolName` is the unresolved reference, or the reserved pseudo-symbol
+// ".." for a same-file address's base-shift; `kind` is one of
 // kArmRelocRel24/MovWLo/MovTHi.
 struct Relocation {
     uint32_t offset;
@@ -262,10 +244,8 @@ class Assembler {
         }
     }
 
-    // `externalName`/`needsBaseShift` mirror ../m68k/M68kAssembler.cpp's
-    // own `evalExpr` exactly - see ArmAssembler.h's own header comment
-    // on why *any* local address reference, not just an external one,
-    // needs a relocation here once `allowExternal_` is set.
+    // Once `allowExternal_` is set, any local address reference, not just
+    // an external one, needs a relocation.
     uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
@@ -307,7 +287,7 @@ class Assembler {
         return 0;
     }
 
-    // --- word emission (little-endian, real ARM memory order) ----------
+    // --- word emission (little-endian) ----------------------------------
     void emit32(uint32_t v) {
         bytes_.push_back(static_cast<uint8_t>(v & 0xFF));
         bytes_.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
@@ -315,9 +295,7 @@ class Assembler {
         bytes_.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
         offset_ += 4;
     }
-    // `db`/`dh` - byte/halfword data, the new type system's own
-    // narrower-than-`int` global storage (see ArmCodegen.cpp's own
-    // declareArray()/generate()).
+    // `db`/`dh` - byte/halfword data for narrower-than-`int` global storage.
     void emit8(uint8_t v) {
         bytes_.push_back(v);
         offset_ += 1;
@@ -328,23 +306,16 @@ class Assembler {
         offset_ += 2;
     }
 
-    // `op`'s own exprList already carries a plain (optionally signed)
-    // decimal/hex value (e.g. `mov r0,-4`) - this dialect's immediate
-    // operands are always used in a context ArmCodegen.cpp itself
-    // already range-checked (an 8-bit data-processing immediate, a
-    // 5-bit shift amount), so no range check is repeated here.
+    // Callers already range-check the result (8-bit data-processing
+    // immediate, 5-bit shift amount), so no range check is repeated here.
     uint32_t evalImm(const Operand &op) {
         if (op.kind == Operand::Reg) fail("expected an immediate or label operand, not a register");
         return evalExpr(op.expr);
     }
 
-    // `movw`/`movt`'s own immediate operand: a plain number is used
-    // exactly as ArmCodegen.cpp already computed it (that half of a
-    // literal it split itself - see IntLit's own codegen); a label
-    // (`Mem`) instead has its own full resolved address split into
-    // its lower (`movw`) or upper (`movt`) 16 bits automatically here -
-    // see ArmAssembler.h's own header comment on why this dialect
-    // needs no `:lower16:`/`:upper16:` syntax at all.
+    // `movw`/`movt` immediate operand: a plain number is used as-is; a
+    // label (`Mem`) has its resolved address split into its lower
+    // (`movw`) or upper (`movt`) 16 bits automatically.
     uint16_t evalHiLo(const Operand &op, bool hi, std::string *externalName = nullptr,
                       bool *needsBaseShift = nullptr) {
         if (op.kind == Operand::Reg) fail("expected an immediate or label operand, not a register");
@@ -363,18 +334,12 @@ class Assembler {
     }
 
     // --- condition-code suffixes -----------------------------------------
-    // Every A32 instruction's own top 4 bits are its condition field -
-    // this dialect spells the condition as a mnemonic suffix (`moveq`,
-    // `beq`, ...), same idea as real UAL syntax, just without the
-    // `IT`-block machinery Thumb would otherwise need (this dialect
-    // only ever emits full 32-bit A32 encodings - see ArmAssembler.h's
-    // own header comment).
+    // Every A32 instruction's top 4 bits are its condition field, spelled
+    // here as a mnemonic suffix (`moveq`, `beq`, ...).
     static uint8_t condOf(const std::string &suffix) {
         static const std::unordered_map<std::string, uint8_t> conds = {
             {"", 0xE}, {"eq", 0x0}, {"ne", 0x1}, {"lt", 0xB}, {"ge", 0xA}, {"le", 0xD}, {"gt", 0xC},
-            // Unsigned counterparts (real ARM condition codes HS/LO/
-            // HI/LS) - the new type system's unsigned compare/branch,
-            // see ArmCodegen.cpp's own genCompare().
+            // Unsigned counterparts: real ARM condition codes HS/LO/HI/LS.
             {"hs", 0x2}, {"lo", 0x3}, {"hi", 0x8}, {"ls", 0x9},
         };
         auto it = conds.find(suffix);
@@ -383,17 +348,14 @@ class Assembler {
     }
 
     // --- A32 instruction formats -----------------------------------------
-    // Data-processing, register operand2 (shift_imm=0, shift_type=0,
-    // bit4=0 - i.e. operand2 is simply `Rm`, unshifted): cond(4) 00
-    // 0 opcode(4) S(1) Rn(4) Rd(4) 00000000 Rm(4).
+    // Data-processing, unshifted register operand2 (Rm):
+    // cond(4) 00 0 opcode(4) S(1) Rn(4) Rd(4) 00000000 Rm(4).
     void emitDPReg(uint8_t cond, uint8_t opcode, uint8_t s, uint8_t rn, uint8_t rd, uint8_t rm) {
         emit32((static_cast<uint32_t>(cond) << 28) | (static_cast<uint32_t>(opcode) << 21) |
                (static_cast<uint32_t>(s) << 20) | (static_cast<uint32_t>(rn) << 16) |
                (static_cast<uint32_t>(rd) << 12) | rm);
     }
-    // Data-processing, immediate operand2 (rotate=0, i.e. operand2 is
-    // simply `imm8` with no rotation - every immediate this dialect
-    // ever emits already fits 0-255 unrotated, see ArmCodegen.cpp):
+    // Data-processing, unrotated 8-bit immediate operand2:
     // cond(4) 00 1 opcode(4) S(1) Rn(4) Rd(4) 0000 imm8(8).
     void emitDPImm(uint8_t cond, uint8_t opcode, uint8_t s, uint8_t rn, uint8_t rd, uint32_t imm8) {
         if (imm8 > 0xFF) fail("data-processing immediate out of 8-bit range");
@@ -401,19 +363,13 @@ class Assembler {
                (static_cast<uint32_t>(s) << 20) | (static_cast<uint32_t>(rn) << 16) |
                (static_cast<uint32_t>(rd) << 12) | imm8);
     }
-    // `add`/`sub`: dialect order `mnemonic rd,rn,op2` where op2 is
-    // either a register (plain `ADD`/`SUB`) or an immediate (`ADD`/
-    // `SUB` with I=1) - ArmCodegen.cpp only ever uses one or the
-    // other depending on context, never needing both forms of the
-    // same expression.
+    // `add`/`sub rd,rn,op2`, op2 a register or an immediate.
     void encodeAddSub(uint8_t cond, uint8_t opcode, const std::vector<Operand> &ops, const std::string &mnemonic) {
         encodeAddSubS(cond, opcode, 0, ops, mnemonic);
     }
-    // `s` sets the S bit (update flags, specifically carry) - needed
-    // on the low-word half of a `long long` add/sub chain so the
-    // high-word `adc`/`sbc` reads the real carry/borrow out of it
-    // (ArmCodegen.cpp's own genWideAdd()); plain `add`/`sub` never
-    // sets it, matching every existing call site's own behavior.
+    // `s` sets the S bit (update flags, specifically carry/borrow) -
+    // needed on the low-word half of a `long long` add/sub chain so the
+    // high-word `adc`/`sbc` reads the carry/borrow out of it.
     void encodeAddSubS(uint8_t cond, uint8_t opcode, uint8_t s, const std::vector<Operand> &ops,
                         const std::string &mnemonic) {
         uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
@@ -425,8 +381,7 @@ class Assembler {
             emitDPImm(cond, opcode, s, rn, rd, evalImm(op2));
         }
     }
-    // `mov`/`mov<cc>`: dialect order `mnemonic rd,op2`, Rn unused
-    // (opcode MOV has no first-source-register field at all).
+    // `mov`/`mov<cc> rd,op2` - MOV has no first-source-register field.
     void encodeMov(uint8_t cond, const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         const Operand &op2 = requireOperand(ops, 1, mnemonic);
@@ -436,33 +391,27 @@ class Assembler {
             emitDPImm(cond, 0xD, 0, 0, rd, evalImm(op2));
         }
     }
-    // `mvn rd,rm` - register operand2 only (ArmCodegen.cpp's own `~`
-    // always has a register operand).
+    // `mvn rd,rm` - register operand2 only.
     void encodeMvn(const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         uint8_t rm = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
         emitDPReg(0xE, 0xF, 0, 0, rd, rm);
     }
-    // `and`/`orr`/`eor` - dialect order `mnemonic rd,rn,rm`, register
-    // operand2 only.
+    // `and`/`orr`/`eor rd,rn,rm`, register operand2 only.
     void encodeLogical(uint8_t opcode, const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         uint8_t rn = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
         uint8_t rm = requireReg(requireOperand(ops, 2, mnemonic), mnemonic);
         emitDPReg(0xE, opcode, 0, rn, rd, rm);
     }
-    // `rsb rd,rm,#0` - this dialect's own negate idiom (`rd = 0 -
-    // rm`), immediate operand2 only (always literally `0`).
+    // `rsb rd,rm,#0` - negate idiom (`rd = 0 - rm`).
     void encodeRsb(const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         uint8_t rn = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
         uint32_t imm = evalImm(requireOperand(ops, 2, mnemonic));
         emitDPImm(0xE, 0x3, 0, rn, rd, imm);
     }
-    // `cmp rn,rm` - sets flags, no destination register (Rd field is
-    // unused/zero), S is architecturally always 1. Register operand2
-    // only (ArmCodegen.cpp's own comparisons always compare two
-    // already-evaluated values, never a bare immediate).
+    // `cmp rn,rm`/`cmp rn,#imm` - sets flags, Rd unused, S always 1.
     void encodeCmp(const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rn = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         const Operand &op2 = requireOperand(ops, 1, mnemonic);
@@ -472,11 +421,7 @@ class Assembler {
             emitDPImm(0xE, 0xA, 1, rn, 0, evalImm(op2));
         }
     }
-    // `mul rd,rn,rm` - dialect order matches the real instruction's
-    // own field order directly (`Rd = Rm_field * Rs_field`,
-    // multiplication being commutative, so which dialect operand maps
-    // to which hardware field doesn't matter for correctness): cond
-    // 000000 A(=0) S(=0) Rd 0000 Rs 1001 Rm.
+    // `mul rd,rn,rm`: cond 000000 A(=0) S(=0) Rd 0000 Rs 1001 Rm.
     void encodeMul(const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         uint8_t rn = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
@@ -485,13 +430,7 @@ class Assembler {
                rm);
     }
     // `umull rdLo,rdHi,rn,rm` (RdHi:RdLo = Rn*Rm, full unsigned 64-bit
-    // product) - dialect order matches ArmCodegen.cpp's own
-    // genWideMul(). Real ARMv7-A encoding: same multiply-instruction
-    // family as `mul` above (cond 000 opcode(4) S RdHi RdLo Rs 1001
-    // Rm), opcode=0100 for UMULL (`mul`'s own opcode is implicitly
-    // 0000) - the one widening multiply the new type system's `long
-    // long` needs (see genWideMul()'s own comment on why only the
-    // low-dword*low-dword cross term needs this, not the other two).
+    // product): cond 000 opcode(4)=0100 S RdHi RdLo Rs 1001 Rm.
     void encodeUmull(const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rdLo = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         uint8_t rdHi = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
@@ -501,17 +440,11 @@ class Assembler {
                (static_cast<uint32_t>(rdLo) << 12) | (static_cast<uint32_t>(rn) << 8) | (0x9u << 4) | rm);
     }
     // `sdiv rd,rn,rm` (`Rd = Rn / Rm`, signed): cond 0111 0001 Rd
-    // 1111 Rm 0001 Rn - note the hardware field order (`Rm` sits
-    // where `Rn` usually would, and vice versa) is the real ARMv7-A
-    // SDIV encoding, not a dialect convention.
+    // 1111 Rm 0001 Rn - note Rm/Rn swap fields, per the real SDIV encoding.
     void encodeSdiv(const std::vector<Operand> &ops, const std::string &mnemonic) {
         encodeDiv(0x71u, ops, mnemonic);
     }
-    // `udiv rd,rn,rm` (`Rd = Rn / Rm`, unsigned) - identical shape to
-    // `sdiv` except bit21 (0111 0011 vs 0111 0001), the real ARMv7-A
-    // UDIV/SDIV encoding difference - see ArmCodegen.cpp's own
-    // genDivMod() for the signed/unsigned choice the new type system
-    // now has to make.
+    // `udiv rd,rn,rm` - same shape as `sdiv`, bit21 differs (0111 0011).
     void encodeUdiv(const std::vector<Operand> &ops, const std::string &mnemonic) {
         encodeDiv(0x73u, ops, mnemonic);
     }
@@ -522,8 +455,7 @@ class Assembler {
         emit32((0xEu << 28) | (opBits << 20) | (static_cast<uint32_t>(rd) << 16) | (0xFu << 12) |
                (static_cast<uint32_t>(rm) << 8) | (0x1u << 4) | rn);
     }
-    // `mls rd,rn,rm,ra` (`Rd = Ra - Rn*Rm`): cond 0000 0110 Rd Ra Rm
-    // 1001 Rn.
+    // `mls rd,rn,rm,ra` (`Rd = Ra - Rn*Rm`): cond 0000 0110 Rd Ra Rm 1001 Rn.
     void encodeMls(const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         uint8_t rn = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
@@ -532,16 +464,10 @@ class Assembler {
         emit32((0xEu << 28) | (0x06u << 20) | (static_cast<uint32_t>(rd) << 16) | (static_cast<uint32_t>(ra) << 12) |
                (static_cast<uint32_t>(rm) << 8) | (0x9u << 4) | rn);
     }
-    // `lsl`/`lsr rd,rn,op2` (dialect: `rd = rn shifted by op2`) - op2
-    // either a register (real ARM "register-shifted-register"
-    // operand2 - the shift *amount* register sits in the `Rs` field,
-    // the value-to-shift register sits where `Rm` normally would:
-    // cond 000 1101 0 0000 Rd Rs 0 shtype 1 Rm) or an immediate shift
-    // amount (real ARM "immediate-shifted-register" operand2: cond
-    // 000 1101 0 0000 Rd shamt(5) shtype 0 Rm) - both forms are a
-    // `MOV` with a shifted-register operand2 underneath (the real UAL
-    // `LSL`/`LSR` mnemonics are themselves just aliases for exactly
-    // this), `shtype`=00 for LSL, 01 for LSR.
+    // `lsl`/`lsr rd,rn,op2` (`rd = rn shifted by op2`), encoded as a MOV
+    // with a shifted-register operand2 (`shtype`=00 LSL, 01 LSR): register
+    // shift amount is cond 000 1101 0 0000 Rd Rs 0 shtype 1 Rm; immediate
+    // shift amount is cond 000 1101 0 0000 Rd shamt(5) shtype 0 Rm.
     void encodeShift(uint8_t shtype, const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         uint8_t rn = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
@@ -558,10 +484,7 @@ class Assembler {
         }
     }
     // `movw`/`movt rd,op2`: cond 0011 000(w)/100(t) imm4 Rd imm12,
-    // where the full imm16 = imm4:imm12 - a plain number is used
-    // exactly as ArmCodegen.cpp already computed it; a label (`Mem`)
-    // has its own full resolved address auto-split into its
-    // lower/upper half (see evalHiLo()'s own comment).
+    // where imm16 = imm4:imm12.
     void encodeMovWT(bool top, const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         const Operand &immOp = requireOperand(ops, 1, mnemonic);
@@ -578,10 +501,8 @@ class Assembler {
         emit32((0xEu << 28) | ((top ? 0x34u : 0x30u) << 20) | (imm4 << 16) | (static_cast<uint32_t>(rd) << 12) |
                imm12);
     }
-    // Dedicated zero-offset load/store - see ArmCodegen.h's own
-    // header comment: `ldind addrReg,destReg` / `stind
-    // addrReg,srcReg`, real `LDR`/`STR` underneath with a literal
-    // `[Rn, #0]` offset: cond 01 I(=0) P(=1) U(=1) B(=0) W(=0)
+    // `ldind addrReg,destReg` / `stind addrReg,srcReg` - LDR/STR with a
+    // fixed `[Rn, #0]` offset: cond 01 I(=0) P(=1) U(=1) B(=0) W(=0)
     // L Rn Rd 000000000000.
     void encodeLdindStind(bool isLoad, const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t base = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
@@ -592,9 +513,7 @@ class Assembler {
         emit32(word);
     }
     // `ldindb`/`stindb addrReg,destOrSrcReg` - LDRB/STRB, zero offset:
-    // the same word-transfer encoding above with the B bit (bit22)
-    // set - a narrower-than-native-int Var/Slot's own unsigned byte
-    // load/store (see ArmCodegen.cpp's loadOperand()/storeOperand()).
+    // same encoding as encodeLdindStind() with the B bit (bit22) set.
     void encodeLdindStindB(bool isLoad, const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t base = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         uint8_t rt = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
@@ -603,12 +522,11 @@ class Assembler {
         if (isLoad) word |= (0x1u << 20);
         emit32(word);
     }
-    // `ldindh`/`stindh`/`ldindsb`/`ldindsh addrReg,destReg` - the real
-    // ARM "extra load/store" instruction family (halfword, and signed
-    // byte/halfword load - there's no STRSB/STRSH, a store never
-    // needs a sign), zero offset, immediate form: cond 000 P(1) U(1)
-    // I(1) W(0) L Rn Rt imm4H(0) 1 S H 1 imm4L(0). `s`/`h` pick which
-    // of LDRH(0,1)/LDRSB(1,0)/LDRSH(1,1)/STRH(0,1 with L=0) this is.
+    // `ldindh`/`stindh`/`ldindsb`/`ldindsh addrReg,destReg` - ARM "extra
+    // load/store" family (halfword, signed byte/halfword load; no
+    // STRSB/STRSH since a store never needs a sign), zero offset,
+    // immediate form: cond 000 P(1) U(1) I(1) W(0) L Rn Rt imm4H(0) 1 S H
+    // 1 imm4L(0). `s`/`h` pick LDRH(0,1)/LDRSB(1,0)/LDRSH(1,1)/STRH(0,1).
     void encodeExtraLdSt(bool isLoad, bool s, bool h, const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t base = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         uint8_t rt = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
@@ -619,28 +537,18 @@ class Assembler {
         emit32(word);
     }
     // `b`/`bl<cc> label`: cond 101 L offset24, offset24 = (target -
-    // (thisInstrAddr+8)) / 4 - real A32 PC-relative branch semantics
-    // (the "+8" is the real architectural "PC reads as the address of
-    // the branch instruction plus 8" quirk, not a pipeline detail this
-    // assembler invented).
+    // (thisInstrAddr+8)) / 4 - the "+8" is the architectural "PC reads as
+    // branch address plus 8" quirk.
     void encodeBranch(uint8_t cond, bool link, const std::vector<Operand> &ops, const std::string &mnemonic) {
         const Operand &target = requireOperand(ops, 0, mnemonic);
         if (target.kind != Operand::Mem) fail("'" + mnemonic + "': target must be a label");
         std::string externalName;
         uint32_t targetAddr = evalExpr(target.expr, &externalName);
-        // A branch target defined in *this* object is already a valid
-        // PC-relative offset regardless of where this object ends up
-        // linked (both its own address and this instruction's own are
-        // shifted by the same base) - no relocation needed at all,
-        // unlike an absolute-address load (movw/movt above). Only a
-        // genuinely cross-object target (undefined here, e.g. `bl
-        // fn_main` reaching another file's own function) needs
-        // deferring - see ../arm64/Arm64Assembler.cpp's own identical
-        // reasoning for its own PC-relative `b`/`bl`. The field itself
-        // is left zero here; ../../linker/factory/ArmLinkerFactory.cpp's
-        // own local patch function fills it in once the symbol's real
-        // linked address is known, reproducing this same "+8" below at
-        // link time instead of assembly time.
+        // A target defined in this object is already a valid PC-relative
+        // offset regardless of link address, so needs no relocation.
+        // Only a cross-object target (still undefined here) does; the
+        // field is left zero and ArmLinkerFactory.cpp's patch function
+        // fills it in once the symbol's linked address is known.
         if (stage_ == 2 && allowExternal_ && !externalName.empty()) {
             relocations_.push_back({offset_, externalName, kArmRelocRel24});
             emit32((static_cast<uint32_t>(cond) << 28) | (0x5u << 25) | ((link ? 1u : 0u) << 24));
@@ -657,22 +565,15 @@ class Assembler {
         uint8_t rm = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         emit32((0xEu << 28) | 0x012FFF10u | rm);
     }
-    // `blx rn` (`BLX (register)`) - the real ARMv7-A encoding for a
-    // near call through a register rather than a label (`bl`'s own
-    // operand is always `Mem`, a PC-relative label - see
-    // encodeBranch()'s own comment): cond 0001 0010 1111 1111 1111
-    // 0011 Rm - identical to `bx`'s own encoding except bits 7:4 are
-    // 0011 rather than 0001 (the bit that additionally makes this a
-    // "with Link" branch, writing the return address into `lr`,
-    // instead of a plain register branch).
+    // `blx rn` (`BLX (register)`, a near call through a register rather
+    // than a label): cond 0001 0010 1111 1111 1111 0011 Rm - same as
+    // `bx` but bits 7:4 are 0011, writing the return address into `lr`.
     void encodeBlx(const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rm = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         emit32((0xEu << 28) | 0x012FFF30u | rm);
     }
 
-    // The full instruction vocabulary ../ArmCodegen.cpp ever emits -
-    // see ArmAssembler.h's own header comment. Not a general A32
-    // encoder: exactly these mnemonic/operand-shape combinations.
+    // Not a general A32 encoder: only the mnemonics ArmCodegen.cpp emits.
     void encodeInstr(const std::string &mnemonic, const std::vector<Operand> &ops) {
         if (mnemonic == "add") {
             encodeAddSub(0xE, 0x4, ops, mnemonic);
@@ -682,10 +583,8 @@ class Assembler {
             encodeAddSub(0xE, 0x2, ops, mnemonic);
             return;
         }
-        // adds/subs (flag-setting, carry out for the next adc/sbc)
-        // and adc/sbc (carry/borrow in) - a `long long`'s own
-        // ripple-carry add/sub, one native word wider (see
-        // ArmCodegen.cpp's genWideAdd()).
+        // adds/subs set carry/borrow for the following adc/sbc, forming a
+        // `long long` ripple-carry add/sub.
         if (mnemonic == "adds") {
             encodeAddSubS(0xE, 0x4, 1, ops, mnemonic);
             return;
@@ -811,14 +710,10 @@ class Assembler {
             return;
         }
         if (mnemonic.size() >= 1 && mnemonic[0] == 'b' && mnemonic != "bl" && mnemonic != "bx" && mnemonic != "blx") {
-            // `b`/`beq`/`bne` - the condition suffix is whatever
-            // follows the leading 'b'.
             encodeBranch(condOf(mnemonic.substr(1)), /*link=*/false, ops, mnemonic);
             return;
         }
         if (mnemonic.size() >= 3 && mnemonic.substr(0, 3) == "mov") {
-            // `mov`/`moveq`/`movne`/`movlt`/`movge`/`movle`/`movgt` -
-            // the condition suffix is whatever follows "mov".
             encodeMov(condOf(mnemonic.substr(3)), ops, mnemonic);
             return;
         }
@@ -834,10 +729,8 @@ class Assembler {
     bool allowExternal_;
 };
 
-// Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - see ArmAssembler.h's own `assembleArmObject`
-// comment, and ../m68k/M68kAssembler.cpp's own `buildObjectFile` for
-// the identical algorithm this is ported from.
+// Builds the format-neutral ObjectFile from a completed object-mode
+// Assembler.
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kArmCoffMachine;

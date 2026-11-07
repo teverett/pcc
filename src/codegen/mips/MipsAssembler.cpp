@@ -18,9 +18,7 @@ namespace {
 
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("MipsAssembler: " + msg); }
 
-// --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
-// Same Syllable/Group shape as every other backend's own assembler -
-// see M68kAssembler.cpp's own comment.
+// --- Parsing, via the shared grammar/PccAsm.g4 ---------------------------
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
     char sign = 0;
@@ -29,14 +27,8 @@ struct Syllable {
     std::vector<Syllable> group;
 };
 
-// One operand, classified from a bare expression - see
-// MipsAssembler.h's own comment on why there's no real `0($t2)`/
-// `%hi()`/`%lo()` MIPS syntax here. `Reg` comes from recognizing a
-// bare register name; `Imm` from a bare (optionally signed) number;
-// anything else (a label, or `label+N`) is `Mem` - an absolute
-// address, resolved to the label's own full 32-bit value and then
-// (for `lui`/`ori` specifically - see MipsAssembler.cpp's own
-// encodeInstr()) split into its upper/lower half.
+// A bare register name is Reg, a bare signed number is Imm, anything
+// else (a label or `label+N`) is Mem, resolved as an address.
 struct Operand {
     enum Kind { Reg, Imm, Mem } kind = Imm;
     int reg = -1;
@@ -79,16 +71,8 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
     return result;
 }
 
-// This dialect's own fixed register numbering (not a real MIPS ABI
-// register-name table in full - just the handful MipsCodegen.cpp
-// ever emits - see MipsCodegen.h's own header comment on each
-// register's role): `zero`=0, `at`=1, `t0`=8, `t1`=9, `t2`=10,
-// `sp`=29, `fp`=30, `ra`=31 - the real MIPS register numbers those
-// names carry in every actual MIPS assembler too (`fp` is the real
-// o32 ABI's own `$s8`/`$fp`), so the encoded bit patterns below match
-// genuine MIPS object code exactly, even though this dialect only
-// ever names this one subset of the 32 GPRs. Returns -1 if `name`
-// isn't one of them.
+// Numbers match the real MIPS/o32 ABI register numbers (fp is $s8).
+// Returns -1 if not one of this dialect's named registers.
 int regNumber(const std::string &lower) {
     static const std::unordered_map<std::string, int> names = {
         {"zero", 0}, {"at", 1},  {"t0", 8},  {"t1", 9},  {"t2", 10}, {"t3", 11},
@@ -193,12 +177,7 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
-// One pending fixup `assembleMipsObject()` (see MipsAssembler.h's own
-// header comment) turns into a real ObjRelocation once assembly is
-// done - `offset` into `bytes()`, `symbolName` the reference that
-// couldn't be resolved locally (or the reserved pseudo-symbol ".."
-// for a same-file address's own needed base-shift), `kind` one of
-// kMipsRelocHi/Lo/Jump.
+// A pending fixup, turned into an ObjRelocation once assembly is done.
 struct Relocation {
     uint32_t offset;
     std::string symbolName;
@@ -243,13 +222,6 @@ class Assembler {
                 orgBase_ = evalExpr(line.exprList.at(0));
                 return;
             case Line::Dw:
-                // Each word's own expression goes through the exact same
-                // external-name/base-shift tracking as `lui`/`ori`'s own
-                // Hi/Lo immediate (see encodeHiLo()) - a bare symbol here
-                // (an array initializer's address-of-function/global
-                // element) resolves and relocates as a plain additive
-                // 32-bit word (kMipsRelocAbs32), rather than the split
-                // Hi/Lo pair an instruction's own immediate field needs.
                 for (const auto &e : line.exprList) {
                     std::string externalName;
                     bool needsBaseShift = false;
@@ -262,9 +234,6 @@ class Assembler {
                 }
                 return;
             case Line::Db:
-                // A `char` global/array element - no relocation
-                // possible at this width (an address never fits in a
-                // byte), so this is always a plain literal.
                 for (const auto &e : line.exprList) emit8(static_cast<uint8_t>(evalExpr(e)));
                 return;
             case Line::Dh:
@@ -276,11 +245,6 @@ class Assembler {
         }
     }
 
-    // `externalName`/`needsBaseShift` mirror
-    // ../m68k/M68kAssembler.cpp's own `evalExpr` exactly - see
-    // MipsAssembler.h's own header comment on why *any* local address
-    // reference, not just an external one, needs a relocation here
-    // once `allowExternal_` is set.
     uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
@@ -347,23 +311,14 @@ class Assembler {
         return static_cast<uint16_t>(v & 0xFFFF);
     }
 
-    // The signed/unsigned decimal `op`'s own exprList already carries
-    // (e.g. `addiu t0,zero,-4`), masked to 16 bits.
     uint16_t evalImm(const Operand &op) {
         if (op.kind == Operand::Reg) fail("expected an immediate or label operand, not a register");
         int32_t v = static_cast<int32_t>(evalExpr(op.expr));
         return imm16Of(v);
     }
 
-    // `lui`/`ori`'s own immediate operand: a plain number is used
-    // exactly as MipsCodegen.cpp already computed it (that half of a
-    // literal it split itself - see IntLit's own codegen); a label
-    // (`Mem`) instead has its own full resolved address split into
-    // its upper (`lui`) or lower (`ori`) 16 bits automatically here -
-    // see MipsAssembler.h's own header comment on why this dialect
-    // needs no `%hi`/`%lo` syntax at all. `externalName`/
-    // `needsBaseShift` are only ever meaningful for a `Mem` operand -
-    // see `encodeHiLo()`'s own call site.
+    // A plain number (Imm) is used as-is; a label (Mem) gets its full
+    // resolved address split into upper (lui) or lower (ori) 16 bits.
     uint16_t evalHiLo(const Operand &op, bool hi, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         if (op.kind == Operand::Reg) fail("expected an immediate or label operand, not a register");
@@ -393,10 +348,8 @@ class Assembler {
         emit32((static_cast<uint32_t>(opcode) << 26) | (static_cast<uint32_t>(rs) << 21) |
                (static_cast<uint32_t>(rt) << 16) | imm);
     }
-    // J-type: opcode(6) instr_index(26) - a real MIPS jump's own
-    // target is this program's own flat 32-bit address shifted right
-    // 2 (word-aligned) and truncated to 26 bits, exactly like any
-    // real MIPS assembler/linker computes it.
+    // J-type: opcode(6) instr_index(26); target address shifted right
+    // 2 (word-aligned) and truncated to 26 bits.
     void emitJ(uint8_t opcode, uint32_t targetAddr) {
         emit32((static_cast<uint32_t>(opcode) << 26) | ((targetAddr >> 2) & 0x03FFFFFFu));
     }
@@ -408,28 +361,21 @@ class Assembler {
         uint8_t rt = requireReg(requireOperand(ops, 2, mnemonic), mnemonic);
         emitR(0, rs, rt, rd, 0, funct);
     }
-    // SLLV/SRLV - dialect order: mnemonic rd,rt,rs (rs is the shift-
-    // count register - real MIPS field order, see MipsCodegen.h's own
-    // header comment on why the dialect spells the count operand
-    // last, matching how it's actually read in hardware).
+    // SLLV/SRLV - dialect order: mnemonic rd,rt,rs (rs is the shift-count register).
     void encodeShiftV(uint8_t funct, const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         uint8_t rt = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
         uint8_t rs = requireReg(requireOperand(ops, 2, mnemonic), mnemonic);
         emitR(0, rs, rt, rd, 0, funct);
     }
-    // SLL - dialect order: mnemonic rd,rt,shamt (shamt is a literal
-    // 0-31 constant, not a register).
+    // SLL - dialect order: mnemonic rd,rt,shamt (shamt a literal 0-31 constant).
     void encodeShiftImm(uint8_t funct, const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         uint8_t rt = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
         uint8_t shamt = static_cast<uint8_t>(evalImm(requireOperand(ops, 2, mnemonic)) & 0x1F);
         emitR(0, 0, rt, rd, shamt, funct);
     }
-    // ADDIU/SLTIU - dialect order: mnemonic rt,rs,imm. Never takes a
-    // label operand (see MipsCodegen.cpp's own call sites - always a
-    // plain literal), so unlike `encodeHiLo()` below this never needs
-    // to track a relocation.
+    // ADDIU/SLTIU - dialect order: mnemonic rt,rs,imm; imm is always a plain literal.
     void encodeImmArith(uint8_t opcode, const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rt = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         uint8_t rs = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
@@ -437,21 +383,11 @@ class Assembler {
         emitI(opcode, rs, rt, imm);
     }
 
-    // LUI's own `rt,imm` / ORI's own `rt,rs,imm` immediate operand,
-    // when it's a label (`Mem`): every such reference - even to a
-    // label defined in this same file - gets a relocation against the
-    // reserved pseudo-symbol ".." (this object assembles with `org 0`
-    // - see MipsAssembler.h's own header comment), and an undefined
-    // one additionally (or instead) gets one against its own name.
-    // `relocKind` is `kMipsRelocHi` for `lui`, `kMipsRelocLo` for
-    // `ori` - see MipsLinkerFactory.cpp's own paired Hi/Lo patch
-    // functions for why `lui` must always immediately precede `ori`
-    // for the same address (both the 4-byte-apart site offsets *and*
-    // the relocation-list order that gives the Hi patch access to the
-    // Lo site's own still-unpatched value both come from nothing more
-    // than MipsCodegen.cpp's own `loadAddress()` always emitting them
-    // back to back, and this function recording each one's relocation
-    // the moment it's encoded).
+    // LUI/ORI's immediate operand: a label operand gets a relocation
+    // against the reserved pseudo-symbol ".." (object assembles at
+    // `org 0`), plus one against its own name if undefined. lui must
+    // immediately precede ori for the same address so the linker's Hi
+    // patch can find the paired Lo site at a fixed +4 offset.
     void encodeHiLo(uint8_t opcode, uint8_t rs, uint8_t rt, const Operand &immOp, bool hi, uint16_t relocKind) {
         std::string externalName;
         bool needsBaseShift = false;
@@ -463,9 +399,6 @@ class Assembler {
         emitI(opcode, rs, rt, imm);
     }
 
-    // The full instruction vocabulary ../MipsCodegen.cpp ever emits -
-    // see MipsAssembler.h's own header comment. Not a general MIPS
-    // encoder: exactly these mnemonic/operand-shape combinations.
     void encodeInstr(const std::string &mnemonic, const std::vector<Operand> &ops) {
         if (mnemonic == "nop") {
             if (!ops.empty()) fail("'nop' takes no operand");
@@ -509,19 +442,8 @@ class Assembler {
             encodeHiLo(0x0F, 0, rt, requireOperand(ops, 1, mnemonic), /*hi=*/true, kMipsRelocHi);
             return;
         }
-        // `ldind addrReg,destReg[,disp]` / `stind addrReg,srcReg[,disp]`
-        // - real LW/SW underneath; `disp` (a compile-time-constant
-        // signed displacement, imm16) defaults to 0 when omitted - see
-        // MipsCodegen.h's own header comment. A `long long`'s own
-        // high word sits 4 bytes past its low word (see
-        // MipsCodegen.cpp's loadOperand()/storeOperand()), the one
-        // place this backend needs a nonzero displacement at all.
-        // Byte/halfword load (sign- or zero-extending into a full
-        // register) / store (writing only that many low bytes) - the
-        // real LB/LBU/LH/LHU/SB/SH, same zero-displacement-by-default
-        // shape as ldind/stind above - a narrower-than-native-int
-        // Var/Slot's own load/store (see MipsCodegen.cpp's
-        // loadOperand()/storeOperand()).
+        // Byte/halfword load (sign- or zero-extending) and store
+        // (LB/LBU/LH/LHU/SB/SH); disp defaults to 0 when omitted.
         static const std::unordered_map<std::string, uint8_t> sized = {
             {"ldindb", 0x20}, {"ldindbu", 0x24}, {"ldindh", 0x21},
             {"ldindhu", 0x25}, {"stindb", 0x28}, {"stindh", 0x29},
@@ -534,6 +456,7 @@ class Assembler {
             emitI(it->second, base, rt, static_cast<uint16_t>(disp));
             return;
         }
+        // LW/SW underneath; disp defaults to 0 when omitted.
         if (mnemonic == "ldind" || mnemonic == "stind") {
             uint8_t base = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rt = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
@@ -559,12 +482,8 @@ class Assembler {
             emitR(0, rs, 0, 0, 0, 0x08);
             return;
         }
-        // JALR - dialect order: mnemonic rd,rs (real MIPS field
-        // order: rs(21) rt=0(16) rd(11) shamt=0(6) funct=0x09). A
-        // real Jump-And-Link-Register: jumps to whatever address rs
-        // holds and leaves the return address in rd, the hardware
-        // mechanism for a call whose target isn't a compile-time
-        // label (unlike JAL's own 26-bit pseudo-absolute field).
+        // JALR: jumps to the address in rs, leaves return address in rd;
+        // used when the call target isn't a compile-time label.
         if (mnemonic == "jalr") {
             uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t rs = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
@@ -574,15 +493,8 @@ class Assembler {
         if (mnemonic == "j" || mnemonic == "jal") {
             const Operand &target = requireOperand(ops, 0, mnemonic);
             if (target.kind != Operand::Mem) fail("'" + mnemonic + "': target must be a label");
-            // Unlike BEQ/BNE below (real PC-relative branches, never
-            // used to reach another file's own code - see
-            // MipsCodegen.h's own header comment), J/JAL's own target
-            // is this dialect's one pseudo-absolute address field, so
-            // even a purely intra-function jump (an `if`/`while`'s own
-            // label, never actually cross-object) needs the same ".."
-            // base-shift relocation a genuine cross-object call does -
-            // see MipsAssembler.h's own header comment on why *every*
-            // local address reference needs one here.
+            // J/JAL's target is a pseudo-absolute address field, so even
+            // an intra-function jump needs the ".." base-shift relocation.
             std::string externalName;
             bool needsBaseShift = false;
             uint32_t targetAddr = evalExpr(target.expr, &externalName, &needsBaseShift);
@@ -599,10 +511,8 @@ class Assembler {
             const Operand &target = requireOperand(ops, 2, mnemonic);
             if (target.kind != Operand::Mem) fail("'" + mnemonic + "': target must be a label");
             uint32_t targetAddr = evalExpr(target.expr);
-            // Branch displacement is relative to the delay-slot
-            // instruction's own address (the branch's own address +
-            // 4), measured in words - real MIPS PC-relative branch
-            // semantics.
+            // Displacement is relative to the delay-slot instruction's
+            // address (branch address + 4), measured in words.
             uint32_t branchEnd = orgBase_ + offset_ + 4;
             int32_t rel = (static_cast<int32_t>(targetAddr) - static_cast<int32_t>(branchEnd)) / 4;
             if (stage_ == 2 && (rel < -32768 || rel > 32767)) fail("branch target out of 16-bit range");
@@ -621,10 +531,6 @@ class Assembler {
     bool allowExternal_;
 };
 
-// Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - see MipsAssembler.h's own `assembleMipsObject`
-// comment, and ../m68k/M68kAssembler.cpp's own `buildObjectFile` for
-// the identical algorithm this is ported from.
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kMipsCoffMachine;

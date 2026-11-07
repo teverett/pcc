@@ -13,42 +13,22 @@ namespace {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
-// Where this backend's own image is loaded and runs - the
-// conventional Multiboot load address (comfortably above the BIOS/
-// real-mode data area, with no need to avoid stepping on anything
-// below 1MB the way a real-mode target has to).
+// Conventional Multiboot load address, above the BIOS/real-mode data area.
 constexpr uint32_t kLoadAddr = 0x100000;
 
-// A real Multiboot header (see the Multiboot Specification's "OS
-// image format") - the standard, real-bootloader-agnostic contract a
-// 32-bit protected-mode kernel image uses to tell whatever loaded it
-// (GRUB, or here, `qemu-system-i386 -kernel` acting as one - see
-// tests/run_tests.sh's own check_i386()) where to load it and where
-// to start running, *without* this backend ever having to write any
-// code of its own to get from real mode into protected mode: the
-// loader does that part entirely, before this image's first
-// instruction ever runs - confirmed directly by booting exactly this
-// header (reading `CS`/`EAX` over qemu's own monitor) rather than
-// assumed from the spec alone. `flags` has only the "load this
-// image's raw bytes at a fixed physical address" bit (0x10000, the
-// "a.out kludge" - no symbol table to omit, no alignment/memory-map
-// request needed for a program this simple); `header_addr`/
-// `load_addr` are both `kLoadAddr` (the header is the very first
-// thing in the image); `load_end_addr`/`bss_end_addr` of 0 both mean
-// "load the whole file, no separate zero-filled bss"; `entry_addr`
-// is `_start`, right after this 32-byte header.
+// Multiboot header (Multiboot Specification "OS image format") telling the bootloader
+// (GRUB, or qemu-system-i386 -kernel) where to load and start this image, without this
+// backend writing any real-mode/protected-mode transition code itself. `flags` sets only
+// the "load raw bytes at a fixed address" bit (0x10000); header_addr/load_addr are both
+// kLoadAddr; load_end_addr/bss_end_addr of 0 mean "load the whole file, no separate bss";
+// entry_addr is `_start`, right after this 32-byte header.
 constexpr uint32_t kMbMagic = 0x1BADB002;
 constexpr uint32_t kMbFlags = 0x10000;
 constexpr uint32_t kMbChecksum = static_cast<uint32_t>(-(static_cast<int64_t>(kMbMagic) + kMbFlags));
 }  // namespace
 
-// A literal element's own decimal text; a symbol element is the
-// referenced Slot's or Function's own label, written out bare - "dd"
-// (I386Assembler.cpp's Line::Dd) already evaluates any expr operand,
-// symbol included, through the same emitAbs32 choke point a bare
-// label used as a 32-bit immediate already goes through for
-// genAddrOf()'s "mov eax,<label>" form, so a relocation is recorded
-// for it exactly the same way.
+// A literal element's decimal text, or a symbol element's bare label (the assembler's "dd"
+// evaluates a symbol through the same relocation path as any other label-as-immediate).
 std::string I386Codegen::arrayElemText(const ir::ArrayInitElem &e) {
     if (!e.isSymbol) return std::to_string(e.value);
     return e.slot ? label(e.slot) : label(e.func);
@@ -56,11 +36,8 @@ std::string I386Codegen::arrayElemText(const ir::ArrayInitElem &e) {
 
 void I386Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType) {
     int w = widthOfType(elemType);
-    // No 64-bit data directive in this dialect - a `long long`
-    // array's own literal elements are emitted as two "dd"s (low
-    // dword, then high) per element instead; a symbol element always
-    // means a plain native-int-width address (the dispatch-table
-    // idiom - see AST.h's ArrayInitElem), so it still gets one "dd".
+    // No 64-bit data directive: a long long literal element is emitted as two "dd"s (low,
+    // then high dword); a symbol element is always a native-int-width address and gets one.
     const char *directive = w == 1 ? "db" : w == 2 ? "dw" : "dd";
     std::ostringstream line;
     line << lbl << ": " << directive << " ";
@@ -85,38 +62,22 @@ std::string I386Codegen::generate(const ir::Program &prog, bool objectMode) {
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // Real separate compilation (`--format=coff`/`elf`/`macho`/`aout`
-    // from a single file - see IRBuilder.h's `allowExternal`) means
-    // `prog` may not define `main` at all. `objectMode` (see
-    // Codegen.h) means no object file ever emits the Multiboot header
-    // or entry sequence itself - I386LinkerFactory.cpp is solely
-    // responsible for synthesizing exactly one, once every object is
-    // merged and `main`'s linked address is resolvable (see
-    // Linker.h). An object file's own base is `org 0` - it's the
-    // linker's job to place it, not this backend's (see
-    // I386Assembler.h's own header comment).
+    // Real separate compilation means `prog` may not define `main` at all; `objectMode`
+    // suppresses the Multiboot header/entry sequence here since I386LinkerFactory
+    // synthesizes exactly one once every object is merged. An object file's base is `org 0`;
+    // placing it is the linker's job.
     code_ << "org " << (objectMode ? 0 : kLoadAddr) << "\n\n";
     if (!objectMode) {
         code_ << "dd " << kMbMagic << "," << kMbFlags << "," << kMbChecksum << "\n";
         code_ << "dd " << kLoadAddr << "," << kLoadAddr << ",0,0\n";
         code_ << "dd _start\n\n";
         code_ << "_start:\n";
-        // Masks both real 8259 PICs - confirmed directly that without
-        // this, a program calling `_ion()` (this file's own `sti`, in
-        // genExpr() below) triple-faults the moment a real hardware
-        // timer tick arrives, since this backend never builds a real
-        // IDT for one to vector through (same "real but nothing to
-        // usefully do" stance as M68kCodegen.cpp's own `_ion()`/
-        // `_iof()` comment - masking the PICs is what makes that
-        // stance actually safe here, not just notionally true).
+        // Masks both 8259 PICs: this backend builds no IDT, so an unmasked timer interrupt
+        // (possible once `_ion()` runs) would triple-fault.
         code_ << "    mov al,0xFF\n    out 0x21,al\n";
         code_ << "    mov al,0xFF\n    out 0xA1,al\n";
         code_ << "    call " << label(mainFn) << "\n";
-        // The result sits in eax the moment execution reaches `halt` -
-        // see I386Codegen.h's own header comment on why that's the
-        // authoritative place to read it from (a real, directly
-        // inspectable 32-bit register).
-        code_ << "    hlt\n";
+        code_ << "    hlt\n";  // result sits in eax
         code_ << "halt:\n    jmp halt\n\n";
     }
 
@@ -124,12 +85,8 @@ std::string I386Codegen::generate(const ir::Program &prog, bool objectMode) {
 
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        // An external global (real separate compilation - see IR.h's
-        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
-        // defined in this file at all - it must never get a local
-        // storage word here, only ever be referenced by name (see
-        // label()) in code, letting the assembler's own undefined-
-        // symbol handling defer it to a relocation.
+        // An external global isn't defined in this file; skip it here so it's only ever
+        // referenced by name, letting the assembler defer it to a relocation.
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
@@ -154,8 +111,6 @@ std::string I386Codegen::generate(const ir::Program &prog, bool objectMode) {
     return out.str();
 }
 
-// Single-file-only - see M6502Codegen.cpp's own version of this same
-// comment (no `--format=coff` here either).
 std::map<std::string, std::string> I386Codegen::perFileAsm() const { return perFileAsm_; }
 
 void I386Codegen::genFunction(const ir::FunctionBody &fn) {
@@ -285,10 +240,8 @@ void I386Codegen::genExpr(const ir::Expr &e) {
                 genCompoundThroughEbx(e);
                 return;
             }
-            // Plain scalar target - operandOf(slot) is a stable
-            // memory operand (a label or an ebp-relative offset),
-            // never a clobberable register, so no address needs to be
-            // held across rhs's own evaluation at all.
+            // operandOf(slot) is a stable memory operand, so no address needs to be held
+            // across rhs's evaluation.
             std::string mem = operandOf(e.slot);
             genExpr(*e.rhs);  // eax = rhs
             code_ << "    mov ebx,eax\n";
@@ -308,11 +261,7 @@ void I386Codegen::genExpr(const ir::Expr &e) {
         }
         case ir::ExprKind::Ternary: {
             genExpr(*e.lhs);
-            // The condition itself (unlike this node's own result type,
-            // which IRBuilder.cpp's rejectIfWide() guarantees is never
-            // wide) can still be a wide expression - same "or the two
-            // halves together before testing" idiom If/While already
-            // use.
+            // The condition can be wide even though the result type never is.
             if (isWide(e.lhs->type)) code_ << "    or eax,edx\n";
             std::string Lelse = newLabel();
             std::string Ldone = newLabel();
@@ -325,13 +274,6 @@ void I386Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Stores through at e.type's own width/signedness - the
-            // pointee type of a real typed pointer (char*/short*/
-            // long*/long long*/...), or a plain native int word for
-            // the still-supported untyped-int-as-address style - see
-            // IRBuilder.cpp's own DerefAssign comment. A wide (8-byte)
-            // pointee needs both halves' addresses, one dword apart,
-            // same as any other wide store.
             genExpr(*e.lhs);  // eax = pointer value
             code_ << "    mov ebx,eax\n    push ebx\n";
             genExpr(*e.rhs);  // eax, or edx:eax if wide = value to store
@@ -350,8 +292,6 @@ void I386Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                // Loads at e.type's own width/signedness - see
-                // DerefAssign's identical comment above.
                 genExpr(*e.rhs);  // eax = pointer value
                 code_ << "    mov ebx,eax\n";
                 loadOperand("[ebx]", "[ebx+4]", e.type);
@@ -365,18 +305,9 @@ void I386Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            // Real cdecl-style argument passing - push right-to-left
-            // so param 0 ends up closest to the return address (see
-            // I8086Codegen.h's own `addr()` comment), caller cleans up
-            // with `add esp,N` after the call returns. See
-            // I8086Codegen.cpp's own identical `Call` case. Every
-            // argument reserves at least one native int's worth (the
-            // same "no narrower than a native word" rule
-            // IRBuilder.cpp's own param-offset layout already applies
-            // - there's no "push a single byte" on real i386), and a
-            // wide (`long long`) argument pushes its high dword first
-            // so its low dword ends up at the lower address, matching
-            // a wide Param's own frameOffset/frameOffset+4 layout.
+            // cdecl: push right-to-left so param 0 ends up closest to the return address;
+            // caller cleans up with `add esp,N`. A wide argument pushes its high dword
+            // first so its low dword ends up at the lower address.
             int totalBytes = 0;
             for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
@@ -393,16 +324,9 @@ void I386Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::CallPtr: {
-            // e.args is always empty here - IRBuilder.cpp rejects any
-            // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr): there's no per-callee
-            // p_<fn>_<i> cell to write one into until the callee is
-            // known, which it never is at compile time for this kind.
-            // "call eax" (I386Assembler.cpp's new FF /2 encoding) is a
-            // real, direct near-indirect call through a register -
-            // same shape as I8086Codegen.cpp's own "call ax", just 32
-            // bits wide.
-            genExpr(*e.lhs);  // eax = the callee's own entry address
+            // e.args is always empty here: IRBuilder rejects any argument on this kind
+            // before it reaches a backend, since the callee is never known at compile time.
+            genExpr(*e.lhs);  // eax = the callee's entry address
             code_ << "    call eax\n";
             return;
         }
@@ -411,13 +335,6 @@ void I386Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Intrinsic: {
-            // Real i386 interrupt enable/disable - same role as
-            // I8086Codegen.cpp's own `_ion()`/`_iof()` comment (that
-            // file's own entry sequence runs with interrupts off from
-            // `cli` until its own `sti`; this backend's stage-1 boot
-            // never re-enables them at all before handing off to
-            // stage-2, so `_ion()`/`_iof()` are the first real `sti`/
-            // `cli` either way).
             code_ << "    " << (e.op == "ion" ? "sti" : "cli") << "\n";
             return;
         }
@@ -430,11 +347,6 @@ void I386Codegen::genExpr(const ir::Expr &e) {
     }
 }
 
-// slot[idxExpr]'s effective-address operand text, e.g.
-// "[g_arr3+ebx]", with ebx already loaded with idx*4 (dwords are 4
-// bytes on this target). See I8086Codegen.cpp's own
-// `computeElementAddr` - identical role and reasoning, just 32 bits
-// throughout (`shl eax,2` instead of `shl ax,1`).
 std::string I386Codegen::computeElementAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);
     int shift = elemShift(slot->type);
@@ -444,14 +356,9 @@ std::string I386Codegen::computeElementAddr(const ir::Slot *slot, const ir::Expr
         if (slot->kind == ir::SlotKind::Global) {
             code_ << "    add ebx," << label(slot) << "\n";
         } else {
-            // A Local array's words sit at decreasing addresses as
-            // its own element index increases (addr(slot) is the
-            // array's *first* word, closest to `ebp`; later words are
-            // further below it - see I386Codegen.h's own `addr()`
-            // comment) - the mirror image of a Global array's
-            // increasing-address layout above, so this is base-minus-
-            // scaled-index, not base-plus. Same shape as
-            // I8086Codegen.cpp's own identical case.
+            // A Local array's words sit at decreasing addresses as its element index
+            // increases (addr(slot) is the first word, closest to ebp), so this is
+            // base-minus-scaled-index rather than base-plus.
             code_ << "    lea eax," << addr(slot) << "\n    sub eax,ebx\n    mov ebx,eax\n";
         }
     } else {
@@ -464,11 +371,7 @@ void I386Codegen::genCompoundOp(const std::string &op, Type type) {
     bool isUnsigned = type.isUnsigned;
     if (op == "+") { code_ << "    add eax,ebx\n"; return; }
     if (op == "-") { code_ << "    sub eax,ebx\n"; return; }
-    // "imul ebx"/"mul ebx" (one operand, same real-hardware shape
-    // genMul() already relies on): edx:eax = eax*ebx, keep eax - this
-    // assembler only ever supports that one-operand multiply form
-    // (see I386Assembler.cpp's own Operand comment), not a two-
-    // operand "imul eax,ebx".
+    // One-operand multiply: edx:eax = eax*ebx, keep eax.
     if (op == "*") { code_ << "    " << (isUnsigned ? "mul" : "imul") << " ebx\n"; return; }
     if (op == "&") { code_ << "    and eax,ebx\n"; return; }
     if (op == "|") { code_ << "    or eax,ebx\n"; return; }
@@ -478,20 +381,15 @@ void I386Codegen::genCompoundOp(const std::string &op, Type type) {
         code_ << "    " << (op == "<<" ? "shl" : (isUnsigned ? "shr" : "sar")) << " eax,cl\n";
         return;
     }
-    // "/" or "%" - ebx is a valid divisor operand directly (div/idiv
-    // only forbid eax/edx, which already hold the dividend).
+    // "/" or "%": div/idiv only forbid eax/edx (the dividend), so ebx is a valid divisor.
     code_ << "    " << (isUnsigned ? "xor edx,edx\n" : "cdq\n");
     code_ << "    " << (isUnsigned ? "div" : "idiv") << " ebx\n";
     if (op == "%") code_ << "    mov eax,edx\n";
 }
 
-// ebx must already hold the resolved address on entry. This dialect's
-// own assembler only ever supports `[ebx]` as a memory base (see
-// I386Assembler.cpp's own Operand comment) - so the address is always
-// shuttled back into ebx right before each of the two real memory
-// accesses here (never held in some other register across rhs's own
-// evaluation/the op computation in between, the way a real i386
-// toolchain's assembler would let this use esi/edi instead).
+// ebx must already hold the resolved address on entry. Only [ebx] is a valid memory base
+// in this dialect, so the address is shuttled back into ebx right before each memory access
+// rather than held in another register across rhs's evaluation.
 void I386Codegen::genCompoundThroughEbx(const ir::Expr &e) {
     code_ << "    push ebx\n";  // stash address
     genExpr(*e.rhs);             // eax = rhs
@@ -525,9 +423,7 @@ void I386Codegen::narrowEaxTo(Type to) {
     } else if (w == 2) {
         code_ << "    " << (to.isUnsigned ? "movzx eax,ax\n" : "movsx eax,ax\n");
     }
-    // 4 bytes (Int/Long): eax already holds the full value, nothing
-    // to do. 8 bytes never reaches here - see genConvert()/the
-    // isWide() branches in loadOperand()/storeOperand() below.
+    // 4 bytes: eax already holds the full value, nothing to do. 8 bytes never reaches here.
 }
 
 void I386Codegen::loadOperand(const std::string &mem, const std::string &highMem, Type type) {
@@ -558,13 +454,6 @@ void I386Codegen::storeOperand(const std::string &mem, const std::string &highMe
     }
 }
 
-// An implicit or explicit type conversion (see IR.h's ExprKind::
-// Convert). Every arithmetic/comparison operand narrower than `int`
-// is already promoted by IRBuilder before any Binary/Unary ever sees
-// it, so the only real work here is: crossing the native-int/`long
-// long` boundary (sign/zero-extending eax into edx, or just dropping
-// edx), or re-truncating+re-extending eax for a narrower target - see
-// narrowEaxTo().
 void I386Codegen::genConvert(const ir::Expr &e) {
     Type from = e.lhs->type;
     Type to = e.type;
@@ -578,16 +467,11 @@ void I386Codegen::genConvert(const ir::Expr &e) {
     } else if (!fromWide && !toWide) {
         narrowEaxTo(to);
     }
-    // fromWide && toWide: the bit pattern is already correct (a
-    // `long long`'s own signedness never changes its representation),
-    // nothing to do.
+    // fromWide && toWide: the bit pattern is already correct, nothing to do.
 }
 
-// `long long` add/sub (lhs OP rhs): evaluate both into edx:eax,
-// stashing lhs's two dwords on the stack while rhs evaluates, then
-// ripple the carry/borrow across the dword pair with adc/sbb - the
-// real-hardware generalization of a native add/sub one dword wider,
-// same idiom any 32-on-32 long-long codegen uses.
+// long long add/sub: evaluate both into edx:eax, stashing lhs's dwords on the stack while
+// rhs evaluates, then ripple the carry/borrow across the dword pair with adc/sbb.
 void I386Codegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd) {
     genExpr(lhs);                       // edx:eax = lhs
     code_ << "    push edx\n    push eax\n";  // stack (top->bottom): lhs_lo, lhs_hi
@@ -601,14 +485,10 @@ void I386Codegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAd
     }
 }
 
-// `long long` multiply, keeping the low 64 bits of the true 128-bit
-// product: result_lo = lo(lhs)*lo(rhs) mod 2^32; result_hi =
-// hi32(lo(lhs)*lo(rhs)) + lo(lhs)*hi(rhs) + hi(lhs)*lo(rhs), all mod
-// 2^32 - the standard 32-on-32 cross-multiply decomposition, using
-// the real hardware `mul` three times (each a genuine 32x32->64
-// unsigned product) and discarding whatever each cross term's own
-// `mul` leaves in `edx` (that overflow only ever affects bit 64 and
-// beyond, which this type doesn't keep).
+// long long multiply, keeping the low 64 bits of the true 128-bit product via the standard
+// 32-on-32 cross-multiply decomposition: result_lo = lo(lhs)*lo(rhs) mod 2^32; result_hi =
+// hi32(lo(lhs)*lo(rhs)) + lo(lhs)*hi(rhs) + hi(lhs)*lo(rhs), all mod 2^32. Each cross term's
+// own mul leaves overflow in edx that's discarded (it only affects bit 64 and beyond).
 void I386Codegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     code_ << "    push edx\n    push eax\n";  // lhs_lo, lhs_hi
@@ -631,36 +511,25 @@ void I386Codegen::genNegate64() {
     code_ << "    adc edx,ecx\n";
 }
 
-// Classic bit-serial shift/compare/subtract long division - see
-// I386Codegen.h's own comment on this method. `ebx` addresses a
-// 9-dword scratch block for the whole routine's duration: [ebx+0/4]
-// the dividend being consumed (shifted left, MSB first), [ebx+8/12]
-// the divisor (constant), [ebx+16/20] the remainder being built,
-// [ebx+24/28] the quotient being built, [ebx+32] the iteration
-// countdown. No native instruction here is wider than 32 bits, so
-// every one of this type's own 64 bits is shifted/compared/
-// subtracted through a pair of ordinary 32-bit operations, same
-// spirit as genWideAdd()'s ripple-carry, just looped bit-by-bit since
-// there's no `adc`-equivalent for an unknown-at-compile-time bit
-// position.
+// Bit-serial shift/compare/subtract long division: no native instruction here is wider
+// than 32 bits, so each of the 64 bits is shifted/compared/subtracted one at a time via a
+// pair of 32-bit operations. `ebx` addresses a 9-dword scratch block for the routine's
+// duration: [ebx+0/4] dividend (consumed, shifted left MSB-first), [ebx+8/12] divisor,
+// [ebx+16/20] remainder being built, [ebx+24/28] quotient being built, [ebx+32] iteration
+// countdown.
 //
-// `isUnsigned` false divides *magnitudes*: lhs/rhs's own sign bits
-// (read directly out of the pushed operand dwords, once they're
-// sitting in stable memory - no register survives a nested genExpr()
-// call, so this is simpler than trying to carry them through one)
-// are stashed in the two scratch dwords this routine's own operand
-// staging no longer needs once copied into n/d ([ebx+36]/[ebx+40]),
-// each operand negated in place if its own sign bit was set, then
-// restored afterward on the result per C's truncating-division rule:
-// the quotient is negative iff the operands' signs differed, and the
-// remainder always takes the dividend's own sign.
+// `isUnsigned` false divides magnitudes: lhs/rhs sign bits are stashed in [ebx+36]/[ebx+40]
+// (reusing the rhs staging dwords, no longer needed once copied into d), each operand
+// negated if its sign bit was set, then restored on the result per C's truncating-division
+// rule: the quotient is negative iff the operands' signs differed, the remainder always
+// takes the dividend's sign.
 void I386Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push edx\n    push eax\n";  // lhs_hi, lhs_lo (lhs_lo on top)
     genExpr(rhs);
     code_ << "    push edx\n    push eax\n";  // rhs_hi, rhs_lo (rhs_lo on top)
     code_ << "    sub esp,36\n    mov ebx,esp\n";
-    // Fetch the stashed operands from just above the scratch block.
+    // Fetch the operands stashed just above the scratch block.
     code_ << "    mov eax,[ebx+44]\n    mov [ebx+0],eax\n";   // n_lo = lhs_lo
     code_ << "    mov eax,[ebx+48]\n    mov [ebx+4],eax\n";   // n_hi = lhs_hi
     code_ << "    mov eax,[ebx+36]\n    mov [ebx+8],eax\n";   // d_lo = rhs_lo
@@ -672,9 +541,6 @@ void I386Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool w
 
     std::string LskipNegN = newLabel(), LskipNegD = newLabel();
     if (!isUnsigned) {
-        // lhsSign/rhsSign reuse [ebx+36]/[ebx+40] - the rhs_lo/rhs_hi
-        // staging dwords, already copied into d_lo/d_hi above and
-        // never read again for that purpose.
         code_ << "    mov eax,[ebx+4]\n    shr eax,31\n    mov [ebx+36],eax\n";  // lhsSign
         code_ << "    mov eax,[ebx+12]\n    shr eax,31\n    mov [ebx+40],eax\n";  // rhsSign
         code_ << "    mov eax,[ebx+36]\n    cmp eax,0\n    je " << LskipNegN << "\n";
@@ -706,10 +572,8 @@ void I386Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool w
     code_ << "    mov eax,[ebx+16]\n    shl eax,1\n    or eax,edx\n    mov [ebx+16],eax\n";
     code_ << "    mov eax,[ebx+20]\n    shl eax,1\n    or eax,edi\n    mov [ebx+20],eax\n";
 
-    // if (r >= d) { r -= d; quotient bit = 1 } else { quotient bit = 0 }
-    // (always an unsigned 64-bit magnitude compare, even for a signed
-    // division - both n and d have already been negated to a
-    // non-negative magnitude above.)
+    // if (r >= d) { r -= d; quotient bit = 1 } else { quotient bit = 0 } - always an
+    // unsigned magnitude compare, since n and d were negated to non-negative above.
     code_ << "    mov eax,[ebx+20]\n    mov edx,[ebx+12]\n    cmp eax,edx\n    jne " << LhiDiff << "\n";
     code_ << "    mov eax,[ebx+16]\n    mov edx,[ebx+8]\n    cmp eax,edx\n    jae " << LsubYes << "\n";
     code_ << "    jmp " << LsubNo << "\n";
@@ -729,9 +593,6 @@ void I386Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool w
 
     code_ << Ldone << ":\n";
     if (!isUnsigned) {
-        // Quotient is negative iff the operands' signs differed;
-        // the remainder always takes the dividend's (lhs) own sign -
-        // see this method's own header comment.
         std::string LskipNegQ = newLabel(), LskipNegR = newLabel();
         code_ << "    mov ecx,[ebx+36]\n    mov eax,[ebx+40]\n    xor ecx,eax\n";
         code_ << "    cmp ecx,0\n    je " << LskipNegQ << "\n";
@@ -751,14 +612,9 @@ void I386Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool w
     if (wantRemainder) code_ << "    mov eax,esi\n    mov edx,edi\n";
 }
 
-// A `long long` shifted by a runtime count - no native instruction
-// shifts more than 32 bits at once, so this is a counted loop of
-// 1-bit shifts, each carrying the bit that crosses the dword boundary
-// by hand (no `rcl`/`rcr` in this dialect) - same spirit as the
-// divide routine's own bit-at-a-time loop above. `isUnsigned` only
-// matters for `>>`: each step's own high-dword shift is `sar` (sign-
-// preserving) or `shr` (zero-filling) accordingly; `<<` never cares
-// about signedness.
+// A long long shifted by a runtime count: a counted loop of 1-bit shifts, carrying the bit
+// that crosses the dword boundary by hand (no rcl/rcr in this dialect). `isUnsigned` only
+// matters for `>>`: the high dword's shift is sar (sign-preserving) or shr (zero-filling).
 void I386Codegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push edx\n    push eax\n";
@@ -779,13 +635,9 @@ void I386Codegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool is
     code_ << Ldone << ":\n";
 }
 
-// A `long long` comparison - compare the high dwords first (using
-// the signed or unsigned jcc per `isUnsigned`, since that's where the
-// sign bit lives); only if those are equal does the low dword's own
-// comparison matter, and at that point it's always an unsigned
-// compare regardless of the overall type's signedness (once the high
-// halves match, the remaining 32 bits are a plain magnitude) - the
-// standard big-number ordered-comparison idiom.
+// A long long comparison: compare the high dwords first (signed or unsigned jcc per
+// isUnsigned, since that's where the sign bit lives); only if those are equal does the low
+// dword matter, and that compare is always unsigned regardless of the type's signedness.
 void I386Codegen::genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push edx\n    push eax\n";
@@ -794,9 +646,8 @@ void I386Codegen::genWideCompare(const std::string &op, const ir::Expr &lhs, con
     code_ << "    pop ebx\n    pop ecx\n";          // ebx:ecx = lhs (lo:hi)
     std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
     if (op == "==" || op == "!=") {
-        // Both branches below land on "equal"; == and != just want
-        // opposite results for that outcome, so swap which literal
-        // each label writes instead of duplicating the comparison.
+        // == and != want opposite results on "equal", so swap which literal each label
+        // writes instead of duplicating the comparison.
         const char *onEqual = op == "==" ? "1" : "0";
         const char *onDiffer = op == "==" ? "0" : "1";
         code_ << "    cmp ebx,esi\n    jne " << Lfalse << "\n";
@@ -826,11 +677,8 @@ void I386Codegen::genLocalArrayInit(const ir::Slot *slot) {
         const ir::ArrayInitElem &elem = slot->arrayInit[i];
         int byteOffset = static_cast<int>(i) * w;
         if (w == 8 && !elem.isSymbol) {
-            // A long long array literal's own element - split across
-            // both dwords; a symbol element (the dispatch-table
-            // idiom, see AST.h's ArrayInitElem) always means a plain
-            // native-int-width address instead, handled by the
-            // general case below.
+            // A long long literal element is split across both dwords; a symbol element is
+            // always a native-int-width address, handled by the general case below.
             auto v = static_cast<uint64_t>(elem.value);
             code_ << "    mov eax," << static_cast<uint32_t>(v) << "\n";
             code_ << "    mov " << addr(slot, byteOffset) << ",eax\n";
@@ -869,9 +717,8 @@ void I386Codegen::genAddrOf(const ir::Expr &operand) {
         int shift = elemShift(operand.slot->type);
         if (shift > 0) code_ << "    shl eax," << shift << "\n";
         if (operand.slot->kind != ir::SlotKind::Global) {
-            // See computeElementAddr()'s own identical comment - a
-            // Local array's element address is base-minus-scaled-
-            // index.
+            // A Local array's element address is base-minus-scaled-index (see
+            // computeElementAddr()).
             code_ << "    mov ebx,eax\n    lea eax," << addr(operand.slot) << "\n    sub eax,ebx\n";
             return;
         }
@@ -892,12 +739,8 @@ void I386Codegen::genAddrOf(const ir::Expr &operand) {
 
 void I386Codegen::genBinary(const ir::Expr &e) {
     const std::string &op = e.op;
-    // Every arithmetic/bitwise/comparison operand here already
-    // shares one common type (IRBuilder's own usual-arithmetic-
-    // conversion pass - see Type.h) - `e.lhs->type` names it, except
-    // for shift (where only the LHS's own type matters - see
-    // IRBuilder.cpp's own Binary case) and &&/|| (width-independent
-    // truth-testing, handled by genLogicalAnd/Or below).
+    // e.lhs->type names the common operand type (IRBuilder's usual-arithmetic-conversion
+    // pass), except for shift (only the LHS's type matters) and &&/|| (handled separately).
     Type operandType = e.lhs->type;
     bool wide = isWide(operandType);
     bool isUnsigned = operandType.isUnsigned;
@@ -991,10 +834,8 @@ void I386Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const i
     err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
 }
 
-// cmp ebx,eax compares lhs-rhs (ebx=lhs, eax=rhs after the pop below)
-// - see I8086Codegen.cpp's own `emitCompare` comment, unchanged here;
-// `isUnsigned` is unused here (the caller already baked it into
-// `jumpIfTrue`) but kept for symmetry with the wide path/call sites.
+// cmp ebx,eax compares lhs-rhs (ebx=lhs, eax=rhs after the pop below); `isUnsigned` is
+// unused since the caller already baked it into `jumpIfTrue`.
 void I386Codegen::emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &jumpIfTrue, bool) {
     genExpr(lhs);
     code_ << "    push eax\n";
@@ -1008,10 +849,8 @@ void I386Codegen::emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const st
     code_ << Ldone << ":\n";
 }
 
-// A wide (`long long`) operand's truthiness needs both dwords - `or
-// eax,edx` folds them together before the usual "cmp eax,0" (the
-// combined value is discarded immediately after, so clobbering eax
-// this way is safe).
+// A wide operand's truthiness needs both dwords: `or eax,edx` folds them together before
+// the usual "cmp eax,0".
 void I386Codegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     if (isWide(lhs.type)) code_ << "    or eax,edx\n";
@@ -1050,12 +889,6 @@ void I386Codegen::genLogicalNot(const ir::Expr &rhs) {
     code_ << Ldone << ":\n";
 }
 
-// Real hardware multiply/divide (mul/imul/div/idiv) - a genuine
-// 32x32->32 product/quotient, same real-hardware story as
-// I8086Codegen.cpp's own `imul`/`idiv` comment, just 32 bits wide
-// (`cdq` sign-extends eax into edx:eax, same role as that file's own
-// `cwd`; the unsigned divide path needs no such extension - it just
-// zeros edx instead, since there's no sign to carry).
 void I386Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     bool isUnsigned = lhs.type.isUnsigned;
     genExpr(lhs);
@@ -1085,13 +918,8 @@ std::string I386Codegen::buildAssembleCommand(const std::string &, const std::st
 std::optional<std::string> I386Codegen::assembleInProcess(const std::string &asmText,
                                                             const std::string &format) const {
     if (format == "raw") return assembleI386(asmText);
-    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
-    // (see generate()'s own `objectMode` comment) - this backend's
-    // own assembler builds one format-neutral ObjectFile exactly once
-    // (see I386Assembler.h's own `assembleI386Object`), and whichever
-    // of these five names was asked for just picks that format's own
-    // FileFormatWriter (see fileformat/FileFormat.h) to
-    // serialize it.
+    // coff/elf/macho/aout/objraw: build one format-neutral ObjectFile, then pick that
+    // format's FileFormatWriter to serialize it.
     if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleI386Object(asmText);
         return makeFileFormatWriter(*kind)->write(obj);

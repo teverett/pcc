@@ -14,67 +14,30 @@ namespace {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
-// The 8008's real address space tops out at 16KB (14-bit addresses) -
-// see I8008Codegen.h's own header comment.
+// The 8008's address space tops out at 16KB (14-bit addresses).
 constexpr uint32_t kMemTop = 0x4000;
-// Where this backend's own fixed memory cells live - `ac`/`bc`/`cx`/
-// `dx`/`ptr`/`sp`/`fp`/`fnext`/`fpsp`, plus the two real runtime
-// stacks `sp` and `fpsp` point into (see I8008Codegen.h's own header
-// comment) - pinned to known, fixed addresses (via the assembler's
-// own `name = expr` equate support, unlike every other backend's own
-// `ac` etc., which are ordinary sequentially-laid-out temps) purely
-// so tests/run_tests.sh's own from-scratch Python 8008 emulator can
-// read the final result straight out of memory at a known address,
-// without needing to parse this assembler's own symbol table at all.
-// Anchored a fixed distance *below* `kMemTop` rather than a fixed
-// distance above address 0: every byte below `kPseudoBase` is
-// generated code plus global data, whose combined size grows with
-// the size of the program being compiled, while everything from
-// `kPseudoBase` up to `kMemTop` (pseudo-registers, the wide-value
-// buffers, and the two runtime stacks below - see each one's own
-// comment) stays a small, fixed size regardless of program size.
-// Anchoring near the top instead leaves the whole rest of the address
-// space - comfortably more than this backend's own generated code and
-// globals need for an ordinary test program - available to code and
-// globals instead of being walled off below an arbitrary low address.
+// Fixed memory cells (`ac`/`bc`/.../`fpsp`) are pinned to known addresses via the assembler's `name = expr`
+// equates, so the test harness's Python 8008 emulator can read results by fixed address without parsing symbols.
+// Anchored below `kMemTop` (not above 0) since everything from here up stays a small fixed size regardless of
+// program size, leaving the rest of the address space free for generated code and globals.
 constexpr uint32_t kPseudoBase = kMemTop - 0x400;
-// `wac`/`wbc`/`wtmp`/`wtmp2` - the wide (`long`/`long long`) value
-// buffers (see I8008Codegen.h's own header comment on this
-// mechanism), 8 bytes each, right after the other fixed pseudo-
-// registers (`ac`=+0 .. `fpsp`=+16..17, 18 bytes total).
+// `wac`/`wbc`/`wtmp`/`wtmp2`: the wide (`long`/`long long`) value buffers, 8 bytes each, after the other fixed
+// pseudo-registers (18 bytes total).
 constexpr uint32_t kWideBase = kPseudoBase + 18;
-// How many 16-bit values this backend's own subexpression-save
-// stack (`sp`) can hold at once across the whole program - generous
-// for ordinary test programs (every binary op, `*`, `/`, comparison,
-// indexed/deref assignment, and function-call argument pushes at
-// most one value for the lifetime of evaluating one subexpression),
-// but a real, fixed limit with no overflow check - see pushCell()'s
-// own comment.
-[[maybe_unused]] constexpr int kStackSize = 32;  // documents the reserved region's size; nothing needs to read it
-                                                  // back since the stack's own content is never initialized
+// Capacity of the subexpression-save stack (`sp`): a fixed limit with no overflow check.
+[[maybe_unused]] constexpr int kStackSize = 32;  // documents the reserved region's size; its content is never read back
 constexpr uint32_t kStackBase = kWideBase + 32;
-// How many nested `fp` saves the frame-pointer chain (`fpsp`) can
-// hold at once - every save corresponds to exactly one real `CAL`
-// still in flight, so this is bounded in practice by the 8008's own
-// 7-level hardware call-nesting limit (see I8008Codegen.h's own
-// header comment); comfortably larger than that real limit, with no
-// overflow check of its own either.
+// Capacity of the frame-pointer chain (`fpsp`): bounded in practice by the 8008's 7-level hardware call-nesting
+// limit, with no overflow check of its own.
 constexpr int kFpStackCapacity = 16;
 constexpr uint32_t kFpStackBase = kStackBase + kStackSize * 2;
-// Where the per-call Local/Param frame bump allocator (`fnext`/`fp` -
-// see genFunction()'s own comment) starts claiming words from - the
-// last of this backend's own reserved regions, with no upper bound
-// or overflow check of its own either, for the same reason as
-// `kStackSize` above.
+// Where the per-call Local/Param frame bump allocator (`fnext`/`fp`) starts claiming words from.
 constexpr uint32_t kFrameBase = kFpStackBase + kFpStackCapacity * 2;
 }  // namespace
 
-// Pushes `srcCell`'s current value onto the real runtime stack
-// pointed to by `spCell`: read `srcCell`'s two bytes into B/C first
-// (computing `spCell`'s own value needs HL, which would otherwise
-// clobber `srcCell` itself mid-read if the two happened to be the
-// same cell - same reasoning as storeAcIndirect()), then write them
-// at the current top of stack and advance `spCell` by one word.
+// Pushes `srcCell`'s value onto the stack pointed to by `spCell`: reads `srcCell`'s bytes into B/C first (since
+// loading `spCell` into H,L would otherwise clobber `srcCell` mid-read if they're the same cell), then writes them
+// at the top of stack and advances `spCell` by one word.
 void I8008Codegen::pushCell(const std::string &srcCell, const std::string &spCell) {
     pointAt(srcCell);
     code_ << "    mov a, m\n    mov b, a\n";
@@ -88,15 +51,9 @@ void I8008Codegen::pushCell(const std::string &srcCell, const std::string &spCel
     storeHLToCell(spCell);
 }
 
-// The reverse: retreats `spCell` by one word first, then reads the
-// two bytes now at the top of that stack into `dstCell` - never
-// touches any other cell unless `dstCell` happens to name it.
-// Doesn't call storeHLToCell() - writing the decremented address
-// back to `spCell` needs pointAt(spCell), which would repoint the
-// real HL away from the very address this function still needs to
-// read the popped word from, so the decremented address is stashed
-// in D/E first instead and `spCell` is written from there once the
-// read is already done.
+// Retreats `spCell` by one word, then reads the two bytes now at the top of that stack into `dstCell`. Doesn't use
+// storeHLToCell() - writing the decremented address back to `spCell` needs pointAt(spCell), which would repoint H,L
+// away before the popped word is read - so the decremented address is stashed in D/E and written back afterward.
 void I8008Codegen::popCell(const std::string &dstCell, const std::string &spCell) {
     loadHLFromCell(spCell);  // HL = current top-of-stack pointer (one past the last pushed word)
     decHL();
@@ -120,19 +77,9 @@ namespace {
 std::string byteAt(const char *base, int i) { return i == 0 ? base : (std::string(base) + "+" + std::to_string(i)); }
 }  // namespace
 
-// A one-byte-granular version of pushCell()/popCell(), against the
-// same `sp` stack - used by every wide (`long`/`long long`) helper
-// (see I8008Codegen.h's own header comment on that whole mechanism),
-// which needs to save/restore individual bytes, not always whole
-// 16-bit words. `sp`'s own runtime value stays resident in the real
-// H,L pair for the whole loop instead of being reloaded from the `sp`
-// memory cell before every single byte - the one read/write pair of
-// `sp` itself happens outside the loop entirely. Reading `base`'s own
-// byte `i` still needs `pointAt()`, which repoints H,L away from the
-// running stack-top address, so that address is stashed in D,E across
-// the read and restored right after - cheaper than the full memory
-// round-trip loadHLFromCell()/storeHLToCell() would otherwise cost on
-// every iteration.
+// Byte-granular version of pushCell()/popCell() against the same `sp` stack, for wide values. `sp` stays resident
+// in H,L for the whole loop rather than being reloaded per byte; reading `base`'s byte `i` still needs pointAt(),
+// which repoints H,L away from the stack-top address, so that address is stashed in D,E across the read.
 void I8008Codegen::pushWide(const char *base, int nbytes) {
     loadHLFromCell("sp");
     for (int i = 0; i < nbytes; i++) {
@@ -145,19 +92,13 @@ void I8008Codegen::pushWide(const char *base, int nbytes) {
     storeHLToCell("sp");
 }
 
-// Same idea as pushWide() above, the other direction: `sp` is read
-// once, dropped by `nbytes` in a single addConstToHL() (not `nbytes`
-// separate decHL() calls) to land on this value's own first (lowest)
-// byte, written back once as the new top-of-stack, then walked
-// forward one byte at a time - each byte's own stack address stashed
-// in D,E across the `storeByte()` that writes it into `base`, for the
-// same reason pushWide() stashes it across its own `loadByte()`.
+// Mirror of pushWide(): `sp` is dropped by `nbytes` in one addConstToHL() (not `nbytes` decHL() calls) to land on
+// this value's first byte, written back as the new top-of-stack, then walked forward one byte at a time.
 void I8008Codegen::popWide(const char *base, int nbytes) {
     loadHLFromCell("sp");
     addConstToHL(-nbytes);
-    storeHLToCell("sp");  // sp = this value's own first byte's address; storeHLToCell() itself leaves H,L
-                          // pointing at `sp+1` (its own last pointAt()), not at that address - see its own body
-    loadHLFromCell("sp");  // h,l reloaded from `sp`, now genuinely holding that same address again
+    storeHLToCell("sp");   // storeHLToCell() leaves H,L pointing at `sp+1`, not the stored address, so reload it
+    loadHLFromCell("sp");
     for (int i = 0; i < nbytes; i++) {
         code_ << "    mov a, l\n    mov d, a\n    mov a, h\n    mov e, a\n";  // d,e = this byte's own stack slot
         code_ << "    mov a, m\n";                                           // a = the byte at that slot
@@ -211,9 +152,7 @@ void I8008Codegen::genWideLoadLiteral(long value, int words) {
 void I8008Codegen::genWideStore(const ir::Slot *slot, int words) {
     int n = 2 * words;
     for (int i = 0; i < n; i++) {
-        // `pointAtSlot` clobbers A internally for a Local/Param - see
-        // the narrow Assign/LocalDecl `char` cases' own comment on
-        // this same hazard.
+        // pointAtSlot() clobbers A internally for a Local/Param, so the value must be loaded before it's called.
         loadByte(byteAt("wac", i));
         code_ << "    mov b, a\n";
         pointAtSlot(slot, i);
@@ -221,20 +160,9 @@ void I8008Codegen::genWideStore(const ir::Slot *slot, int words) {
     }
 }
 
-// `ptr` already holds the target address (a runtime value, not a
-// compile-time label) - reached through the real H,L pair via
-// loadHLFromCell(), one byte at a time, advancing with incHL() (the
-// only way this target can walk a *computed* address at all - see
-// this file's own header comment).
-// Every iteration re-derives H,L from the `ptr` cell instead of
-// walking a live H,L across the whole loop (the way genWideLoadAtPtr/
-// genWideStoreAtPtr's single-word callers do via loadHLFromCell()+
-// incHL() alone) - storeByte()/loadByte() on the `wac` side each
-// repoint H,L to a `wac+i` byte's own fixed address in between, so a
-// live H,L left pointing at the pointee would already be clobbered
-// by the time the next iteration's incHL() ran on it. `ptr`'s own
-// stored value is advanced in memory instead (addConstToCell()),
-// which survives that repointing just fine.
+// Each iteration re-derives H,L from the `ptr` cell rather than walking a live H,L across the whole loop, since
+// storeByte()/loadByte() on the `wac` side repoint H,L to a fixed address in between; `ptr`'s stored value is
+// advanced in memory instead (addConstToCell()), which survives that repointing.
 void I8008Codegen::genWideLoadAtPtr(int words) {
     int n = 2 * words;
     for (int i = 0; i < n; i++) {
@@ -274,22 +202,15 @@ void I8008Codegen::decHL() {
     code_ << "    dcr l\n";
 }
 
-// A literal element's own decimal text, or a symbol element's own
-// label text (the referenced Slot's or Function's own address) - the
-// shared assembler's own "dw" directive (I8008Assembler.cpp's emit16)
-// resolves either one into a real, full 16-bit value and writes it
-// out low byte then high byte, the same split a `jmp`/`cal` operand
-// already gets.
+// A literal element's decimal text, or a symbol element's label text (the referenced Slot's/Function's address);
+// the assembler's "dw" directive resolves either into a full 16-bit value.
 std::string I8008Codegen::arrayElemText(const ir::ArrayInitElem &e) {
     if (!e.isSymbol) return std::to_string(e.value);
     return e.slot ? label(e.slot) : label(e.func);
 }
 
-// See ../m6502/M6502Codegen.cpp's own version of this same function
-// for the general idea - a `char`-width element is one plain `db`
-// byte; a wide (`long`/`long long`) one is split into plain bytes
-// directly (little-endian), since this dialect's shared "dw"
-// directive only ever splits a 16-bit value.
+// A `char`-width element is one plain `db` byte; a wide (`long`/`long long`) one is split into plain bytes
+// directly (little-endian), since the shared "dw" directive only splits a 16-bit value.
 void I8008Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values,
                                  Type elemType) {
     if (values.empty()) return;
@@ -350,11 +271,7 @@ void I8008Codegen::storeAcIndirect(const std::string &addrCell) {
     code_ << "    mov a, c\n    mov m, a\n";
 }
 
-// A real 16-bit increment of the HL *register pair* itself (not a
-// memory cell - see copy16()/pushAc() for that) - the 8008 has no
-// 16-bit increment instruction at all, so this chains two 8-bit
-// `INR`s through a carry test, the same workaround the 6502 backend's
-// own inc16() needs for the same reason (see M6502Codegen.cpp).
+// The 8008 has no 16-bit increment instruction, so this chains two 8-bit INRs through a carry test.
 void I8008Codegen::incHL() {
     std::string Lskip = newLabel();
     code_ << "    inr l\n";
@@ -364,11 +281,8 @@ void I8008Codegen::incHL() {
     code_ << Lskip << ":\n";
 }
 
-// Copies one 16-bit memory cell to another - four real memory
-// accesses (through B/C, since there's no way to read src's two
-// bytes and write dst's two bytes without repointing HL in between -
-// see this file's own header comment), not the one or two
-// instructions every other backend's own copy16() needs.
+// Copies one 16-bit memory cell to another via four real memory accesses through B/C, since H,L can't address
+// both src and dst at once.
 void I8008Codegen::copy16(const std::string &dst, const std::string &src) {
     pointAt(src);
     code_ << "    mov a, m\n    mov b, a\n";
@@ -416,11 +330,7 @@ void I8008Codegen::emitSignExtendByte(const std::string &valueCell, const std::s
     code_ << Ldone << ":\n";
 }
 
-// Adds `byteOffset` to the real H,L register pair in place: low byte
-// through a plain ADI (also the only source of a possible carry
-// out), high byte through ACI, so the carry an ADI leaves behind
-// always lands correctly in the high byte's own sum, even when
-// `byteOffset`'s own high byte is 0.
+// Adds `byteOffset` to H,L: low byte via ADI (the carry source), high byte via ACI to absorb it.
 void I8008Codegen::addConstToHL(int byteOffset) {
     int lo = byteOffset & 0xFF;
     int hi = (byteOffset >> 8) & 0xFF;
@@ -428,11 +338,8 @@ void I8008Codegen::addConstToHL(int byteOffset) {
     code_ << "    mov a, h\n    aci " << hi << "\n    mov h, a\n";
 }
 
-// The same add, against a named 16-bit memory cell instead of the
-// real H,L pair - same ADI/ACI carry chain, through the accumulator,
-// since there's no way to add to a memory operand directly (every
-// ALU instruction here takes its second operand from a register or
-// `m`, never an immediate *and* a memory destination at once).
+// Same ADI/ACI carry chain as addConstToHL(), against a named cell instead of H,L (no ALU instruction can add an
+// immediate directly to a memory destination here).
 void I8008Codegen::addConstToCell(const std::string &cell, int amount) {
     int lo = amount & 0xFF;
     int hi = (amount >> 8) & 0xFF;
@@ -488,9 +395,7 @@ void I8008Codegen::storeImmediate16ToSlot(const ir::Slot *slot, int elemOffset, 
     code_ << "    mvihi a, " << exprText << "\n    mov m, a\n";
 }
 
-// Pops the top of the `sp` stack straight into `slot`'s own storage -
-// the same body as popCell(), with the final write-back aimed at
-// pointAtSlot() instead of a plain named cell's own pointAt().
+// Same body as popCell(), with the final write-back aimed at pointAtSlot() instead of a plain cell's pointAt().
 void I8008Codegen::popIntoSlot(const ir::Slot *slot) {
     int w = std::max(widthOfType(slot->type), 2);
     if (w <= 2) {
@@ -512,10 +417,8 @@ void I8008Codegen::popIntoSlot(const ir::Slot *slot) {
         code_ << "    mov a, c\n    mov m, a\n";
         return;
     }
-    // A wide (`long`/`long long`) param - popped one byte at a time,
-    // highest byte first (the real `sp` stack's own LIFO order,
-    // matching how the caller's own `Call` case pushed it - see that
-    // case's own comment), straight into this slot's own frame bytes.
+    // A wide param: popped one byte at a time, highest byte first, matching the `sp` stack's LIFO order against
+    // how the caller's Call case pushed it.
     for (int i = w - 1; i >= 0; i--) {
         loadHLFromCell("sp");
         decHL();
@@ -531,20 +434,14 @@ void I8008Codegen::popIntoSlot(const ir::Slot *slot) {
     }
 }
 
-// Gives this call's own frame back to the bump allocator and
-// restores the caller's own `fp` - see genFunction()'s own comment.
+// Gives this call's frame back to the bump allocator and restores the caller's `fp`.
 void I8008Codegen::emitEpilogue() {
     copy16("fnext", "fp");
     popCell("fp", "fpsp");
 }
 
-// One in-place 1-bit rotate of the 16-bit memory cell `lbl`, through
-// the accumulator (the 8008's only rotates - RLC/RRC/RAL/RAR - work
-// on A alone, unlike the Z80 backend's own register-targeted `RL r`/
-// `RR r` - see I8008Codegen.h's own header comment). `and a` is this
-// target's own idiom for "clear carry without disturbing A" (every
-// logical instruction clears CY as a side effect - confirmed against
-// NDA/XRA/ORA's own documented "C=0" flag behavior).
+// One in-place 1-bit rotate of 16-bit cell `lbl` through the accumulator (RLC/RRC/RAL/RAR work on A only).
+// `and a` clears carry without disturbing A (every logical instruction clears CY as a side effect).
 void I8008Codegen::shiftOneBit(const std::string &lbl, bool isLeft) {
     if (isLeft) {
         pointAt(lbl);
@@ -552,10 +449,7 @@ void I8008Codegen::shiftOneBit(const std::string &lbl, bool isLeft) {
         pointAt(lbl + "+1");
         code_ << "    mov a, m\n    ral\n    mov m, a\n";
     } else {
-        // Logical (unsigned) shift - same convention, and the same
-        // reason (no unsigned type to make the distinction with), as
-        // every other backend's own `>>`. High byte first, so its
-        // own vacated-bit carry-out feeds the low byte's rotate.
+        // High byte first, so its vacated-bit carry-out feeds the low byte's rotate.
         pointAt(lbl + "+1");
         code_ << "    mov a, m\n    and a\n    rar\n    mov m, a\n";
         pointAt(lbl);
@@ -568,39 +462,19 @@ std::string I8008Codegen::generate(const ir::Program &prog, bool objectMode) {
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // Real separate compilation (`--format=coff`/`elf`/`macho`/
-    // `aout` from a single file - see IRBuilder.h's `allowExternal`)
-    // means `prog` may not define `main` at all. `objectMode` (see
-    // Codegen.h) means no object file ever emits the entry sequence
-    // itself, even the one that happens to define `main` -
-    // I8008LinkerFactory.cpp is solely responsible for synthesizing
-    // exactly one, once every object is merged and `main`'s linked
-    // address is resolvable - same pattern Z80Codegen.cpp/
-    // M6502Codegen.cpp's own `objectMode` comment documents.
+    // In object mode, `prog` may not define `main`; no object ever emits the entry sequence itself -
+    // I8008LinkerFactory.cpp synthesizes it once every object is merged and `main`'s linked address is known.
     code_ << "org 0\n\n";
-    // The fixed memory pseudo-registers and the runtime software
-    // stack's own pointer cell - see this file's own anonymous-
-    // namespace comment on `kPseudoBase`/`kStackBase`. These are
-    // compile-time `name = expr` equates (a plain constant, the same
-    // in every object regardless of where it's linked - see
-    // I8008Assembler.h's own header comment), so - unlike a real
-    // backend's own per-object *storage* cells (z80's own `ac` etc. -
-    // see Z80Codegen.cpp's own `generate()` comment) - every object
-    // declares them identically and harmlessly; no `objectMode`
-    // special-casing needed here at all.
+    // Fixed memory pseudo-registers, declared as compile-time equates - the same constant in every object, so no
+    // `objectMode` special-casing is needed.
     code_ << "ac = " << kPseudoBase << "\n";
     code_ << "bc = " << (kPseudoBase + 2) << "\n";
     code_ << "cx = " << (kPseudoBase + 4) << "\n";
     code_ << "dx = " << (kPseudoBase + 6) << "\n";
     code_ << "ptr = " << (kPseudoBase + 8) << "\n";
     code_ << "sp = " << (kPseudoBase + 10) << "\n";
-    // `fp` holds the *current* call's own frame base address; `fnext`
-    // the bump allocator's own next-free-word pointer; `fpsp` the
-    // top-of-stack pointer for the chain of saved `fp`s a nested call
-    // restores from on return (see genFunction()'s own comment and
-    // I8008Codegen.h's own header comment). `fp` itself needs no
-    // initial value here - the first function ever entered (`main`)
-    // overwrites it from `fnext` before reading it at all.
+    // `fp` needs no initial value here - the first function entered (`main`) overwrites it from `fnext` before
+    // reading it.
     code_ << "fp = " << (kPseudoBase + 12) << "\n";
     code_ << "fnext = " << (kPseudoBase + 14) << "\n";
     code_ << "fpsp = " << (kPseudoBase + 16) << "\n";
@@ -610,40 +484,25 @@ std::string I8008Codegen::generate(const ir::Program &prog, bool objectMode) {
     code_ << "wtmp2 = " << (kWideBase + 24) << "\n";
     if (!objectMode) {
         code_ << "\n_start:\n";
-        // The subexpression-save stack grows up from `kStackBase`;
-        // `sp` always holds the address *just past* the last pushed
-        // word (see pushCell()/popCell()). The frame-pointer chain
-        // grows up from `kFpStackBase` the same way, via `fpsp`; the
-        // frame bump allocator starts out with its own next-free word
-        // at `kFrameBase`.
         storeImmediate16("sp", std::to_string(kStackBase));
         storeImmediate16("fpsp", std::to_string(kFpStackBase));
         storeImmediate16("fnext", std::to_string(kFrameBase));
         code_ << "    cal " << label(mainFn) << "\n";
-        // The program's own final result sits in `ac` the moment
-        // execution reaches `halt` below - the authoritative (and, on
-        // this backend, only practical - there's no register wide enough
-        // to dump the way every other backend's own halt sequence
-        // leaves one) place to read it from.
+        // The program's final result sits in `ac` once execution reaches `halt`.
         code_ << "halt:\n    jmp halt\n\n";
     }
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
 
-    // Every shared `cal`-able subroutine any `/`/`%` on a `long`/`long
-    // long` asked for (see getWideDivModSubroutine()'s own comment) -
-    // only ever reached via `cal`, never fallen into, so it's safe to
-    // place these after every real function's own code.
+    // Shared subroutines are only ever reached via `cal`, never fallen into, so it's safe to place them after
+    // every real function's code.
     for (const std::string &body : wideDivModSubroutineBodies_) code_ << body;
     for (const std::string &body : wideEqualitySubroutineBodies_) code_ << body;
 
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        // An external global (real separate compilation - see IR.h's
-        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
-        // defined in this file at all - only ever referenced by name,
-        // letting the assembler's own undefined-symbol handling defer
-        // it to a relocation.
+        // An external global is only referenced by name, letting the assembler's undefined-symbol handling
+        // defer it to a relocation.
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
@@ -663,26 +522,11 @@ std::string I8008Codegen::generate(const ir::Program &prog, bool objectMode) {
     return out.str();
 }
 
-// Single-file-only (see I8008Codegen.h's own header comment: no
-// `--format=coff`) - the whole generated text is simply attributed
-// to whichever file defines `main`, same as every other single-file
-// backend's own perFileAsm().
 std::map<std::string, std::string> I8008Codegen::perFileAsm() const { return perFileAsm_; }
 
-// A function's own prologue builds this call's own fresh Local/Param
-// frame: saves the caller's `fp` onto the `fpsp` chain, takes the
-// bump allocator's current `fnext` as this call's own frame base,
-// claims this function's own whole word count
-// (`params.size() + frameSize`) by bumping `fnext` past it, then
-// pops each of its own incoming argument values - pushed by the
-// caller, in argument order, onto the `sp` stack (see genExpr()'s
-// own Call case) - straight into that fresh frame, in reverse
-// (`sp` is a stack: the last argument pushed is the first one
-// popped, so the loop below walks `params` back to front). Every
-// Local/Param access for the rest of this function's own body (see
-// pointAtSlot()) is relative to `fp`, which this prologue is the only
-// place that ever changes - `currentParamCount_` records this
-// function's own param count for wordIndexOf() to use throughout.
+// Prologue: saves the caller's `fp` onto `fpsp`, takes `fnext` as this call's frame base, bumps `fnext` past
+// `params.size() + frameSize`, then pops each argument off `sp` (last pushed, first popped - params walked back
+// to front) into the fresh frame.
 void I8008Codegen::genFunction(const ir::FunctionBody &fn) {
     currentParamCount_ = static_cast<int>(fn.func->params.size());
     currentParamBytes_ = 0;
@@ -753,16 +597,8 @@ void I8008Codegen::genStmt(const ir::Stmt &s) {
             return;
         }
         case ir::StmtKind::LocalDecl: {
-            // A Local's own storage is this call's own frame (see
-            // genFunction()'s own comment) - never a fixed, compile-
-            // time label the way a Global's is - so, unlike a Global
-            // array's own literal initializer (baked into the binary
-            // once, in generate()'s own loop below), a Local array's
-            // own initializer is written out at runtime, every time
-            // this declaration is reached (so a declaration inside a
-            // loop body re-initializes its own array each iteration,
-            // the same call's own frame being reused for every one of
-            // them).
+            // A Local array's initializer is written at runtime every time this declaration is reached (unlike a
+            // Global array's, baked into the binary once), since a Local's storage is this call's own frame.
             if (s.declSlot->arraySize > 0) {
                 int w = widthOfType(s.declSlot->type);
                 for (size_t i = 0; i < s.declSlot->arrayInit.size(); i++) {
@@ -770,15 +606,9 @@ void I8008Codegen::genStmt(const ir::Stmt &s) {
                     if (w <= 2) {
                         storeImmediate16ToSlot(s.declSlot, w * static_cast<int>(i), arrayElemText(elem));
                     } else {
-                        // A wide element's own literal is never a
-                        // symbol (see declareArray()'s own comment) -
-                        // split directly into `w` plain bytes.
+                        // A wide element's literal is never a symbol - split directly into `w` plain bytes.
                         auto uv = static_cast<unsigned long>(elem.value);
                         for (int b = 0; b < w; b++) {
-                            // `pointAtSlot` has to run BEFORE the
-                            // value is loaded into A, not after - see
-                            // genWideStore()'s own comment on this
-                            // same hazard.
                             pointAtSlot(s.declSlot, w * static_cast<int>(i) + b);
                             code_ << "    mvi a, " << ((uv >> (8 * b)) & 0xFF) << "\n    mov m, a\n";
                         }
@@ -856,9 +686,7 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
             if (isWide(e.slot->type)) {
                 genWideStore(e.slot, wordCountOf(e.slot->type));
             } else if (widthOfType(e.slot->type) == 1) {
-                // `pointAtSlot` clobbers A internally for a Local/Param
-                // (it computes `fp + offset` through it) - see the
-                // indexed-assign case's own comment just above.
+                // pointAtSlot() clobbers A internally for a Local/Param (it computes `fp + offset` through it).
                 loadByte("ac");
                 code_ << "    mov b, a\n";
                 pointAtSlot(e.slot, 0);
@@ -869,13 +697,8 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Stores through at e.type's own width - the pointee type
-            // of a real typed pointer, or plain native-word width for
-            // the still-supported untyped-int-as-address style - see
-            // IRBuilder.cpp's own DerefAssign comment. Mirrors the
-            // indexed Assign's own identical width dispatch above,
-            // with `ptr` set directly from the pointer value instead
-            // of genIndexAddr().
+            // Stores at e.type's width (the pointee type, or plain native-word width for untyped-int-as-address);
+            // `ptr` is set directly from the pointer value instead of via genIndexAddr().
             genExpr(*e.lhs);  // ac = pointer value
             copy16("ptr", "ac");
             pushAc();  // ac already equals the pointer value - push it directly
@@ -890,14 +713,8 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
                 genCompoundThroughPtr(e);
                 return;
             }
-            // Plain scalar target - its own storage (a Global's fixed
-            // label, or fp-relative for a Local/Param, via
-            // pointAtSlot()) is reconstructible at zero cost after rhs
-            // evaluates: unlike ptr/ac/bc/cx/dx, `fp` itself is
-            // restored by any nested call's own epilogue before that
-            // call ever returns (see emitEpilogue()), so there's
-            // nothing that needs holding across rhs's own evaluation
-            // here at all.
+            // A plain scalar target's storage is reconstructible at zero cost after rhs evaluates (fp is restored
+            // by any nested call's epilogue), so nothing needs holding across rhs's evaluation here.
             genExpr(*e.rhs);     // ac = rhs
             copy16("bc", "ac");  // bc = rhs
             if (widthOfType(e.slot->type) == 1) {
@@ -960,10 +777,7 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                // Loads at e.type's own width - see DerefAssign's
-                // identical comment above. Mirrors genIndex()'s own
-                // identical width dispatch, with `ptr` set directly
-                // from the pointer value instead of genIndexAddr().
+                // Loads at e.type's width, `ptr` set directly from the pointer value instead of genIndexAddr().
                 genExpr(*e.rhs);  // ac = pointer value
                 copy16("ptr", "ac");
                 loadOperandAtPtr(e.type);
@@ -988,21 +802,10 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            // Each argument is pushed onto the real `sp` stack, in
-            // argument order, rather than written through any cell
-            // named after the callee's own params - a shared per-
-            // function cell would break the moment this same call
-            // site's own later argument's own evaluation makes
-            // another call to the same function (direct recursion)
-            // before this call's `cal` below ever runs, overwriting
-            // the earlier argument's own cell before it's even been
-            // used. The callee's own prologue (genFunction()) pops
-            // every one of these, in reverse, straight into that
-            // call's own fresh frame. A wide argument pushes its own
-            // real width in bytes (ascending, byte 0 first); a narrow
-            // one always pushes exactly 2 bytes via pushAc() (see
-            // IRBuilder's own call-argument conversion, promoting
-            // anything narrower than `int` up to it first).
+            // Each argument is pushed onto `sp` in argument order rather than through a cell named after the
+            // callee's param, since a shared cell would be clobbered by direct recursion before `cal` even runs.
+            // The callee's prologue pops them in reverse into its fresh frame. A wide argument pushes its real
+            // width in bytes; a narrow one always pushes 2 bytes via pushAc() (already promoted to `int`).
             for (size_t i = 0; i < e.args.size(); i++) {
                 genExpr(*e.args[i]);
                 int w = std::max(widthOfType(e.args[i]->type), 2);
@@ -1016,30 +819,11 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::CallPtr: {
-            // e.args is always empty here - IRBuilder.cpp rejects any
-            // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr). The 8008 has no
-            // indirect call or jump of any kind - every real `CAL`/
-            // `JMP` operand is a fixed 14-bit address baked into the
-            // instruction's own bytes at assemble time, and there's
-            // no "jump to the address in a register pair" instruction
-            // the way the 8080/Z80 have `PCHL`/`JP (HL)` (see
-            // I8008Codegen.h's own header comment) - so a computed
-            // call is instead emulated with self-modifying code: the
-            // placeholder `cal 0` below is a real CAL instruction
-            // whose own operand bytes (`Lcal+1`/`Lcal+2`, immediately
-            // following its opcode byte at `Lcal`) get overwritten
-            // with the callee's own address - already computed into
-            // `ac` - right before the CPU falls through and executes
-            // it. The instruction the CPU then fetches is a perfectly
-            // ordinary CAL to that address; the real internal
-            // hardware call stack handles the return exactly as it
-            // would for `cal <label>`. Safe because this backend has
-            // no interrupts and no concurrency (see I8008Codegen.h's
-            // own header comment) - nothing can observe or race the
-            // placeholder bytes between the patch and the CAL that
-            // immediately follows it, even across recursive calls
-            // through this same call site.
+            // The 8008 has no indirect call/jump (every CAL/JMP operand is a fixed address baked in at assemble
+            // time, unlike the 8080/Z80's PCHL/JP (HL)), so a computed call is emulated with self-modifying code:
+            // the placeholder `cal 0` below has its own operand bytes (Lcal+1/+2) overwritten with the callee's
+            // address, computed into `ac`, immediately before the CPU falls through and executes it as an
+            // ordinary CAL. Safe here since this backend has no interrupts or concurrency to race the patch.
             genExpr(*e.lhs);  // ac = the callee's own entry address
             std::string Lcal = newLabel();
             pointAt("ac");
@@ -1058,12 +842,8 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Intrinsic: {
-            // The 8008 has no interrupt enable/disable instruction at all
-            // (interrupts work by an external signal forcing an instruction
-            // onto the bus, not a software EI/DI the way every later chip in
-            // this family has one), so there is nothing here for ion()/iof()
-            // to meaningfully affect. Treated as a no-op, same choice as
-            // MipsCodegen.cpp/PowerPCCodegen.cpp/etc.'s own Intrinsic case.
+            // The 8008 has no interrupt enable/disable instruction (interrupts work via an external signal
+            // forcing an instruction onto the bus), so ion()/iof() are no-ops.
             (void)e;
             return;
         }
@@ -1076,35 +856,14 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
     }
 }
 
-// Leaves slot[idxExpr]'s own effective address in the `ptr` memory
-// cell. `idxExpr` is always evaluated first, and alone - see
-// ../i8080/I8080Codegen.cpp's own genIndexAddr() comment on why.
-// `slot->arraySize > 0` means the base is the array's own first
-// word - a compile-time-known address for a Global, loaded via
-// `mvi`/`mvihi` directly (same split-byte trick as everywhere else in
-// this backend), or a runtime one (`fp` plus a word offset) for a
-// Local; otherwise `slot` is a plain pointer variable and the base
-// instead comes from *reading* that variable's own stored value
-// (again either a Global's fixed address or a Local/Param's own
-// runtime one - see pointAtSlot()). Either way there's no hardware
-// 16-bit add here (no `DAD` - see I8008Codegen.h's own header
-// comment), so the doubled index and the base are added byte-wise
-// through the accumulator with the carry chained from low into high.
-// A Local array's own element `i` therefore sits at this same base
-// *plus* `i` words, the array's own word index growing the same
-// direction as its own element index - unlike a frame scheme that
-// addresses a Local by a *negative* offset from its own frame
-// pointer (where element `i` would sit at the array's base *minus*
-// `i` words instead - see I386Codegen.h's own `addr()` comment),
-// this backend's own `fp` is the start, not the middle, of each
-// call's own frame (see genFunction()'s own comment), so every
-// Local/Param address here - scalar or array element alike - only
-// ever adds a non-negative word offset to it, never subtracts one.
+// Leaves slot[idxExpr]'s effective address in `ptr`. `idxExpr` is evaluated first and alone. The base is the
+// array's first word for `slot->arraySize > 0` (a Global's fixed label, or `fp` plus a runtime offset for a
+// Local); otherwise `slot` is a plain pointer variable and the base comes from reading its stored value. No
+// hardware 16-bit add exists, so the doubled index and base are added byte-wise with carry chained low into
+// high. `fp` is the start, not the middle, of each frame, so every Local/Param offset here is non-negative.
 void I8008Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
-    // ptr = index * widthOf(slot->type) (repeated doubling, via self-
-    // add - see elemShift()), same reason every other backend's own
-    // indexing scales the index first.
+    // ptr = index * widthOf(slot->type), via repeated doubling (elemShift()).
     copy16("ptr", "ac");
     for (int s = 0; s < elemShift(slot->type); s++) {
         pointAt("ptr");
@@ -1120,25 +879,17 @@ void I8008Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     }
 
     if (slot->arraySize > 0 && slot->kind == ir::SlotKind::Global) {
-        // A Global array's own address is a compile-time constant -
-        // loaded directly into B,C, same immediate split-byte trick
-        // as everywhere else in this backend (no need to round-trip
-        // it through H,L and `m` first).
+        // A Global array's address is a compile-time constant, loaded directly into B,C.
         std::string lbl = label(slot);
         code_ << "    mvi b, " << lbl << "\n";     // b = low byte of the array's own address
         code_ << "    mvihi c, " << lbl << "\n";    // c = high byte
     } else if (slot->arraySize > 0) {
-        // A Local array's own address is this call's own frame plus
-        // a runtime offset (see pointAtSlot()) - computed into H,L
-        // first, then copied into B,C, since B,C (not H,L) is where
-        // the rest of this function needs the base.
+        // A Local array's address is computed into H,L via pointAtSlot(), then copied into B,C.
         pointAtSlot(slot, 0);
         code_ << "    mov a, l\n    mov b, a\n";
         code_ << "    mov a, h\n    mov c, a\n";
     } else {
-        // `slot` is a plain pointer variable - the base comes from
-        // *reading* its own stored value (Global, Local, or Param -
-        // pointAtSlot() handles all three).
+        // `slot` is a plain pointer variable - the base comes from reading its stored value.
         pointAtSlot(slot, 0);
         code_ << "    mov a, m\n    mov b, a\n";
         pointAtSlotNextByte(slot, 0);
@@ -1189,11 +940,7 @@ void I8008Codegen::storeOperandAtPtr(Type type) {
         return;
     }
     if (w == 1) {
-        // `loadHLFromCell` clobbers A internally (it reads `ptr`'s own
-        // two stored bytes through it) - the value to store has to
-        // survive in B across that call, the same reason copy16()/
-        // storeAcIndirect() never read a value straight into A right
-        // before repointing H,L.
+        // loadHLFromCell() clobbers A internally, so the value to store must survive in B across that call.
         loadByte("ac");
         code_ << "    mov b, a\n";
         loadHLFromCell("ptr");
@@ -1208,13 +955,8 @@ void I8008Codegen::narrowAcTo(Type to) {
     emitSignExtendByte("ac", "ac+1", to.isUnsigned);
 }
 
-// `op` applied to ac=old, bc=rhs, leaving the raw new value in ac -
-// every instruction here is the exact same mnemonic/operand shape
-// genBinary()'s own per-operator case already emits (see that
-// method), with only ac/bc's own roles swapped where the operator
-// isn't commutative (old plays genBinary()'s own "first/lhs operand"
-// role here, rhs its "second/rhs operand" role - see this method's
-// own header comment in I8008Codegen.h).
+// `op` applied to ac=old, bc=rhs, leaving the raw new value in ac; `old` plays genBinary()'s lhs role, `rhs` its
+// rhs role, for non-commutative operators.
 void I8008Codegen::genCompoundOp(const std::string &op, Type type) {
     bool isUnsigned = type.isUnsigned;
     if (op == "+" || op == "-") {
@@ -1264,25 +1006,15 @@ void I8008Codegen::genCompoundOp(const std::string &op, Type type) {
         code_ << "    mov a, c\n    mov m, a\n";
         return;
     }
-    // "<<" or ">>" - genShiftCore() operates on bc=value/cx=count, the
-    // opposite of this method's own ac=old/bc=rhs(count) convention,
-    // so the two are swapped into place first.
+    // "<<" or ">>" - genShiftCore() expects bc=value/cx=count, the opposite of ac=old/bc=rhs here.
     copy16("cx", "bc");  // cx = shift count (rhs)
     copy16("bc", "ac");  // bc = value to shift (old)
     genShiftCore(op == "<<", isUnsigned);
 }
 
-// `ptr` must already hold the resolved address on entry (see
-// genIndexAddr()/the Assign indexed case, or copy16("ptr","ac") off a
-// dereferenced pointer value, for the two ways a caller gets there).
-// `e.rhs`'s own evaluation can recursively reach arbitrarily complex
-// codegen (calls, nested expressions) that's free to clobber every
-// one of ptr/ac/bc/cx/dx - exactly the reason Assign's own indexed
-// case and DerefAssign already stash `ptr` on the real `sp` stack
-// across it rather than trusting it to survive in place;
-// genCompoundOp()'s own "/"/"%" case reaches back into `ptr` too (see
-// its own header comment), so the address is re-stashed a second time
-// around that call as well.
+// `ptr` must already hold the resolved address on entry. `e.rhs`'s evaluation can clobber ptr/ac/bc/cx/dx, so the
+// address is stashed on the `sp` stack across it; genCompoundOp()'s "/"/"%" case also reaches into `ptr`, so it's
+// re-stashed a second time around that call.
 void I8008Codegen::genCompoundThroughPtr(const ir::Expr &e) {
     pushCell("ptr", "sp");  // stash address across rhs's own evaluation
     genExpr(*e.rhs);        // ac = rhs
@@ -1303,10 +1035,8 @@ void I8008Codegen::genAddrOf(const ir::Expr &operand) {
         if (operand.slot->kind == ir::SlotKind::Global) {
             storeImmediate16("ac", label(operand.slot));
         } else {
-            // A Local/Param's own address is only known at runtime
-            // (this call's own `fp` plus a word offset - see
-            // pointAtSlot()), never a compile-time immediate the way
-            // a Global's is.
+            // A Local/Param's address is only known at runtime (`fp` plus a word offset), never a compile-time
+            // immediate the way a Global's is.
             pointAtSlot(operand.slot, 0);  // H,L = this call's own copy of operand.slot
             storeHLToCell("ac");
         }
@@ -1324,15 +1054,7 @@ void I8008Codegen::genAddrOf(const ir::Expr &operand) {
     err(operand.line, "internal: unhandled addressable-operand kind");
 }
 
-// Every binary op here saves its left operand across evaluating the
-// right one on the real runtime stack (pushAc()/popInto() - see
-// I8008Codegen.h's own header comment on why a compile-time-indexed
-// save cell doesn't work once a real function call is involved).
-// An implicit or explicit type conversion - see
-// ../m6502/M6502Codegen.cpp's own version of this same function for
-// the full rationale (identical here, just reached through this
-// backend's own `pointAt`/`loadByte`/`storeByte` idiom in place of a
-// direct "lda"/"sta").
+// An implicit or explicit type conversion.
 void I8008Codegen::genConvert(const ir::Expr &e) {
     Type from = e.lhs->type;
     Type to = e.type;
@@ -1464,14 +1186,9 @@ void I8008Codegen::emitWideEqualityCompare(const ir::Expr &lhs, const ir::Expr &
     code_ << Ldone << ":\n";
 }
 
-// Scans byte-wise most-significant first via a single chained
-// subtract (one `sub`, then `sbb` per later byte - the borrow
-// propagates automatically), the direct byte-level generalization of
-// ../i8080/I8080Codegen.h's own 16-bit sign-bit-bias trick: flipping
-// the top bit of only the MOST significant byte (not every byte) and
-// subtracting maps the signed range onto the unsigned one the same
-// way, since every lower byte is already comparing a pure magnitude
-// once the top byte's own sign has been accounted for.
+// Scans byte-wise least-significant first via a chained subtract (one `sub`, then `sbb` per later byte, borrow
+// propagating automatically). Flipping the sign bit of only the most significant byte before subtracting maps
+// the signed range onto the unsigned one, the wide generalization of the 16-bit sign-bit-bias trick.
 void I8008Codegen::emitWideLessCompare(const ir::Expr &a, const ir::Expr &b, bool isUnsigned, int words,
                                         bool invert) {
     int n = 2 * words;
@@ -1515,13 +1232,9 @@ void I8008Codegen::genWideCompare(const std::string &op, const ir::Expr &lhs, co
     err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
 }
 
-// A `long`/`long long` shifted by a runtime count - loops one bit at
-// a time across all `n` bytes (ASL/ROL-equivalent chained through
-// the accumulator, since RAL/RAR only ever work on A itself - see
-// I8008Codegen.h's own header comment on shiftOneBit()). A signed
-// right shift re-derives the current sign bit into the carry before
-// the top byte's own rotate, instead of a fixed 0-fill - the same
-// trick genShift() uses for the narrow case.
+// A wide value shifted by a runtime count: loops one bit at a time across all `n` bytes, chained through the
+// accumulator (RAL/RAR work on A only). A signed right shift re-derives the current sign bit into carry before
+// the top byte's rotate, instead of a fixed 0-fill.
 void I8008Codegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned, int words) {
     int n = 2 * words;
     genExpr(lhs);
@@ -1562,10 +1275,8 @@ void I8008Codegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool i
     code_ << Ldone << ":\n";
 }
 
-// Textbook shift-and-add multiply, `n*8` bits serially - the wide
-// generalization of genMul() (see that function's own comment).
-// Needs no signedness at all (see M6502Codegen.cpp's own comment on
-// why a truncated multiply's own bit pattern never depends on it).
+// Textbook shift-and-add multiply, `n*8` bits serially - the wide generalization of genMul(). Needs no
+// signedness, since a truncated multiply's bit pattern never depends on it.
 void I8008Codegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int words) {
     int n = 2 * words;
     genExpr(lhs);
@@ -1618,13 +1329,8 @@ std::string I8008Codegen::getWideDivModSubroutine(bool isUnsigned, int words) {
     std::string label = newLabel();
     wideDivModSubroutineLabel_.emplace(key, label);
 
-    // Builds this subroutine's own body into a fresh stream instead of
-    // `code_` directly, so it can be queued (into
-    // wideDivModSubroutineBodies_) rather than landing wherever this
-    // particular `/`/`%` call site happens to sit - every pointAt()/
-    // loadByte()/etc. helper this body calls still reaches it through
-    // the `code_` member exactly as usual, since the two streams are
-    // simply swapped for the duration.
+    // Builds this subroutine's body into a fresh stream so it can be queued separately rather than landing at the
+    // call site; `code_` is simply swapped for the duration, so every helper still writes through it as usual.
     std::ostringstream callSiteCode;
     std::swap(callSiteCode, code_);
     code_ << label << ":\n";
@@ -1650,10 +1356,8 @@ std::string I8008Codegen::getWideDivModSubroutine(bool isUnsigned, int words) {
         negateWideBuffer(buf, n);
         code_ << Lskip << ":\n";
     };
-    // On entry, `wbc` already holds the dividend and `wac` the
-    // divisor - see getWideDivModSubroutine()'s own comment; the
-    // call site (genWideDivMod()) is what actually evaluates and
-    // places them there before `cal`-ing this label.
+    // On entry, `wbc` holds the dividend and `wac` the divisor - placed there by the call site before `cal`-ing
+    // this label.
     if (!isUnsigned) {
         isNegByte(byteAt("wbc", n - 1), "dx");
         isNegByte(byteAt("wac", n - 1), "dx+1");
@@ -1869,11 +1573,8 @@ void I8008Codegen::genBinary(const ir::Expr &e) {
     genCompare(op, *e.lhs, *e.rhs, isUnsigned);
 }
 
-// No variable-count shift instruction (see I8008Codegen.h's own
-// header comment) - loop `rhs` times instead, one bit at a time, via
-// shiftOneBit(). A signed right shift re-derives the current sign
-// bit into the carry before each 1-bit rotate, instead of
-// shiftOneBit()'s own fixed 0-fill.
+// No variable-count shift instruction - loop `rhs` times, one bit at a time, via shiftOneBit(). A signed right
+// shift re-derives the current sign bit into carry before each rotate, instead of a fixed 0-fill.
 void I8008Codegen::genShiftCore(bool isLeft, bool isUnsigned) {
     pointAt("cx");
     code_ << "    mov a, m\n    mov b, a\n";  // b = shift count (always small; low byte is enough)
@@ -1900,8 +1601,7 @@ void I8008Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLef
     genExpr(lhs);  // ac = value to shift
     pushAc();
     genExpr(rhs);         // ac = shift count
-    copy16("cx", "ac");  // stash the count in a memory cell, not a register - popInto() below
-                          // uses every one of A/B/C/D/E/H/L as its own scratch internally
+    copy16("cx", "ac");  // popInto() below uses every one of A/B/C/D/E/H/L as scratch, so stash the count in a cell
     popInto("bc");         // bc = value (restored only now)
     genShiftCore(isLeft, isUnsigned);
 }
@@ -2053,10 +1753,8 @@ void I8008Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const 
     err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
 }
 
-// `==`/`!=` need no sign handling at all: a-b (full 16 bits, borrow
-// chained from low into high byte) is zero iff a==b, checked the
-// same "OR the two result bytes together" way genLogicalNot() checks
-// a value for zero.
+// `==`/`!=` need no sign handling: a-b (16 bits, borrow chained low into high) is zero iff a==b, checked by
+// ORing the two result bytes together.
 void I8008Codegen::emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, bool wantEqual) {
     genExpr(lhs);
     pushAc();
@@ -2081,12 +1779,9 @@ void I8008Codegen::emitEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs,
     code_ << Ldone << ":\n";
 }
 
-// Signed 16-bit "a < b" via the standard bias trick (see
-// ../i8080/I8080Codegen.h's own header comment: the 8008, like the
-// 8080, has no hardware overflow flag) - flipping the sign bit of
-// each operand's high byte, in place, maps the signed range onto the
-// unsigned one while preserving order, and the final borrow out of a
-// plain byte-wise subtract is all that's left to check.
+// Signed 16-bit "a < b" via the sign-bit-bias trick (the 8008 has no hardware overflow flag): flipping the sign
+// bit of each operand's high byte maps the signed range onto the unsigned one, leaving just the final borrow to
+// check.
 void I8008Codegen::emitLessCompare(const ir::Expr &a, const ir::Expr &b, bool isUnsigned, bool invert) {
     genExpr(a);
     pushAc();
@@ -2168,13 +1863,8 @@ std::string I8008Codegen::buildAssembleCommand(const std::string &, const std::s
 std::optional<std::string> I8008Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "raw") return assembleI8008(asmText);
-    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
-    // (see generate()'s own `objectMode` comment) - this backend's
-    // own assembler builds one format-neutral ObjectFile exactly once
-    // (see I8008Assembler.h's own `assembleI8008Object`), and
-    // whichever of these five names was asked for just picks that
-    // format's own FileFormatWriter (see
-    // fileformat/FileFormat.h) to serialize it.
+    // `coff`/`elf`/`macho`/`aout`/`objraw`: the assembler builds one format-neutral ObjectFile, and the
+    // requested format name just picks that format's FileFormatWriter to serialize it.
     if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleI8008Object(asmText);
         return makeFileFormatWriter(*kind)->write(obj);

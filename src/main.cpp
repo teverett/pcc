@@ -1,17 +1,9 @@
 // pcc - a compiler for pdp-c-compiler's C subset.
 //
-// Reads one or more C source files, each parsed on its own but then
-// merged into a single program sharing one flat global/function
-// namespace (see main()'s comment on mergeInto) before anything
-// else happens - so a function or global defined in one file is
-// visible to every other file given on the same command line, no
-// forward-declaration or "extern" needed. Compiles the result to
-// the chosen target's assembly text, via a Backend (see Codegen.h) -
-// and, unless --format=asm was requested, pipes that through the
-// target's own real assembler to produce a real binary. See
-// README.md for the language subset (the same for every target) and
-// each backend's own header comment for target-specific codegen
-// conventions.
+// Reads one or more C source files, parsed separately but merged into one
+// program sharing a flat global/function namespace, then compiles the
+// result via a Backend (see Codegen.h) and, unless --format=asm, pipes the
+// output through the target's real assembler.
 
 #include <unistd.h>
 
@@ -125,9 +117,8 @@ void usage(const char *argv0) {
                  "--link into the final program.\n";
 }
 
-// The source file's name with its directory and ".c" stripped, e.g.
-// "../src-c/sys/s5.c" -> "s5" - used to name --dump-ir/--dump-asm's
-// output files.
+// Strips directory and ".c" (e.g. "src/s5.c" -> "s5") for naming
+// --dump-ir/--dump-asm output files.
 std::string baseName(const std::string &srcPath) {
     size_t slash = srcPath.find_last_of('/');
     std::string base = (slash == std::string::npos) ? srcPath : srcPath.substr(slash + 1);
@@ -135,19 +126,8 @@ std::string baseName(const std::string &srcPath) {
     return base;
 }
 
-// Writes `content` to build/<name>, creating build/ first if it
-// doesn't exist yet (mirroring the Makefile's own BUILD_DIR). Used
-// by --dump-ir/--dump-asm, which exist purely to let you inspect
-// what pcc produced partway through compiling - not part of the
-// normal compile-and-maybe-assemble pipeline.
-// `binary`: --dump-ir/--dump-asm's own callers want text mode (the
-// default); writing a `build/<name>.o` from multi-file --format=coff
-// (see main()'s compileAndAssembleOne) wants binary, since a COFF
-// object is arbitrary bytes, not text.
-// mkdir()'s own signature differs by platform (MinGW's <io.h> one -
-// the only one available there, since it has no <sys/stat.h> mkdir -
-// takes no mode argument at all), so every caller goes through this
-// instead of calling mkdir() directly.
+// MinGW's mkdir() (no <sys/stat.h>) takes no mode argument, so every
+// caller goes through this rather than calling mkdir() directly.
 void makeDir(const std::string &path) {
 #ifdef _WIN32
     _mkdir(path.c_str());
@@ -157,7 +137,7 @@ void makeDir(const std::string &path) {
 }
 
 void writeToBuildDir(const std::string &name, const std::string &content, bool binary = false) {
-    makeDir("build");  // ignore EEXIST and any other failure here; the ofstream below will fail loudly instead
+    makeDir("build");  // any failure here surfaces via the ofstream below instead
     std::ofstream out("build/" + name, binary ? std::ios::binary : std::ios::out);
     if (!out) {
         std::cerr << "warning: could not write build/" << name << "\n";
@@ -166,16 +146,12 @@ void writeToBuildDir(const std::string &name, const std::string &content, bool b
     out << content;
 }
 
-// --target=8088 is a deliberate, software-identical alias for
-// --target=8086, not a separate backend: the 8088 is the exact same
-// instruction set as the 8086 (literally the same opcodes, the same
-// registers, the same real-mode memory model) - its one real
-// difference, an 8-bit external data bus instead of a 16-bit one, is
-// a hardware bus-timing detail invisible to every instruction this
-// compiler (or anything else) could ever emit. There is nothing for
-// a distinct I8088Codegen to do differently, so this just reuses
-// I8086Codegen/makeI8086Linker() outright rather than inventing a
-// duplicate pair of classes with no actual behavioral difference.
+// Several --target names below are deliberate, software-identical aliases
+// for another target rather than distinct backends (8088->8086, r4000->
+// r10000, cortex-m4/m7->cortex-m3, 8031/8032/8051/8052 all share one
+// backend): each pair's real hardware differences are invisible to any
+// instruction this compiler emits, so there's nothing for a separate
+// Codegen to do differently.
 std::unique_ptr<pcc::Backend> makeBackend(const std::string &target) {
     if (target == "pdp7") return std::make_unique<pcc::Pdp7Codegen>();
     if (target == "8086" || target == "8088") return std::make_unique<pcc::I8086Codegen>();
@@ -193,37 +169,15 @@ std::unique_ptr<pcc::Backend> makeBackend(const std::string &target) {
     if (target == "m16c") return std::make_unique<pcc::M16cCodegen>();
     if (target == "pic16") return std::make_unique<pcc::PIC16Codegen>();
     if (target == "pic18") return std::make_unique<pcc::PIC18Codegen>();
-    // --target=r4000 is a deliberate, software-identical alias for
-    // --target=r10000 (same reasoning as the 8088 alias above): this
-    // backend never emits anything beyond the real MIPS I
-    // instruction subset (see MipsCodegen.h's own header comment),
-    // which a real R4000 (MIPS III) runs exactly as unchanged as a
-    // real R10000 (MIPS IV) does - there is nothing for a distinct
-    // R4000 codegen to do differently.
     if (target == "r10000" || target == "r4000") return std::make_unique<pcc::MipsCodegen>();
-    // --target=cortex-m4/cortex-m7 are deliberate, software-identical
-    // aliases for --target=cortex-m3 (same reasoning as r4000/r10000
-    // above): this backend only ever emits real ARMv7-M mainline
-    // Thumb/Thumb-2 instructions (see ArmMCodegen.h's own header
-    // comment), which the M4/M7 execute exactly the same as the M3 -
-    // there is nothing for a distinct M4/M7 codegen to do differently
-    // (this backend never touches either chip's own DSP/FP extension
-    // instructions at all).
     if (target == "cortex-m3" || target == "cortex-m4" || target == "cortex-m7") {
         return std::make_unique<pcc::ArmMCodegen>();
     }
-    // 8031/8032/8051/8052 are all the same MCS-51 instruction set as
-    // far as any instruction this compiler could ever emit is
-    // concerned - see MCS51Codegen.h's own header comment (same
-    // "software-identical part numbers share one Backend" reasoning
-    // as the 8088 alias just above).
     if (target == "8051" || target == "8052" || target == "8031" || target == "8032") {
         return std::make_unique<pcc::MCS51Codegen>();
     }
-    // ARM A-profile: armv7a is 32-bit AArch32 (A32 encoding), armv8a
-    // is 64-bit AArch64 (A64 encoding) - genuinely different
-    // instruction sets (unlike every alias above), so each gets its
-    // own Codegen rather than sharing one.
+    // armv7a (32-bit AArch32) and armv8a (64-bit AArch64) are genuinely
+    // different instruction sets, each with its own Codegen.
     if (target == "armv7a") return std::make_unique<pcc::ArmCodegen>();
     if (target == "armv8a") return std::make_unique<pcc::Arm64Codegen>();
     if (target == "powerpc") return std::make_unique<pcc::PowerPCCodegen>();
@@ -231,8 +185,6 @@ std::unique_ptr<pcc::Backend> makeBackend(const std::string &target) {
     return nullptr;
 }
 
-// The linker's own equivalent of makeBackend() above - one
-// TargetLinker implementation per target, see linker/Linker.h.
 std::unique_ptr<pcc::TargetLinker> makeLinker(const std::string &target) {
     if (target == "pdp7") return pcc::makePdp7Linker();
     if (target == "8086" || target == "8088") return pcc::makeI8086Linker();
@@ -261,17 +213,10 @@ std::unique_ptr<pcc::TargetLinker> makeLinker(const std::string &target) {
 }
 
 
-// Parses one file's own source into its own Program (BuildAst
-// doesn't know or care that there might be others), then appends its
-// functions/globals onto `combined`. "Merging" is this simple
-// because name resolution (IRBuilder) only happens once, after every
-// file's declarations are already in one list - a function or
-// global is visible to IRBuilder regardless of which file physically
-// defines it, with no linking step beyond this concatenation. A
-// prototype (`int f();`, no body) contributes nothing on its own -
-// BuildAst already drops those - so one file can call a function
-// defined in another without declaring it first at all; a prototype
-// is purely documentation here, never required.
+// Parses one file into its own Program, then appends its functions/globals
+// onto `combined`; name resolution (IRBuilder) runs once, afterward, over
+// the whole concatenated list, so no file needs to declare another's
+// function first.
 void parseAndMergeFile(const std::string &srcPath, const std::string &source, pcc::Program &combined) {
     CountingErrorListener errors;
 
@@ -299,13 +244,9 @@ void parseAndMergeFile(const std::string &srcPath, const std::string &source, pc
     }
 }
 
-// Compiles exactly one source file completely independently - no
-// visibility into any other file, even one given on the same pcc
-// invocation (see IRBuilder.h's own `allowExternal`) - to this
-// backend's own generated assembly text. `allowExternal` is real
-// separate compilation's own switch (true only for --format=coff -
-// see IRBuilder.h), threaded straight through to both buildIR() and
-// Backend::generate()'s own `objectMode`.
+// Compiles exactly one source file with no visibility into any other file
+// on this invocation. `allowExternal` (true only for --format=coff) is
+// threaded through to both buildIR() and Backend::generate()'s objectMode.
 std::string compileOneFile(const std::string &srcPath, const std::map<std::string, std::string> &predefinedMacros,
                              pcc::Backend &backend, bool allowExternal, bool optimize, bool dumpIr, bool dumpAsm) {
     pcc::Program prog;
@@ -313,56 +254,32 @@ std::string compileOneFile(const std::string &srcPath, const std::map<std::strin
 
     pcc::ir::Program irProg = pcc::buildIR(prog, backend.typeWidths(), allowExternal);
 
-    // Every registered Optimizer (see optimizers/Optimizer.h) runs
-    // here, before any backend ever sees the IR - target-independent
-    // by construction, since instruction selection hasn't happened
-    // yet.
     if (optimize) {
-        // Constant folding first - it often turns a once-variable
-        // initializer/condition into a literal DeadCodeElimination
-        // can then reason about (e.g. a now-dead LocalDecl's own
-        // initializer collapsing to a side-effect-free constant).
+        // Constant folding first, so DeadCodeElimination can reason about
+        // initializers it collapses to a side-effect-free constant.
         pcc::ConstantFolding cf;
         cf.run(irProg);
-        // Strength reduction next - it only ever rewrites an
-        // operation whose OTHER operand isn't a literal (constant
-        // folding already handled both-literal above), so running it
-        // after constant folding rather than before doesn't lose any
-        // opportunity either pass could find alone.
+        // Strength reduction only rewrites an op whose other operand isn't
+        // a literal, so ordering after constant folding loses nothing.
         pcc::AlgebraicSimplification algsimp;
         algsimp.run(irProg);
-        // Local CSE next, so it sees each pass above's own
-        // canonicalized form (e.g. a strength-reduced `x << 1` now
-        // matches another occurrence written as `x << 1` to begin
-        // with, where the pre-simplification `x * 2` wouldn't have) -
-        // see LocalCSE.h's own "syntactic, not flow-sensitive" scope.
+        // Local CSE after the above so it matches each pass's canonicalized
+        // form (e.g. a strength-reduced `x << 1`, not the original `x * 2`).
         pcc::LocalCSE cse;
         cse.run(irProg);
         pcc::DeadCodeElimination dce;
         dce.run(irProg);
-        // LocalCSE may have introduced brand new locals (temps) after
-        // buildIR() already assigned every *other* local's own frame
-        // offset once - see recomputeFrameLayout's own comment.
+        // LocalCSE may have introduced new locals after buildIR() already
+        // assigned frame offsets once.
         pcc::recomputeFrameLayout(irProg, backend.typeWidths());
-        // Unused-global removal last, and only when this compile sees
-        // the entire program (never under real separate compilation,
-        // --format=coff's own per-file `allowExternal`) - see
-        // UnusedGlobalElimination.h's own comment on why that matters,
-        // and why it runs after DeadCodeElimination (a global touched
-        // only from now-unreachable code must look unused too, not
-        // "used" by code that no longer exists in the tree).
+        // Only when this compile sees the entire program, and after DCE so
+        // a global touched only from now-unreachable code looks unused too.
         if (!allowExternal) {
             pcc::UnusedGlobalElimination uge;
             uge.run(irProg);
         }
     }
 
-    // A self-check, not a user-facing feature: parses this program's
-    // own printed IR (see IRPrinter.h) against grammar/PccIRLexer.g4
-    // + grammar/PccIRParser.g4 on every compile, optimized or not, so
-    // a bug in an optimizer (or in the printer itself) that produces
-    // IR the grammar doesn't recognize is caught immediately instead
-    // of silently miscompiling. See IRValidator.h's own comment.
     pcc::validateIRSyntax(irProg);
 
     if (dumpIr) writeToBuildDir(baseName(srcPath) + ".ir", pcc::printIR(irProg, srcPath));
@@ -376,27 +293,17 @@ std::string compileOneFile(const std::string &srcPath, const std::map<std::strin
     return asmText;
 }
 
-// Assembles `asmText` (one backend's own generate() output, for one
-// file) into `format` - "asm" just means "asmText itself, nothing
-// more to do". Prefers this backend's own in-process assembler (see
-// Codegen.h's assembleInProcess()); falls back to its real external
-// assembler tool (via a temp input/output file pair) only for a
-// backend that doesn't have one. Throws std::runtime_error on any
-// failure, so every caller (single-file compile, or each file of a
-// multi-file --format=coff compile) handles errors the same way.
+// Assembles `asmText` into `format`; "asm" is a no-op. Prefers the
+// backend's in-process assembler, falling back to its external assembler
+// tool via a temp file pair.
 std::string assembleOne(const pcc::Backend &backend, const std::string &asmText, const std::string &format,
                           const std::string &assemblerPath) {
     if (format == "asm") return asmText;
 
     if (std::optional<std::string> result = backend.assembleInProcess(asmText, format)) return *result;
 
-    // mkstemp() (no suffix) is the only one of the two available on
-    // MinGW - mkstemps() (glibc/BSD only) isn't - so the input file's
-    // required extension (some real external assemblers key off it)
-    // is added with a rename afterward instead of mkstemps()'s own
-    // suffix argument. Neither hardcodes "/tmp" (not a real path on
-    // native Windows) - std::filesystem::temp_directory_path() is
-    // this platform's own actual temp directory on every target.
+    // mkstemp() (not mkstemps(), MinGW lacks it) can't give the input file
+    // its required extension directly, so it's added via a rename after.
     std::string tmpDir = std::filesystem::temp_directory_path().string();
     std::string tmpPathTemplate = tmpDir + "/pcc_XXXXXX";
     std::vector<char> tmpPath(tmpPathTemplate.begin(), tmpPathTemplate.end());
@@ -442,10 +349,6 @@ std::string assembleOne(const pcc::Backend &backend, const std::string &asmText,
 
 }  // namespace
 
-// Writes `content` either to `outPath` (binary) or, if empty, to
-// stdout (binary) - the common "where does the final output go"
-// decision every mode below (compile, multi-file coff, --link)
-// shares once it has its own finished bytes in hand.
 void writeResult(const std::string &outPath, const std::string &content) {
     if (outPath.empty()) {
         std::cout << content;
@@ -508,13 +411,9 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // --- --link mode: combine already-compiled .o files - no
-    // frontend, no Backend. Merging them into a resolved, linked
-    // ObjectFile (this target's own TargetLinker - see
-    // linker/Linker.h) and writing that out in a given format (a
-    // separate FileFormatWriter - see fileformat/FileFormat.h) are
-    // two decoupled steps; `target` only picks the first one,
-    // `format` the second. ---
+    // --link mode: merging .o files (TargetLinker) and writing the result
+    // in a given format (FileFormatWriter) are decoupled; `target` picks
+    // the first, `format` the second.
     if (link) {
         std::unique_ptr<pcc::TargetLinker> linker = makeLinker(target);
         if (!linker) {
@@ -531,10 +430,7 @@ int main(int argc, char **argv) {
             return 1;
         }
         auto outKind = pcc::fileFormatKindFromName(format);
-        // formatOk above already confirmed `format` is one of
-        // `linker->outputFormats()`'s own names, and every target's
-        // own outputFormats() only ever lists a real FileFormatKind's
-        // own name - this can't actually be nullopt.
+        // formatOk above already confirmed format names a real FileFormatKind.
         std::unique_ptr<pcc::FileFormatWriter> writer = pcc::makeFileFormatWriter(*outKind);
         try {
             std::vector<pcc::ObjectFile> objects;
@@ -544,11 +440,9 @@ int main(int argc, char **argv) {
                 std::ostringstream ss;
                 ss << in.rdbuf();
                 std::string bytes = ss.str();
-                // Each input .o can be in any supported object format
-                // (see fileformat/FileFormat.h) - sniffed from its
-                // own leading bytes, not assumed to be COFF, so a
-                // link step can freely combine objects compiled with
-                // different `--format` choices.
+                // Sniffed from leading bytes, not assumed to be COFF, so
+                // objects compiled with different --format choices can
+                // still be linked together.
                 pcc::FileFormatKind kind = pcc::detectFileFormat(bytes);
                 objects.push_back(pcc::makeFileFormatReader(kind)->read(bytes));
             }
@@ -579,11 +473,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Real separate compilation is now the *only* way to combine more
-    // than one .c file into a final program (see Codegen.h's
-    // `objectMode`/IRBuilder.h's `allowExternal`) - any other format
-    // only ever meant "merge every file into one shared namespace
-    // before resolving a single name", which no longer exists.
+    // Real separate compilation is the only way to combine more than one
+    // .c file; any other format takes exactly one source file.
     if (!backend->isObjectFormat(format) && srcPaths.size() != 1) {
         std::cerr << "--format=" << format << " takes exactly one .c file (got " << srcPaths.size()
                    << ") - compile each file as an object format, then --link them together; see --help\n";
@@ -596,53 +487,27 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Target macro pcc predefines for every file's own preprocessor
-    // run - see preprocessor/Preprocessor.h and
-    // docs/pdp-c-compiler.md's "Preprocessor" for `#ifdef __PDP7__`/
-    // `#ifdef __8086__`/`#ifdef __6502__`-style target-conditional code.
+    // Each target predefines its own macro (e.g. __PDP7__) for
+    // #ifdef-style conditional code. An alias target (8088, 65c02,
+    // mc68328, r4000, cortex-m4/m7, 8051/8052/8031/8032's siblings)
+    // defines both its base target's macro and its own, so source gated
+    // on either the generic or the specific name keeps working.
     std::map<std::string, std::string> predefinedMacros;
     if (target == "pdp7") {
         predefinedMacros["__PDP7__"] = "1";
     } else if (target == "8086") {
         predefinedMacros["__8086__"] = "1";
     } else if (target == "8088") {
-        // --target=8088 is a software-identical alias for --target=8086
-        // (see makeBackend()'s own comment) - defining __8086__ too
-        // means existing `#ifdef __8086__` source (e.g. tests/disk.c's
-        // real BIOS disk I/O, equally valid on either machine) keeps
-        // working unchanged under either target name. __8088__ exists
-        // only for source that wants to say "I was compiled for an
-        // 8088" specifically, even though nothing in pcc itself ever
-        // treats that differently from __8086__.
         predefinedMacros["__8086__"] = "1";
         predefinedMacros["__8088__"] = "1";
     } else if (target == "6502") {
         predefinedMacros["__6502__"] = "1";
     } else if (target == "65c02") {
-        // Same reasoning as __8086__/__8088__ above: a 65C02 is a
-        // real superset of the 6502, so source gated on plain
-        // `#ifdef __6502__` (nothing CMOS-specific) keeps working
-        // unchanged under this target too; __65C02__ exists only for
-        // source that wants to say "I need the real CMOS-only
-        // instructions" specifically (none of which this compiler's
-        // own backend ever lets through its `asm` escape and back
-        // into a `--format=raw` that doesn't build, since
-        // M65C02Assembler.cpp only ever recognizes this one extra
-        // mnemonic - `stz`/`stzp` - beyond the plain 6502 dialect).
         predefinedMacros["__6502__"] = "1";
         predefinedMacros["__65C02__"] = "1";
     } else if (target == "68000") {
         predefinedMacros["__68000__"] = "1";
     } else if (target == "mc68328") {
-        // Same reasoning as __6502__/__65C02__ above: the MC68328's
-        // own CPU core executes a bit-for-bit identical instruction
-        // set to a plain 68000 (see MC68328Codegen.h's own header
-        // comment), so source gated on plain `#ifdef __68000__`
-        // keeps working unchanged under this target too; __MC68328__
-        // exists only for source that wants to say "I need this real
-        // chip specifically" (e.g. to assume its own real reset-
-        // vector-table entry convention, rather than the generic
-        // `68000` target's own simulator-PC-forced one).
         predefinedMacros["__68000__"] = "1";
         predefinedMacros["__MC68328__"] = "1";
     } else if (target == "pdp11") {
@@ -668,38 +533,14 @@ int main(int argc, char **argv) {
     } else if (target == "r10000") {
         predefinedMacros["__R10000__"] = "1";
     } else if (target == "r4000") {
-        // --target=r4000 is a software-identical alias for
-        // --target=r10000 (see makeBackend()'s own comment) - same
-        // __8086__/__8088__ reasoning: defining __R10000__ too means
-        // existing `#ifdef __R10000__` source (nothing here is ever
-        // actually R10000-specific, since this backend only emits
-        // the real MIPS I instruction subset) keeps working
-        // unchanged under either target name. __R4000__ exists only
-        // for source that wants to say "I was compiled for an
-        // R4000" specifically.
         predefinedMacros["__R10000__"] = "1";
         predefinedMacros["__R4000__"] = "1";
     } else if (target == "cortex-m3") {
         predefinedMacros["__CORTEX_M3__"] = "1";
     } else if (target == "cortex-m4" || target == "cortex-m7") {
-        // --target=cortex-m4/cortex-m7 are software-identical aliases
-        // for --target=cortex-m3 (see makeBackend()'s own comment) -
-        // same __8086__/__8088__ reasoning: defining __CORTEX_M3__
-        // too means existing `#ifdef __CORTEX_M3__` source (nothing
-        // here is ever actually M3-specific, since this backend only
-        // emits the real ARMv7-M mainline instruction subset) keeps
-        // working unchanged under either target name. __CORTEX_M4__/
-        // __CORTEX_M7__ exist only for source that wants to say "I
-        // was compiled for this exact chip" specifically.
         predefinedMacros["__CORTEX_M3__"] = "1";
         predefinedMacros[target == "cortex-m4" ? "__CORTEX_M4__" : "__CORTEX_M7__"] = "1";
     } else if (target == "8051" || target == "8052" || target == "8031" || target == "8032") {
-        // All four part numbers share the exact same backend (see
-        // makeBackend()'s own comment) and so always define the
-        // common `__MCS51__` macro; each part number also gets its
-        // own exact macro (`__8051__`/etc.) for source that wants to
-        // say "I need this specific part" even though nothing in
-        // pcc itself ever treats one differently from another.
         predefinedMacros["__MCS51__"] = "1";
         if (target == "8051") predefinedMacros["__8051__"] = "1";
         else if (target == "8052") predefinedMacros["__8052__"] = "1";
@@ -718,28 +559,15 @@ int main(int argc, char **argv) {
         predefinedMacros["__sparc__"] = "1";
     }
 
-    // A genuinely external reference is always allowed under a real
-    // object format for this backend (`backend->isObjectFormat()` -
-    // see Codegen.h's own header comment on why that's asked per-
-    // backend rather than hardcoded to "coff": deferred as a
-    // relocation for a future --link step) and always a hard compile
-    // error under any other format - see IRBuilder.h's
-    // `allowExternal`.
+    // An external reference is allowed under a real object format for this
+    // backend, and a hard compile error under any other format.
     bool allowExternal = backend->isObjectFormat(format);
 
     if (allowExternal && srcPaths.size() > 1) {
-        // Multi-file object compile: each file compiles completely
-        // independently (compileOneFile has no idea any other file
-        // on this command line exists) and gets its own build/<name>.o.
-        // Each needs its own fresh Backend instance, not the shared
-        // `backend` above (used only for the --format/--assembler
-        // validation before this loop) - generate() accumulates its
-        // output in member variables (code_/trailer_/literal and temp
-        // counters) that are never reset between calls, so reusing
-        // one instance across files would silently leak every earlier
-        // file's own generated text into every later one's object -
-        // exactly the "every file defines every function" corruption
-        // a real separate-compilation object must never produce.
+        // Each file needs its own fresh Backend instance, not the shared
+        // `backend` above: generate() accumulates output in member
+        // variables never reset between calls, so reusing one instance
+        // would leak each file's generated text into the next one's object.
         try {
             for (const std::string &srcPath : srcPaths) {
                 std::unique_ptr<pcc::Backend> fileBackend = makeBackend(target);
@@ -755,9 +583,8 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    // Exactly one input file - any format, including --format=coff
-    // with --out (or the default build/<name>.o if --out wasn't
-    // given, same convention --dump-ir/--dump-asm already use).
+    // Exactly one input file, any format, defaulting to build/<name>.o
+    // when --out is omitted for an object format.
     try {
         std::string asmText =
             compileOneFile(srcPaths[0], predefinedMacros, *backend, allowExternal, optimize, dumpIr, dumpAsm);

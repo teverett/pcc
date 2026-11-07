@@ -11,148 +11,38 @@
 
 namespace pcc {
 
-// Generates Intel 8080 assembly (this project's own dialect, but
-// using real, standard 8080 mnemonics throughout - see
-// I8080Assembler.h) for the IR built by IRBuilder. See
-// ../../../README.md for the shared language and this backend's own
-// "bare flat binary" platform choice: `generate()` returns a
-// complete, self-contained program loaded at a fixed address
-// (`kBaseAddress`, see I8080Codegen.cpp), halting in an infinite
-// loop - no OS, no CP/M, no BDOS calls - the same "no stack, no
-// recursion" model every backend shares (see README's "Scope and
-// limitations"), just for a target whose own real hardware stack
-// (the 8080 genuinely has one, via SP/PUSH/POP/CALL/RET) gets used
-// for exactly the roles it's good at: real subroutine calls, and
-// saving one operand across evaluating the other in a binary
-// expression - the same role the 6502 backend's real-but-byte-at-a-
-// time PHA/PLA plays (see M6502Codegen.h), just now a single `PUSH
-// H`/`POP D` moves a whole 16-bit pair at once.
+// Generates Intel 8080 assembly (standard mnemonics) for the IR built by IRBuilder.
+// `generate()` emits a flat binary loaded at a fixed address (kBaseAddress), halting in an
+// infinite loop; no OS/CP-M/BDOS calls.
 //
-// This language's own `int` is 16 bits here (matching every other
-// target's own 16-bit choice except pdp7/68000 - see
-// I8086Codegen.h/M6502Codegen.h's own comments on why 16 bits is the
-// right width even on an 8-bit CPU). The 8080 has three real 16-bit-
-// capable register pairs (BC, DE, HL) plus the 8-bit accumulator A,
-// but none of them survive a recursive-descent expression evaluator
-// cleanly on their own - an arbitrarily deep expression needs
-// arbitrarily many "the other operand, saved somewhere" slots, and
-// three pairs isn't enough once dereferencing is in the mix (M-
-// addressing, the 8080's one real indirect-memory mode, *always*
-// means "through HL", so HL can never safely hold a live operand at
-// the same time a nested subexpression needs to dereference a
-// pointer). So, like the 6502 backend, every value in flight lives
-// in one of five fixed, two-byte memory cells - `ac` (genExpr()'s
-// own result), `bc` ("the other operand" in a binary op), `cx`/`dx`
-// (multiply/divide's own extra scratch), `ptr` (an indirection
-// target) - ordinary labels, not the 6502's special zero-page-only
-// ones (the 8080 has no addressing-mode restriction on where a 16-
-// bit memory operand can live - `LHLD`/`SHLD` take any absolute
-// address), so these are declared exactly like any other global (see
-// declareTemp()). HL is this backend's own transit register: loaded
-// from a memory cell immediately before an operation needs a real
-// register, stored back immediately after - `LHLD`/`SHLD` move a
-// whole pair in one instruction, so this is far cheaper than the
-// 6502's own byte-by-byte `lda`/`sta` pairs. Getting a memory cell's
-// value into DE or BC (needed by `DAD rp`, which only ever adds a
-// *register* pair to HL, never a memory operand) goes through HL
-// first and then a real `PUSH H` / `POP D` (or `POP B`) - two
-// instructions, not the 6502's four-instruction byte copy.
+// `int` is 16 bits. The 8080's three register pairs (BC/DE/HL) plus A can't hold every live
+// value of a recursive-descent expression evaluator, and M-addressing always goes through HL,
+// so every in-flight value instead lives in a fixed 16-bit memory cell (`ac`, `bc`, `cx`/`dx`,
+// `ptr`). HL is the transit register: loaded from a cell immediately before an operation needs
+// a real register, stored back right after.
 //
-// No hardware multiply or divide (same as pdp7/6502 - see their own
-// backends' comments; the 68000 is the only target here with real
-// `MULS`/`DIVS`), so `*` is a textbook shift-and-add loop and `/`,
-// `%` a simple repeated-subtraction loop, both only verified against
-// non-negative operands - the same scope limitation every other
-// software-multiply/divide backend already documents.
+// No hardware multiply/divide: `*` is shift-and-add, `/`/`%` repeated subtraction, both
+// verified only for non-negative operands. No variable-count shift either: `<<`/`>>` rotate one
+// bit at a time via RAL/RAR, using `ANA A` first to clear carry (the 8080 has no explicit
+// clear-carry instruction).
 //
-// No variable-count shift instruction either (the 8080's only shift/
-// rotate instructions - RLC/RRC/RAL/RAR - always rotate the
-// accumulator exactly one bit, and only the accumulator, never a
-// register pair) - `<<`/`>>` loop one bit at a time, chaining RAL/RAR
-// across both bytes of the pair the same way the 6502 backend's own
-// ASL/ROL or LSR/ROR pairing does (see M6502Codegen.h), just using
-// `ANA A` first to force the carry-in to 0 (the 8080 has no explicit
-// "clear carry" instruction the way the 6502 has CLC - any logical
-// instruction always clears carry as a side effect, and ANA A is the
-// standard idiom for doing that without otherwise disturbing A).
+// Every function gets a real stack frame with a software frame pointer `fp` (the 8080 has no
+// base+displacement addressing mode): `lhld fp`/`lxi d,<offset>`/`dad d` computes a frame-
+// relative address by hand. Param i is at `fp+4+2*i`; Local i is at `fp-2*(frameOffset+i)`, so a
+// Local array's elements sit at decreasing addresses as the index increases, the mirror of a
+// Global array's increasing-address layout.
 //
-// Every function gets a real per-call stack frame, so direct and
-// indirect/mutual recursion both work: two overlapping activations of
-// the same function never share storage. The 8080 has no base+
-// displacement addressing mode at all (unlike the Z80's `(IX+d)`/
-// `(IY+d)`, or the 8086's `[bp+d]` - see I8086Codegen.h's own `addr()`
-// for that backend's much simpler version of this same idea), so this
-// backend keeps its own *software* frame pointer in a dedicated
-// memory cell, `fp` (declared alongside `ac`/`bc`/`cx`/`dx`/`ptr`
-// below), and computes every frame-relative address by hand: `lhld fp`
-// loads the current frame's base into HL, `lxi d, <offset>` loads a
-// slot's own compile-time-constant word offset (positive for a Param,
-// negative for a Local - see genFrameAddr()), and `dad d` adds them,
-// leaving the slot's real address in HL for whatever M-addressing
-// (`mov a,m`/`mov m,a`) needs it next.
+// Comparisons (`<`,`<=`,`>`,`>=`) use the sign-bit-flip bias trick (XOR 0x8000 on both operands'
+// high bytes) since the 8080's flags have no overflow bit; `==`/`!=` are a plain subtract-and-
+// OR-the-bytes zero check.
 //
-// genFunction()'s prologue pushes the caller's `fp` onto the *real*
-// hardware stack (so nested/recursive activations stack up correctly,
-// restored on return the same way a real `push bp`/`pop bp` would),
-// then points the new `fp` at that just-pushed word (via `lxi h,0` /
-// `dad sp`, the standard 8080 idiom for reading SP into HL - there's
-// no direct "HL=SP" instruction), then reserves this function's own
-// locals by moving SP down below them (`dad d` with the locals'
-// *negative* total size, then `sphl`). Since `frameSize` is a
-// compile-time constant, this reservation is a handful of fixed
-// instructions, not a runtime loop. A Call's own arguments are pushed
-// onto the real stack by the caller (last-declared argument first, so
-// argument 0 ends up closest to the return address `call` is about to
-// push) and popped back off by the caller after the call returns
-// (`lxi h,N`/`dad sp`/`sphl`, the same "move SP by a compile-time
-// constant via HL" idiom) - this gives the frame the exact same
-// layout I8086Codegen.h's own `addr()` comment describes: the callee's
-// own `fp` points at its saved old `fp`, the return address sits one
-// word above that, the caller's pushed arguments sit above *that* in
-// declaration order (so Param i is at `fp+4+2*i`), and this function's
-// own Locals sit *below* `fp` (`Slot::frameOffset` is already a
-// 1-based sequential word index, so Local i is at `fp-2*frameOffset`).
-// A Local array's element i is therefore at a *decreasing* address as
-// i increases (`fp-2*(frameOffset+i)`) - the mirror image of a Global
-// array's own increasing-address layout (see genIndexAddr()'s own
-// comment on why indexing a Local array needs a subtract where
-// indexing a Global array needs an add).
-//
-// Globals are unaffected by any of this - still one real, permanent
-// static cell each, addressed by name exactly as before - and the
-// real hardware CALL/RET pair (and the real SP it already uses) never
-// needed any change at all: it was always genuinely reentrant, the
-// one piece of this backend's own calling convention that didn't need
-// a software workaround.
-//
-// Comparisons (`<`,`<=`,`>`,`>=`) can't use the 6502/8086/68000 trick
-// of a hardware overflow flag plus the result's sign bit (the 8080's
-// status word - S, Z, AC, P, CY - has no overflow flag at all, unlike
-// the 6502's V or the Z80's reused P/V). Instead this backend uses
-// the standard bias trick: flipping just the sign bit (top bit of the
-// high byte) of both operands maps the signed 16-bit range onto the
-// unsigned one while preserving order (`a < b` signed `<=>` `(a XOR
-// 0x8000) < (b XOR 0x8000)` unsigned, since XOR-ing the sign bit is
-// exactly addition of 0x8000 mod 2^16, which is what maps two's-
-// complement ordering onto unsigned ordering) - so the comparison
-// becomes a plain unsigned subtract-and-check-the-final-borrow, with
-// no flag-combination logic needed at all. `==`/`!=` need none of
-// this - a 16-bit subtract-and-OR-the-bytes zero check, same as every
-// other backend's own equality compare.
-//
-// Every real 8080 jump/call is an unconditional-range 16-bit absolute
-// address - unlike the 6502's ±127-byte conditional branches (see
-// M6502Codegen.h's own `safeBranch()`), there's no branch-range
-// workaround needed anywhere in this backend, the same simplicity the
-// 68000 backend's own header comment notes for its full-range `Bcc`.
+// Every 8080 jump/call is a full 16-bit absolute address, so there's no branch-range workaround
+// needed anywhere in this backend.
 class I8080Codegen : public Backend {
    public:
-    // One scratch 16-bit memory cell's own label - see
-    // ../z80/Z80Codegen.h's own header comment on wideScratch(),
-    // which this mirrors exactly (role is "a"/"b"/"ret", `i` is 0 for
-    // the least significant word). Public only so the free function
-    // in I8080Codegen.cpp's own anonymous namespace (used by every
-    // wide helper there) can call it too.
+    // Label for one scratch word; `role` is "a"/"b"/"ret", `i` is the word index (0 = least
+    // significant). Public so the free function in I8080Codegen.cpp's anonymous namespace can
+    // call it too.
     static std::string wideScratch(const char *role, int i) { return std::string("w") + role + std::to_string(i); }
 
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
@@ -162,11 +52,7 @@ class I8080Codegen : public Backend {
     std::vector<std::string> assembledFormats() const override {
         return {"raw", "coff", "elf", "macho", "aout", "objraw"};
     }
-    // `raw` is this backend's own whole-program flat binary - a
-    // completely different concept from the other five, every one of
-    // which means a real relocatable object file for separate
-    // compilation (see Codegen.h's own header comment on why this is
-    // asked per-backend).
+    // `raw` is a whole-program flat binary; the other formats are relocatable object files.
     bool isObjectFormat(const std::string &format) const override { return format != "raw"; }
     std::string defaultAssemblerPath() const override { return ""; }
     std::string buildAssembleCommand(const std::string &assemblerPath, const std::string &format,
@@ -192,84 +78,45 @@ class I8080Codegen : public Backend {
     void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
-    void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
-    // CompoundAssign/CompoundDerefAssign's "new = old <op> rhs" step -
-    // `old` already in HL, `rhs` already in DE (both already at
-    // `type`'s own width/signedness), leaves the raw (not yet
-    // re-narrowed - see narrowAcTo()) new value in `ac`. `type` is
-    // never wide here - IRBuilder.cpp's own rejectIfWide() guarantees
-    // it. `+`/`-`/`&`/`|`/`^` reuse genBinary()'s own HL/DE instruction
-    // shapes (register-generic, same mnemonic/operand-shape family -
-    // see I8080Assembler.cpp's own reg8Code()); `*`/`/`/`%`/`<<`/`>>`
-    // seed `bc`/`dx` from HL/DE and reuse genMul()'s/genDivMod()'s/
-    // genShift()'s own loop bodies unchanged.
+    void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's frame slots
+    // Computes CompoundAssign/CompoundDerefAssign's "new = old <op> rhs": `old` in HL, `rhs` in
+    // DE, both at `type`'s width/signedness; leaves the unnarrowed result in `ac` (see
+    // narrowAcTo()). `type` is never wide here.
     void genCompoundOp(const std::string &op, Type type);
-    // CompoundAssign's plain (unindexed) target - `e.slot` is a
-    // Global or a Local/Param. The target's own address is a pure
-    // function of `e.slot` (a label, or `fp`-relative arithmetic that
-    // never touches `ac`/`bc`/`cx`/`dx`), so unlike the indexed/deref
-    // case below it's simply recomputed a second time after `rhs` is
-    // evaluated, rather than held across that evaluation at all - only
-    // the loaded `old` value itself needs the real stack to survive
-    // `rhs`'s own evaluation (which may use any cell as scratch).
+    // CompoundAssign's unindexed target. The target address is a pure function of `e.slot`, so
+    // it's recomputed after evaluating `rhs` rather than held across it; only the loaded `old`
+    // value needs the real stack to survive that evaluation.
     void genCompoundScalar(const ir::Expr &e);
-    // Shared tail for CompoundAssign's indexed form and
-    // CompoundDerefAssign - the `ptr` cell must already hold the
-    // resolved address on entry. See the .cpp's own comment.
+    // Shared tail for indexed CompoundAssign and CompoundDerefAssign; `ptr` must already hold
+    // the resolved address on entry.
     void genCompoundThroughPtr(const ir::Expr &e);
-    // Re-narrows `ac` from its own low byte, per `to`'s signedness,
-    // when `to` is a `char` - the same instruction shapes
-    // genConvert()'s own narrow-to-narrow case already uses, needed
-    // here because a compound op computed at full 16-bit width can
-    // leave garbage above a `char` target's own 8 bits.
+    // Re-narrows `ac` to `to`'s width/signedness when `to` is a `char`.
     void narrowAcTo(Type to);
 
-    // Leaves slot[idxExpr]'s own effective address in the `ptr`
-    // memory cell - the only thing in this backend that ever needs a
-    // real address in a register (HL, via M-addressing) rather than
-    // just a value passing through it.
+    // Leaves slot[idxExpr]'s effective address in the `ptr` memory cell.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
-    // Leaves a Local or Param slot's own effective address in HL -
-    // `lhld fp` / `lxi d, <frameByteOffset(slot)+extraBytes>` / `dad
-    // d` (see this file's own header comment on the frame layout).
-    // `extraBytes` lets a Local/Param array's own element i
-    // (`i * widthOfType(slot->type)`), or a wide scalar's own word i
-    // (`2*i`), reuse this same formula. Never called for a Global,
-    // which addresses itself by name instead (see label()).
+    // Leaves a Local/Param slot's effective address in HL. `extraBytes` offsets into an array
+    // element or a wide word's word i. Never called for a Global (see label()).
     void genFrameAddr(const ir::Slot *slot, long extraBytes = 0);
 
-    // `widthOf(t, typeWidths())` - how many bytes `t` occupies on
-    // this target. `isWide(t)` is `widthOfType(t) > 2`: a `long`/
-    // `long long`, the only two types wider than this backend's own
-    // native 16-bit word, represented as `wordCountOf(t)` (2 or 4)
-    // 16-bit words pushed on the real hardware stack, least-
-    // significant word on top (pushed last) - same convention as
-    // ../pdp11/Pdp11Codegen.h's own header comment, generalized the
-    // same way here (and on ../z80/Z80Codegen.h). `elemShift(t)` is
-    // log2(widthOfType(t)) - the left-shift count (via repeated `dad
-    // h`) that scales a runtime array index into a byte offset in
-    // genIndexAddr().
+    // `widthOfType`: byte width of `t`. `isWide`: true for `long`/`long long` (wider than this
+    // backend's native 16-bit word), represented as `wordCountOf` (2 or 4) 16-bit words, least
+    // significant word pushed last. `elemShift`: log2(widthOfType(t)), the `dad h` repeat count
+    // that scales an array index into a byte offset in genIndexAddr().
     int widthOfType(Type t) const;
     bool isWide(Type t) const;
     int wordCountOf(Type t) const;
     int elemShift(Type t) const;
 
-    // Assumes HL already holds the operand's own address. A 1-byte
-    // operand (`char`) is sign- or zero-extended into `ac`'s own 16
-    // bits (see I8080Codegen.cpp's own loadOperand() comment for the
-    // "ral"/"sbb a" idiom this uses); anything else is the plain
-    // 16-bit load this file already did everywhere before `char`
-    // existed.
+    // HL must hold the operand's address. A `char` is sign- or zero-extended into `ac`'s 16
+    // bits; anything else is a plain 16-bit load.
     void loadOperand(Type type);
-    // Assumes HL already holds the operand's own address and `ac`
-    // holds the (possibly sign-extended) value to store - only ever
-    // writes the one byte that matters for a `char`.
+    // HL must hold the operand's address and `ac` the value to store; only writes one byte for
+    // a `char`.
     void storeOperand(Type type);
 
-    // An implicit or explicit conversion (`ir::ExprKind::Convert` -
-    // see IR.h's own comment and ../z80/Z80Codegen.cpp's own
-    // genConvert(), which this mirrors).
+    // An implicit or explicit conversion (ir::ExprKind::Convert).
     void genConvert(const ir::Expr &e);
 
     void popWideInto(const char *role, int words);
@@ -278,11 +125,8 @@ class I8080Codegen : public Backend {
     void genWideLoad(const ir::Slot *slot, int words);
     void genWideLoadLiteral(long value, int words);
     void genWideStore(const ir::Slot *slot, int words);
-    // Same as genWideLoad()/genWideStore(), but the element's own
-    // address is already sitting in `ptr` (genIndexAddr()'s own
-    // output) instead of coming from a Slot - see I8080Codegen.cpp's
-    // own genIndex()/genExpr() (Assign case) for why an indexed wide
-    // array element needs its own version of each.
+    // Like genWideLoad()/genWideStore(), but the element's address is already in `ptr`
+    // (genIndexAddr()'s output) instead of coming from a Slot.
     void genWideLoadAtPtr(int words);
     void genWideStoreAtPtr(const char *role, int words);
     void genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd, int words);
@@ -292,62 +136,38 @@ class I8080Codegen : public Backend {
     void genWideLessCompare(const ir::Expr &a, const ir::Expr &b, bool invert, bool isUnsigned, int words);
     void genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned, int words);
     void genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned, int words);
-    // Deliberately unimplemented - see I8080Codegen.cpp's own
-    // genWideMul()/genWideDivMod() comment (same judgment call, and
-    // the same reason, as ../pdp11/Pdp11Codegen.cpp's own version of
-    // these two).
+    // Unimplemented: no way to verify a hand-written multi-word multiply/divide routine.
     void genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int words);
     void genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, int words);
 
-    // Leaves a plain 0/1 truth value in `ac` for whatever `e`'s own
-    // genExpr() just left behind - see ../z80/Z80Codegen.h's own
-    // header comment on testTruthy(), which this mirrors.
+    // Leaves a plain 0/1 truth value in `ac` for whatever `e`'s genExpr() just left behind.
     void testTruthy(const ir::Expr &e);
 
-    // Tears down the current function's own frame and returns -
-    // `lhld fp`/`sphl` (SP = fp, discarding the locals' reserved
-    // region), `pop h`/`shld fp` (restores the caller's own fp), `ret`.
-    // Used both by genFunction()'s own fall-off-the-end epilogue and
-    // inline by every Return statement (an early return bypasses that
-    // fall-through epilogue entirely, so it needs this same teardown
-    // of its own - see genStmt()'s own Return case).
+    // Tears down the current frame and returns: `lhld fp`/`sphl` discards the locals' reserved
+    // region, `pop h`/`shld fp` restores the caller's fp, `ret` returns. Used both by
+    // genFunction()'s fall-through epilogue and inline by every Return statement.
     void emitEpilogue();
 
-    // Assumes HL already holds a target address (genIndexAddr's
-    // `ptr`, or DerefAssign's own pointer value) and writes `ac`'s
-    // two bytes there via plain accumulator loads/M-stores - doesn't
-    // touch HL itself, so the caller's address survives.
+    // HL must hold a target address; writes `ac`'s two bytes there without touching HL.
     void storeAcIndirect();
 
-    // "lhld src\nshld dst\n" - copies one 16-bit memory cell to
-    // another in a single pair of real instructions (no byte-by-byte
-    // workaround needed - see this file's own header comment).
+    // Copies one 16-bit memory cell to another ("lhld src\nshld dst\n").
     void copy16(const std::string &dst, const std::string &src);
-    // Loads a 16-bit memory cell into DE or BC (`pairReg` is "d" or
-    // "b") via HL and a real stack round-trip: "lhld src\npush
-    // h\npop d\n" - the only way to get a memory value into a pair
-    // other than HL, since `LHLD` only ever targets HL.
+    // Loads a 16-bit memory cell into DE or BC (`pairReg` is "d" or "b") via HL and a stack
+    // round-trip, since `LHLD` only ever targets HL.
     void loadPair(const std::string &pairReg, const std::string &src);
-    // The reverse: "push d\npop h\nshld dst\n".
+    // The reverse of loadPair().
     void storePair(const std::string &dst, const std::string &pairReg);
-    // Shifts the 16-bit memory cell `lbl` left or right by exactly
-    // one bit, in place, via HL - the shared body of genShift()'s own
-    // loop and genMul()/genDivMod()'s inline doubling/halving.
+    // Shifts the 16-bit memory cell `lbl` left or right by one bit in place, via HL.
     void shiftOneBit(const std::string &lbl, bool isLeft);
 
-    // Only ever called for a Global slot now - a Local or Param is
-    // addressed relative to `fp` instead (see genFrameAddr()), since
-    // neither one ever crosses a file boundary (a Local/Param's
-    // address isn't even a compile-time constant here, unlike a
-    // Global's, so it couldn't be a label at all).
+    // Only for a Global; a Local/Param is addressed relative to `fp` instead (see
+    // genFrameAddr()).
     static std::string label(const ir::Slot *slot) { return "g_" + slot->sourceName; }
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
-    // A Local or Param's own byte offset from `fp` - `Slot::
-    // frameOffset` is already IRBuilder's own real byte offset for
-    // both (see IR.h's own comment on Slot::frameOffset), `fp+
-    // frameOffset` for a Param, `fp-frameOffset` for a Local. Never
-    // called for a Global.
+    // A Local/Param's byte offset from `fp`: `fp+frameOffset` for a Param, `fp-frameOffset` for
+    // a Local. Never called for a Global.
     static long frameByteOffset(const ir::Slot *slot, long extraBytes = 0) {
         if (slot->kind == ir::SlotKind::Param) return static_cast<long>(slot->frameOffset) + extraBytes;
         return -(static_cast<long>(slot->frameOffset) + extraBytes);
@@ -365,9 +185,7 @@ class I8080Codegen : public Backend {
 
     int tempCounter_ = 0;
     int labelCounter_ = 0;
-    // One entry per currently-open loop (innermost last) - {continue
-    // label, break label} - pushed/popped by genStmt's own While
-    // case, consulted by its Break/Continue cases.
+    // {continue label, break label} per open loop, innermost last.
     std::vector<std::pair<std::string, std::string>> loopLabels_;
 };
 

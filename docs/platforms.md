@@ -97,10 +97,11 @@ retro hardware through pluggable backends. Today it supports:
   registers, genuine register-indirect/autoincrement/autodecrement
   addressing, real EIS `MUL`/`DIV` hardware multiply/divide) that
   almost everything maps onto one real instruction rather than a
-  named memory cell. An `open-simh` PDP-11 simulator (`pdp11`) is
-  available the same way the `pdp7` one is, but this backend isn't
-  wired into `tests/run_tests.sh` yet - verified directly against
-  that simulator during development instead.
+  named memory cell. `tests/run_tests.sh --target=pdp11` runs its own
+  test suite against an `open-simh` PDP-11 simulator (`pdp11`),
+  available the same way the `pdp7` one is; `make test` doesn't run
+  it, since `pdp11` isn't one of the targets wired into the Makefile's
+  own `test` rule (see `docs/building.md`).
 - **stm8** — real STM8 assembly and machine code (see
   `src/codegen/stm8/STM8Assembler.h`), producing a bare flat binary
   loaded and entered at a fixed address (`$0100`), the same "bare
@@ -335,7 +336,9 @@ retro hardware through pluggable backends. Today it supports:
   `generate()` returns a complete, self-contained program loaded at a
   fixed address, no vector table or reset exception (the simulator
   sets the CPU's PC directly, unlike `stm32`'s/`mc68328`'s own real-
-  vector-table choice). No automated `tests/run_tests.sh` target yet.
+  vector-table choice). `tests/run_tests.sh --target=cortex-m3` runs
+  its own test suite against `qemu-system-arm -M mps2-an385`;
+  `make test` doesn't run it.
 - **r10000**/**r4000** — MIPS assembly (this project's own dialect -
   see `src/codegen/mips/MipsAssembler.h`), targeting the MIPS IV
   instruction set the R10000 implements; `--target=r4000` is a
@@ -348,8 +351,10 @@ retro hardware through pluggable backends. Today it supports:
   hardware multiply/divide/shift - `generate()` returns a complete,
   self-contained program loaded at a fixed address, halting in a
   self-branch infinite loop. Verified directly under
-  `qemu-system-mips -cpu R4000` (qemu ships no real R10000 model)
-  during development; no automated `tests/run_tests.sh` target yet.
+  `qemu-system-mips -cpu R4000` (qemu ships no real R10000 model).
+  `tests/run_tests.sh --target=r10000` runs its own test suite against
+  `qemu-system-mips -M malta -cpu 4Kc`, but `make test` doesn't run
+  it.
 - **powerpc** — classic 32-bit PowerPC assembly (this project's own
   dialect - see `src/codegen/powerpc/PowerPCAssembler.h`), the
   instruction set every G3/G4/G5 and embedded PowerPC core shares.
@@ -362,8 +367,9 @@ retro hardware through pluggable backends. Today it supports:
   branch infinite loop. Verified directly under
   `qemu-system-ppc -M none -cpu 603` during development, including a
   deliberately crafted carry-overflow case exercising the `lis`/`ori`
-  hi/lo address-load split at link time; no automated
-  `tests/run_tests.sh` target yet.
+  hi/lo address-load split at link time. `tests/run_tests.sh
+  --target=powerpc` runs its own test suite against
+  `qemu-system-ppc -M none -cpu G3`, but `make test` doesn't run it.
 - **sparc** — 32-bit SPARC V8 assembly (this project's own dialect -
   see `src/codegen/sparc/SparcAssembler.h`), the closest sibling to
   `powerpc` here: another real-register, real-hardware-stack 32-bit

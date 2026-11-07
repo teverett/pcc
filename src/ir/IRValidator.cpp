@@ -14,11 +14,8 @@ namespace pcc {
 
 namespace {
 
-// Same idea as main.cpp's own CountingErrorListener for the C
-// frontend: ANTLR's default listener only prints to stderr and keeps
-// going, so this one also remembers whether a syntax error happened
-// at all (and what the first one said), to turn into a thrown
-// std::runtime_error below.
+// ANTLR's default listener only prints to stderr; this one records whether
+// an error happened and the first message, to throw below.
 class CountingErrorListener : public antlr4::BaseErrorListener {
    public:
     void syntaxError(antlr4::Recognizer *, antlr4::Token *, size_t line, size_t charPositionInLine,

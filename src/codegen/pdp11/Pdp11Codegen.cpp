@@ -13,29 +13,17 @@ namespace {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
-// Where the whole program is loaded and starts executing - the test
-// harness would set the simulated CPU's PC here directly (same
-// convention as every other "bare flat binary" backend - see
-// M68kCodegen.cpp/M6502Codegen.cpp's own `kBaseAddress`), so this
-// backend never has to lay out a real PDP-11 reset/trap vector
-// (those live at addresses 0-0376, below this). Must stay even - the
-// PDP-11 can only fetch an instruction word from an even address.
+// Where the whole program loads and starts executing; the test harness sets the simulated
+// CPU's PC here directly. Must stay even - the PDP-11 can only fetch an instruction word
+// from an even address. Chosen above the real reset/trap vector range (0-0376).
 constexpr uint32_t kBaseAddress = 0x1000;
 
-// Where this backend's own entry sequence points SP (the real
-// hardware stack pointer, used by `push`/`pop` and by `jsr`/`rts`)
-// before calling main() - comfortably above the loaded program and
-// its data, growing down into otherwise-unused memory.
+// Where SP is set before calling main(), comfortably above the loaded program and its data.
 constexpr uint32_t kInitialSp = 0xE000;
 }  // namespace
 
-// A literal element's own decimal text, truncated to this target's
-// own 16-bit word width; a symbol element is the referenced Slot's or
-// Function's own label, written out bare - "dw" (Pdp11Assembler.cpp's
-// Line::Dw) already evaluates any expr operand, symbol included, and
-// now also records the same external-name/base-shift relocation
-// (kPdp11RelocAbs16) a label used as `lea`'s own absolute extension
-// word already gets.
+// A literal element's decimal text, truncated to 16 bits; a symbol element is the
+// referenced Slot's or Function's label, written out bare.
 std::string Pdp11Codegen::arrayElemText(const ir::ArrayInitElem &e) {
     if (!e.isSymbol) return std::to_string(static_cast<int>(static_cast<uint16_t>(e.value)));
     return e.slot ? label(e.slot) : label(e.func);
@@ -44,11 +32,9 @@ std::string Pdp11Codegen::arrayElemText(const ir::ArrayInitElem &e) {
 void Pdp11Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType) {
     if (values.empty()) return;
     int w = widthOfType(elemType);
-    // No 32-/64-bit data directive in this dialect - a `long`/`long
-    // long` array's own literal elements are emitted as 2/4 "dw"s
-    // (least significant word first) per element instead; a symbol
-    // element always means a plain native-word address (the
-    // dispatch-table idiom), so it still gets exactly one "dw".
+    // No 32-/64-bit data directive: a `long`/`long long` literal element is emitted as 2/4
+    // "dw"s (least significant word first); a symbol element is always a plain native-word
+    // address, so it still gets exactly one "dw".
     const char *directive = w == 1 ? "db" : "dw";
     std::ostringstream line;
     line << lbl << ": " << directive << " ";
@@ -85,49 +71,31 @@ std::string Pdp11Codegen::generate(const ir::Program &prog, bool objectMode) {
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // Real separate compilation (`--format=coff`/`elf`/`macho`/
-    // `aout` from a single file - see IRBuilder.h's `allowExternal`)
-    // means `prog` may not define `main` at all. `objectMode` (see
-    // Codegen.h) means no object file ever emits this entry sequence
-    // itself - Pdp11LinkerFactory.cpp is solely responsible for
-    // synthesizing exactly one, once every object is merged and
-    // `main`'s linked address is resolvable (see Linker.h). An object
-    // file's own base is `org 0` - it's the linker's job to place it,
-    // not this backend's (see Pdp11Assembler.h's own header comment).
+    // Real separate compilation means `prog` may not define `main` at all; `objectMode`
+    // skips the entry sequence below, since Pdp11LinkerFactory.cpp synthesizes it once
+    // instead, after linking. An object file's own base is `org 0`; placing it is the
+    // linker's job.
     code_ << "org " << (objectMode ? 0 : kBaseAddress) << "\n\n";
     if (!objectMode) {
         code_ << "_start:\n";
         code_ << "    mov " << kInitialSp << ",sp\n";
         code_ << "    jsr " << label(mainFn) << "\n";
-        // The result sits in R0 the moment execution reaches `halt` -
-        // same "a real, directly inspectable register" rationale as
-        // the 68000 backend's own D0 (see Pdp11Codegen.h's own header
-        // comment). The real `halt` instruction should actually stop
-        // the simulated CPU right here; the `br halt` right after it
-        // is only a safety net in case a given simulator's own `HALT`
-        // just traps to a console/ODT prompt and execution somehow
-        // resumes at the next word instead.
+        // The result sits in R0 once execution reaches `halt`. `halt` should stop the
+        // simulated CPU; the `br halt` after it is a safety net in case a simulator's HALT
+        // just traps to a console prompt and execution resumes at the next word.
         code_ << "halt:\n    halt\n    br halt\n\n";
     }
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
 
-    // Globals are laid out back-to-back in declaration order with no
-    // gaps of their own - real PDP-11 hardware traps on an odd-
-    // address word access, so a `dw`-or-wider global landing right
-    // after an odd number of accumulated `db` bytes needs one byte of
-    // padding first to stay on an even address. A `db`/byte-array
-    // global never needs this itself (byte access is fine anywhere),
-    // just tracked here for whatever comes after it.
+    // Globals are laid out back-to-back in declaration order. PDP-11 hardware traps on an
+    // odd-address word access, so a `dw`-or-wider global landing after an odd number of
+    // accumulated `db` bytes needs one byte of padding first.
     size_t globalByteOffset = 0;
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        // An external global (real separate compilation - see IR.h's
-        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
-        // defined in this file at all - it must never get a local
-        // storage word here, only ever be referenced by name (see
-        // label()) in code, letting the assembler's own undefined-
-        // symbol handling defer it to a relocation.
+        // An external global isn't defined in this file: it must never get a storage word
+        // here, only be referenced by name, letting the assembler defer it to a relocation.
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         int elemW = widthOfType(slot->type);
@@ -168,20 +136,13 @@ std::string Pdp11Codegen::generate(const ir::Program &prog, bool objectMode) {
     return out.str();
 }
 
-// Single-file-only - see M6502Codegen.cpp's own version of this same
-// comment (no `--format=coff` here either).
 std::map<std::string, std::string> Pdp11Codegen::perFileAsm() const { return perFileAsm_; }
 
-// Prologue: `push r5` saves the caller's own frame pointer, then
-// `mov sp,r5` makes `r5` this call's own frame pointer - pointing at
-// that just-pushed word, with the return address `jsr` already
-// pushed sitting right above it, and the caller's own pushed
-// arguments above that (see Pdp11Codegen.h's own `addr()` comment).
-// `sub N,sp` then reserves this function's own Locals, below `r5`.
-// Epilogue (here and every `Return` - see genStmt()) undoes exactly
-// that: `mov r5,sp` drops the Locals, `pop r5` restores the caller's
-// own frame pointer (and leaves `sp` pointing at the return address),
-// `rts` pops that address into `pc`.
+// Prologue: `push r5` saves the caller's frame pointer, `mov sp,r5` makes `r5` this call's
+// frame pointer (pointing at that saved word, with the return address above it and the
+// caller's pushed arguments above that - see addr()), then `sub N,sp` reserves Locals below
+// `r5`. Epilogue (here and every `Return`) undoes it: `mov r5,sp` drops the Locals, `pop r5`
+// restores the caller's frame pointer, `rts` pops the return address into `pc`.
 void Pdp11Codegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
     code_ << "    push r5\n";
@@ -246,15 +207,9 @@ void Pdp11Codegen::genStmt(const ir::Stmt &s) {
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) {
                 genExpr(*s.initOrReturnOrExpr);
-                // A wide value sits on the stack (LSW on top - see
-                // Pdp11Codegen.h's own header comment) after
-                // genExpr() - pop it into r0(LSW)..r(words-1)(MSW)
-                // first, since the epilogue's own `mov r5,sp` is
-                // about to discard this call's whole frame (and
-                // anything still sitting above it on the stack)
-                // before `rts` ever runs - see genExpr()'s own Call
-                // case for the matching read-it-back-out-of-registers
-                // half of this convention.
+                // A wide value sits on the stack (LSW on top) after genExpr(); pop it into
+                // r0(LSW)..r(words-1)(MSW) first, since the epilogue's `mov r5,sp` is about
+                // to discard this call's whole frame before `rts` runs.
                 if (isWide(s.initOrReturnOrExpr->type)) {
                     int words = wordCountOf(s.initOrReturnOrExpr->type);
                     for (int i = 0; i < words; i++) code_ << "    pop r" << i << "\n";
@@ -315,7 +270,7 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Assign: {
-            if (e.lhs) {  // slot[idx] = rhs (never wide - see Pdp11Codegen.h's own "Scope restriction"-style note).
+            if (e.lhs) {  // slot[idx] = rhs (never wide).
                 genIndexAddr(e.slot, *e.lhs);  // r2 = target address
                 code_ << "    push r2\n";
                 genExpr(*e.rhs);
@@ -340,16 +295,10 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Stores through at e.type's own width/signedness - the
-            // pointee type of a real typed pointer, or a plain native
-            // int word for the still-supported untyped-int-as-address
-            // style - see IRBuilder.cpp's own DerefAssign comment. The
-            // pointer value is always narrow (one word) and has to
-            // ride the data stack (not a register) across evaluating
-            // rhs, since rhs's own evaluation may use any register as
-            // scratch (e.g. a nested narrow division uses r2 itself -
-            // see genDivMod()) - storeIndirect() then recovers it,
-            // underneath rhs's own pushed value if that's wide.
+            // Stores through at e.type's width/signedness. The pointer value (always one
+            // word) has to ride the data stack, not a register, across evaluating rhs, since
+            // rhs may clobber any register as scratch (e.g. genDivMod() uses r2); storeIndirect()
+            // recovers it, underneath rhs's own pushed value if that's wide.
             genExpr(*e.lhs);  // r0 = pointer value
             code_ << "    mov r0,r2\n";
             code_ << "    push r2\n";
@@ -363,10 +312,8 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
                 genCompoundThroughR2(e);
                 return;
             }
-            // Plain scalar target - operandOf(slot) is a stable
-            // memory operand (a label or an r5-relative offset), never
-            // a clobberable register, so no address needs to be held
-            // across rhs's own evaluation at all.
+            // Plain scalar target - operandOf(slot) is a stable memory operand, so no
+            // address needs to be held across rhs's own evaluation.
             std::string mem = operandOf(e.slot);
             genExpr(*e.rhs);  // r0 = rhs
             code_ << "    mov r0,r1\n";
@@ -410,11 +357,9 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                // Loads at e.type's own width/signedness - see
-                // DerefAssign's identical comment above. No competing
-                // stack use happens between computing the address and
-                // dereferencing it here, so (unlike DerefAssign) r2
-                // can safely hold the address directly.
+                // Loads at e.type's width/signedness. Unlike DerefAssign, no competing stack
+                // use happens between computing the address and dereferencing it, so r2 can
+                // safely hold the address directly.
                 genExpr(*e.rhs);  // r0 = pointer value
                 code_ << "    mov r0,r2\n";
                 loadIndirect("r2", e.type);
@@ -430,14 +375,10 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            // Real stack-based argument passing - push right-to-left
-            // so param 0 ends up closest to the return address (see
-            // Pdp11Codegen.h's own `addr()` comment), caller cleans
-            // up with `add N,sp` after the call returns. A wide
-            // argument's own genExpr() already pushes its own `words`
-            // words directly (see this file's own wide-value stack
-            // convention); a narrow one leaves its value in r0, which
-            // this loop pushes itself.
+            // Push arguments right-to-left so param 0 ends up closest to the return address;
+            // caller cleans up with `add N,sp` after the call returns. A wide argument's
+            // genExpr() already pushes its own `words` words; a narrow one leaves its value
+            // in r0, which this loop pushes itself.
             int totalWords = 0;
             for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
@@ -451,16 +392,10 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
             code_ << "    jsr " << label(e.func) << "\n";
             if (totalWords > 0) code_ << "    add " << (2 * totalWords) << ",sp\n";
             if (isWide(e.type)) {
-                // The callee left its own wide return value in
-                // r0(LSW)..r(words-1)(MSW) - see genStmt()'s own
-                // Return case - push it back onto the stack as this
-                // expression's own result, in the usual LSW-on-top
-                // order every wide helper expects. Pushes each
-                // register directly (never routes r1..r(words-1)
-                // through r0 first) - r0 itself is one of the values
-                // being pushed here, so clobbering it to relay an
-                // earlier register would lose r0's own original
-                // value before its own turn comes up.
+                // The callee left its wide return value in r0(LSW)..r(words-1)(MSW); push it
+                // back as this expression's result in LSW-on-top order. Pushes each register
+                // directly rather than relaying through r0, since r0 is itself one of the
+                // values being pushed.
                 int words = wordCountOf(e.type);
                 for (int i = words - 1; i >= 0; i--) {
                     code_ << "    push r" << i << "\n";
@@ -469,19 +404,10 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::CallPtr: {
-            // e.args is always empty here - IRBuilder.cpp rejects any
-            // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr): there's no per-callee
-            // p_<fn>_<i> cell to write one into until the callee is
-            // known, which it never is at compile time for this kind.
-            // "jsrind r2" is Pdp11Assembler.cpp's real `JSR PC,@Rn`
-            // encoding (register-DEFERRED mode, not register-direct -
-            // see that file's own comment) - a genuine, standard PDP-
-            // 11 call through whatever address r2 holds, the same way
-            // real PDP-11 software routinely calls through a function
-            // pointer. There's likewise no callee signature to learn
-            // a real return type from here; the result stays plain
-            // int, same as every other backend's own CallPtr.
+            // e.args is always empty here - IRBuilder.cpp rejects any argument on this kind,
+            // since the callee is unknown at compile time. "jsrind r2" is the real `JSR
+            // PC,@Rn` register-deferred call through whatever address r2 holds. No callee
+            // signature is known, so the result stays plain int.
             genExpr(*e.lhs);  // r0 = the callee's own entry address
             code_ << "    mov r0,r2\n";
             code_ << "    jsrind r2\n";
@@ -492,13 +418,8 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Intrinsic: {
-            // No real portable notion of interrupt enable/disable on
-            // a bare-metal PDP-11 with no trap vector set up at all
-            // (see generate()'s own comment) - the real `RTI`/PSW
-            // priority bits exist, but there's nothing here for
-            // `ion`/`iof` to meaningfully enable or disable. Treated
-            // as a no-op, same as the 68000 backend's own version of
-            // this same intrinsic.
+            // No trap vector is set up (see generate()), so there's nothing for `ion`/`iof`
+            // to meaningfully enable or disable; treated as a no-op.
             (void)e;
             return;
         }
@@ -511,26 +432,6 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
     }
 }
 
-// See Pdp11Codegen.h's own header comment: `R2` holds the computed
-// address, via the real register-deferred `(Rn)` mode - no zero-
-// page-style placement restriction the way the 6502 backend's own
-// `ptr` has. `slot->arraySize > 0` means `slot` is an array, so its
-// base is a compile-time-known address: a Global's own label
-// (loaded via `lea`), or a Local's own frame-relative address
-// (computed from `r5` - see below); otherwise `slot` is a plain
-// pointer variable (Global, Local, or Param), so the base instead
-// comes from *reading* that variable's own stored value first
-// (operandOf()).
-//
-// A Local array's element `i` lives at frameOffset+i (see IR.h's own
-// Slot::frameOffset comment), so its address is `r5 -
-// 2*(frameOffset+i)` - addresses *decrease* as the element index
-// increases, the mirror image of a Global array's own increasing-
-// address layout, since a Local's storage grows down from `r5` (see
-// Pdp11Codegen.h's own `addr()` comment). `r0` already holds
-// `idx*2`, so that's `r5 - 2*frameOffset - idx*2` - computed here as
-// `sub` twice, not folded into one constant, since `idx` is only
-// known at runtime.
 std::string Pdp11Codegen::wideWordOperand(const ir::Slot *slot, int wordIndex) const {
     int off = 2 * wordIndex;
     if (slot->kind == ir::SlotKind::Global) {
@@ -542,10 +443,8 @@ std::string Pdp11Codegen::wideWordOperand(const ir::Slot *slot, int wordIndex) c
     return "[r5-" + std::to_string(slot->frameOffset + off) + "]";
 }
 
-// A `char` load sign-extends for free (real PDP-11 hardware: `movb`
-// into a register destination always sign-extends to 16 bits), so an
-// unsigned `char` has to mask the high byte back off afterward - the
-// one extra instruction a signed load doesn't need.
+// `movb` into a register destination always sign-extends to 16 bits, so an unsigned `char`
+// has to mask the high byte back off afterward.
 void Pdp11Codegen::loadOperand(const std::string &mem, Type type) {
     if (widthOfType(type) == 1) {
         code_ << "    movb " << mem << ",r0\n";
@@ -582,20 +481,16 @@ void Pdp11Codegen::storeIndirect(Type type) {
         return;
     }
     int words = wordCountOf(type);
-    // r5 is the frame pointer and r2 ends up holding the address -
-    // r0/r1/r3/r4 are the only four registers left free, exactly
-    // enough to stash a `long long`'s own 4 words while the address
-    // (pushed before rhs - see the DerefAssign case's own comment)
-    // still sits buried underneath them.
+    // r0/r1/r3/r4 are the only four registers free (r5 is the frame pointer, r2 holds the
+    // address) - exactly enough to stash a `long long`'s 4 words while the address stays
+    // buried underneath them on the stack.
     static const char *const tempRegs[] = {"r0", "r1", "r3", "r4"};
     for (int i = 0; i < words; i++) code_ << "    pop " << tempRegs[i] << "\n";
     code_ << "    pop r2\n";
     for (int i = 0; i < words; i++) code_ << "    mov " << tempRegs[i] << ",[r2+" << (2 * i) << "]\n";
 }
 
-// Pushes `slot`'s own `words`-word value, least-significant word on
-// top (pushed last) - see Pdp11Codegen.h's own header comment on this
-// convention, shared by every wide (`long`/`long long`) helper below.
+// Pushes `slot`'s `words`-word value, least-significant word on top (pushed last).
 void Pdp11Codegen::genWideLoad(const ir::Slot *slot, int words) {
     for (int i = words - 1; i >= 0; i--) {
         code_ << "    mov " << wideWordOperand(slot, i) << ",r0\n";
@@ -612,8 +507,7 @@ void Pdp11Codegen::genWideLoadLiteral(long value, int words) {
     }
 }
 
-// Pops `words` words off the stack (least-significant on top) into
-// `slot`'s own storage.
+// Pops `words` words off the stack (least-significant on top) into `slot`'s storage.
 void Pdp11Codegen::genWideStore(const ir::Slot *slot, int words) {
     for (int i = 0; i < words; i++) {
         code_ << "    pop r0\n";
@@ -621,21 +515,11 @@ void Pdp11Codegen::genWideStore(const ir::Slot *slot, int words) {
     }
 }
 
-// `long`/`long long` add/sub - the standard PDP-11 multi-word idiom:
-// word 0 is a plain ADD/SUB (setting C = carry/borrow for the next
-// word); each later word first folds in the previous word's own C via
-// ADC/SBC (which only ever adds/subtracts the carry bit itself, into
-// one operand - there's no single two-operand "add with carry-in" on
-// this hardware the way x86's ADC is), *then* does its own ADD/SUB
-// (setting C for the word after it). Both operands can be ordinary
-// memory operands directly (no register needed in between) - they
-// already sit on the stack after evaluating lhs then rhs (lhs pushed
-// first, so it's the deeper block; rhs is on top - see
-// Pdp11Codegen.h's own header comment on this convention). Writing
-// every result word over lhs's own slot, then discarding exactly
-// rhs's now-stale block with one `add`, leaves lhs's block - now
-// holding the result - as the new top, matching every wide helper's
-// shared "result replaces both operands" convention.
+// Standard PDP-11 multi-word idiom: word 0 is a plain ADD/SUB (setting C for the next word);
+// each later word first folds in the previous C via ADC/SBC (which only adds/subtracts the
+// carry bit into one operand - there's no two-operand "add with carry-in" here), then does
+// its own ADD/SUB. Result is written over lhs's stack block; rhs's now-stale block is
+// discarded with one `add`, leaving lhs's block as the new top.
 void Pdp11Codegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd, int words) {
     genExpr(lhs);
     genExpr(rhs);
@@ -648,9 +532,8 @@ void Pdp11Codegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isA
     code_ << "    add " << (2 * words) << ",sp\n";
 }
 
-// Two's-complement negation in place, in the same chained-carry shape
-// as genWideAdd() - COM every word first, then ADD 1 into the least
-// significant word and ADC the resulting carry up through the rest.
+// Two's-complement negation in place: COM every word first, then ADD 1 into the least
+// significant word and ADC the carry up through the rest.
 void Pdp11Codegen::genWideNegate(int words) {
     for (int i = 0; i < words; i++) code_ << "    com [sp+" << (2 * i) << "]\n";
     code_ << "    add 1,[sp+0]\n";
@@ -664,10 +547,8 @@ void Pdp11Codegen::genWideBitwise(const ir::Expr &lhs, const ir::Expr &rhs, cons
         std::string rhsOperand = "[sp+" + std::to_string(2 * i) + "]";
         std::string lhsOperand = "[sp+" + std::to_string(2 * words + 2 * i) + "]";
         if (op == "&") {
-            // No real AND - BIC is "dst &= ~src" (see the narrow `&`
-            // case's own comment) - COM the rhs word in place first
-            // (its own stack slot is dead afterward anyway, since the
-            // whole rhs block is discarded below).
+            // No real AND - BIC is "dst &= ~src", so COM the rhs word first (its stack slot
+            // is dead afterward anyway).
             code_ << "    com " << rhsOperand << "\n";
             code_ << "    bic " << rhsOperand << "," << lhsOperand << "\n";
         } else if (op == "|") {
@@ -680,14 +561,10 @@ void Pdp11Codegen::genWideBitwise(const ir::Expr &lhs, const ir::Expr &rhs, cons
     code_ << "    add " << (2 * words) << ",sp\n";
 }
 
-// Compares two `words`-word values most-significant word first (only
-// that one compare needs the signed/unsigned distinction - see
-// Pdp11Codegen.h's own header comment on `isUnsigned`); once a word
-// differs, that comparison alone decides the whole result, same as
-// every other backend's own multi-word compare. `CMP src,dst` sets
-// the real flags for `src - dst` (this file's own established
-// convention - see emitCompare()'s comment), so `cmp lhsWord,rhsWord`
-// is directly `lhs - rhs` with no operand-order inversion needed.
+// Compares two `words`-word values most-significant word first (only that compare needs the
+// signed/unsigned distinction); once a word differs, that comparison alone decides the
+// result. `CMP src,dst` sets flags for `src - dst`, so `cmp lhsWord,rhsWord` is directly
+// `lhs - rhs`.
 void Pdp11Codegen::genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned,
                                     int words) {
     genExpr(lhs);
@@ -713,10 +590,8 @@ void Pdp11Codegen::genWideCompare(const std::string &op, const ir::Expr &lhs, co
             std::string Lcontinue = newLabel(), Ldiffer = newLabel();
             safeBranch("beq", Lcontinue, Ldiffer);
             code_ << Ldiffer << ":\n";
-            // Only the most significant word (i == words-1) uses the
-            // signed branch when the overall type is signed - every
-            // lower word, once reached, is comparing a pure magnitude
-            // (the higher words already matched).
+            // Only the most significant word uses the signed branch; lower words, once
+            // reached, compare a pure magnitude (higher words already matched).
             bool useSigned = (i == words - 1) && !isUnsigned;
             safeBranch(useSigned ? signedBranch : unsignedBranch, Ltrue, Lfalse);
             code_ << Lcontinue << ":\n";
@@ -729,13 +604,9 @@ void Pdp11Codegen::genWideCompare(const std::string &op, const ir::Expr &lhs, co
     code_ << "    add " << (4 * words) << ",sp\n";  // release both operand blocks - the result is a plain int in r0
 }
 
-// A `long`/`long long` shifted by a runtime count - no hardware
-// shift here is wider than one word (see Pdp11Codegen.h's own header
-// comment on why even the single-word case already loops one bit at
-// a time) - so this loops over every word, one bit at a time, folding
-// the bit that crosses a word boundary by hand the same way the
-// narrower genShift() does, just chained across `words` words instead
-// of held in a single register.
+// A `long`/`long long` shifted by a runtime count: no hardware shift is wider than one word,
+// so this loops one bit at a time, folding the bit crossing a word boundary by hand, chained
+// across `words` words.
 void Pdp11Codegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned, int words) {
     genExpr(lhs);     // pushes `words` words
     code_ << "    push r1\n";  // reserve a slot to stash the shift count
@@ -755,12 +626,8 @@ void Pdp11Codegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool i
         code_ << "    clc\n";
         for (int i = words - 1; i >= 0; i--) {
             std::string w = "[sp+" + std::to_string(2 + 2 * i) + "]";
-            // Logical (unsigned) shift fills with a cleared carry; a
-            // signed shift's own top word instead keeps sign-
-            // extending - CLC/no-CLC right before the top word's own
-            // `ror` is the only difference between the two, since
-            // `ror` always rotates whatever's currently in the carry
-            // into the new top bit.
+            // A signed shift's top word sign-extends instead of filling with a cleared
+            // carry; CLC/no-CLC before that word's `ror` is the only difference.
             if (i == words - 1 && !isUnsigned) {
                 code_ << "    asr " << w << "\n";
             } else {
@@ -774,18 +641,9 @@ void Pdp11Codegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool i
     code_ << "    pop r1\n";  // discard the shift-count slot; the `words`-word result stays on top
 }
 
-// `long`/`long long` multiply/divide need a genuine bit-serial
-// software routine (the real EIS MUL/DIV only ever widen one native
-// word to two, not `words` words to `2*words`) - deliberately not
-// implemented here: this backend has no simulator in this project's
-// own test harness to verify a hand-written multi-word multiply/
-// divide algorithm against at all (every other backend that
-// implements one either has real hardware wide enough, like SPARC's
-// `smul`, or a working simulator to catch a mistake in a software
-// one, like i386's own qemu-verified bit-serial divide) - failing
-// loudly here is safer than shipping an unverifiable, possibly wrong
-// one. `+`/`-`/comparisons/shifts/bitwise ops on `long`/`long long`
-// are all implemented and don't depend on this.
+// `long`/`long long` multiply/divide need a bit-serial software routine (EIS MUL/DIV only
+// widen one native word to two, not `words` to `2*words`); deliberately not implemented
+// since this backend has no simulator to verify such an algorithm against.
 void Pdp11Codegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int) {
     err(lhs.line, "multiplying two 'long'/'long long' values isn't supported on this target yet - "
                    "see Pdp11Codegen.cpp's own genWideMul() comment");
@@ -798,13 +656,9 @@ void Pdp11Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool,
     (void)rhs;
 }
 
-// An implicit or explicit type conversion (see IR.h's ExprKind::
-// Convert). Every arithmetic/comparison operand narrower than `int`
-// is already promoted by IRBuilder before any Binary/Unary ever sees
-// it, so the real work here is crossing the native-word/`long`-or-
-// `long long` boundary (pushing `words` more words of sign/zero
-// extension, or popping down to just the low word) and re-narrowing a
-// `char` result (mask or sign-extend its own top byte back off).
+// The real work here is crossing the native-word/`long`-or-`long long` boundary (pushing
+// more words of sign/zero extension, or popping to just the low word) and re-narrowing a
+// `char` result.
 void Pdp11Codegen::genConvert(const ir::Expr &e) {
     Type from = e.lhs->type;
     Type to = e.type;
@@ -832,16 +686,8 @@ void Pdp11Codegen::genConvert(const ir::Expr &e) {
         return;
     }
     if (!fromWide && toWide) {
-        // The least significant word has to end up on TOP of the
-        // stack (word index 0 - see genWideLoad()'s own header
-        // comment on this convention), so the real narrow value (saved
-        // in r1 before computing the extension word, since SXT
-        // overwrites r0 in place) is pushed LAST, after every
-        // extension-word copy - pushing it first, the way a plain
-        // top-to-bottom reading of this conversion might suggest,
-        // would instead bury the real value under the padding and
-        // leave an extension word sitting in the least-significant
-        // slot.
+        // The least significant word must end up on top of the stack, so the real value
+        // (saved in r1 before SXT overwrites r0) is pushed LAST, after the extension words.
         int toWords = wordCountOf(to);
         genExpr(*e.lhs);  // r0 = the native-width value, already correctly sign/zero-extended to 16 bits
         code_ << "    mov r0,r1\n";
@@ -855,12 +701,9 @@ void Pdp11Codegen::genConvert(const ir::Expr &e) {
     int toWords = wordCountOf(to);
     genExpr(*e.lhs);
     if (toWords > fromWords) {
-        // Same "least significant word stays on top" requirement as
-        // the !fromWide branch above - the extension words have to
-        // land *underneath* the existing fromWords words, so those are
-        // popped into registers first and pushed back on top of the
-        // newly pushed extension words, restoring their own original
-        // order (word 0 ending up on top again).
+        // Extension words must land underneath the existing fromWords words, so those are
+        // popped into registers first and pushed back on top of the new extension words,
+        // restoring word 0 to the top.
         code_ << "    mov [sp+" << (2 * (fromWords - 1)) << "],r0\n    sxt r0\n";
         static const char *const tempRegs[] = {"r1", "r3", "r4"};
         for (int i = 0; i < fromWords; i++) code_ << "    pop " << tempRegs[i] << "\n";
@@ -871,8 +714,7 @@ void Pdp11Codegen::genConvert(const ir::Expr &e) {
     }
 }
 
-// Same narrow-to-narrow re-extension genConvert()'s own `!fromWide &&
-// !toWide` case above already does - a no-op unless `to` is a `char`.
+// No-op unless `to` is a `char`.
 void Pdp11Codegen::narrowR0To(Type to) {
     if (widthOfType(to) != 1) return;
     if (to.isUnsigned) {
@@ -882,6 +724,12 @@ void Pdp11Codegen::narrowR0To(Type to) {
     }
 }
 
+// `R2` ends up holding the computed address via register-deferred `(Rn)` mode. An array's
+// base is a compile-time-known address (a Global label, or a Local's frame-relative
+// address); a plain pointer variable's base instead comes from reading its stored value.
+// A Local array's address decreases as the element index increases (storage grows down from
+// `r5`): element `i` is at `r5 - 2*(frameOffset+i)`, computed via two `sub`s since `idx` is
+// only known at runtime.
 void Pdp11Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // r0 = index
     int shift = elemShift(slot->type);
@@ -904,10 +752,8 @@ void Pdp11Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
 void Pdp11Codegen::genIndex(const ir::Expr &e) {
     genIndexAddr(e.slot, *e.lhs);
     if (widthOfType(e.slot->type) == 1) {
-        // Real PDP-11 hardware: MOVB into a register destination
-        // always sign-extends to 16 bits, same as loadOperand()'s own
-        // direct-memory byte load - an unsigned char still needs its
-        // high byte masked back off afterward.
+        // MOVB into a register destination always sign-extends to 16 bits; an unsigned char
+        // needs its high byte masked back off afterward.
         code_ << "    ldindb r2,r0\n";
         if (e.slot->type.isUnsigned) code_ << "    bic 0xFF00,r0\n";
     } else {
@@ -915,17 +761,10 @@ void Pdp11Codegen::genIndex(const ir::Expr &e) {
     }
 }
 
-// A Local array is no longer a static `dw`-declared data block (see
-// generate()'s own trailer_, still used for Global arrays) - it's
-// reserved frame storage (see genFunction()'s own `sub N,sp`), freshly
-// allocated on every call, so its own initializer has to be stored
-// into it with real instructions each time this declaration runs,
-// not baked into the program image once. A literal element loads
-// with a plain `mov`; a symbol element (a Slot's or Function's own
-// address - see IR.h's own ArrayInitElem comment) needs `lea` instead
-// - this dialect's bare-label operand means "read the value stored
-// there", not "take its address" (see Pdp11Assembler.h's own header
-// comment), so only `lea` gives the address itself.
+// A Local array is reserved frame storage, freshly allocated on every call, so its
+// initializer must be stored with real instructions each time this runs. A symbol element
+// (a Slot's or Function's address) needs `lea`, since a bare-label operand otherwise means
+// "read the value stored there", not "take its address".
 void Pdp11Codegen::genLocalArrayInit(const ir::Slot *slot) {
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
         const ir::ArrayInitElem &elem = slot->arrayInit[i];
@@ -938,14 +777,9 @@ void Pdp11Codegen::genLocalArrayInit(const ir::Slot *slot) {
     }
 }
 
-// A Local/Param's own address is only ever a *runtime* value (`r5`
-// plus/minus a displacement) - there's no real PDP-11 instruction
-// that loads a register-relative effective address directly (`lea`
-// here is a synthesized pseudo-op that only ever works from a
-// compile-time-absolute label, via PC-immediate addressing - see
-// Pdp11Assembler.cpp's own `encodeLea`), so this computes it with
-// real arithmetic instead, the same `mov r5,rX` + `add`/`sub` shape
-// genIndexAddr() above uses for a Local array's own base.
+// A Local/Param's address is a runtime value (`r5` plus/minus a displacement); `lea` only
+// works from a compile-time-absolute label (PC-immediate addressing), so this computes the
+// address with real arithmetic instead.
 void Pdp11Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
         if (operand.slot->kind == ir::SlotKind::Global) {
@@ -972,26 +806,10 @@ void Pdp11Codegen::genAddrOf(const ir::Expr &operand) {
     err(operand.line, "internal: unhandled addressable-operand kind");
 }
 
-// Entry convention: r0 = old value, r1 = rhs value (both already at
-// `type`'s own width/signedness - IRBuilder.cpp's own
-// buildCompoundRhs() already converts `rhs` to match). This is exactly
-// genBinary()'s own r0/r1 roles for `+`/`|`/`^` (both commutative, so
-// which operand is which register doesn't matter), `*` (genMul()'s own
-// `mul r1,r0`/`mov r1,r0` pair - multiplication's low word doesn't
-// depend on operand order either), and `<<`/`>>` (genShift()'s own
-// r0=value/r1=count loop body, already this exact convention with no
-// swap needed). `-` and `&` aren't commutative, so each is reordered
-// to land old-op-rhs with `old` already the one sitting in r0 - `sub
-// r1,r0` (r0 -= r1) is the same register-register SUB shape as
-// genBinary()'s own `sub r0,r1`, just the other way round (this
-// dialect's assembler encodes SUB generically for any register pair,
-// not per-register - see Pdp11Assembler.cpp's own encodeTwoOp()); `&`
-// uses BIC's own `dst &= ~src` meaning directly (`com r1` then `bic
-// r1,r0`) instead of genBinary()'s three-line de Morgan dance, since
-// here the destination is already the register (r0) that needs to end
-// up holding the result. `/`/`%` reshuffles into genDivMod()'s own
-// r1=dividend/r2=divisor layout with two extra register-register
-// `mov`s, then reuses its `tst`/`sxt`/`div` tail unchanged.
+// Entry convention: r0 = old value, r1 = rhs value, both at `type`'s width/signedness. `-`
+// and `&` aren't commutative, so each is reordered to compute old-op-rhs with `old` already
+// in r0 (`sub r1,r0` for `-`; `com r1`/`bic r1,r0` directly for `&`, since the destination is
+// already r0). `/`/`%` reshuffles into genDivMod()'s r1=dividend/r2=divisor layout.
 void Pdp11Codegen::genCompoundOp(const std::string &op, Type type) {
     bool isUnsigned = type.isUnsigned;
     if (op == "+") { code_ << "    add r1,r0\n"; return; }
@@ -1025,12 +843,8 @@ void Pdp11Codegen::genCompoundOp(const std::string &op, Type type) {
     if (op == "%") code_ << "    mov r1,r0\n";
 }
 
-// r2 must already hold the resolved address on entry. The address is
-// always shuttled back into r2 right before each of the two real
-// memory accesses here (via the real stack, never some other register
-// held across rhs's own evaluation - that evaluation may recurse into
-// arbitrarily complex codegen that can use any register, e.g. a nested
-// compound assignment's own identical address-holding problem).
+// r2 must already hold the resolved address on entry. The address rides the stack (not a
+// register) across evaluating rhs, since that evaluation may use any register.
 void Pdp11Codegen::genCompoundThroughR2(const ir::Expr &e) {
     code_ << "    push r2\n";  // stash address
     genExpr(*e.rhs);            // r0 = rhs
@@ -1055,10 +869,8 @@ void Pdp11Codegen::genCompoundThroughR2(const ir::Expr &e) {
 
 void Pdp11Codegen::genBinary(const ir::Expr &e) {
     const std::string &op = e.op;
-    // Every arithmetic/bitwise/comparison operand here already
-    // shares one common type (IRBuilder's own usual-arithmetic-
-    // conversion pass - see Type.h) via `e.lhs->type`, except shift
-    // (only the LHS's own type matters) and &&/|| (width-independent).
+    // Every operand here shares one common type via `e.lhs->type` (IRBuilder's usual-
+    // arithmetic-conversion pass), except shift (only LHS matters) and &&/|| (width-independent).
     Type operandType = e.lhs->type;
     bool wide = isWide(operandType);
     bool isUnsigned = operandType.isUnsigned;
@@ -1106,18 +918,15 @@ void Pdp11Codegen::genBinary(const ir::Expr &e) {
         genExpr(*e.rhs);
         code_ << "    pop r1\n";  // r1 = lhs, r0 = rhs
         if (op == "&") {
-            // No real AND instruction on the PDP-11 - only BIC ("bit
-            // clear": dst &= ~src). De Morgan's law turns that into a
-            // real AND: `COM` the rhs first (giving `~rhs`), then
-            // `BIC ~rhs,lhs` leaves `lhs & ~~rhs` = `lhs & rhs`.
+            // No real AND on the PDP-11 - only BIC (dst &= ~src). De Morgan: COM rhs first
+            // (giving ~rhs), then BIC ~rhs,lhs leaves lhs & rhs.
             code_ << "    com r0\n";
             code_ << "    bic r0,r1\n";
             code_ << "    mov r1,r0\n";
         } else if (op == "|") {
             code_ << "    bis r1,r0\n";  // r0 |= r1
         } else {
-            code_ << "    xor r1,r0\n";  // r0 ^= r1 (XOR's own source-must-be-a-register convention - see
-                                          // Pdp11Assembler.cpp's own comment)
+            code_ << "    xor r1,r0\n";  // r0 ^= r1
         }
         return;
     }
@@ -1144,11 +953,9 @@ void Pdp11Codegen::genBinary(const ir::Expr &e) {
     genCompare(op, *e.lhs, *e.rhs, isUnsigned);
 }
 
-// No variable-count *logical* shift (see Pdp11Codegen.h's own header
-// comment on why the EIS `ASH` instruction doesn't fit here) - loop
-// one bit at a time instead, counting down in `r1`. `isUnsigned`
-// picks between `ROR` (logical, zero-filling) and `ASR` (arithmetic,
-// sign-preserving) for `>>`; `<<` never cares about signedness.
+// No variable-count logical shift (EIS `ASH` shifts arithmetically), so loop one bit at a
+// time, counting down in `r1`. `isUnsigned` picks `ROR` (zero-filling) vs `ASR`
+// (sign-preserving) for `>>`; `<<` never cares about signedness.
 void Pdp11Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push r0\n";
@@ -1171,9 +978,7 @@ void Pdp11Codegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLef
     code_ << Ldone << ":\n";
 }
 
-// Real EIS hardware multiply (`MUL`) - see Pdp11Codegen.h's own
-// header comment on which half of its 32-bit product (`R1`, the low
-// word) is this project's own 16-bit truncated answer.
+// EIS `MUL`: the low word of its 32-bit product (`R1`) is the 16-bit truncated answer.
 void Pdp11Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     code_ << "    push r0\n";
@@ -1183,23 +988,16 @@ void Pdp11Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << "    mov r1,r0\n";
 }
 
-// Real EIS hardware divide (`DIV`) - needs a genuine 32-bit dividend
-// in `R0:R1`, so the 16-bit dividend is first sign-extended into that
-// pair with `SXT` (`TST` first, to set the N flag `SXT` itself reads)
-// - the same "widen with a dedicated instruction, then use the real
-// hardware op" shape as the 8086 backend's own `CWD`+`IDIV` (see
-// Pdp11Codegen.h's own header comment).
+// EIS `DIV` needs a 32-bit dividend in `R0:R1`, so the 16-bit dividend is first
+// sign-extended into that pair with `SXT` (`TST` first, to set the N flag `SXT` reads).
 void Pdp11Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push r0\n";
     genExpr(rhs);
     code_ << "    mov r0,r2\n";  // r2 = divisor
     code_ << "    pop r1\n";     // r1 = dividend (low word)
-    // Widen the 16-bit dividend into the 32-bit R0:R1 pair DIV
-    // expects: zero-extend (R0 = 0) for an unsigned dividend, sign-
-    // extend (via TST+SXT) for a signed one - using SXT regardless
-    // would reinterpret a large unsigned value (top bit set) as
-    // negative and widen it accordingly, corrupting the division.
+    // Zero-extend (R0 = 0) for unsigned, sign-extend (TST+SXT) for signed - using SXT
+    // regardless would corrupt an unsigned dividend with its top bit set.
     if (isUnsigned) {
         code_ << "    mov 0,r0\n";
     } else {
@@ -1219,11 +1017,8 @@ void Pdp11Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const 
     err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
 }
 
-// `CMP src,dst` sets the real signed condition codes for `src - dst`
-// directly in hardware (see Pdp11Codegen.h's own header comment on
-// this operand order) - `r1`(lhs)/`r0`(rhs) is exactly `lhs - rhs`,
-// so `branchIfTrue` applies with no further sign/overflow fixup, the
-// same as the 68000/8086 backends' own comparisons.
+// `CMP src,dst` sets condition codes for `src - dst`, so `cmp r1,r0` (lhs, rhs) is directly
+// `lhs - rhs`, with `branchIfTrue` applying with no further sign/overflow fixup.
 void Pdp11Codegen::emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &branchIfTrue) {
     genExpr(lhs);
     code_ << "    push r0\n";
@@ -1237,13 +1032,7 @@ void Pdp11Codegen::emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const s
     code_ << Ldone << ":\n";
 }
 
-// After genExpr(e) just left `e`'s own value - r0, if narrow, or
-// `wordCountOf(e.type)` words on the stack if wide (see
-// Pdp11Codegen.h's own header comment on this convention) - this
-// leaves r0 holding a plain 0/nonzero truth value, with any wide
-// stack space already released; a bare `TST r0` is never wrong to
-// run again afterward (idempotent), so every call site here still
-// does its own, matching the narrow case's existing shape exactly.
+// Leaves r0 holding a plain 0/nonzero truth value, with any wide stack space released.
 void Pdp11Codegen::testTruthy(const ir::Expr &e) {
     if (!isWide(e.type)) {
         code_ << "    tst r0\n";
@@ -1303,13 +1092,8 @@ std::string Pdp11Codegen::buildAssembleCommand(const std::string &, const std::s
 std::optional<std::string> Pdp11Codegen::assembleInProcess(const std::string &asmText,
                                                             const std::string &format) const {
     if (format == "raw") return assemblePdp11(asmText);
-    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
-    // (see generate()'s own `objectMode` comment) - this backend's
-    // own assembler builds one format-neutral ObjectFile exactly once
-    // (see Pdp11Assembler.h's own `assemblePdp11Object`), and
-    // whichever of these five names was asked for just picks that
-    // format's own FileFormatWriter (see fileformat/FileFormat.h)
-    // to serialize it.
+    // `coff`/`elf`/`macho`/`aout`/`objraw`: build one format-neutral ObjectFile, then pick
+    // that format's FileFormatWriter to serialize it.
     if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assemblePdp11Object(asmText);
         return makeFileFormatWriter(*kind)->write(obj);

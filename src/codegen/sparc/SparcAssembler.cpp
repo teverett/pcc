@@ -19,8 +19,6 @@ namespace {
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("SparcAssembler: " + msg); }
 
 // --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
-// Same Syllable/Group shape as every other backend's own assembler -
-// see PowerPCAssembler.cpp's own comment.
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
     char sign = 0;
@@ -29,14 +27,11 @@ struct Syllable {
     std::vector<Syllable> group;
 };
 
-// One operand, classified from a bare expression - see
-// SparcAssembler.h's own comment on why there's no real
-// `[%rs1+off]`/`%hi()`/`%lo()` SPARC syntax here. `Reg` comes from
-// recognizing a bare register name; `Imm` from a bare (optionally
-// signed) number; anything else (a label, or `label+N`) is `Mem` - an
-// absolute address, resolved to the label's own full 32-bit value and
-// then (for `sethi`/`or` specifically - see encodeInstr()) split into
-// its upper 22 / lower 10 bits.
+// One operand, classified from a bare expression (no `[%rs1+off]`/`%hi()`/`%lo()` syntax
+// here). `Reg` comes from a bare register name; `Imm` from a bare (optionally signed)
+// number; anything else (a label, or `label+N`) is `Mem` - an absolute address, resolved
+// to the label's full 32-bit value and (for `sethi`/`or` specifically) split into its
+// upper 22 / lower 10 bits.
 struct Operand {
     enum Kind { Reg, Imm, Mem } kind = Imm;
     int reg = -1;
@@ -79,22 +74,11 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
     return result;
 }
 
-// This dialect's own fixed register numbering (not a real SPARC ABI
-// register-name table in full - just the handful SparcCodegen.cpp
-// ever emits - see SparcCodegen.h's own header comment for each
-// register's role): `g0`=0 (the real hardwired-zero register), `t0`=8
-// (%o0 - also the real SPARC ABI's own return-value register, though
-// that convention is otherwise unused here), `t1`=9 (%o1), `t2`=10
-// (%o2), `fp`=11 (%o3 - this dialect's own dedicated frame-pointer
-// register, not real SPARC's windowed `%fp`/`%i6`, since this dialect
-// never executes a real `save`/`restore` window shift at all - see
-// SparcCodegen.h's own header comment), `sp`=14 (%o6 - the real SPARC
-// stack-pointer register number), `lr`=15 (%o7 - the real SPARC
-// register `call` itself writes the return address into). The
-// encoded bit patterns below match genuine SPARC register numbers
-// exactly, even though this dialect only ever names this one subset
-// of the 32 integer registers. Returns -1 if `name` isn't one of
-// them.
+// This dialect's fixed register numbering, matching real SPARC register numbers: `g0`=0,
+// `t0`=8 (%o0), `t1`=9 (%o1), `t2`=10 (%o2), `fp`=11 (%o3, this dialect's own
+// frame-pointer register, not real SPARC's windowed `%fp`/`%i6`), `sp`=14 (%o6), `lr`=15
+// (%o7, the register `call` writes the return address into). Returns -1 if `name` isn't
+// one of them.
 int regNumber(const std::string &lower) {
     static const std::unordered_map<std::string, int> names = {
         {"g0", 0}, {"t0", 8}, {"t1", 9}, {"t2", 10}, {"t3", 16}, {"t4", 17}, {"t5", 18}, {"t6", 19},
@@ -199,12 +183,9 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
-// One pending fixup `assembleSparcObject()` (see SparcAssembler.h's
-// own header comment) turns into a real ObjRelocation once assembly
-// is done - `offset` into `bytes()`, `symbolName` the reference that
-// couldn't be resolved locally (or the reserved pseudo-symbol ".."
-// for a same-file address's own needed base-shift), `kind` one of
-// kSparcRelocHi/Lo/Call.
+// One pending fixup, turned into an ObjRelocation once assembly is done - `offset` into
+// `bytes()`, `symbolName` the unresolved reference (or the pseudo-symbol ".." for a
+// same-file address's base-shift), `kind` one of kSparcRelocHi/Lo/Call.
 struct Relocation {
     uint32_t offset;
     std::string symbolName;
@@ -249,13 +230,9 @@ class Assembler {
                 orgBase_ = evalExpr(line.exprList.at(0));
                 return;
             case Line::Dw:
-                // Each word's own expression goes through the exact same
-                // external-name/base-shift tracking as `sethi`/`or`'s own
-                // Hi/Lo immediate (see encodeInstr()) - a bare symbol here
-                // (an array initializer's address-of-function/global
-                // element) resolves and relocates as a plain additive
-                // 32-bit word (kSparcRelocAbs32), rather than the split
-                // Hi/Lo pair an instruction's own immediate field needs.
+                // A bare symbol here (an array initializer's address-of-function/global
+                // element) relocates as a plain additive 32-bit word (kSparcRelocAbs32),
+                // not the split Hi/Lo pair an instruction's immediate field needs.
                 for (const auto &e : line.exprList) {
                     std::string externalName;
                     bool needsBaseShift = false;
@@ -285,15 +262,10 @@ class Assembler {
         }
     }
 
-    // `externalName`/`needsBaseShift` mirror
-    // ../powerpc/PowerPCAssembler.cpp's own `evalExpr` exactly - see
-    // SparcAssembler.h's own header comment on why *any* local
-    // `sethi`/`or` address reference, not just an external one, needs
-    // a relocation here once `allowExternal_` is set (a `call`/`ba`/
-    // `b<cc>` branch target never sets `needsBaseShift` at all - its
-    // own caller never passes that out-param, since a same-object
-    // control-transfer displacement needs no relocation regardless of
-    // where this object ends up linked).
+    // Any local `sethi`/`or` address reference, not just an external one, needs a
+    // relocation once `allowExternal_` is set. A `call`/`ba`/`b<cc>` branch target never
+    // sets `needsBaseShift`, since a same-object control-transfer displacement needs no
+    // relocation regardless of where the object is linked.
     uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
@@ -352,12 +324,9 @@ class Assembler {
         bytes_.push_back(static_cast<uint8_t>(v & 0xFF));
         offset_ += 4;
     }
-    // Real SPARC `nop` - `sethi 0,%g0` (format 2, op=00 rd=00000
-    // op2=100 imm22=0, i.e. word 0x01000000 - *not* all-zero: a plain
-    // zero word is real SPARC's own `unimp` trap instruction, since
-    // op2=000 rather than sethi's own 100). Always synthesized into a
-    // control-transfer instruction's own delay slot - see
-    // SparcAssembler.h's own header comment.
+    // Real SPARC `nop` - `sethi 0,%g0` (word 0x01000000; an all-zero word is instead
+    // `unimp`, since op2=000 there vs. sethi's op2=100). Synthesized into every
+    // control-transfer instruction's own delay slot.
     void emitNop() { emit32(0b100u << 22); }
 
     static uint16_t imm13Of(int32_t v) {
@@ -365,10 +334,7 @@ class Assembler {
         return static_cast<uint16_t>(v & 0x1FFF);
     }
 
-    // The plain decimal `op`'s own exprList already carries, masked
-    // to a signed 13-bit field - every format-3 instruction's own
-    // immediate operand in this dialect (SparcCodegen.cpp only ever
-    // passes a small literal constant this way, never a label).
+    // A format-3 instruction's immediate operand, masked to a signed 13-bit field.
     uint16_t evalImm(const Operand &op) {
         if (op.kind != Operand::Imm) fail("expected a plain immediate operand, not a register or label");
         int32_t v = static_cast<int32_t>(evalExpr(op.expr));
@@ -385,14 +351,10 @@ class Assembler {
     }
 
     // --- SPARC V8 instruction formats -----------------------------------
-    // Format 3 (op=2 arithmetic/logical, op=3 load/store): op(2)
-    // rd(5) op3(6) rs1(5) i(1) [asi(8) rs2(5) | simm13(13)] - the one
-    // format every ALU/compare/shift/multiply/divide/load/store
-    // mnemonic in this dialect goes through. `operand2` is a Reg
-    // (register form, i=0) or Imm (immediate form, i=1, the field
-    // sign-extended from 13 bits) - SparcCodegen.cpp never passes a
-    // Mem (label) operand here; only `sethi`/`or`'s own dedicated
-    // handling (see encodeInstr()) ever resolves a label.
+    // Format 3 (op=2 arithmetic/logical, op=3 load/store): op(2) rd(5) op3(6) rs1(5) i(1)
+    // [asi(8) rs2(5) | simm13(13)] - every ALU/compare/shift/multiply/divide/load/store
+    // mnemonic in this dialect goes through this. `operand2` is Reg (i=0) or Imm (i=1,
+    // sign-extended from 13 bits); only `sethi`/`or` ever resolve a label operand.
     uint32_t fmt3(uint8_t op, uint8_t rd, uint8_t op3, uint8_t rs1, const Operand &operand2) {
         uint32_t word = (static_cast<uint32_t>(op) << 30) | (static_cast<uint32_t>(rd) << 25) |
                          (static_cast<uint32_t>(op3) << 19) | (static_cast<uint32_t>(rs1) << 14);
@@ -403,12 +365,9 @@ class Assembler {
         }
         return word;
     }
-    // The register-rs1/register-or-immediate-rs2/register-rd family
-    // (add/sub/and/or/xor/sll/srl/sra/smul/sdiv) - `op`'s own operand
-    // order matches genuine SPARC assembly syntax exactly (source(s)
-    // first, destination last), unlike every other backend in this
-    // project (which all put the destination first) - see
-    // SparcCodegen.h's own header comment.
+    // The rs1/rs2-or-immediate/rd family (add/sub/and/or/xor/sll/srl/sra/smul/sdiv) -
+    // operand order matches real SPARC assembly syntax: source(s) first, destination
+    // last.
     void encodeAlu3(uint8_t op3, const std::vector<Operand> &ops, const std::string &mnemonic) {
         uint8_t rs1 = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
         const Operand &op2 = requireOperand(ops, 1, mnemonic);
@@ -416,14 +375,9 @@ class Assembler {
         emit32(fmt3(2, rd, op3, rs1, op2));
     }
 
-    // `sethi`'s own 22-bit immediate field (format 2: op=0 rd(5)
-    // op2=100(3) imm22(22)) - a plain `Imm` operand is used exactly as
-    // SparcCodegen.cpp already computed it (that half of a literal it
-    // split itself - see its own `genExpr()`'s IntLit case); a label
-    // (`Mem`) operand instead has its own full resolved address split
-    // into its upper 22 bits automatically here - see
-    // SparcAssembler.h's own header comment on why this dialect needs
-    // no `%hi`/`%lo` syntax spelled out at all.
+    // `sethi`'s 22-bit immediate field (format 2: op=0 rd(5) op2=100(3) imm22(22)) - a
+    // plain `Imm` operand is used as given; a label (`Mem`) operand has its full
+    // resolved address split into its upper 22 bits automatically here.
     void encodeSethi(const std::vector<Operand> &ops) {
         uint8_t rd = requireReg(requireOperand(ops, 1, "sethi"), "sethi");
         const Operand &immOp = requireOperand(ops, 0, "sethi");
@@ -438,24 +392,11 @@ class Assembler {
         emit32((0u << 30) | (static_cast<uint32_t>(rd) << 25) | (0b100u << 22) | imm22);
     }
 
-    // `or`'s own three real uses in this dialect, all the same real
-    // SPARC OR instruction (format 3, op3=0x02): a plain register
-    // second operand (the language's own `|` operator, and the
-    // `or g0,src,dst` "move register" idiom - see
-    // SparcCodegen.cpp's own `movReg()`), a plain immediate second
-    // operand (`or g0,<imm>,dst` - loading a small literal, or the
-    // lower-10-bits half of a literal too wide for `sethi` alone to
-    // carry), or a label (`Mem`) second operand - the lower-10-bits
-    // half of the same `sethi`/`or` address-load pair above; same
-    // relocation treatment as `sethi`, `kSparcRelocLo` instead of
-    // `kSparcRelocHi` - see SparcLinkerFactory.cpp's own paired Hi/Lo
-    // patch functions for how the two sites' own carry gets computed
-    // correctly. Real SPARC assembly syntax for this exact
-    // three-way reuse is identical (`or %rs1, %lo(label), %rd` is
-    // genuinely plain `or`, not a distinct mnemonic, in real SPARC
-    // code) - so unlike PowerPC's own `lis`/`ori` split (two distinct
-    // real opcodes), this dialect needs only one mnemonic for both
-    // halves of the pair.
+    // `or`'s three uses, all the same real SPARC OR instruction (format 3, op3=0x02): a
+    // plain register second operand (`|`, or the `or g0,src,dst` move idiom), a plain
+    // immediate second operand (loading a small literal, or a literal's lower-10-bits
+    // half), or a label (`Mem`) second operand - the lower-10-bits half of the
+    // `sethi`/`or` address-load pair, relocated as `kSparcRelocLo`.
     void encodeOr(const std::vector<Operand> &ops) {
         uint8_t rs1 = requireReg(requireOperand(ops, 0, "or"), "or");
         const Operand &op2 = requireOperand(ops, 1, "or");
@@ -476,34 +417,25 @@ class Assembler {
                (1u << 13) | lo10);
     }
 
-    // `cmp rs1,rs2_or_imm` - real `subcc rs1,rs2_or_imm,%g0`: sets the
-    // integer condition codes to `rs1 - rs2_or_imm` without keeping
-    // the (discarded) difference itself, the one way SPARC has to
-    // compare two values (no standalone compare instruction - see
-    // SparcCodegen.h's own header comment).
+    // `cmp rs1,rs2_or_imm` - real `subcc rs1,rs2_or_imm,%g0`: sets the condition codes to
+    // `rs1 - rs2_or_imm`, discarding the difference. SPARC has no standalone compare.
     void encodeCmp(const std::vector<Operand> &ops) {
         uint8_t rs1 = requireReg(requireOperand(ops, 0, "cmp"), "cmp");
         const Operand &op2 = requireOperand(ops, 1, "cmp");
         emit32(fmt3(2, 0, 0x14, rs1, op2));
     }
 
-    // `wry rs1,rs2_or_imm` - real `wr rs1,rs2_or_imm,%y`: sets the Y
-    // register (ASR 0) to `rs1 XOR rs2_or_imm` - used only to seed Y
-    // with the dividend's own sign bits (via a preceding `sra ...,31,`
-    // - see SparcCodegen.cpp's own `genDivMod()`) before `sdiv`, which
-    // (like every SPARC V8 32-bit divide) computes a 64-bit `Y:rs1`
-    // dividend under the hood.
+    // `wry rs1,rs2_or_imm` - real `wr rs1,rs2_or_imm,%y`: sets the Y register to
+    // `rs1 XOR rs2_or_imm`, used to seed Y with the dividend's sign bits before `sdiv`,
+    // which computes a 64-bit `Y:rs1` dividend under the hood.
     void encodeWry(const std::vector<Operand> &ops) {
         uint8_t rs1 = requireReg(requireOperand(ops, 0, "wry"), "wry");
         const Operand &op2 = requireOperand(ops, 1, "wry");
         emit32(fmt3(2, 0, 0x30, rs1, op2));
     }
 
-    // `rdy rd` - the real SPARC RDY (read the Y register, op3=0x28,
-    // rs1 field fixed at 0) - `smul`/`umul` leave the high 32 bits of
-    // their own 64-bit product in Y, the same role i386's `edx` or
-    // MIPS's `$hi` plays after a wide multiply (see
-    // SparcCodegen.cpp's own genWideMul()).
+    // `rdy rd` - real SPARC RDY (op3=0x28, rs1 fixed at 0): `smul`/`umul` leave the high
+    // 32 bits of their 64-bit product in Y.
     void encodeRdy(const std::vector<Operand> &ops) {
         uint8_t rd = requireReg(requireOperand(ops, 0, "rdy"), "rdy");
         Operand g0;
@@ -512,20 +444,10 @@ class Assembler {
         emit32(fmt3(2, rd, 0x28, 0, g0));
     }
 
-    // `ldind`/`stind` - see SparcCodegen.h's own header comment:
-    // dedicated, always-zero-displacement mnemonics standing in for
-    // real `ld [rs1+0],rd` / `st rd,[rs1+0]` (format 3, op=3), since
-    // this dialect's own grammar has no bracketed memory-operand
-    // syntax (see SparcAssembler.h's own header comment) and every
-    // load/store this backend ever emits is through a freshly
-    // computed address with no other displacement needed anyway.
-    // An optional third operand is this dialect's own displacement
-    // (a plain signed immediate, never a register or label) - defaults
-    // to 0 when absent, the original always-zero-displacement shape.
-    // Used by SparcCodegen.cpp's own genWideAdd/genWideMul/
-    // genWideDivMod/genWideShift/genWideCompare to address a `long
-    // long`'s own high word (base+4) or a scratch slot on the real
-    // hardware stack without first computing a separate address.
+    // `ldind`/`stind` stand in for real `ld [rs1+0],rd` / `st rd,[rs1+0]` (format 3,
+    // op=3). An optional third operand is a plain signed-immediate displacement,
+    // defaulting to 0, used to address a `long long`'s high word (base+4) or a scratch
+    // stack slot without computing a separate address.
     uint16_t dispOf(const std::vector<Operand> &ops, size_t i) {
         if (ops.size() <= i) return 0;
         return evalImm(ops[i]);
@@ -546,18 +468,10 @@ class Assembler {
                (1u << 13) | disp);
     }
 
-    // `call label` - real SPARC CALL (format 1: op=01 disp30(30)) -
-    // always immediately followed by a synthesized `nop` delay-slot
-    // instruction (see SparcAssembler.h's own header comment). A
-    // target defined in *this* object is already a valid PC-relative
-    // displacement regardless of where this object ends up linked
-    // (both its own address and this instruction's own are shifted by
-    // the same base) - no relocation needed at all, unlike an
-    // absolute-address load (`sethi`/`or` above). Only a genuinely
-    // cross-object `call` target (undefined here) needs deferring -
-    // see SparcAssembler.h's own `kSparcRelocCall` comment, and
-    // PowerPCAssembler.cpp's own identical `b`/`bl` handling this is
-    // ported from.
+    // `call label` - real SPARC CALL (format 1: op=01 disp30(30)), always followed by a
+    // synthesized `nop` delay-slot instruction. A target in this object is already a
+    // valid PC-relative displacement regardless of link address, so only a cross-object
+    // target needs a relocation.
     void encodeCall(const std::vector<Operand> &ops) {
         const Operand &target = requireOperand(ops, 0, "call");
         if (target.kind != Operand::Mem) fail("'call': target must be a label");
@@ -574,34 +488,19 @@ class Assembler {
         emitNop();
     }
 
-    // `retl` - real SPARC `jmpl %lr+8,%g0` (format 3, op=2, op3=0x38
-    // JMPL): the real leaf-routine return idiom (reading the return
-    // address straight back out of `%o7`, since no real register
-    // window ever rotated it into `%i7` - see SparcCodegen.h's own
-    // header comment on why), used by every function this dialect
-    // emits regardless of whether it's actually a leaf, since `lr`
-    // is always spilled to this call's own frame and reloaded first -
-    // see SparcCodegen.cpp's own genFunction()/emitEpilogue()
-    // comments. Immediately followed by a synthesized `nop` delay
-    // slot.
+    // `retl` - real SPARC `jmpl %lr+8,%g0` (format 3, op=2, op3=0x38 JMPL): reads the
+    // return address directly out of `%o7`, since no register window rotates it into
+    // `%i7` here. Followed by a synthesized `nop` delay slot.
     void encodeRetl() {
         emit32((2u << 30) | (0u << 25) | (0x38u << 19) | (15u << 14) | (1u << 13) | 8u);
         emitNop();
     }
 
-    // `jmpl rs1,rd` - real SPARC JMPL (format 3, op=2, op3=0x38),
-    // register-indirect form (i=0, rs2=%g0, so the effective target
-    // is simply rs1's own value - the same fixed-zero-displacement
-    // convention ldind/stind already use, see SparcCodegen.h's own
-    // header comment): PC <- rs1, rd <- the address of this
-    // instruction itself, the identical return-address convention
-    // `call` already leaves in its own target register for a direct
-    // call - see encodeCall()'s own comment - so SparcCodegen.cpp's
-    // own CallPtr case can target `lr` here and let the callee's
-    // already-existing `retl` ("jmpl lr+8,g0") epilogue return
-    // correctly either way. Always immediately followed by a
-    // synthesized `nop` delay slot, same as every other real
-    // control-transfer here.
+    // `jmpl rs1,rd` - real SPARC JMPL (format 3, op=2, op3=0x38), register-indirect form
+    // (i=0, rs2=%g0, so the target is simply rs1's value): PC <- rs1, rd <- the address
+    // of this instruction, the same return-address convention `call` leaves, so a
+    // callee's `retl` epilogue returns correctly either way. Followed by a synthesized
+    // `nop` delay slot.
     void encodeJmpl(const std::vector<Operand> &ops) {
         uint8_t rs1 = requireReg(requireOperand(ops, 0, "jmpl"), "jmpl");
         uint8_t rd = requireReg(requireOperand(ops, 1, "jmpl"), "jmpl");
@@ -609,17 +508,9 @@ class Assembler {
         emitNop();
     }
 
-    // Bicc - format 2: op=0 a(1)=0 cond(4) op2=010(3) disp22(22).
-    // `cond`'s own real SPARC encoding - see SparcCodegen.cpp's own
-    // `genCompare()` for which comparison operator picks which one.
-    // Always immediately followed by a synthesized `nop` delay slot.
-    // A branch target here is always intra-function-only (this
-    // dialect's own `beq`/`bne`/etc. are never used to reach another
-    // file's own code - same convention, and the same reason, as
-    // M68kCodegen.h's own `Bcc`/`BRA`), so (like a real-architecture
-    // PC-relative branch defined in the same object - see
-    // PowerPCAssembler.h's own `kPowerPCRelocBranch` comment) it never
-    // needs a relocation at all.
+    // Bicc - format 2: op=0 a(1)=0 cond(4) op2=010(3) disp22(22). Followed by a
+    // synthesized `nop` delay slot. A branch target is always intra-function, so it
+    // never needs a relocation.
     void encodeBicc(uint8_t cond, const std::vector<Operand> &ops, const std::string &mnemonic) {
         const Operand &target = requireOperand(ops, 0, mnemonic);
         if (target.kind != Operand::Mem) fail("'" + mnemonic + "': target must be a label");
@@ -635,9 +526,8 @@ class Assembler {
         static const std::unordered_map<std::string, uint8_t> alu3 = {
             {"add", 0x00}, {"sub", 0x04}, {"and", 0x01}, {"xor", 0x03},
             {"sll", 0x25}, {"srl", 0x26}, {"sra", 0x27}, {"smul", 0x0B}, {"sdiv", 0x0F},
-            // umul/udiv - the unsigned counterparts (op3=0x0A/0x0E) -
-            // `long long` multiply/divide need both (see
-            // SparcCodegen.cpp's own genWideMul()/genWideDivMod()).
+            // umul/udiv - unsigned counterparts (op3=0x0A/0x0E), needed by `long long`
+            // multiply/divide.
             {"umul", 0x0A}, {"udiv", 0x0E},
         };
         if (auto it = alu3.find(mnemonic); it != alu3.end()) {
@@ -668,13 +558,9 @@ class Assembler {
             encodeLdind(ops);
             return;
         }
-        // Byte/halfword load (zero- or sign-extending into a full
-        // register, real LDUB=0x01/LDSB=0x09/LDUH=0x02/LDSH=0x0A) /
-        // store (writing only that many low bytes, real STB=0x05/
-        // STH=0x06) - a narrower-than-native-int Var/Slot's own
-        // load/store (see SparcCodegen.cpp's loadOperand()/
-        // storeOperand()), always through a freshly computed address
-        // with no displacement, same as ldind/stind above.
+        // Byte/halfword load (zero-/sign-extending into a full register, real
+        // LDUB=0x01/LDSB=0x09/LDUH=0x02/LDSH=0x0A) / store (writing only those low
+        // bytes, real STB=0x05/STH=0x06) for a narrower-than-int scalar.
         static const std::unordered_map<std::string, uint8_t> sizedLoad = {
             {"ldindb", 0x01}, {"ldindsb", 0x09}, {"ldindh", 0x02}, {"ldindsh", 0x0A},
         };
@@ -719,10 +605,7 @@ class Assembler {
         }
         static const std::unordered_map<std::string, uint8_t> condBranches = {
             {"beq", 0x1}, {"bne", 0x9}, {"blt", 0x3}, {"ble", 0x2}, {"bgt", 0xA}, {"bge", 0xB},
-            // Unsigned counterparts - real SPARC BLEU(4)/BCS(5, aka
-            // BLU)/BGU(0xC)/BGEU(0xD, aka BCC) - signed vs. unsigned
-            // `long long`/native-width comparison (see
-            // SparcCodegen.cpp's own genCompare()/genWideCompare()).
+            // Unsigned counterparts - real SPARC BLEU(4)/BCS(5, aka BLU)/BGU(0xC)/BGEU(0xD, aka BCC).
             {"bltu", 0x5}, {"bleu", 0x4}, {"bgtu", 0xC}, {"bgeu", 0xD},
         };
         if (auto it = condBranches.find(mnemonic); it != condBranches.end()) {
@@ -741,11 +624,7 @@ class Assembler {
     bool allowExternal_;
 };
 
-// Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - see SparcAssembler.h's own
-// `assembleSparcObject` comment, and ../powerpc/PowerPCAssembler.cpp's
-// own `buildObjectFile` for the identical algorithm this is ported
-// from.
+// Builds the format-neutral ObjectFile from a completed object-mode Assembler.
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kSparcCoffMachine;

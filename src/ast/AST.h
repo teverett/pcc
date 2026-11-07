@@ -13,27 +13,22 @@ namespace pcc {
 enum class ExprKind {
     IntLit,
     Var,
-    Index,        // name[lhs] - array element read
-    Assign,       // name = rhs, or (if lhs is set) name[lhs] = rhs
+    Index,        // name[lhs]
+    Assign,       // name = rhs, or name[lhs] = rhs if lhs is set
     DerefAssign,  // *lhs = rhs
-    // name op= rhs, or (if lhs is set) name[lhs] op= rhs - `op` names the
-    // underlying binary operator (the compound token with its trailing
-    // '=' stripped, e.g. "+=" -> "+"); `yieldOld` is true only for a
-    // postfix '++'/'--' (built as op="+"/"-", rhs=IntLit(1)) - see
-    // IRBuilder.cpp's own note on why this is a real IR node rather than
-    // a `name = name op rhs` desugar: the target's index/pointer
-    // sub-expression must only be evaluated once, and returning the
-    // *old* value (postfix) needs the value to still be available right
-    // after the load, before the store.
+    // name op= rhs (or name[lhs] op= rhs); `op` is the operator with its
+    // trailing '=' stripped. Kept as its own node, not desugared, because the
+    // index/pointer target must be evaluated once and postfix '++'/'--' needs
+    // the old value available between the load and the store.
     CompoundAssign,
-    CompoundDerefAssign,  // *lhs op= rhs - same as CompoundAssign, deref target
-    Unary,        // op applied to one sub-expression: '-', '!', '*' (deref) or '&' (address-of)
+    CompoundDerefAssign,  // *lhs op= rhs
+    Unary,        // '-', '!', '*' (deref), '&' (address-of)
     Binary,       // + - * / % == != < <= > >= && ||
     Call,
-    CallPtr,      // (lhs)(args) - callee is a computed address, not a name; see IRBuilder's buildExpr
+    CallPtr,      // (lhs)(args): callee is a computed address, not a name
     Cast,         // (type)rhs
-    Sizeof,       // sizeof(type) or sizeof(rhs) - see sizeofIsType
-    StringLit,    // "..." - decoded bytes in `name`; see IRBuilder's buildExpr
+    Sizeof,       // sizeof(type) or sizeof(rhs), per sizeofIsType
+    StringLit,    // decoded bytes stored in `name`
     Ternary,      // lhs ? rhs : elseExpr
 };
 
@@ -42,18 +37,16 @@ struct Expr {
     int line = 0;
 
     long intValue = 0;        // IntLit
-    Type type;                 // IntLit (from its suffix); Cast/Sizeof (the operand/measured type)
-    bool sizeofIsType = false;  // Sizeof: true -> `type` is what's measured, false -> `rhs` is (unevaluated)
-    bool yieldOld = false;      // CompoundAssign/CompoundDerefAssign: true only for postfix '++'/'--'
-    std::string name;         // Var / Index / Assign (target) / Call (callee) / StringLit (decoded bytes)
+    Type type;                 // IntLit's suffix type; Cast/Sizeof's operand/measured type
+    bool sizeofIsType = false;  // Sizeof: true -> `type` is measured, false -> `rhs` is (unevaluated)
+    bool yieldOld = false;      // CompoundAssign(DerefAssign): true only for postfix '++'/'--'
+    std::string name;         // Var / Index / Assign target / Call callee / StringLit bytes
     std::string op;           // Unary / Binary / CompoundAssign(DerefAssign) operator text
-    std::unique_ptr<Expr> lhs;  // Binary lhs, Index/indexed-Assign(CompoundAssign) subscript,
-                                 // DerefAssign/CompoundDerefAssign's pointer, CallPtr's callee expression,
-                                 // Ternary's condition
-    std::unique_ptr<Expr> rhs;                  // Binary rhs, Assign/DerefAssign/CompoundAssign(DerefAssign)
-                                                  // value, Unary operand, Cast operand, Sizeof's measured
-                                                  // expression, Ternary's then-branch
-    std::unique_ptr<Expr> elseExpr;              // Ternary's else-branch
+    std::unique_ptr<Expr> lhs;  // Binary lhs, Index/Assign(CompoundAssign) subscript, DerefAssign
+                                 // (CompoundDerefAssign) pointer, CallPtr callee, Ternary condition
+    std::unique_ptr<Expr> rhs;                  // Binary rhs, Assign(DerefAssign/CompoundAssign) value,
+                                                  // Unary/Cast operand, Sizeof expression, Ternary then-branch
+    std::unique_ptr<Expr> elseExpr;              // Ternary else-branch
     std::vector<std::unique_ptr<Expr>> args;    // Call / CallPtr arguments
 };
 
@@ -61,12 +54,8 @@ using ExprPtr = std::unique_ptr<Expr>;
 
 // --- Statements ---------------------------------------------------------
 
-// One element of an array initializer list - either a plain literal,
-// or a bare name standing for that symbol's (a function's or a
-// global's) own address, the dispatch-table idiom (e.g. "int t[] =
-// {f, g};") - see grammar/CParser.g4's arrayInitElem and IRBuilder.cpp,
-// which resolves `symbolName` to a Slot or a Function the same way it
-// resolves a bare "&name" expression.
+// Array initializer element: a literal value, or a bare name standing for
+// that function/global's own address (the dispatch-table idiom).
 struct ArrayInitElem {
     bool isSymbol = false;
     long value = 0;            // literal value, when !isSymbol
@@ -78,12 +67,12 @@ enum class StmtKind {
     If,
     While,
     Return,
-    Break,     // see Stmt's own comment on While's loopBody/postStmt for what it targets
-    Continue,  // see Stmt's own comment on While's loopBody/postStmt for what it targets
+    Break,
+    Continue,
     LocalDecl,
     ExprStmt,
     Empty,
-    Asm,  // asm { ... } - raw target text, emitted verbatim; see AST.h's Stmt::asmText
+    Asm,  // raw target text, emitted verbatim
 };
 
 struct Stmt {
@@ -94,14 +83,9 @@ struct Stmt {
     ExprPtr cond;                                // If / While
     std::unique_ptr<Stmt> thenStmt, elseStmt;    // If
     std::unique_ptr<Stmt> loopBody;              // While
-    // A `for(init;cond;post)` is desugared into `{ init; while(cond)
-    // ... }` right here in BuildAst.cpp - but `post` is kept as its
-    // OWN field, never folded into loopBody, specifically so
-    // `continue` inside the loop body can skip the rest of loopBody
-    // while still running post before the condition is retested (a
-    // real While has no postStmt at all - null here - so its own
-    // `continue` just jumps straight back to the condition check,
-    // same as always). Null for a real `while`.
+    // `for(init;cond;post)` desugars to `{ init; while(cond) ... }` with
+    // `post` kept separate from loopBody so `continue` still runs it before
+    // retesting cond. Null for a real `while`.
     std::unique_ptr<Stmt> postStmt;              // While (for-loop desugaring only)
     std::string declName;                        // LocalDecl
     Type type;                                     // LocalDecl: declared type (scalar, or array element type)
@@ -124,17 +108,13 @@ struct FunctionDecl {
     std::string name;
     Type returnType;
     std::vector<Param> params;
-    std::unique_ptr<Stmt> body;  // null for a prototype-only declaration, or an 'extern' one
+    std::unique_ptr<Stmt> body;  // null for a prototype-only or 'extern' declaration
     int line = 0;
-    bool hasAddress = false;  // '@' addr given - see IR.h's Function::hasAddress
+    bool hasAddress = false;  // '@' address given explicitly
     long address = 0;
-    std::string sourceFile;  // which .c file this came from - see IR.h's Function::sourceFile
+    std::string sourceFile;  // originating .c file
 
-    // True for an 'extern' declaration (always bodyless): this name
-    // is a function defined in another file - see IR.h's
-    // Function::isExternal and IRBuilder.cpp's own header comment on
-    // why this now has to be stated explicitly rather than guessed.
-    bool isExternDecl = false;
+    bool isExternDecl = false;  // 'extern': defined in another file
 };
 
 struct GlobalVar {
@@ -144,16 +124,12 @@ struct GlobalVar {
     long initValue = 0;
     int line = 0;
     int arraySize = 0;            // >0 means an array of this many words
-    std::vector<ArrayInitElem> arrayInit;  // array: initializer (padded with 0s); unused for scalars
-    bool hasAddress = false;       // '@' addr given - see IR.h's Slot::hasAddress
+    std::vector<ArrayInitElem> arrayInit;  // array initializer (padded with 0s); unused for scalars
+    bool hasAddress = false;       // '@' address given explicitly
     long address = 0;
-    std::string sourceFile;        // which .c file this came from - see IR.h's Slot::sourceFile
+    std::string sourceFile;        // originating .c file
 
-    // True for an 'extern' declaration (always uninitialized): this
-    // name is data defined in another file - see Slot::isExternal
-    // and IRBuilder.cpp's own header comment on why this now has to
-    // be stated explicitly rather than guessed.
-    bool isExternDecl = false;
+    bool isExternDecl = false;  // 'extern': data defined in another file
 };
 
 struct Program {

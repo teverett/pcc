@@ -18,9 +18,7 @@ namespace {
 
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("Pdp11Assembler: " + msg); }
 
-// --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
-// Same Syllable/Group shape as every other backend's own assembler -
-// see M68kAssembler.cpp's own comment.
+// --- Parsing, via the shared grammar/PccAsm.g4 ---------------------------
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
     char sign = 0;
@@ -29,19 +27,11 @@ struct Syllable {
     std::vector<Syllable> group;
 };
 
-// One operand, classified from a bare expression - see
-// Pdp11Assembler.h's own comment on why there's no real MACRO-11
-// `(Rn)`/`#n` syntax here. `Reg` comes from recognizing a bare
-// `r0`-`r7`/`sp`/`pc` identifier; `Imm` from a bare (optionally
-// signed) number; anything else (a label, or `label+N`) is `Mem` -
-// PC-relative addressing to the value stored there. `Indexed` is the
-// one addressing mode this dialect *does* write with the grammar's
-// own generic `[expr]` bracket syntax (otherwise unused here) -
-// `[Rn+N]`/`[Rn-N]`: a real PDP-11 index-mode operand, `X(Rn)`, whose
-// base is `Rn`'s own runtime value plus a compile-time-constant
-// displacement `N` - used by Pdp11Codegen.cpp's own frame-pointer-
-// relative Local/Param addressing (`[r5+N]`/`[r5-N]`), never PC-
-// relative and never a symbol (see buildOperand() below).
+// One operand, classified from a bare expression. `Reg`: a bare `r0`-`r7`/`sp`/`pc`
+// identifier. `Imm`: a bare (optionally signed) number. `Mem`: anything else (a label, or
+// `label+N`) - PC-relative addressing to the value stored there. `Indexed`: the `[Rn+N]`/
+// `[Rn-N]` bracket form - index mode `X(Rn)`, base register plus a compile-time-constant
+// displacement, used for frame-pointer-relative Local/Param addressing.
 struct Operand {
     enum Kind { Reg, Imm, Mem, Indexed } kind = Imm;
     int reg = -1;
@@ -85,9 +75,7 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
     return result;
 }
 
-// `r0`-`r7` (case-insensitive, matching how mnemonics are lowercased
-// too), plus the `sp`/`pc` aliases for `r6`/`r7` - returns -1 if
-// `name` is neither.
+// `r0`-`r7` (case-insensitive), plus `sp`/`pc` aliases for `r6`/`r7`; -1 if neither.
 int regNumber(const std::string &lower) {
     if (lower == "sp") return 6;
     if (lower == "pc") return 7;
@@ -97,13 +85,8 @@ int regNumber(const std::string &lower) {
 
 Operand buildOperand(PccAsmParser::OperandContext *ctx) {
     if (ctx->LBRACKET()) {
-        // `[Rn+N]`/`[Rn-N]` - the one bracketed form this dialect
-        // accepts (see Operand::Indexed's own comment above): the
-        // first syllable must be a bare, unsigned base register, and
-        // every remaining syllable a literal number (never a symbol -
-        // Pdp11Codegen.cpp only ever uses this for a compile-time-
-        // constant frame-pointer displacement, so there's no case to
-        // support, and no relocation to ever record for one).
+        // `[Rn+N]`/`[Rn-N]`: first syllable must be a bare, unsigned base register; every
+        // remaining syllable a literal number (never a symbol, so never a relocation).
         std::vector<Syllable> syls = exprToSyllables(ctx->expr());
         if (syls.empty() || syls[0].sign != 0 || syls[0].kind != SylKind::Symbol) {
             fail("'[...]' operand must start with a bare base register, e.g. '[r5+4]'");
@@ -208,12 +191,7 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
-// One pending fixup `assemblePdp11Object()` (see Pdp11Assembler.h's
-// own header comment) turns into a real ObjRelocation once assembly
-// is done - `byteOffset` into `bytes()`, `symbolName` the reference
-// that couldn't be resolved locally, `kind` either
-// `kPdp11RelocAbs16` (`lea`'s own absolute extension word) or
-// `kPdp11RelocRel16` (every other, PC-relative, bare-label operand).
+// One pending fixup, turned into a real ObjRelocation once assembly is done.
 struct Relocation {
     uint32_t byteOffset;
     std::string symbolName;
@@ -258,12 +236,8 @@ class Assembler {
                 orgBase_ = evalExpr(line.exprList.at(0));
                 return;
             case Line::Dw:
-                // Each word's own expression goes through the exact same
-                // external-name/base-shift tracking as `lea`'s own
-                // absolute extension word (see encodeLea()) - a bare
-                // symbol here (an array initializer's address-of-
-                // function/global element) resolves and relocates
-                // identically to one used as `lea`'s own source.
+                // Each word goes through the same external-name/base-shift tracking as
+                // `lea`'s absolute extension word (see encodeLea()).
                 for (const auto &e : line.exprList) {
                     std::string externalName;
                     bool needsBaseShift = false;
@@ -276,12 +250,8 @@ class Assembler {
                 }
                 return;
             case Line::Db:
-                // `db` - a `char` global's own 1-byte storage (see
-                // Pdp11Codegen.cpp's own generate()/declareArray()).
-                // Never a symbol element (there's no 1-byte relocation
-                // kind on this target, and no real use case for one -
-                // the dispatch-table idiom always stores a full-width
-                // address, never a byte).
+                // `char` global storage; never a symbol element (no 1-byte relocation kind
+                // exists on this target).
                 for (const auto &e : line.exprList) emit8(static_cast<uint8_t>(evalExpr(e)));
                 return;
             case Line::Instr:
@@ -290,11 +260,8 @@ class Assembler {
         }
     }
 
-    // `externalName`/`needsBaseShift` mirror ../m68k/M68kAssembler.cpp's
-    // own `evalExpr` exactly - see Pdp11Assembler.h's own header
-    // comment on why only `lea`'s own absolute reference ever needs
-    // `needsBaseShift` (an ordinary PC-relative `Mem` operand never
-    // does - see `emitEAExtension`'s own comment below).
+    // `needsBaseShift` is set only for `lea`'s absolute reference; a PC-relative `Mem`
+    // operand never needs it (see emitEAExtension()).
     uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
@@ -348,18 +315,11 @@ class Assembler {
     }
 
     // --- general ("double operand"-style) EA field --------------------
-    // Reg direct (000 000-111), or - via PC (R7) - immediate (mode
-    // 010, "(PC)+": the extension word that follows is the literal
-    // value) or relative (mode 110, "X(PC)": the extension word is a
-    // *displacement* from the extension word's own address to the
-    // real target - see Pdp11Assembler.h's own header comment), or -
-    // via any other register - index mode (mode 110, "X(Rn)": the
-    // extension word is a plain additive displacement to that
-    // register's own runtime value, see Operand::Indexed's own
-    // comment). No other addressing mode (register-deferred,
-    // autoincrement, ...) is ever produced by this classifier -
-    // Pdp11Codegen.cpp's own dedicated mnemonics (`ldind`/`stind`/
-    // `push`/`pop`/`lea`) cover every one of those.
+    // Reg direct (mode 000), or via PC (R7): immediate (mode 010, extension word is the
+    // literal value) or relative (mode 110, "X(PC)", extension word is a displacement to the
+    // target); via any other register: index mode (mode 110, "X(Rn)", extension word is a
+    // plain additive displacement). No other addressing mode is ever produced here -
+    // dedicated mnemonics (`ldind`/`stind`/`push`/`pop`/`lea`) cover the rest.
     struct EA {
         uint8_t mode;
         uint8_t reg;
@@ -377,47 +337,32 @@ class Assembler {
         }
         fail("internal: unhandled operand kind");
     }
-    // Emits `op`'s own extension word, for whichever EA mode needs
-    // one (Imm/Mem both do - see classifyEA's own comment). Must be
-    // called exactly when the program counter sits where that
-    // extension word will actually land, since Mem's own value is a
-    // *relative* displacement computed from that address.
+    // Emits `op`'s extension word (Imm/Mem both need one). Must be called exactly when the
+    // PC sits where that word will land, since Mem's value is a displacement from that address.
     void emitEAExtension(const Operand &op) {
         if (op.kind == Operand::Imm) {
             emit16(static_cast<uint16_t>(evalExpr(op.expr)));
         } else if (op.kind == Operand::Mem) {
-            // PC-relative (mode 067) - target and extAddr are both
-            // already final, zero-based, position-independent
-            // offsets *within this one object* once resolved locally,
-            // so a locally-resolved reference needs no relocation at
-            // all (see Pdp11Assembler.h's own `kPdp11RelocRel16`
-            // comment): only an `externalName` (never a
-            // `needsBaseShift`) is ever requested here.
+            // PC-relative (mode 067): a locally-resolved reference needs no relocation,
+            // since target and extAddr are both already final, zero-based offsets.
             std::string externalName;
             uint32_t target = evalExpr(op.expr, &externalName, nullptr);
             uint32_t extAddr = orgBase_ + offset_;
             if (stage_ == 2 && allowExternal_ && !externalName.empty()) {
                 relocations_.push_back({offset_, externalName, kPdp11RelocRel16});
             }
-            // Mode 067's own displacement adds to the PC as it stands
-            // once the CPU has already fetched this extension word -
-            // i.e. extAddr + 2, not extAddr itself.
+            // Mode 067's displacement is relative to the PC after this extension word is
+            // fetched, i.e. extAddr + 2.
             emit16(static_cast<uint16_t>(target - (extAddr + 2)));
         } else if (op.kind == Operand::Indexed) {
-            // A plain additive displacement, never PC-relative and
-            // never a symbol (buildOperand() only ever lets a literal
-            // number through here) - so, unlike Mem above, this never
-            // records a relocation.
+            // A plain additive displacement - never a symbol, so never a relocation.
             emit16(static_cast<uint16_t>(evalExpr(op.expr)));
         }
     }
 
-    // The `opcode SS DD` double-operand family (MOV/CMP/BIC/BIS/ADD/
-    // SUB - see encodeInstr's own table): a 4-bit opcode, a 6-bit
-    // source EA, a 6-bit destination EA, each with its own extension
-    // word if it needs one (source's extension, if any, always comes
-    // first - matching real PDP-11 object code order, since the
-    // source operand is evaluated before the destination).
+    // The `opcode SS DD` double-operand family (MOV/CMP/BIC/BIS/ADD/SUB): 4-bit opcode, 6-bit
+    // source EA, 6-bit destination EA, each with its own extension word if needed (source's
+    // extension comes first, matching real PDP-11 object code order).
     void encodeTwoOp(uint16_t opcodeBase, const Operand &src, const Operand &dst, bool writesDst,
                       const std::string &mnemonic) {
         if (writesDst && dst.kind == Operand::Imm) fail("'" + mnemonic + "': an immediate can't be a destination");
@@ -428,19 +373,15 @@ class Assembler {
         emitEAExtension(dst);
     }
 
-    // The single-operand family (CLC aside - see below - every one
-    // of these takes one general EA): CLR/COM/NEG/TST/ASL/ASR/ROR/SXT
-    // - Pdp11Codegen.cpp only ever passes a bare register operand,
-    // but the encoding itself is general.
+    // The single-operand family (CLR/COM/NEG/TST/ASL/ASR/ROR/SXT): one general EA.
     void encodeOneOp(uint16_t opcodeBase, const Operand &op) {
         EA e = classifyEA(op);
         emit16(static_cast<uint16_t>(opcodeBase | (e.mode << 3) | e.reg));
         emitEAExtension(op);
     }
 
-    // The EIS `opcode Reg,<ea>` family: a fixed 3-bit register field
-    // (MUL/DIV's own accumulator register, or XOR's own source
-    // register) plus one general EA.
+    // The EIS `opcode Reg,<ea>` family: a fixed 3-bit register field (MUL/DIV's accumulator,
+    // or XOR's source register) plus one general EA.
     void encodeRegEa(uint16_t opcodeBase, uint8_t regField, const Operand &ea) {
         EA e = classifyEA(ea);
         emit16(static_cast<uint16_t>(opcodeBase | (regField << 6) | (e.mode << 3) | e.reg));
@@ -456,12 +397,8 @@ class Assembler {
         return ops[i];
     }
 
-    // `lea label,Rn` - loads the label's own absolute address (never
-    // a relative displacement the way an ordinary Mem operand's own
-    // extension word is - see Pdp11Assembler.h's own header comment)
-    // into Rn, via the exact same PC-immediate encoding as a numeric
-    // Imm operand, just with the extension word holding a label's
-    // value instead of a literal one.
+    // `lea label,Rn`: loads the label's absolute address into Rn, via the same PC-immediate
+    // encoding as a numeric Imm operand, with the extension word holding the label's value.
     void encodeLea(const Operand &src, const Operand &dst) {
         if (src.kind != Operand::Mem) fail("'lea': source must be a label");
         uint8_t rn = requireReg(dst, "lea");
@@ -476,11 +413,8 @@ class Assembler {
         emit16(static_cast<uint16_t>(v));
     }
 
-    // Branch-offset family (BR/BEQ/BNE/BLT/BLE/BGT/BGE): an 8-bit
-    // signed word offset, relative to the address right after this
-    // one-word instruction - see Pdp11Codegen.h's own header comment
-    // on why Pdp11Codegen.cpp never emits one of these with a target
-    // more than ±128 words away.
+    // Branch-offset family (BR/BEQ/BNE/BLT/BLE/BGT/BGE): an 8-bit signed word offset,
+    // relative to the address right after this one-word instruction.
     void encodeBranch(uint16_t opcodeBase, const Operand &target, const std::string &mnemonic) {
         if (target.kind != Operand::Mem) fail("'" + mnemonic + "': target must be a label");
         uint32_t targetAddr = evalExpr(target.expr);
@@ -492,19 +426,13 @@ class Assembler {
         emit16(static_cast<uint16_t>(opcodeBase | (static_cast<uint8_t>(wordDelta) & 0xFF)));
     }
 
-    // The full instruction vocabulary ../Pdp11Codegen.cpp ever emits -
-    // see Pdp11Assembler.h's own header comment. Not a general PDP-11
-    // encoder: exactly these mnemonic/operand-shape combinations.
+    // Not a general PDP-11 encoder: exactly the mnemonic/operand-shape combinations
+    // Pdp11Codegen.cpp emits.
     void encodeInstr(const std::string &mnemonic, const std::vector<Operand> &ops) {
         static const std::unordered_map<std::string, uint16_t> twoOpWrite = {
             {"mov", 0x1000}, {"add", 0x6000}, {"sub", 0xE000}, {"bic", 0x4000}, {"bis", 0x5000},
-            // `movb` - the real byte form of MOV (bit 15 set - PDP-11's
-            // own "B" bit, shared by every instruction in this general
-            // double-operand group). A register destination gets the
-            // byte real hardware automatically sign-extends to 16 bits
-            // - exactly a `char` load's own signed semantics for free
-            // (see Pdp11Codegen.cpp's own loadOperand()); an unsigned
-            // `char` load zeroes the high byte itself afterward.
+            // Byte form of MOV (bit 15, the "B" bit); a register destination auto-sign-extends
+            // to 16 bits in hardware, giving a `char` load's signed semantics for free.
             {"movb", 0x9000},
         };
         if (auto it = twoOpWrite.find(mnemonic); it != twoOpWrite.end()) {
@@ -513,12 +441,8 @@ class Assembler {
             return;
         }
         if (mnemonic == "cmp") {
-            // CMP's own destination is read-only (it only ever
-            // updates the condition codes - see Pdp11Codegen.h's own
-            // header comment on its unusual `src - dst` flag
-            // convention), so an Imm destination is perfectly legal
-            // hardware-wise - unlike MOV/ADD/SUB/BIC/BIS, which
-            // really do write theirs.
+            // CMP only updates condition codes (flags = src - dst), so an Imm destination is
+            // legal here unlike MOV/ADD/SUB/BIC/BIS, which really do write theirs.
             encodeTwoOp(0x2000, requireOperand(ops, 0, mnemonic), requireOperand(ops, 1, mnemonic),
                         /*writesDst=*/false, mnemonic);
             return;
@@ -530,22 +454,15 @@ class Assembler {
         }
         if (mnemonic == "mul" || mnemonic == "div") {
             uint8_t rn = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
-            // MUL is 070RSS (0x7000); DIV is 071RSS (0x7200) - not
-            // 0x7400, which is ASH's own opcode (072RSS).
+            // MUL is 070RSS (0x7000); DIV is 071RSS (0x7200), not ASH's 072RSS (0x7400).
             encodeRegEa(mnemonic == "mul" ? 0x7000 : 0x7200, rn, requireOperand(ops, 0, mnemonic));
             return;
         }
         static const std::unordered_map<std::string, uint16_t> oneOp = {
             {"com", 0x0A40}, {"neg", 0x0B00}, {"tst", 0x0BC0}, {"ror", 0x0C00},
             {"asr", 0x0C80}, {"asl", 0x0CC0}, {"sxt", 0x0DC0},
-            // ADC/SBC (add/subtract the carry bit into the operand in
-            // place) - the real single-operand carry-chain instructions
-            // this family's own opcode numbering already implies
-            // between NEG (0x0B00) and TST (0x0BC0) - see
-            // Pdp11Codegen.cpp's own genWideAdd()/genWideSub(), the
-            // ripple-carry generalization of a native add/sub one word
-            // wider, the same idiom every other backend's own ADC/SBB-
-            // equivalent already uses.
+            // ADC/SBC: add/subtract the carry bit into the operand in place, used for
+            // multi-word ripple-carry add/sub (genWideAdd()).
             {"adc", 0x0B40}, {"sbc", 0x0B80},
         };
         if (auto it = oneOp.find(mnemonic); it != oneOp.end()) {
@@ -561,10 +478,8 @@ class Assembler {
             encodeLea(requireOperand(ops, 0, mnemonic), requireOperand(ops, 1, mnemonic));
             return;
         }
-        // Push/pop onto the real hardware stack (SP/R6) - MOV
-        // Rn,-(SP) / MOV (SP)+,Rn - spelled as their own mnemonics,
-        // not a generic autoincrement/autodecrement operand (see
-        // Pdp11Assembler.h's own header comment).
+        // push/pop: MOV Rn,-(SP) / MOV (SP)+,Rn, spelled as their own mnemonics rather than a
+        // generic autoincrement/autodecrement operand.
         if (mnemonic == "push") {
             uint8_t rn = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             // src Rn direct (mode 000), dst -(SP) (mode 100, reg 6)
@@ -577,9 +492,8 @@ class Assembler {
             emit16(static_cast<uint16_t>(0x1000 | (0b010 << 9) | (6 << 6) | (0b000 << 3) | rn));
             return;
         }
-        // (Rn) register-deferred, spelled as its own mnemonics rather
-        // than a generic bracketed operand - see Pdp11Assembler.h's
-        // own header comment.
+        // (Rn) register-deferred, spelled as its own mnemonics rather than a generic
+        // bracketed operand.
         if (mnemonic == "ldind") {
             uint8_t addr = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t dst = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
@@ -594,10 +508,7 @@ class Assembler {
             emit16(static_cast<uint16_t>(0x1000 | (0b000 << 9) | (src << 6) | (0b001 << 3) | addr));
             return;
         }
-        // Byte-sized counterparts of ldind/stind above (MOVB instead
-        // of MOV - opcode 0x9000 instead of 0x1000, same operand
-        // field layout) - a `char`-element array's own indexed
-        // load/store needs these instead of the word-only ones above.
+        // Byte-sized counterparts of ldind/stind (MOVB, opcode 0x9000, same field layout).
         if (mnemonic == "ldindb") {
             uint8_t addr = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             uint8_t dst = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
@@ -611,25 +522,15 @@ class Assembler {
             return;
         }
         if (mnemonic == "jsr") {
-            // JSR PC,label - the "link register" is always PC here
-            // (a plain call, saving only the return address, exactly
-            // the m68k backend's own `jsr`/`rts` role).
+            // JSR PC,label: a plain call, saving only the return address.
             EA e = classifyEA(requireOperand(ops, 0, mnemonic));
             emit16(static_cast<uint16_t>(0x0800 | (7 << 6) | (e.mode << 3) | e.reg));
             emitEAExtension(requireOperand(ops, 0, mnemonic));
             return;
         }
-        // "JSR PC,@Rn" - a real, standard register-DEFERRED call
-        // (mode 0b001): the target is the address *stored in* Rn, not
-        // Rn's own bare numeric value - a bare `jsr Rn` would instead
-        // classify as register-DIRECT (mode 0b000) via classifyEA
-        // above, which isn't a legal control-transfer destination on
-        // real hardware (there's no memory address to fetch from) -
-        // this dialect has no `(Rn)`/`@Rn` deferred-addressing syntax
-        // at all (see this file's own header comment on `Operand`),
-        // so this needs its own mnemonic, the same "(Rn) gets its own
-        // mnemonic rather than a generic bracketed operand" idiom
-        // ldind/stind above already use.
+        // "JSR PC,@Rn": register-deferred call (mode 0b001) - the target is the address
+        // stored in Rn, not Rn's own value (a bare `jsr Rn` would be register-direct, not a
+        // legal call target), so this needs its own mnemonic.
         if (mnemonic == "jsrind") {
             uint8_t rn = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
             emit16(static_cast<uint16_t>(0x0800 | (7 << 6) | (0b001 << 3) | rn));
@@ -654,12 +555,8 @@ class Assembler {
         static const std::unordered_map<std::string, uint16_t> branchCond = {
             {"br", 0x0100}, {"bne", 0x0200}, {"beq", 0x0300}, {"bge", 0x0400},
             {"blt", 0x0500}, {"bgt", 0x0600}, {"ble", 0x0700},
-            // Unsigned counterparts (real PDP-11 branches on the
-            // carry/zero flags directly rather than N/V the signed
-            // ones above use) - Pdp11Codegen.cpp's own unsigned
-            // comparisons (see genWideCompare()'s own comment).
-            // BHI=101000, BLOS=101400, BHIS(=BCC)=103000, BLO(=BCS)=103400
-            // octal, per the real PDP-11 instruction set.
+            // Unsigned counterparts: branch on carry/zero flags rather than N/V.
+            // BHI=101000, BLOS=101400, BHIS(=BCC)=103000, BLO(=BCS)=103400 octal.
             {"bhi", 0x8200}, {"blos", 0x8300}, {"bhis", 0x8600}, {"blo", 0x8700},
         };
         if (auto it = branchCond.find(mnemonic); it != branchCond.end()) {
@@ -678,10 +575,7 @@ class Assembler {
     bool allowExternal_;
 };
 
-// Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - see Pdp11Assembler.h's own
-// `assemblePdp11Object` comment, and ../m68k/M68kAssembler.cpp's own
-// `buildObjectFile` for the identical algorithm this is ported from.
+// Builds the format-neutral ObjectFile from a completed object-mode Assembler.
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kPdp11CoffMachine;

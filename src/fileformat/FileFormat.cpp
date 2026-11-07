@@ -39,7 +39,7 @@ std::unique_ptr<FileFormatWriter> makeFileFormatWriter(FileFormatKind kind) {
         case FileFormatKind::List:
             return std::make_unique<ListFormatWriter>();
     }
-    return nullptr;  // unreachable - every enumerator handled above
+    return nullptr;
 }
 
 std::unique_ptr<FileFormatReader> makeFileFormatReader(FileFormatKind kind) {
@@ -65,7 +65,7 @@ std::unique_ptr<FileFormatReader> makeFileFormatReader(FileFormatKind kind) {
         case FileFormatKind::List:
             return std::make_unique<ListFormatReader>();
     }
-    return nullptr;  // unreachable - every enumerator handled above
+    return nullptr;
 }
 
 std::optional<FileFormatKind> fileFormatKindFromName(const std::string &name) {
@@ -106,15 +106,11 @@ std::string fileFormatName(FileFormatKind kind) {
         case FileFormatKind::List:
             return "list";
     }
-    return "";  // unreachable - every enumerator handled above
+    return "";
 }
 
-// Real magic numbers for the four formats that have one - checked in
-// this order so a file that happens to start with a byte sequence
-// one format's reader would accept but that's actually a different,
-// more specific format's own magic never gets misidentified (COFF's
-// own Machine-field-as-magic is the weakest signal here, so it's
-// checked last among the four real ones).
+// Checked in this order so COFF's Machine-field-as-magic (weakest signal) never shadows the
+// other three formats' real magic numbers.
 FileFormatKind detectFileFormat(const std::string &bytes) {
     if (bytes.size() >= 4 && static_cast<uint8_t>(bytes[0]) == 0x7F && bytes[1] == 'E' && bytes[2] == 'L' &&
         bytes[3] == 'F') {
@@ -132,13 +128,8 @@ FileFormatKind detectFileFormat(const std::string &bytes) {
                           (static_cast<uint32_t>(static_cast<uint8_t>(bytes[3])) << 24);
         if (magic == 0407) return FileFormatKind::Aout;
     }
-    // COFF has no real magic number of its own (its first field is
-    // just a Machine ID - see coff/CoffFormat.h's own header comment),
-    // so this is a registry, not real format-sniffing: every target's
-    // own `k<Target>CoffMachine` (see e.g.
-    // ../codegen/m6502/M6502Assembler.h) must be added here, or its
-    // own `--format=coff` objects silently fall through to the `Flat`
-    // fallback below and lose their entire symbol table.
+    // COFF has no magic number, only a Machine ID; every target's k<Target>CoffMachine must be
+    // listed here or its --format=coff objects fall through to the Flat fallback below.
     static const std::unordered_set<uint16_t> kKnownCoffMachines = {
         0x1987,  // pdp7
         0x0086,  // 8086/8088

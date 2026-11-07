@@ -12,113 +12,67 @@
 
 namespace pcc {
 
-// Generates AArch64 assembly (this project's own dialect - see
+// Generates AArch64 assembly (this project's dialect - see
 // Arm64Assembler.h) for the IR built by IRBuilder, targeting the
-// ARMv8-A "A64" instruction set every real A-profile core since the
-// Cortex-A53 implements (this backend's own test harness runs it on
-// qemu's `cortex-a53` model - see tests/run_tests.sh's own comment).
-// `--target=armv8a`. Like M68kCodegen/MipsCodegen (the closest
-// template here - a real register machine with a real hardware
-// stack, hardware multiply/divide/shift, and real signed compare),
-// `generate()` returns a complete, self-contained program with no OS
-// and no bootloader - the test harness loads it as a raw qemu
-// `-kernel` image on the `virt` machine (which places/enters a raw
-// image at a fixed, well-documented offset - see MipsCodegen.h's own
-// header comment on why a from-scratch simulator wasn't used instead:
-// unlike MIPS, qemu ships several real Cortex-A cores, so there's no
-// reason not to use one) - halting in a self-branch infinite loop.
-// Every function has a real per-call stack frame (see genFunction()
-// and loadSlotAddr()'s own comment), so direct and indirect recursion
-// both work: every activation gets its own `x29`-rooted frame, its
-// own copy of every Local/Param, and its own saved `x30`/`x29` pair,
-// exactly mirroring I386Codegen.h's `ebp`-based frame (just with a
-// different fixed offset - see loadSlotAddr()'s own comment on why).
+// ARMv8-A "A64" instruction set (`--target=armv8a`). `generate()` returns
+// a complete, self-contained program with no OS and no bootloader,
+// halting in a self-branch infinite loop. Every function has a real
+// per-call stack frame (see genFunction()/loadSlotAddr()), so direct and
+// indirect recursion both work: every activation gets its own
+// `x29`-rooted frame, its own copy of every Local/Param, and its own
+// saved `x30`/`x29` pair.
 //
-// This language's own `int` is 32 bits here (every real A64 GPR is 64
-// bits wide, but every data-processing instruction this backend emits
-// is the 32-bit "W" variant - matching every other backend's own
-// word-size choice: MIPS's 32 bits, 68000's 32 bits, 6502/8086's 16
-// bits). Addresses, though, genuinely need all 64 bits in the A64
-// state (there's no 32-bit addressing mode at all, unlike AArch32) -
-// so this backend's own `ac`/`other operand`/`addr` registers below
-// are each really one physical register addressed two different ways
-// depending on role, exactly as real AArch64 code does: `w0` when
-// `x0` holds a data value, `x0` when the same register holds an
-// address. This isn't ambiguous or unsafe: *every* 32-bit ("W-form")
-// instruction here zero-extends its own result into the full 64-bit
-// register as an architectural guarantee (ARM DDI 0487, "when the
-// destination size is 32 bits, the upper 32 bits of the destination
-// register are set to zero") - so a value this backend just computed
-// via a `w`-form op is always already safe to read back as its own
-// `x`-form view with no explicit extension step, and genAddrOf()/
-// genIndex() below rely on exactly that guarantee instead of
-// inserting one.
+// This language's `int` is 32 bits (every data-processing instruction
+// here is the 32-bit "W" variant), but addresses need the full 64 bits
+// (A64 has no 32-bit addressing mode) - so the `ac`/other-operand/addr
+// registers below are each one physical register addressed two
+// different ways depending on role: `w0` for a data value, `x0` for an
+// address held in the same register. This is safe because every 32-bit
+// ("W-form") instruction zero-extends its result into the full 64-bit
+// register as an architectural guarantee (ARM DDI 0487) - a value
+// computed via a `w`-form op is always already safe to read back as its
+// `x`-form view with no explicit extension, and genAddrOf()/genIndex()
+// rely on exactly that.
 //
-// Register assignment (this backend's own convention, not a real
-// AAPCS64 calling-convention choice - arguments go through the
-// caller's own pushed stack words, not registers, same as every
-// other backend that has migrated to real per-call frames - see
-// loadSlotAddr()):
-//   w0/x0  ("ac")   - genExpr()'s own result (same role as MIPS's $t0)
-//   w1/x1           - "the other operand" in a binary op ($t1)
+// Register assignment (this backend's own convention; arguments go
+// through the caller's pushed stack words, not registers):
+//   w0/x0  ("ac")   - genExpr()'s result
+//   w1/x1           - "the other operand" in a binary op
 //   w2/x2           - holds a computed address when dereferencing one
-//                      (array/pointer indexing, `*`/`&`, or a Local/
-//                      Param's own frame-relative address) ($t2)
-//   sp              - the real hardware stack pointer: adjusted with
-//                      `add`/`sub sp,sp,#imm`, `ldind`/`stind` through
-//                      it, used to save one operand across evaluating
-//                      the other in a binary expression, to pass
-//                      every call's own arguments, and to reserve/
-//                      release each call's own frame
-//   x29 (fp)        - this call's own frame pointer, set up by
-//                      genFunction()'s prologue and torn down by its
-//                      epilogue - see loadSlotAddr()'s own comment
-//   x30 (lr)        - the real hardware link register `bl` sets and
-//                      `ret` reads
+//   sp              - the hardware stack pointer, used to save one
+//                      operand across evaluating the other, to pass each
+//                      call's arguments, and to reserve/release each
+//                      call's frame
+//   x29 (fp)        - this call's frame pointer, set up by
+//                      genFunction()'s prologue and torn down by its epilogue
+//   x30 (lr)        - the link register `bl` sets and `ret` reads
 //
 // Like MIPS, A64 has no absolute-addressing memory operand - every
-// load/store goes through a base register with (here, always) a zero
-// displacement. Reading or writing a Global first loads its own fixed
-// address into `x2` via `movz`+`movk` (Arm64Assembler.cpp resolves a
-// label operand to its own low/high 16 bits respectively for exactly
-// these two mnemonics - see its own header comment); a Local/Param
-// instead computes its own `x29`-relative address into `x2` with
-// `mov`+`add`/`sub` (see loadSlotAddr()). Either way the actual
-// access is then `ldind`/`stind x2,w0` (this backend's own dedicated
-// mnemonics for `ldr`/`str` with a fixed zero displacement, same
-// convention as MIPS's own `ldind`/`stind`).
+// load/store goes through a base register with a zero displacement.
+// Reading or writing a Global first loads its fixed address into `x2`
+// via `movz`+`movk`; a Local/Param instead computes its `x29`-relative
+// address into `x2` with `mov`+`add`/`sub` (see loadSlotAddr()). Either
+// way the access is then `ldind`/`stind x2,w0`.
 //
-// `*`/`/` use the real hardware `sdiv` (a full 32-bit signed divide)
-// and `msub` (remainder = dividend - quotient*divisor, in one
-// instruction - no packed HI/LO register pair to unpack the way
-// MIPS's own `mflo`/`mfhi` need, and no operand-size limitation the
-// way 68000's `DIVS.W` has).
+// `*`/`/` use the hardware `sdiv` (32-bit signed divide) and `msub`
+// (remainder = dividend - quotient*divisor, in one instruction).
 //
-// `<<`/`>>` use the real hardware variable-count register-form shift
-// (`lslv`/`lsrv`) - `>>` is logical/unsigned, same convention every
-// other backend's own `>>` already uses. Multiplying an index by 4
-// (this target's own word size) instead uses `mul` against a loaded
-// constant - see genIndexAddr()'s own comment on why this backend
-// has no dedicated shift-by-immediate mnemonic at all.
+// `<<`/`>>` use the variable-count register-form shift (`lslv`/`lsrv`);
+// `>>` is always logical/unsigned. Multiplying an index by a fixed
+// element width instead uses `mul` against a loaded constant, since this
+// backend has no shift-by-immediate mnemonic.
 //
-// Comparisons use the real hardware `cmp` (`subs` with a discarded
-// result) plus `cset<cc>` (an alias this dialect spells as one of six
-// dedicated mnemonics - `csetlt`/`csetgt`/`csetle`/`csetge`/`cseteq`/
-// `csetne` - rather than a general `cset rd,cc` taking a condition-
-// code operand, since this grammar's own `expr` has no way to spell
-// a bare condition mnemonic that isn't itself either a register name
-// or a label - see Arm64Assembler.h's own comment) - each one
-// directly produces the boolean this language needs (1 or 0), no
-// branch at all needed, the same simplicity MIPS's own `slt` family
-// already has (see its own header comment) and strictly simpler than
-// 68000's CMP+Bcc.
+// Comparisons use `cmp` (`subs` with a discarded result) plus
+// `cset<cc>` (spelled as one of six dedicated mnemonics -
+// `csetlt`/`csetgt`/`csetle`/`csetge`/`cseteq`/`csetne` - since this
+// grammar's `expr` has no way to spell a bare condition mnemonic that
+// isn't itself a register name or a label) - each directly produces the
+// boolean this language needs (1 or 0), no branch needed.
 //
-// `if`/`while` conditions use `cbz`/`cbnz` (compare-and-branch-if-
-// zero/nonzero) directly against `w0` - no flags and no `cmp` needed
-// at all for control flow, unlike every flag-based target here.
+// `if`/`while` conditions use `cbz`/`cbnz` directly against `w0` - no
+// flags and no `cmp` needed for control flow.
 //
-// Unlike MIPS, A64 branches/calls have no delay slot at all - no
-// `nop` needed after a `b`/`bl`/`cbz`/`cbnz`.
+// A64 branches/calls have no delay slot.
 class Arm64Codegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
@@ -128,11 +82,8 @@ class Arm64Codegen : public Backend {
     std::vector<std::string> assembledFormats() const override {
         return {"raw", "coff", "elf", "macho", "aout", "objraw"};
     }
-    // `raw` is this backend's own whole-program flat binary - a
-    // completely different concept from the other five, every one of
-    // which means a real relocatable object file for separate
-    // compilation (see Codegen.h's own header comment on why this is
-    // asked per-backend).
+    // `raw` is a whole-program flat binary; the other five are
+    // relocatable object files for separate compilation.
     bool isObjectFormat(const std::string &format) const override { return format != "raw"; }
     std::string defaultAssemblerPath() const override { return ""; }
     std::string buildAssembleCommand(const std::string &assemblerPath, const std::string &format,
@@ -157,26 +108,21 @@ class Arm64Codegen : public Backend {
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genLocalArrayInit(const ir::Slot *slot);  // stores arrayInit into a Local's own frame slots
     void genConvert(const ir::Expr &e);
-    // CompoundAssign/CompoundDerefAssign's "new = old <op> rhs" step -
-    // old already in w0, rhs already in w1 (both already at `type`'s
-    // own width/signedness - never wide here, IRBuilder.cpp's own
-    // rejectIfWide() guarantees it), leaves the raw (not yet re-
-    // truncated - see narrowW0To()) new value in w0.
+    // CompoundAssign/CompoundDerefAssign's "new = old <op> rhs" step - old
+    // in w0, rhs in w1 (both at `type`'s width/signedness; never wide
+    // here), leaves the raw (not yet re-truncated, see narrowW0To())
+    // new value in w0.
     void genCompoundOp(const std::string &op, Type type);
-    // Shared tail for CompoundAssign (both its scalar and indexed
-    // forms) and CompoundDerefAssign - x2 must already hold the
-    // resolved target address on entry (and nothing else live). See
-    // the .cpp's own comment. `mayBeUnaligned` - see loadOperand()'s
-    // own comment; true only when x2 came from dereferencing a plain
-    // pointer value (CompoundDerefAssign, or CompoundAssign indexing
-    // through a pointer variable rather than a real array).
+    // Shared tail for CompoundAssign and CompoundDerefAssign - x2 must
+    // already hold the resolved target address on entry. `mayBeUnaligned`
+    // - see loadOperand()'s comment; true only when x2 came from
+    // dereferencing a plain pointer value.
     void genCompoundThroughX2(const ir::Expr &e, bool mayBeUnaligned = false);
 
     int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
-    // log2 of an element type's own width (1/2/4/8 bytes -> 0/1/2/3) -
-    // the shift amount genIndexAddr() scales an index by, instead of
-    // the old fixed "always 4 bytes".
+    // log2 of an element type's width (1/2/4/8 bytes -> 0/1/2/3) - the
+    // shift amount genIndexAddr() scales an index by.
     int elemShift(Type t) const {
         switch (widthOfType(t)) {
             case 1: return 0;
@@ -186,75 +132,54 @@ class Arm64Codegen : public Backend {
         }
     }
 
-    // Loads a value of `type` from the address in `addrReg` (a 64-bit
-    // ["x"] register) into w0 (or x0, for a `long long` - a real 64-
-    // bit register holds the whole value directly on this target, no
-    // multi-word emulation needed), sign- or zero-extending a
-    // narrower-than-native-int source per its own signedness.
-    // `mayBeUnaligned` is true wherever `addrReg` is a plain pointer
-    // *value* the program computed at runtime (a dereferenced `int`/
-    // pointer variable, not this backend's own Slot/array-element
-    // address arithmetic, which always keeps a multi-byte access on
-    // its type's own natural boundary by construction): a real A64
-    // LDR/STR transfer wider than a byte takes an Alignment Fault at
-    // an address that isn't aligned to its own width on real AArch64
-    // hardware (unlike every other backend's own native CPU/
-    // simulator, which tolerates it silently), so such a width is
+    // Loads a value of `type` from the address in `addrReg` (an "x"
+    // register) into w0 (or x0, for a `long long`), sign- or
+    // zero-extending a narrower-than-native-int source per its
+    // signedness. `mayBeUnaligned` is true when `addrReg` is a plain
+    // pointer value computed at runtime rather than this backend's own
+    // Slot/array-element address arithmetic (which is always naturally
+    // aligned): a real A64 LDR/STR transfer wider than a byte takes an
+    // Alignment Fault at an unaligned address, so such a width is
     // reassembled from individual byte transfers instead (see
-    // loadIntUnaligned()) whenever the address can't be proven
-    // aligned ahead of time.
+    // loadIntUnaligned()).
     void loadOperand(const std::string &addrReg, Type type, bool mayBeUnaligned = false);
     // Stores w0 (or x0, for a `long long`) into the address in
-    // `addrReg`, truncating to `type`'s own width. `mayBeUnaligned` -
-    // see loadOperand()'s own comment.
+    // `addrReg`, truncating to `type`'s width. `mayBeUnaligned` - see
+    // loadOperand()'s comment.
     void storeOperand(const std::string &addrReg, Type type, bool mayBeUnaligned = false);
     // Byte-by-byte reassembly of an `nBytes`-wide (2, 4, or 8) load or
-    // store at a runtime address that might not be aligned to its own
-    // width, using `x3` as the running byte address and `w4`/`x4` (the
-    // same register either name - see this file's own header comment
-    // on why a "w" write already zero-extends into its "x" counterpart)
-    // as the byte just transferred. `destReg`/`srcReg` is always w0/x0
-    // (never x3/x4), and `addrReg` (always x2 at every call site) is
-    // left unchanged.
+    // store at a possibly-unaligned runtime address, using `x3` as the
+    // running byte address and `w4`/`x4` as the byte just transferred.
+    // `destReg`/`srcReg` is always w0/x0, and `addrReg` is left unchanged.
     void loadIntUnaligned(const std::string &addrReg, const std::string &destReg, int nBytes);
     void storeIntUnaligned(const std::string &addrReg, const std::string &srcReg, int nBytes);
-    // Re-extends w0 from its own low widthOf(to) bytes, per `to`'s
-    // signedness - every Convert between two types no wider than a
-    // native int.
+    // Re-extends w0 from its low widthOf(to) bytes, per `to`'s
+    // signedness - every Convert between two types no wider than int.
     void narrowW0To(Type to);
-    // Loads a genuine 64-bit immediate into `reg` (an "x" register) -
-    // movz (hw=0) + up to three movk/movk2/movk3 (hw=1/2/3), skipping
-    // any all-zero chunk beyond the first (same shape as loadImm32()
-    // below, one hw step wider).
+    // Loads a 64-bit immediate into `reg` (an "x" register) - movz (hw=0)
+    // + up to three movk/movk2/movk3 (hw=1/2/3), skipping any all-zero
+    // chunk beyond the first.
     void loadImm64(const std::string &reg, uint64_t uv);
 
-    // Leaves slot[idxExpr]'s own effective address in `x2`.
+    // Leaves slot[idxExpr]'s effective address in `x2`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
-    // Loads `lbl`'s own address into 64-bit register `reg` (`movz`+
-    // `movk` - see this file's own header comment on why A64 needs
-    // two instructions here where 68000 needs none).
+    // Loads `lbl`'s address into 64-bit register `reg` (`movz`+`movk`).
     void loadAddress(const std::string &reg, const std::string &lbl);
 
     // Loads 32-bit immediate `uv` into `reg` (a `w`-named register) -
     // `movz` alone when it fits in 16 bits, `movz`+`movk` otherwise.
     void loadImm32(const std::string &reg, uint32_t uv);
 
-    // Every function gets a real per-call stack frame (see
-    // genFunction()): `x29` is this call's own frame pointer, set up
-    // by the prologue to point at the saved-old-`x29` word once the
-    // old `x29`/`x30` are both saved below the caller's own pushed
-    // arguments. A Param's own storage is the CALLER's pushed
-    // argument, sitting above those two saved words (`x29+32+4*
-    // paramIndex` - 32 because each of the two saves below uses its
-    // own 16-byte-aligned push, matching every other temp-save in
-    // this file); a Local's is reserved by the prologue's own
-    // `sub sp,sp,frameSize*4` below `x29` (`x29-4*frameOffset` -
-    // Slot::frameOffset is already a 1-based sequential word index in
-    // declaration order - see IR.h's own comment). This makes
-    // recursion (direct or indirect) safe: every activation gets its
-    // own `x29` and its own frame, unlike a Global's one real static
-    // cell. Loads the computed address into 64-bit register `reg`.
+    // Every function gets a per-call stack frame: `x29` is this call's
+    // frame pointer, set up by the prologue to point at the
+    // saved-old-`x29` word once the old `x29`/`x30` are both saved below
+    // the caller's pushed arguments. A Param's storage is the caller's
+    // pushed argument, above those two saved words (`x29+32+4*
+    // paramIndex`); a Local's is reserved by the prologue's
+    // `sub sp,sp,frameSize*4` below `x29` (`x29-4*frameOffset`). This
+    // makes recursion safe: every activation gets its own `x29` and
+    // frame. Loads the computed address into 64-bit register `reg`.
     void loadSlotAddr(const std::string &reg, const ir::Slot *slot);
 
     static std::string label(const ir::Slot *slot) {
@@ -272,13 +197,11 @@ class Arm64Codegen : public Backend {
     std::map<std::string, std::string> perFileAsm_;
 
     int labelCounter_ = 0;
-    // The function genStmt() is currently generating code for - its
-    // own frameSize, needed by a `return` statement's own inline
-    // epilogue (see genFunction()'s own comment).
+    // The frameSize of the function genStmt() is currently generating
+    // code for, needed by a `return` statement's inline epilogue.
     int currentFrameSize_ = 0;
     // One entry per currently-open loop (innermost last) - {continue
-    // label, break label} - pushed/popped by genStmt's own While
-    // case, consulted by its Break/Continue cases.
+    // label, break label}.
     std::vector<std::pair<std::string, std::string>> loopLabels_;
 };
 

@@ -13,24 +13,16 @@ namespace {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
-// Where the whole program is loaded and starts executing - the test
-// harness sets the simulated CPU's PC here directly (see
-// tests/run_tests.sh's own qemu-system-mips64 invocation), same idea
-// as M68kCodegen.cpp's own kBaseAddress.
+// Where the whole program loads; the test harness sets the simulated
+// CPU's PC here directly.
 constexpr uint32_t kBaseAddress = 0x80010000u;
 
-// Where this backend's own entry sequence points $sp before calling
-// main() - comfortably above the loaded program and its data,
-// growing down into otherwise-unused RAM.
+// Initial $sp, comfortably above the loaded program and its data.
 constexpr uint32_t kInitialSP = 0x80100000u;
 }  // namespace
 
-// A literal element's own decimal text; a symbol element is the
-// referenced Slot's or Function's own label, written out bare - "dw"
-// (MipsAssembler.cpp's Line::Dw) already evaluates any expr operand,
-// symbol included, and now also records the same external-name/base-
-// shift relocation (kMipsRelocAbs32) a label used as an instruction's
-// own absolute address already gets.
+// A literal element's decimal text, or a symbol element's referenced
+// Slot's/Function's label written out bare.
 std::string MipsCodegen::arrayElemText(const ir::ArrayInitElem &e) {
     if (!e.isSymbol) return std::to_string(static_cast<int32_t>(static_cast<uint32_t>(e.value)));
     return e.slot ? label(e.slot) : label(e.func);
@@ -39,11 +31,8 @@ std::string MipsCodegen::arrayElemText(const ir::ArrayInitElem &e) {
 void MipsCodegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType) {
     if (values.empty()) return;
     int w = widthOfType(elemType);
-    // No 64-bit data directive in this dialect - a `long long`
-    // array's own literal elements are emitted as two "dw"s (low
-    // word, then high) per element instead; a symbol element always
-    // means a plain native-int-width address (the dispatch-table
-    // idiom), so it still gets one "dw".
+    // No 64-bit data directive; a `long long` element is two "dw"s
+    // (low word, then high) instead.
     const char *directive = w == 1 ? "db" : w == 2 ? "dh" : "dw";
     std::ostringstream line;
     line << lbl << ": " << directive << " ";
@@ -78,15 +67,9 @@ void MipsCodegen::loadImm32(const std::string &reg, int32_t v) {
     }
 }
 
-// A Param lives in the CALLER's own pushed argument space, at
-// `fp+frameOffset`; a Local lives below `fp`, at `fp-frameOffset` -
-// both already real byte offsets computed by IRBuilder (see IR.h's
-// own comment on Slot::frameOffset), not multiplied by a fixed word
-// size here any more. Both are a single ADDIU away from `fp` - no
-// bracketed memory operand exists in this dialect (see
-// MipsAssembler.h's own header comment), so every Local/Param access
-// computes its own address this way instead of using a real
-// `lw rt,N(fp)`/`sw rt,N(fp)` operand.
+// A Param lives at fp+frameOffset (caller's pushed argument space); a
+// Local lives at fp-frameOffset. No bracketed memory operand exists
+// in this dialect, so the address is computed with a single ADDIU.
 void MipsCodegen::loadSlotAddr(const std::string &reg, const ir::Slot *slot) {
     if (slot->kind == ir::SlotKind::Global) {
         loadAddress(reg, label(slot));
@@ -101,48 +84,30 @@ std::string MipsCodegen::generate(const ir::Program &prog, bool objectMode) {
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // Real separate compilation (`--format=coff`/`elf`/`macho`/
-    // `aout` from a single file - see IRBuilder.h's `allowExternal`)
-    // means `prog` may not define `main` at all. `objectMode` (see
-    // Codegen.h) means no object file ever emits this entry sequence
-    // itself - MipsLinkerFactory.cpp is solely responsible for
-    // synthesizing exactly one, once every object is merged and
-    // `main`'s linked address is resolvable (see Linker.h). An object
-    // file's own base is `org 0` - it's the linker's job to place it,
-    // not this backend's (see MipsAssembler.h's own header comment).
+    // In objectMode, `prog` may not define `main`; the entry sequence
+    // below is skipped since MipsLinkerFactory.cpp synthesizes it once
+    // every object is linked. An object's base is `org 0`; the linker
+    // places it.
     code_ << "org " << (objectMode ? 0 : kBaseAddress) << "\n\n";
     if (!objectMode) {
         code_ << "_start:\n";
         code_ << "    lui sp," << static_cast<int32_t>((kInitialSP >> 16) & 0xFFFFu) << "\n";
         code_ << "    ori sp,sp," << static_cast<int32_t>(kInitialSP & 0xFFFFu) << "\n";
         code_ << "    jal " << label(mainFn) << "\n    nop\n";
-        // The result sits in $t0 the moment execution reaches `halt` -
-        // see MipsCodegen.h's own header comment on why that's the
-        // authoritative place to read it from.
+        // main's result sits in $t0 once execution reaches halt.
         code_ << "halt:\n    beq zero,zero,halt\n    nop\n\n";
     }
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
 
-    // Globals are laid out back-to-back in declaration order with no
-    // gaps of their own - real MIPS hardware raises an address-error
-    // exception on a misaligned halfword/word access, so a `dh`/`dw`
-    // global landing on the wrong boundary after a `db` (or an odd-
-    // sized array) needs padding bytes first to reach its own
-    // natural alignment (2 bytes for `dh`, 4 for `dw`, including the
-    // two `dw`s a `long long` global's own 8-byte value splits into).
-    // A `db`/byte-array global never needs this itself (byte access
-    // has no alignment requirement at all), just tracked here for
-    // whatever comes after it.
+    // MIPS raises an address-error exception on a misaligned
+    // halfword/word access, so each dh/dw global needs padding bytes
+    // first to reach its own natural alignment.
     size_t globalByteOffset = 0;
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        // An external global (real separate compilation - see IR.h's
-        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
-        // defined in this file at all - it must never get a local
-        // storage word here, only ever be referenced by name (see
-        // label()) in code, letting the assembler's own undefined-
-        // symbol handling defer it to a relocation.
+        // An external global isn't defined in this file; skip reserving
+        // storage so references stay as undefined symbols/relocations.
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         int elemW = widthOfType(slot->type);
@@ -180,25 +145,12 @@ std::string MipsCodegen::generate(const ir::Program &prog, bool objectMode) {
 
 std::map<std::string, std::string> MipsCodegen::perFileAsm() const { return perFileAsm_; }
 
-// Every function here saves/restores `$ra` around its own body,
-// whether or not it happens to call anything else - unlike the
-// 68000's own JSR/RTS (which push/pop the real hardware stack
-// automatically, so a nested call just works - see M68kCodegen.cpp's
-// own comment), MIPS has exactly one link register: a non-leaf
-// function's own call to another function overwrites `$ra` outright,
-// so without this save/restore a caller's own eventual `jr ra` would
-// return into whatever its *own* last call last returned to, not
-// back to its own caller. Always saving/restoring (leaf or not) is
-// simpler than tracking which functions are actually non-leaf, and
-// costs only two real instructions on either side.
-//
-// Alongside `$ra`, the prologue also pushes the caller's own `$fp`
-// and points `$fp` at that saved-fp word, giving this call its own
-// private frame - every activation (direct or mutual recursion alike)
-// gets its own Local storage and sees only its own pushed arguments,
-// unlike a Global's one real static cell (see this file's own header
-// comment on the frame layout this establishes). Locals are reserved
-// right after, by lowering `$sp` another `frameSize` words.
+// Every function saves/restores $ra, leaf or not: MIPS has exactly
+// one link register, so a non-leaf function's own call would
+// otherwise overwrite it before `jr ra` returns. The prologue also
+// pushes the caller's $fp and points $fp at that saved word, giving
+// this call (including recursive ones) its own frame; locals are then
+// reserved by lowering $sp another frameSize words.
 void MipsCodegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
     code_ << "    addiu sp,sp,-4\n    stind sp,ra\n";
@@ -212,12 +164,9 @@ void MipsCodegen::genFunction(const ir::FunctionBody &fn) {
     code_ << "\n";
 }
 
-// Deallocates this call's own locals (`$sp` back up to `$fp`),
-// restores the caller's own `$fp`/`$ra` from the two words `$fp`
-// itself points at, then returns - see this file's own header comment
-// on the frame layout. `$at` briefly holds the caller's own saved
-// `$fp` across restoring `$ra`, since nothing else needs it live at a
-// function's own exit.
+// Deallocates locals ($sp back up to $fp), restores the caller's
+// $fp/$ra from the two words $fp points at, then returns. $at briefly
+// holds the saved $fp across restoring $ra.
 void MipsCodegen::genEpilogue() {
     code_ << "    addu sp,fp,zero\n";
     code_ << "    ldind sp,at\n    addiu sp,sp,4\n";
@@ -276,11 +225,8 @@ void MipsCodegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            // A `return` statement is its own early exit from the
-            // function, bypassing genFunction()'s own fall-through
-            // epilogue entirely, so it needs the same exit sequence
-            // inline - see genEpilogue()'s own comment. The return
-            // value already sits in `$t0`, untouched by it.
+            // Early exit, bypassing the fall-through epilogue; genEpilogue()
+            // doesn't touch $t0, where the return value already sits.
             genEpilogue();
             return;
         }
@@ -349,10 +295,8 @@ void MipsCodegen::genExpr(const ir::Expr &e) {
                 genCompoundThroughT2(e);
                 return;
             }
-            // A plain scalar target still needs its address computed
-            // (MIPS has no absolute-addressing memory operand - see
-            // this file's own header comment), so it goes through the
-            // exact same held-address tail as the indexed form above.
+            // MIPS has no absolute-addressing memory operand, so even a
+            // scalar target's address is computed first.
             loadSlotAddr("t2", e.slot);
             genCompoundThroughT2(e);
             return;
@@ -365,11 +309,8 @@ void MipsCodegen::genExpr(const ir::Expr &e) {
         }
         case ir::ExprKind::Ternary: {
             genExpr(*e.lhs);
-            // The condition's own type (unlike the ternary's result
-            // type, which is already capped to the native width - see
-            // IRBuilder.cpp's own rejectIfWide()) can still be wide, so
-            // this reuses If/While's own wide-OR-then-test idiom, not
-            // just a bare t0 test.
+            // The condition's type can still be wide even though the
+            // ternary's result type isn't, hence the OR-then-test.
             if (isWide(e.lhs->type)) code_ << "    or t0,t0,t1\n";
             std::string Lelse = newLabel();
             std::string Ldone = newLabel();
@@ -382,10 +323,8 @@ void MipsCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Stores at e.type's own width/signedness - the pointee
-            // type of a real typed pointer, or plain native-int-width
-            // for the still-supported untyped-int-as-address style -
-            // see IRBuilder.cpp's own DerefAssign comment.
+            // Stores at e.type's width/signedness (the pointee type, or
+            // native-int-width for untyped-int-as-address).
             genExpr(*e.lhs);  // t0 = pointer value
             code_ << "    addiu sp,sp,-4\n    stind sp,t0\n";
             genExpr(*e.rhs);  // t0, or t1:t0 if wide
@@ -404,8 +343,7 @@ void MipsCodegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                // Loads at e.type's own width/signedness - see
-                // DerefAssign's identical comment above.
+                // Loads at e.type's width/signedness.
                 genExpr(*e.rhs);  // t0 = pointer value
                 code_ << "    addu t2,t0,zero\n";
                 loadOperand("t2", e.type);
@@ -423,23 +361,11 @@ void MipsCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            // Real cdecl-style argument passing: push right-to-left
-            // (onto the real hardware `$sp`) so arg 0 ends up closest
-            // to where the callee's own prologue will save `$ra`/
-            // `$fp` - landing at the callee's own `fp+8+4*i` the
-            // moment its prologue runs (see this file's own header
-            // comment on the frame layout) - then the caller cleans
-            // its own pushed words back up once the call returns,
-            // same convention as I386Codegen.cpp's own identical
-            // `Call` case.
-            // A wide (`long long`) argument pushes both words (high
-            // first, so its low word ends up at the lower address,
-            // matching a wide Param's own frameOffset/frameOffset+4
-            // layout - same convention as I386Codegen.cpp's own Call
-            // case) - every argument still reserves at least one
-            // native int's worth, matching IRBuilder.cpp's own Param-
-            // offset layout (no narrower-than-int push exists here
-            // either).
+            // cdecl-style: push args right-to-left onto $sp (arg 0
+            // lands at fp+8+4*i once the callee's prologue runs), caller
+            // cleans up after the call returns. A wide argument pushes
+            // high word first so its low word ends up at the lower
+            // address.
             int totalBytes = 0;
             for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
@@ -456,19 +382,8 @@ void MipsCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::CallPtr: {
-            // e.args is always empty here - IRBuilder.cpp rejects any
-            // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr): there's no per-callee
-            // p_<fn>_<i> cell to write one into until the callee is
-            // known, which it never is at compile time for this kind.
-            // "jalr ra,t2" is the real MIPS Jump-And-Link-Register
-            // instruction (funct 0x09): it jumps to whatever address
-            // t2 holds and leaves the return address in ra, exactly
-            // like a direct "jal label" does for a compile-time-known
-            // target - same real hardware branch-delay slot as every
-            // other control-transfer here (see this file's own header
-            // comment), so the nop right after it is required, not
-            // decorative.
+            // jalr ra,t2 jumps to the address in t2 and leaves the
+            // return address in ra, like jal for a runtime-known target.
             genExpr(*e.lhs);  // t0 = the callee's own entry address
             code_ << "    addu t2,t0,zero\n";
             code_ << "    jalr ra,t2\n    nop\n";
@@ -479,35 +394,21 @@ void MipsCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Intrinsic: {
-            // No real portable notion of interrupt enable/disable on
-            // a bare-metal R10000 with no exception/interrupt setup
-            // done at all here - treated as a no-op, same reasoning
-            // (and the same choice) as M68kCodegen.cpp's own
-            // Intrinsic case.
+            // No exception/interrupt setup on this bare-metal target; no-op.
             (void)e;
             return;
         }
     }
 }
 
-// `$t2` holds the computed address, no zero-page-style placement
-// restriction the way the 6502 backend's own `ptr` has. `arraySize >
-// 0` means the base is a compile-time-known array (a Global's own
-// label, or a Local's own `fp`-relative base - see loadSlotAddr()'s
-// own comment); otherwise `slot` is a plain pointer variable, so the
-// base instead comes from *reading* that variable's own stored value
-// first (via loadSlotAddr()+ldind, so this also works correctly for a
-// Local/Param pointer variable, not just a Global one).
+// t2 ends up holding the computed address. arraySize > 0 means a
+// compile-time-known array base (Global label or Local fp-relative);
+// otherwise `slot` is a pointer variable, so the base is read from its
+// stored value first.
 //
-// A Global array's element addresses increase with the element index
-// (`base+4*i`, same as any ordinary memory layout); a Local array's
-// instead *decrease* (`base-4*i`) - frameOffset only ever grows
-// downward from `fp` as more locals get declared (see
-// loadSlotAddr()'s own comment), so element `i` of a Local array at
-// frameOffset `K` lives at `fp-4*(K+i)`, the mirror image of the
-// Global case. Getting this backwards (`+` instead of `-`) is exactly
-// the bug this project's own x86 migrations hit first - see
-// I386Codegen.cpp's own `computeElementAddr` comment.
+// A Global array's element addresses increase with the index
+// (base+4*i); a Local array's instead decrease (base-4*i), since
+// frameOffset only grows downward from fp as locals get declared.
 void MipsCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // t0 = index
     int shift = elemShift(slot->type);
@@ -532,23 +433,16 @@ void MipsCodegen::genIndex(const ir::Expr &e) {
     loadOperand("t2", e.slot->type);
 }
 
-// Stores a Local array's own compile-time initializer values into its
-// frame slots - a Global array instead gets this once, statically, as
-// a `dw` trailer line (see declareArray()); a Local array needs it
-// re-run on every call, in the body where its declaration occurs,
-// since its frame storage is this call's own, freshly reserved by
-// genFunction()'s own prologue. Element `i` of the array (frameOffset
-// `K`) lives at `fp-4*(K+i)` - same addressing genIndexAddr() uses.
+// Stores a Local array's compile-time initializer values into its
+// frame slots, re-run on every call since the storage is freshly
+// reserved each time. Element i (frameOffset K) lives at fp-4*(K+i).
 void MipsCodegen::genLocalArrayInit(const ir::Slot *slot) {
     int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
         const ir::ArrayInitElem &elem = slot->arrayInit[i];
         int offset = -(slot->frameOffset + w * static_cast<int>(i));
         if (w == 8 && !elem.isSymbol) {
-            // A long long array literal's own element - split across
-            // both words; a symbol element (the dispatch-table idiom)
-            // always means a plain native-int-width address instead,
-            // handled by the general case below.
+            // A long long element is split across both words.
             auto v = static_cast<uint64_t>(elem.value);
             loadImm32("t0", static_cast<int32_t>(static_cast<uint32_t>(v)));
             code_ << "    addiu t2,fp," << offset << "\n    stind t2,t0\n";
@@ -628,16 +522,11 @@ void MipsCodegen::narrowT0To(Type to) {
         code_ << "    sll t0,t0,16\n";
         code_ << "    " << (to.isUnsigned ? "srl" : "sra") << " t0,t0,16\n";
     }
-    // 4 bytes (Int/Long): t0 already holds the full value. 8 never
-    // reaches here - see genConvert()'s own isWide() branches.
+    // 4 bytes (Int/Long): t0 already holds the full value.
 }
 
-// An implicit or explicit type conversion. Every arithmetic/
-// comparison operand narrower than `int` is already promoted by
-// IRBuilder before any Binary/Unary ever sees it, so the only real
-// work here is crossing the native-int/`long long` boundary (sign/
-// zero-extending t0 into t1, or just dropping t1), or re-truncating+
-// re-extending t0 for a narrower target - see narrowT0To().
+// Crosses the native-int/`long long` boundary (sign/zero-extending t0
+// into t1, or dropping t1), or re-truncates t0 for a narrower target.
 void MipsCodegen::genConvert(const ir::Expr &e) {
     Type from = e.lhs->type;
     Type to = e.type;
@@ -658,12 +547,9 @@ void MipsCodegen::genConvert(const ir::Expr &e) {
     // fromWide && toWide: the bit pattern is already correct.
 }
 
-// `long long` add/sub (lhs OP rhs): evaluate both into t1:t0, stash
-// lhs's two words on the stack while rhs evaluates, then ripple the
-// carry/borrow across the word pair - MIPS has no carry flag, so the
-// carry out of the low-word add is recovered via `sltu` (unsigned
-// "did it wrap" test), same idea as a real carry flag, one more
-// instruction wide.
+// `long long` add/sub: stash lhs on the stack while rhs evaluates,
+// then ripple carry/borrow across the word pair. MIPS has no carry
+// flag, so the carry out of the low-word add is recovered via sltu.
 void MipsCodegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd) {
     genExpr(lhs);  // t1:t0 = lhs
     code_ << "    addiu sp,sp,-8\n    stind sp,t0\n    stind sp,t1,4\n";
@@ -683,11 +569,9 @@ void MipsCodegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAd
     }
 }
 
-// `long long` multiply, keeping the low 64 bits of the true 128-bit
-// product - the standard 32-on-32 cross-multiply decomposition, using
-// the real hardware `MULT`/`MFLO`/`MFHI` three times (each a genuine
-// 32x32->64 product) and discarding whatever each cross term's own
-// `MFHI` leaves (that overflow only ever affects bit 64 and beyond).
+// `long long` multiply, keeping the low 64 bits of the 128-bit
+// product via the standard 32x32 cross-multiply decomposition; each
+// cross term's own MFHI overflow only affects bit 64+ and is discarded.
 void MipsCodegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);  // t1:t0 = lhs
     code_ << "    addiu sp,sp,-8\n    stind sp,t0\n    stind sp,t1,4\n";
@@ -711,14 +595,10 @@ void MipsCodegen::genNegate64() {
     code_ << "    addu t1,t1,t3\n";
 }
 
-// Classic bit-serial shift/compare/subtract long division - see
-// I386Codegen.cpp's own genWideDivMod() for the algorithm; ported
-// here onto the stack (no `[reg+disp]`-addressed scratch needed,
-// since MIPS's own `ldind`/`stind` already take a displacement) with
-// $sp playing the role `ebx` plays there. `isUnsigned` false divides
-// *magnitudes*: lhs/rhs's own sign bits are read directly out of the
-// pushed operand words, each negated in place if its own sign bit was
-// set, then restored on the result per C's truncating-division rule.
+// Bit-serial shift/compare/subtract long division, using $sp-relative
+// scratch (ldind/stind already take a displacement). Signed division
+// operates on magnitudes: each negative operand is negated in place
+// first, then the sign is restored on the result per C's truncating rule.
 void MipsCodegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    addiu sp,sp,-8\n    stind sp,t1\n    stind sp,t0,4\n";  // [sp]=lhs_hi,[sp+4]=lhs_lo
@@ -811,9 +691,9 @@ void MipsCodegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool w
     }
 }
 
-// A `long long` shifted by a runtime count - a counted loop of 1-bit
-// shifts, each carrying the bit that crosses the word boundary by
-// hand (MIPS's own SLLV/SRLV/SRAV only ever shift one 32-bit word).
+// A `long long` shifted by a runtime count: a loop of 1-bit shifts,
+// each carrying the bit across the word boundary by hand (SLLV/SRLV
+// only shift one 32-bit word).
 void MipsCodegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    addiu sp,sp,-8\n    stind sp,t0\n    stind sp,t1,4\n";
@@ -835,11 +715,9 @@ void MipsCodegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool is
     code_ << Ldone << ":\n";
 }
 
-// A `long long` comparison - compare the high words first (signed or
-// unsigned per `isUnsigned`), falling back to an always-unsigned
-// compare of the low words only when the high words are equal - the
-// standard big-number ordered-comparison idiom (see
-// I386Codegen.cpp's own genWideCompare()).
+// A `long long` comparison: compare high words first (signed/unsigned
+// per isUnsigned), falling back to an unsigned low-word compare only
+// when the high words are equal.
 void MipsCodegen::genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    addiu sp,sp,-8\n    stind sp,t0\n    stind sp,t1,4\n";
@@ -857,10 +735,8 @@ void MipsCodegen::genWideCompare(const std::string &op, const ir::Expr &lhs, con
         code_ << Ldone << ":\n";
         return;
     }
-    // t0 = (hi differ) ? hiCompare(t4,t6) : loCompareUnsigned(t3,t5) -
-    // the standard big-number ordered-comparison idiom: once the high
-    // words are equal, the remaining 32 bits are a plain unsigned
-    // magnitude regardless of the overall type's own signedness.
+    // Once the high words are equal, the low 32 bits are an unsigned
+    // magnitude regardless of the overall type's signedness.
     std::string LhiDiff = newLabel(), Ldone = newLabel();
     code_ << "    bne t4,t6," << LhiDiff << "\n    nop\n";
     if (op == "<") {
@@ -887,16 +763,9 @@ void MipsCodegen::genWideCompare(const std::string &op, const ir::Expr &lhs, con
     code_ << Ldone << ":\n";
 }
 
-// Entry: t0 = old, t1 = rhs (both already at `type`'s own width/
-// signedness). Every instruction shape here is exactly the one
-// genBinary()/genMul()/genDivMod() already use for that same operator
-// at native width - this assembler's own R-type encoders take their
-// register operands as plain bitfields (see MipsAssembler.cpp's own
-// encodeR3()-style helpers), so which actual register holds which
-// operand is free to pick; neither MULT/MFLO nor DIV/MFHI/MFLO ever
-// touch t2, so the address genCompoundThroughT2() holds there survives
-// this call unconditionally, unlike a target whose own software
-// divide/modulo routine needs more registers than this one does.
+// Entry: t0 = old, t1 = rhs (both at `type`'s width/signedness).
+// Neither MULT/MFLO nor DIV/MFHI/MFLO touch t2, so the address
+// genCompoundThroughT2() holds there survives this call.
 void MipsCodegen::genCompoundOp(const std::string &op, Type type) {
     bool isUnsigned = type.isUnsigned;
     if (op == "+") { code_ << "    addu t0,t0,t1\n"; return; }
@@ -919,13 +788,9 @@ void MipsCodegen::genCompoundOp(const std::string &op, Type type) {
     code_ << "    " << (op == "%" ? "mfhi" : "mflo") << " t0\n";
 }
 
-// t2 must already hold the resolved address on entry. The address is
-// stashed on the real hardware stack across evaluating e.rhs (the
-// same mechanism Assign's own indexed case and DerefAssign already
-// use for the identical problem - genExpr(*e.rhs) can reach arbitrary
-// nested codegen that may use t0 through t4), never recomputed
-// afterward, so an indexed/pointer target's own address sub-
-// expression is evaluated exactly once.
+// t2 must already hold the resolved address on entry; it's stashed on
+// the stack across evaluating e.rhs (which may clobber t0-t4) and never
+// recomputed, so the target's address sub-expression runs exactly once.
 void MipsCodegen::genCompoundThroughT2(const ir::Expr &e) {
     code_ << "    addiu sp,sp,-4\n    stind sp,t2\n";  // stash address
     genExpr(*e.rhs);                                     // t0 = rhs
@@ -949,11 +814,9 @@ void MipsCodegen::genCompoundThroughT2(const ir::Expr &e) {
 
 void MipsCodegen::genBinary(const ir::Expr &e) {
     const std::string &op = e.op;
-    // Every arithmetic/bitwise/comparison operand here already
-    // shares one common type (IRBuilder's own usual-arithmetic-
-    // conversion pass) - `e.lhs->type` names it, except for shift
-    // (only the LHS's own type matters) and &&/|| (width-independent,
-    // handled by genLogicalAnd/Or below).
+    // Both operands share one common type (IRBuilder's usual-
+    // arithmetic-conversion pass), except shift (only LHS matters)
+    // and &&/|| (width-independent, handled below).
     Type operandType = e.lhs->type;
     bool wide = isWide(operandType);
     bool isUnsigned = operandType.isUnsigned;
@@ -1032,9 +895,7 @@ void MipsCodegen::genBinary(const ir::Expr &e) {
     genCompare(op, *e.lhs, *e.rhs);
 }
 
-// Real hardware multiply (`MULT`/`MULTU`+`MFLO`) - a full 32x32->32
-// product, no operand-size limitation the way the 68000's own
-// `MULS.W` has.
+// Real hardware multiply (MULT/MULTU+MFLO), a full 32x32->32 product.
 void MipsCodegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     bool isUnsigned = lhs.type.isUnsigned;
     genExpr(lhs);
@@ -1045,9 +906,8 @@ void MipsCodegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << "    mflo t0\n";
 }
 
-// Real hardware divide (`DIV`/`DIVU`) - `MFLO`/`MFHI` pull the
-// quotient and remainder straight back out, no packed-register
-// unpacking needed the way the 68000's own `DIVS.W` needs.
+// Real hardware divide (DIV/DIVU); MFLO/MFHI pull the quotient and
+// remainder straight back out.
 void MipsCodegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    addiu sp,sp,-4\n    stind sp,t0\n";
@@ -1057,14 +917,9 @@ void MipsCodegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantR
     code_ << "    " << (wantRemainder ? "mfhi" : "mflo") << " t0\n";
 }
 
-// `SLT`/`SLTU`/`SLTIU` each directly produce the 0/1 boolean this
-// language needs - no branch at all needed for any comparison
-// (simpler than both the 68000's own CMP+Bcc, which needs a real
-// branch to materialize the boolean, and the 6502's N-xor-V fixup -
-// see their own comments). `isUnsigned` (the shared operand type's
-// own signedness, both sides already matching via IRBuilder's usual
-// arithmetic conversions) picks SLT vs SLTU for the ordered forms;
-// ==/!= need no such choice (a bit-for-bit compare either way).
+// SLT/SLTU directly produce the 0/1 boolean needed, no branch required.
+// isUnsigned picks SLT vs SLTU for the ordered forms; ==/!= need no
+// such choice.
 void MipsCodegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs) {
     if (isWide(lhs.type)) {
         genWideCompare(op, lhs, rhs, lhs.type.isUnsigned);
@@ -1107,8 +962,8 @@ void MipsCodegen::genCompare(const std::string &op, const ir::Expr &lhs, const i
     err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
 }
 
-// A wide (`long long`) operand's truthiness needs both words - `or
-// t0,t0,t1` folds them together before the usual "beq t0,zero,...".
+// A wide operand's truthiness needs both words; `or t0,t0,t1` folds
+// them together before the usual zero test.
 void MipsCodegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     if (isWide(lhs.type)) code_ << "    or t0,t0,t1\n";
@@ -1137,8 +992,8 @@ void MipsCodegen::genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << Ldone << ":\n";
 }
 
-// `SLTIU t0,t0,1` is exactly "t0 = (unsigned(t0) < 1)" = "t0 == 0" -
-// logical not, in one real instruction, no branch needed.
+// SLTIU t0,t0,1 computes (unsigned(t0) < 1), i.e. logical not, in one
+// instruction.
 void MipsCodegen::genLogicalNot(const ir::Expr &rhs) {
     genExpr(rhs);
     if (isWide(rhs.type)) code_ << "    or t0,t0,t1\n";
@@ -1154,13 +1009,8 @@ std::string MipsCodegen::buildAssembleCommand(const std::string &, const std::st
 std::optional<std::string> MipsCodegen::assembleInProcess(const std::string &asmText,
                                                             const std::string &format) const {
     if (format == "raw") return assembleMips(asmText);
-    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
-    // (see generate()'s own `objectMode` comment) - this backend's
-    // own assembler builds one format-neutral ObjectFile exactly once
-    // (see MipsAssembler.h's own `assembleMipsObject`), and whichever
-    // of these five names was asked for just picks that format's own
-    // FileFormatWriter (see fileformat/FileFormat.h) to
-    // serialize it.
+    // coff/elf/macho/aout/objraw: build one format-neutral ObjectFile,
+    // then pick that format's FileFormatWriter to serialize it.
     if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleMipsObject(asmText);
         return makeFileFormatWriter(*kind)->write(obj);

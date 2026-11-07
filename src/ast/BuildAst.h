@@ -5,11 +5,9 @@
 
 namespace pcc {
 
-// Walks an ANTLR C.g4 parse tree into the flat AST.h data model.
-// Dispatches on the labeled-alternative Context subclasses with
-// dynamic_cast rather than the generated Visitor interface, since
-// the grammar's shape is fixed and known at every call site - a
-// plain cast chain reads more directly than a double-dispatch visit.
+// Walks an ANTLR parse tree into the AST.h data model, dispatching on the
+// labeled-alternative Context subclasses via dynamic_cast rather than the
+// generated Visitor interface.
 Program buildProgram(CParser::ProgramContext *ctx);
 
 }  // namespace pcc

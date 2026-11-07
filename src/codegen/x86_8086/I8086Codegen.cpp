@@ -14,11 +14,6 @@ namespace {
 
 std::string I8086Codegen::allocTemp() { return "t" + std::to_string(tempCounter_++); }
 
-// A literal element is its own decimal text; a symbol element is the
-// referenced Slot's or Function's own label, written out bare - NASM-
-// style "dw" (I8086Assembler.cpp's Line::Dw) already evaluates any
-// expr operand, symbol included, the same way "mov ax, fn_f" already
-// does for an immediate (see genAddrOf).
 std::string I8086Codegen::arrayElemText(const ir::ArrayInitElem &e) {
     if (!e.isSymbol) return std::to_string(e.value);
     return e.slot ? label(e.slot) : label(e.func);
@@ -36,27 +31,8 @@ void I8086Codegen::declareArray(const std::string &label, const std::vector<ir::
 
 std::string I8086Codegen::newLabel() { return "L" + std::to_string(labelCounter_++); }
 
-// Placement (`@addr` in source - see IR.h's Slot::hasAddress, and
-// ../pdp7/Pdp7Codegen.cpp's own placement comment for the other
-// backend's take on the same source syntax). This backend's whole
-// output is one flat, position-fixed boot sector (`ORG 0x7C00`, see
-// generate() below) - there's no notion of an absolute machine
-// address here the way pdp7's `. = addr` has, and NASM's `-f bin`
-// output flatly refuses a second `ORG` directive (verified directly:
-// "program origin redefined"), so there's no way to jump the
-// in-progress output's position backward and later resume where it
-// left off the way the pdp7 backend's save/restore trick does.
-// `addr` here means something narrower instead: a byte offset from
-// this backend's own ORG (0x7C00), forward-only - `times addr-($-$$)
-// db 0` (the same NASM idiom already used below for the final
-// boot-signature padding) pads up to it, then the placed item is
-// emitted, and whatever's next in program order just continues
-// immediately after - there's no restore, because NASM's `$` can
-// only ever increase. A placed item's own address must not already
-// have been passed by the time it's reached in program order
-// (NASM reports it plainly: "TIMES value N is negative" if so,
-// verified directly) - unlike pdp7, placement here can't reorder
-// things, only insert forward padding.
+// `@addr` placement: pads forward to a byte offset from ORG (0x7C00) via `times`.
+// NASM's `$` only increases, so placement can only insert forward padding, never reorder.
 void I8086Codegen::emitPlacement(long address) { code_ << "times (" << address << "-($-$$)) db 0\n"; }
 
 std::string I8086Codegen::generate(const ir::Program &prog, bool objectMode) {
@@ -64,26 +40,14 @@ std::string I8086Codegen::generate(const ir::Program &prog, bool objectMode) {
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // Real separate compilation (`--format=coff` from a single file -
-    // see IRBuilder.h's `allowExternal`) means `prog` may not define
-    // `main` at all - an ordinary object file never does. Outside
-    // `objectMode`, IRBuilder still guarantees a parameterless `main`
-    // exists, so `mainFn` is never null there.
+    // In objectMode, prog may have no `main`; otherwise IRBuilder guarantees one exists.
 
-    // --dump-asm wants one file per *input*, not one combined dump -
-    // see Codegen.h's perFileAsm() and Pdp7Codegen.cpp's own version
-    // of this same tracking for the fuller rationale (same idea
-    // here: track (sourceFile, start, end) ranges by write position
-    // into code_/by index into trailer_, without ever touching
-    // code_/trailer_ themselves, so the single combined asmText this
-    // function returns - used for every real --format - is
-    // completely unaffected).
+    // Tracks (sourceFile, start, end) ranges into code_/trailer_ for --dump-asm's
+    // per-file output, without affecting the combined asmText returned below.
     std::vector<std::tuple<std::string, size_t, size_t>> codeRanges;
     std::vector<std::tuple<std::string, size_t, size_t>> trailerRanges;
 
-    // Purely for --dump-asm's own per-file attribution of the handful
-    // of things with no single owning Slot/Function - never a
-    // correctness concern. See Pdp7Codegen.cpp's own `homeFile`.
+    // Fallback file attribution for --dump-asm when nothing owns a Slot/Function.
     std::string homeFile = mainFn ? mainFn->sourceFile
                             : !prog.functionBodies.empty() ? prog.functionBodies.front().func->sourceFile
                             : !prog.slots.empty() ? prog.slots.front()->sourceFile
@@ -91,14 +55,8 @@ std::string I8086Codegen::generate(const ir::Program &prog, bool objectMode) {
 
     size_t rangeStart = static_cast<size_t>(code_.tellp());
     code_ << "BITS 16\n";
-    // `objectMode` (see Codegen.h) means no object file ever emits
-    // the boot-sector wrapper or entry sequence itself, even the one
-    // that happens to define `main` - the linker is solely
-    // responsible for synthesizing exactly one, once every object is
-    // merged and `main`'s linked address is resolvable (see
-    // Linker.h). An object file's own base is `ORG 0` - it's the
-    // linker's job to place it, not this backend's (see
-    // I8086Assembler.h).
+    // objectMode: no boot-sector wrapper/entry sequence here - the linker synthesizes
+    // one after linking. An object's own base is `ORG 0`; placement is the linker's job.
     if (objectMode) {
         code_ << "ORG 0\n\n";
     } else {
@@ -109,7 +67,7 @@ std::string I8086Codegen::generate(const ir::Program &prog, bool objectMode) {
         code_ << "    mov ds, ax\n";
         code_ << "    mov es, ax\n";
         code_ << "    mov ss, ax\n";
-        code_ << "    mov sp, 0x7C00\n";  // stack grows down from just below the boot sector
+        code_ << "    mov sp, 0x7C00\n";  // stack grows down from just below the boot sector itself
         code_ << "    sti\n";
         code_ << "    call " << label(mainFn) << "\n";
         code_ << "    hlt\n";
@@ -127,20 +85,14 @@ std::string I8086Codegen::generate(const ir::Program &prog, bool objectMode) {
         trailerRanges.push_back({fb.func->sourceFile, fTrailerStart, trailer_.size()});
     }
 
-    // Fixed scratch for a wide (`long`/`long long`) Return - see
-    // genStmt()'s own Return case for why this needs to exist at all
-    // (a wide result's own address might point into the very frame
-    // the epilogue is about to tear down) - 4 words covers even a
-    // `long long`, unconditionally, whether or not this program ever
-    // returns one.
+    // Fixed scratch for a wide Return value (its address may point into the frame
+    // the epilogue is about to tear down); 4 words covers even a `long long`.
     trailer_.push_back("__wret: dw 0, 0, 0, 0");
     trailer_.push_back("__wargsp: dw 0");
 
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        // An external global isn't defined in this file at all - see
-        // Pdp7Codegen.cpp's own version of this same fix.
-        if (slot->isExternal) continue;
+        if (slot->isExternal) continue;  // not defined in this file
         size_t gCodeStart = static_cast<size_t>(code_.tellp());
         size_t gTrailerStart = trailer_.size();
         if (slot->hasAddress) emitPlacement(slot->address);
@@ -151,13 +103,8 @@ std::string I8086Codegen::generate(const ir::Program &prog, bool objectMode) {
             line << lbl << ": " << (w == 1 ? "db " : "dw ");
             for (size_t i = 0; i < slot->arrayInit.size(); i++) {
                 if (i > 0) line << ", ";
-                // A wide (`long`/`long long`) array element's own
-                // literal is split into its N low-to-high words here
-                // too (a symbol element always means a plain native-
-                // int-width address instead - the dispatch-table
-                // idiom, see AST.h's ArrayInitElem - so it only ever
-                // needs the one word every other backend's own
-                // "always dd two words" edge case already accepts).
+                // A wide element's literal splits into N low-to-high words; a symbol
+                // element (dispatch-table idiom) is always a plain native-width address.
                 const ir::ArrayInitElem &elem = slot->arrayInit[i];
                 if (w > 2 && !elem.isSymbol) {
                     auto v = static_cast<uint64_t>(elem.value);
@@ -203,16 +150,9 @@ std::string I8086Codegen::generate(const ir::Program &prog, bool objectMode) {
 
 std::map<std::string, std::string> I8086Codegen::perFileAsm() const { return perFileAsm_; }
 
-// Every activation gets its own real stack frame: `push bp` saves
-// the caller's frame pointer, `mov bp,sp` makes `bp` the fixed point
-// every Local/Param in this call addresses relative to (see
-// I8086Codegen.h's `addr()`), and `sub sp,N` reserves this
-// function's own locals below it. The epilogue's `mov sp,bp` tears
-// the whole frame down in one instruction regardless of how many
-// locals it had, then `pop bp` restores the caller's own frame -
-// this is what lets two overlapping activations of the same
-// function (direct or indirect recursion) never share storage: each
-// `call` gets a fresh `bp`/frame of its own.
+// Standard frame: push bp/mov bp,sp establishes the frame pointer Local/Param
+// addressing is relative to; sub sp,N reserves locals. Epilogue tears it down in two
+// instructions regardless of local count, giving each activation its own frame.
 void I8086Codegen::genFunction(const ir::FunctionBody &fn) {
     curFunctionLabel_ = label(fn.func);
     code_ << curFunctionLabel_ << ":\n";
@@ -249,11 +189,8 @@ void I8086Codegen::genStmt(const ir::Stmt &s) {
         case ir::StmtKind::While: {
             std::string Lstart = newLabel();
             std::string Lend = newLabel();
-            // `continue` jumps here if this loop has its own post-
-            // statement (a desugared for-loop's - see IR.h's
-            // Stmt::postStmt), so post still runs before the condition
-            // is retested; otherwise it's just Lstart itself, since
-            // there's nothing else to run first.
+            // continue runs the post-statement (desugared for-loop) before retesting,
+            // if there is one; otherwise it jumps straight back to the condition.
             std::string Lcont = s.postStmt ? newLabel() : Lstart;
             code_ << Lstart << ":\n";
             genExpr(*s.cond);
@@ -282,36 +219,20 @@ void I8086Codegen::genStmt(const ir::Stmt &s) {
             if (s.initOrReturnOrExpr) {
                 genExpr(*s.initOrReturnOrExpr);
                 if (isWide(s.initOrReturnOrExpr->type)) {
-                    // A wide result's own address (the convention
-                    // every other wide expression uses) might point
-                    // into THIS call's own frame (a wide local, or a
-                    // literal just pushed on this call's own stack) -
-                    // about to be torn down by the epilogue right
-                    // below. Copying it into this one fixed, program-
-                    // wide scratch block first (see generate()'s own
-                    // "__wret" declaration) keeps it alive across the
-                    // return - safe because a caller always consumes
-                    // it (e.g. via an Assign's own copyWideBlock())
-                    // immediately after the call returns, before any
-                    // other call that could itself return a wide
-                    // value and overwrite this same scratch.
+                    // The result's address may point into this frame, about to be torn
+                    // down below, so copy it into the fixed __wret scratch first; safe
+                    // since the caller consumes __wret immediately after the call returns.
                     int n = widthOfType(s.initOrReturnOrExpr->type) / 2;
                     code_ << "    mov si, ax\n";  // si = source address value
                     for (int i = 0; i < n; i++) {
-                        // Only bx/bp can address memory in this
-                        // dialect - bx is repointed at each base in
-                        // turn via a plain `mov` (see genWideAdd()'s
-                        // own identical comment).
+                        // Only bx/bp can address memory here, so bx is repointed per base.
                         code_ << "    mov bx, si\n    mov ax, [bx+" << (2 * i) << "]\n";
                         code_ << "    mov bx, __wret\n    mov [bx+" << (2 * i) << "], ax\n";
                     }
                     code_ << "    mov ax, __wret\n";
                 }
             }
-            // Early exit from the function - genFunction()'s own
-            // fall-through epilogue never runs for this path, so it
-            // needs this same frame teardown inline (see its own
-            // comment for what each instruction does).
+            // Early exit: inline the same frame teardown genFunction()'s epilogue does.
             code_ << "    mov sp, bp\n    pop bp\n";
             code_ << "    ret\n";
             return;
@@ -335,11 +256,7 @@ void I8086Codegen::genStmt(const ir::Stmt &s) {
                     storeOperand(addr(s.declSlot), s.declSlot->type);
                 }
             }
-            // No "else" case for a bare, uninitialized scalar: its
-            // own frame word already exists (genFunction()'s own
-            // `sub sp,N` reserved it) - same as a real, ordinary C
-            // automatic variable, its value is simply whatever was
-            // already in that stack slot until something assigns it.
+            // An uninitialized scalar needs no code: its frame word already exists.
             return;
         }
         case ir::StmtKind::ExprStmt: {
@@ -349,10 +266,7 @@ void I8086Codegen::genStmt(const ir::Stmt &s) {
         case ir::StmtKind::Empty:
             return;
         case ir::StmtKind::Asm: {
-            // Verbatim passthrough - see grammar/C.g4's `statement`
-            // comment on `asm { ... }`. Not reformatted/indented:
-            // whatever's between the braces goes straight into the
-            // generated assembly text exactly as written.
+            // Verbatim passthrough: emitted exactly as written, no reformatting.
             code_ << s.asmText;
             if (!s.asmText.empty() && s.asmText.back() != '\n') code_ << "\n";
             return;
@@ -364,8 +278,7 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
     switch (e.kind) {
         case ir::ExprKind::IntLit: {
             if (isWide(e.type)) {
-                // Real 8086 has no PUSH imm16 (that's an 80186+
-                // addition) - load each word into AX first.
+                // Real 8086 has no PUSH imm16 - load each word into AX first.
                 int n = widthOfType(e.type) / 2;
                 auto v = static_cast<uint64_t>(e.intValue);
                 for (int i = n - 1; i >= 0; i--) {
@@ -379,9 +292,7 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Var: {
-            // IRBuilder already rejects a bare array Var outside of
-            // `&` (which bypasses this path), so e.slot is always a
-            // scalar here.
+            // IRBuilder rejects a bare array Var outside of `&`, so e.slot is scalar here.
             if (isWide(e.slot->type)) {
                 genWideSlotAddr(e.slot);
                 return;
@@ -396,21 +307,15 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
         case ir::ExprKind::Assign: {
             if (isWide(e.slot->type)) {
                 int n = widthOfType(e.slot->type) / 2;
-                // rhs first, THEN the destination address - never the
-                // other way around: rhs may itself be a wide binary
-                // op (genWideAdd/Mul/Compare), and those use si/di as
-                // their OWN scratch internally, which would clobber a
-                // destination address stashed in si/di before rhs
-                // runs. computeElementAddr/genWideSlotAddr never touch
-                // si/di, so computing the destination after is safe.
+                // rhs must be evaluated before the destination address: a wide rhs
+                // (genWideAdd/Mul/Compare) uses si/di as scratch, which would clobber
+                // a destination address stashed there first.
                 genExpr(*e.rhs);       // ax = source address
                 code_ << "    mov bx, ax\n";
                 copyWideBlock(n, n, /*isUnsignedExt=*/false);  // ax = fresh copy's address
                 code_ << "    mov di, ax\n";  // di = fresh copy's own address
-                // slot[idx] = rhs (a wide element) needs the element's
-                // own address, not the whole slot's - computeElementAddr
-                // leaves it in bx (see its own comment); a plain
-                // (unindexed) wide slot uses genWideSlotAddr instead.
+                // An indexed destination needs the element's own address (bx, from
+                // computeElementAddr); an unindexed one uses genWideSlotAddr instead.
                 if (e.lhs) {
                     computeElementAddr(e.slot, *e.lhs);
                     code_ << "    mov si, bx\n";
@@ -418,11 +323,8 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
                     genWideSlotAddr(e.slot);
                     code_ << "    mov si, ax\n";
                 }
-                // Copy the fresh stack copy (di) into the real
-                // destination (si) - only bx/bp can address memory in
-                // this dialect (see genWideAdd()'s own comment), so
-                // bx is repointed at each in turn - then free the
-                // stack copy's space back afterward.
+                // Copy the fresh stack copy (di) into the real destination (si), then
+                // free the stack copy's space.
                 for (int i = 0; i < n; i++) {
                     code_ << "    mov bx, di\n    mov ax, [bx+" << (2 * i) << "]\n";
                     code_ << "    mov bx, si\n    mov [bx+" << (2 * i) << "], ax\n";
@@ -449,10 +351,8 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
                 genCompoundThroughBx(e);
                 return;
             }
-            // Plain scalar target - operandOf(slot) is a stable
-            // memory operand (a label or a bp-relative offset), never
-            // a clobberable register, so no address needs to be held
-            // across rhs's own evaluation at all.
+            // operandOf(slot) is a stable memory operand, not a clobberable register,
+            // so no address needs to be held across rhs's own evaluation.
             std::string mem = operandOf(e.slot);
             genExpr(*e.rhs);  // ax = rhs
             code_ << "    mov bx, ax\n";
@@ -484,16 +384,10 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Stores through at e.type's own width - the pointee type
-            // of a real typed pointer, or a plain native int word for
-            // the still-supported untyped-int-as-address style - see
-            // IRBuilder.cpp's own DerefAssign comment. A wide pointee
-            // reuses the same "fresh protected copy, then copy into
-            // the real destination" shape as a wide Assign's own
-            // unindexed branch above, except the destination address
-            // comes directly from evaluating e.lhs (the pointer,
-            // always narrow - see Unary "*"'s own identical comment
-            // below) instead of genWideSlotAddr()/computeElementAddr().
+            // Stores at e.type's own width (the pointee type). A wide pointee reuses
+            // the "fresh protected copy, then copy to real destination" shape of a
+            // wide Assign, except the destination address comes from evaluating e.lhs
+            // (the pointer, always narrow) rather than genWideSlotAddr/computeElementAddr.
             if (isWide(e.type)) {
                 int n = widthOfType(e.type) / 2;
                 genExpr(*e.rhs);  // ax = source address
@@ -529,13 +423,9 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                // Loads at e.type's own width - see DerefAssign's
-                // identical comment above. A wide pointee's own
-                // evaluation leaves ax = the pointee storage's address
-                // (the convention every wide expression here uses -
-                // see genWideSlotAddr()'s own comment) - which is
-                // already exactly the pointer value itself, so there
-                // is nothing further to load.
+                // Loads at e.type's own width. A wide pointee's evaluation already
+                // leaves its storage address in ax, which is exactly the pointer value,
+                // so there's nothing further to load.
                 genExpr(*e.rhs);  // ax = pointer value
                 if (isWide(e.type)) return;
                 code_ << "    mov bx, ax\n";
@@ -558,42 +448,17 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            // Arguments are pushed onto the real stack, last-declared
-            // one first, so the first argument ends up closest to the
-            // return address `call` is about to push - matching the
-            // address every Param already addresses itself by (see
-            // I8086Codegen.h's `addr()`: paramIndex 0 is `bp+4`, the
-            // lowest positive offset). Each callee lays them into ITS
-            // OWN frame itself; nothing here needs to know anything
-            // about the callee's parameter count or names beyond
-            // `e.args.size()` (true of a real separate-compilation
-            // external function too, same as before this convention
-            // existed - see IR.h's `isExternal`). The caller cleans
-            // the pushed words back off afterward (`add sp,N`) -
-            // cdecl's own convention, chosen here only because it
-            // needs no cooperation from the callee at all.
+            // cdecl: arguments pushed right-to-left so the first ends up closest to the
+            // return address, matching Param addressing (paramIndex 0 at bp+4); the
+            // caller cleans up afterward (add sp,N).
             int totalBytes = 0;
             for (size_t i = e.args.size(); i-- > 0;) {
                 if (isWide(e.args[i]->type)) {
-                    // A wide argument's own evaluation (a literal, a
-                    // convert, an add/mul/... result) generally leaves
-                    // its own temp block sitting permanently on the
-                    // stack below wherever sp was before it ran (see
-                    // genWideAdd()'s own comment on why nothing here
-                    // ever reclaims its own scratch - that's normally
-                    // left to the enclosing statement/epilogue). That
-                    // would be harmless for a single top-level wide
-                    // statement, but here it is NOT: this loop pushes
-                    // more than one argument's own real value within
-                    // the SAME statement, so an earlier (farther, i.e.
-                    // already-pushed) argument's position would be
-                    // thrown off by however much a LATER argument's
-                    // own temp leaks underneath it. So: remember sp
-                    // from right before evaluating this argument, then
-                    // write the real copy directly at (that saved sp -
-                    // n words) and reset sp there - reclaiming whatever
-                    // the argument's own evaluation left behind, same
-                    // as if it had never grown the stack at all.
+                    // A wide argument's evaluation leaves its own temp block on the
+                    // stack. Since several arguments are pushed within this same
+                    // statement, an earlier temp would be displaced by a later one's -
+                    // so each argument's real copy is written at (sp before it ran) -
+                    // n words, and sp is reset there, reclaiming the temp.
                     int n = widthOfType(e.args[i]->type) / 2;
                     code_ << "    mov [__wargsp], sp\n";
                     genExpr(*e.args[i]);  // ax = this argument's own address
@@ -616,14 +481,8 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::CallPtr: {
-            // e.args is always empty here - IRBuilder.cpp rejects any
-            // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr): there's no per-callee
-            // p_<fn>_<i> cell to write one into until the callee is
-            // known, which it never is at compile time for this kind.
-            // "call ax" (I8086Assembler.cpp's new FF /2 encoding) is a
-            // real, direct near-indirect call through a register -
-            // unlike pdp7's jms, no temp cell is needed at all.
+            // e.args is always empty (IRBuilder rejects arguments on this kind).
+            // "call ax" is a real near-indirect call through a register (FF /2).
             genExpr(*e.lhs);  // ax = the callee's own entry address
             code_ << "    call ax\n";
             return;
@@ -633,14 +492,7 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Intrinsic: {
-            // Real 8086 interrupt enable/disable - unlike pdp7's
-            // ion/iof (see Pdp7Codegen.cpp), these are ordinary
-            // opcodes NASM already knows by name, no literal value
-            // needed. Note the boot-sector entry sequence already
-            // runs with interrupts off from `cli` until its own
-            // `sti` (see generate()) - calling _iof()/_ion() from
-            // user code just nests inside that, same as real 8086
-            // code doing the same thing would.
+            // Real 8086 interrupt enable/disable (sti/cli).
             code_ << "    " << (e.op == "ion" ? "sti" : "cli") << "\n";
             return;
         }
@@ -653,40 +505,24 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
     }
 }
 
-// slot[idxExpr]'s effective-address operand text, e.g. "[bx]", with
-// bx already loaded with the final effective address (idx*2 - words
-// are 2 bytes on this byte-addressed target, unlike pdp7's word-
-// addressed memory - plus the array's or pointer's own base).
+// slot[idxExpr]'s effective-address operand text ("[bx]"), with bx loaded with the
+// final address (idx*2 words, plus the array's/pointer's own base).
 //
-// slot is only the base address itself when it's a declared array
-// (slot->arraySize > 0) - slot[idx] on a plain variable means that
-// variable holds a pointer, and the base to index from is its
-// runtime VALUE, not its own address. A Global array's base folds
-// into a compile-time immediate the same way its own address always
-// does (see genAddrOf below); a Local array's base needs `lea`
-// instead, since it's only known at runtime relative to `bp` (see
-// I8086Codegen.h's `addr()`) - every activation gets its own. A
-// pointer variable (Global or not) is indexed through whatever
-// address its own VALUE holds either way, via operandOf().
+// slot is the base address itself only for a declared array; slot[idx] on a plain
+// variable indexes through that variable's runtime pointer VALUE instead, via
+// operandOf(). A Global array's base is a compile-time immediate; a Local array's
+// needs `lea` (only known relative to bp at runtime).
 std::string I8086Codegen::computeElementAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);
-    // This dialect's own `shl` only takes a literal count of exactly
-    // 1 (or `cl`, for a runtime count - see I8086Assembler.cpp's own
-    // shl/shr/sar dispatch) - a wider compile-time-constant shift is
-    // just that many `shl ax,1`s in a row.
+    // shl only takes a literal count of 1 (or cl) - a wider shift is that many in a row.
     for (int i = 0; i < elemShift(slot->type); i++) code_ << "    shl ax, 1\n";
     code_ << "    mov bx, ax\n";
     if (slot->arraySize > 0) {
         if (slot->kind == ir::SlotKind::Global) {
             code_ << "    add bx, " << label(slot) << "\n";
         } else {
-            // A Local array's words sit at decreasing addresses as
-            // its own element index increases (addr(slot) is the
-            // array's *first* word, closest to `bp`; later words are
-            // further below it - see addr()'s own comment) - the
-            // mirror image of a Global array's increasing-address
-            // layout above, so this is base-minus-scaled-index, not
-            // base-plus.
+            // A Local array's words sit at decreasing addresses as index increases
+            // (addr(slot) is the first word, closest to bp) - base-minus-scaled-index.
             code_ << "    lea ax, " << addr(slot) << "\n    sub ax, bx\n    mov bx, ax\n";
         }
     } else {
@@ -698,19 +534,8 @@ std::string I8086Codegen::computeElementAddr(const ir::Slot *slot, const ir::Exp
 void I8086Codegen::genCompoundOp(const std::string &op, Type type) {
     bool isUnsigned = type.isUnsigned;
     if (op == "+") { code_ << "    add ax, bx\n"; return; }
-    // `ax -= bx` directly (old - rhs, ax already the destination this
-    // entry convention needs) - the same register-register SUB shape
-    // genBinary() already uses as `sub bx, ax` for its own ax=rhs/
-    // bx=lhs roles, just the other way round (this dialect's assembler
-    // encodes SUB generically for any register pair, not per-register
-    // - see I8086Assembler.cpp's own encodeTwoOp()).
     if (op == "-") { code_ << "    sub ax, bx\n"; return; }
-    // "imul bx"/"mul bx" (one operand, same real-hardware shape
-    // genMul() already relies on): dx:ax = ax*bx, keep ax - this
-    // assembler only ever supports that one-operand multiply form
-    // (see I8086Assembler.h's own header comment on its own fixed
-    // instruction vocabulary), not a two-operand "imul ax,bx".
-    if (op == "*") { code_ << "    " << (isUnsigned ? "mul" : "imul") << " bx\n"; return; }
+    if (op == "*") { code_ << "    " << (isUnsigned ? "mul" : "imul") << " bx\n"; return; }  // dx:ax = ax*bx
     if (op == "&" || op == "|" || op == "^") {
         const char *insn = (op == "&") ? "and" : (op == "|") ? "or" : "xor";
         code_ << "    " << insn << " ax, bx\n";
@@ -721,20 +546,15 @@ void I8086Codegen::genCompoundOp(const std::string &op, Type type) {
         code_ << "    " << (op == "<<" ? "shl" : (isUnsigned ? "shr" : "sar")) << " ax, cl\n";
         return;
     }
-    // "/" or "%" - bx is a valid divisor operand directly (div/idiv
-    // only forbid ax/dx, which already hold the dividend).
+    // "/" or "%": div/idiv only forbid ax/dx (the dividend) as the divisor.
     code_ << "    " << (isUnsigned ? "xor dx, dx\n" : "cwd\n");
     code_ << "    " << (isUnsigned ? "div" : "idiv") << " bx\n";
     if (op == "%") code_ << "    mov ax, dx\n";
 }
 
-// bx must already hold the resolved address on entry. This dialect's
-// own assembler only ever supports `[bx]` as a memory base (see
-// I8086Assembler.h's own header comment) - so the address is always
-// shuttled back into bx right before each of the two real memory
-// accesses here (never held in some other register across rhs's own
-// evaluation/the op computation in between, since that evaluation may
-// recurse into arbitrarily complex codegen that can use any register).
+// bx must already hold the resolved address. Only `[bx]` is a valid memory base here,
+// so the address is stashed on the stack (not held in a register) across rhs's own
+// evaluation, which may use any register.
 void I8086Codegen::genCompoundThroughBx(const ir::Expr &e) {
     code_ << "    push bx\n";  // stash address
     genExpr(*e.rhs);            // ax = rhs
@@ -764,22 +584,16 @@ void I8086Codegen::genCompoundThroughBx(const ir::Expr &e) {
 void I8086Codegen::genIndex(const ir::Expr &e) {
     std::string memOperand = computeElementAddr(e.slot, *e.lhs);  // bx = element address
     if (isWide(e.slot->type)) {
-        // Every wide expression leaves its own ADDRESS in ax (see
-        // genWideSlotAddr()'s own comment) - bx already holds it.
+        // Every wide expression leaves its address in ax - bx already holds it.
         code_ << "    mov ax, bx\n";
         return;
     }
     loadOperand(memOperand, e.slot->type);
 }
 
-// &operand: a plain variable/array (&slot -> its own address), an
-// array element (&slot[idx] -> that element's address), or a bare
-// function name (&fn -> fn's own entry label - the same address a
-// direct `call label(fn)` already targets; see label()'s own
-// comment) - nothing else in this subset has an address worth taking.
-// A Global's own address is a compile-time immediate (its label,
-// used bare); a Local/Param's is only known at runtime relative to
-// `bp` (see addr()), so it needs `lea` instead of a plain `mov`.
+// &operand: a variable/array, an array element, or a bare function name. A Global's
+// address is a compile-time immediate; a Local/Param's needs `lea` since it's only
+// known at runtime relative to bp.
 void I8086Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
         if (operand.slot->kind == ir::SlotKind::Global) {
@@ -796,9 +610,7 @@ void I8086Codegen::genAddrOf(const ir::Expr &operand) {
             if (operand.slot->kind == ir::SlotKind::Global) {
                 code_ << "    add ax, " << label(operand.slot) << "\n";
             } else {
-                // See computeElementAddr()'s own identical comment -
-                // a Local array's element address is base-minus-
-                // scaled-index.
+                // A Local array's element address is base-minus-scaled-index.
                 code_ << "    mov bx, ax\n    lea ax, " << addr(operand.slot) << "\n    sub ax, bx\n";
             }
         } else {
@@ -813,40 +625,25 @@ void I8086Codegen::genAddrOf(const ir::Expr &operand) {
     err(operand.line, "internal: unhandled addressable-operand kind");
 }
 
-// Stores arrayInit into `slot`'s own frame slots - every call needs
-// this re-run, since (unlike a Global's one static trailer) a
-// Local's storage is this activation's own fresh frame region, not
-// pre-set to anything; arrayInit is always fully populated up to
-// arraySize (zero-padded even with no source-level initializer - see
-// BuildAst.cpp's padArrayInit), so this always leaves the whole array
-// in a known state, same as a Global array's static trailer always
-// did. An element's own address is slot->frameOffset+i words below
-// `bp`, the same arithmetic addr() uses for the array's own first
-// word, just advanced by i.
 void I8086Codegen::narrowAxTo(Type to) {
     int w = widthOfType(to);
     if (w == 1) {
-        // No movzx/movsx on real 8086 (386+ only), and this dialect's
-        // assembler has no "ah" register operand at all - zero-extend
-        // by masking out every bit above AL instead of touching AH
-        // directly; sign-extend with the real CBW instruction (sign-
-        // extends AL into AH:AX).
+        // No movzx/movsx on real 8086, and no "ah" operand in this dialect - zero-extend
+        // by masking out bits above AL; sign-extend with CBW (AL into AH:AX).
         if (to.isUnsigned) {
             code_ << "    and ax, 0x00FF\n";
         } else {
             code_ << "    cbw\n";
         }
     }
-    // 2 bytes (short/int on this target): ax already holds the full
-    // value, nothing to do. A wide type never reaches here - see
-    // genConvert()'s own isWide branches.
+    // 2 bytes: ax already holds the full value. A wide type never reaches here.
 }
 
 void I8086Codegen::loadOperand(const std::string &mem, Type type) {
     int w = widthOfType(type);
     if (w == 1) {
         if (type.isUnsigned) {
-            code_ << "    xor ax, ax\n";  // clear ax first - a byte load into al alone never touches ah
+            code_ << "    xor ax, ax\n";  // movb loads al only, never touches ah
             code_ << "    movb ax, " << mem << "\n";
         } else {
             code_ << "    movb ax, " << mem << "\n";
@@ -865,19 +662,10 @@ void I8086Codegen::storeOperand(const std::string &mem, Type type) {
     }
 }
 
-// A Local or Param/Global's own N-word (N=widthOfType(type)/2)
-// storage, word 0 (least significant) through word N-1 (most),
-// always in LOW-TO-HIGH ADDRESS order from the address this leaves in
-// AX - a Global's or Param's own storage already grows that way (see
-// I8086Codegen.h's own `addr()` comment: a Param's frameOffset grows
-// up from `bp`, same direction as a Global's label), so AX is simply
-// that slot's own base address. A LOCAL's own storage instead grows
-// DOWN from `bp` as its declared size increases (the mirror image,
-// same convention every Local array here already uses - see
-// computeElementAddr()'s own comment) - its own word 0 (least
-// significant, "lowest address" in THIS method's own convention) is
-// therefore the FARTHEST one from `bp`, not the closest, so AX here
-// is `bp - frameOffset - (N-1)*2`, not `bp - frameOffset`.
+// Leaves the address of slot's N-word storage in ax, words low-to-high as address
+// increases. Global/Param storage already grows that way, so ax is just the base
+// address. A Local's storage grows DOWN from bp as size increases, so its word 0 is
+// the farthest word from bp: ax = bp - frameOffset - (N-1)*2, not bp - frameOffset.
 void I8086Codegen::genWideSlotAddr(const ir::Slot *slot) {
     if (slot->kind == ir::SlotKind::Global) {
         code_ << "    mov ax, " << label(slot) << "\n";
@@ -891,14 +679,11 @@ void I8086Codegen::genWideSlotAddr(const ir::Slot *slot) {
     code_ << "    lea ax, " << addr(slot, 2 * (n - 1)) << "\n";
 }
 
-// Builds a fresh `toN`-word low-to-high block on the real stack from
-// the `fromN`-word low-to-high block whose address is already in BX -
-// see I8086Codegen.h's own comment on this method and why it covers
-// both a same-width copy (Assign/LocalDecl-init) and a widening/
-// narrowing Convert. Pushes the extension words (if widening) first
-// (ending up at the highest addresses), then the real/truncated words
-// high-to-low (so the least significant ends up on top of the stack,
-// the lowest address) - leaves the new block's own address in AX.
+// Builds a fresh toN-word low-to-high block on the stack from the fromN-word block
+// at the address in bx (covers both a same-width copy and a widening/narrowing
+// Convert). Pushes extension words first (highest addresses), then the real words
+// high-to-low, so the least significant word ends up at the lowest address. Leaves
+// the new block's address in ax.
 void I8086Codegen::copyWideBlock(int fromN, int toN, bool isUnsignedExt) {
     int copyN = fromN < toN ? fromN : toN;
     if (toN > fromN) {
@@ -906,7 +691,7 @@ void I8086Codegen::copyWideBlock(int fromN, int toN, bool isUnsignedExt) {
         if (isUnsignedExt) {
             code_ << "    xor dx, dx\n";
         } else {
-            code_ << "    mov ax, cx\n    cwd\n";  // dx = sign-extension of the old MSW (0 or 0xFFFF)
+            code_ << "    mov ax, cx\n    cwd\n";  // dx = sign-extension of old MSW
         }
         for (int i = 0; i < toN - fromN; i++) code_ << "    push dx\n";
     }
@@ -917,12 +702,8 @@ void I8086Codegen::copyWideBlock(int fromN, int toN, bool isUnsignedExt) {
     code_ << "    mov ax, sp\n";
 }
 
-// An implicit or explicit type conversion (see IR.h's ExprKind::
-// Convert). Every arithmetic/comparison operand narrower than `int`
-// is already promoted by IRBuilder before any Binary/Unary ever sees
-// it, so the only real work here is: crossing the native-int/wide
-// boundary (building or discarding extra words), or re-truncating+
-// re-extending AX for a narrower target (narrowAxTo()).
+// IRBuilder already promotes narrower operands before Binary/Unary sees them, so the
+// only work here is crossing the native-int/wide boundary, or re-extending via narrowAxTo.
 void I8086Codegen::genConvert(const ir::Expr &e) {
     Type from = e.lhs->type;
     Type to = e.type;
@@ -931,7 +712,7 @@ void I8086Codegen::genConvert(const ir::Expr &e) {
     genExpr(*e.lhs);  // ax, or an address if fromWide
     if (fromWide && toWide) {
         int fromN = widthOfType(from) / 2, toN = widthOfType(to) / 2;
-        if (fromN == toN) return;  // same width, different signedness only - bit pattern unchanged
+        if (fromN == toN) return;  // same width - bit pattern unchanged
         code_ << "    mov bx, ax\n";
         copyWideBlock(fromN, toN, from.isUnsigned);
     } else if (fromWide && !toWide) {
@@ -952,10 +733,8 @@ void I8086Codegen::genConvert(const ir::Expr &e) {
     }
 }
 
-// Negates the N-word value whose address is in BX, in place - two's
-// complement across the whole block: NOT every word, then add 1 with
-// the carry rippling through every word above it (the same "not every
-// word, then +1 with carry" shape any software bignum negate uses).
+// Two's complement across the N-word value at bx: NOT every word, then +1 with carry
+// rippling through the rest.
 void I8086Codegen::genWideNegate(int n) {
     for (int i = 0; i < n; i++) {
         code_ << "    mov ax, [bx+" << (2 * i) << "]\n    not ax\n    mov [bx+" << (2 * i) << "], ax\n";
@@ -966,31 +745,18 @@ void I8086Codegen::genWideNegate(int n) {
     }
 }
 
-// `long`/`long long` add/sub: evaluate both operand addresses, then
-// ripple the carry/borrow across N words low-to-high via real ADC/SBB
-// - the generalization of a native add/sub one word wider, same idiom
-// any multi-word codegen uses, just N words instead of 2.
+// long/long long add/sub: ripple carry/borrow across N words low-to-high via ADC/SBB.
 void I8086Codegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd) {
     int n = widthOfType(lhs.type) / 2;
     genExpr(lhs);
-    // si = lhs address, via a plain register rather than the stack -
-    // rhs's own evaluation below may itself push a fresh scratch
-    // block (a wide literal/convert), shifting sp further down, which
-    // would make a later `pop` here retrieve the wrong word.
+    // si holds the address as a value (not a bracket base), so rhs's own evaluation
+    // (which may push its own scratch, moving sp) can't disturb it.
     code_ << "    mov si, ax\n";
     genExpr(rhs);
     code_ << "    mov di, ax\n";  // di = rhs address
     code_ << "    sub sp, " << (2 * n) << "\n";
-    // Only bx/bp can address memory in this dialect (si/di are
-    // address *values* here, never bracket bases - see
-    // I8086Assembler.cpp's own buildOperand()), so bx is repointed at
-    // whichever of the three bases (lhs/rhs/result) each step needs
-    // via a plain `mov` (never `add` - `mov` alone never touches
-    // FLAGS on this target, unlike `add`, so repointing bx this way
-    // never disturbs the carry the next word's `adc`/`sbb` needs to
-    // pick back up from this one; the `+2*i` byte offset itself is
-    // just the bracket's own displacement, not a separate instruction
-    // - see I8086Assembler.cpp's own `[bx+N]` addressing).
+    // Only bx/bp can address memory here, so bx is repointed per base via `mov`
+    // (never `add`, since `mov` doesn't touch FLAGS - preserving the carry chain).
     for (int i = 0; i < n; i++) {
         code_ << "    mov bx, si\n    mov ax, [bx+" << (2 * i) << "]\n";
         code_ << "    mov bx, di\n    mov cx, [bx+" << (2 * i) << "]\n";
@@ -1000,19 +766,12 @@ void I8086Codegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isA
     code_ << "    mov ax, sp\n";
 }
 
-// `long`/`long long` multiply, keeping the low N words of the true
-// product - the schoolbook O(n^2) cross-multiply, using the real
-// hardware MUL for every partial 16x16->32 product (same idea as
-// I386Codegen.cpp's genWideMul, generalized from 2 words to N) and
-// discarding whatever overflow a given partial product's own carry
-// pushes past word N-1.
+// long/long long multiply: schoolbook O(n^2) cross-multiply with hardware MUL for
+// each 16x16->32 partial product, keeping only the low N words (discarding overflow).
 void I8086Codegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     int n = widthOfType(lhs.type) / 2;
     genExpr(lhs);
-    // si = lhs address - see genWideAdd()'s own comment on why this
-    // has to be a plain register move, not a push/pop pair, across
-    // rhs's own evaluation.
-    code_ << "    mov si, ax\n";
+    code_ << "    mov si, ax\n";  // si = lhs address, held across rhs's own evaluation
     genExpr(rhs);
     code_ << "    mov di, ax\n";  // di = rhs address
     code_ << "    sub sp, " << (2 * n) << "\n";
@@ -1021,21 +780,11 @@ void I8086Codegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     for (int i = 0; i < n; i++) code_ << "    mov [bx+" << (2 * i) << "], ax\n";
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n - i; j++) {
-            // Only bx/bp can address memory in this dialect, so it's
-            // repointed at whichever base (lhs/rhs/result) each step
-            // needs via a plain `mov` (never `add` - see genWideAdd()'s
-            // own identical comment on why that matters here: the
-            // carry chain below depends on it).
+            // bx is repointed per base via `mov` (not `add`, which would disturb FLAGS).
             code_ << "    mov bx, si\n    mov ax, [bx+" << (2 * i) << "]\n";
             code_ << "    mov bx, di\n    mov cx, [bx+" << (2 * j) << "]\n";
             code_ << "    mul cx\n";  // dx:ax = word_i(lhs) * word_j(rhs)
-            // Add this partial product (dx:ax) into the result
-            // starting at word i+j, carry rippling further up through
-            // the rest of the N-word result - `mov` never touches
-            // FLAGS on this target, so the carry each `add`/`adc`
-            // below leaves behind survives the intervening loads/
-            // stores undisturbed, letting a single `adc` pick it back
-            // up exactly where the previous word's arithmetic left it.
+            // Add dx:ax into the result at word i+j, carry rippling up through the rest.
             code_ << "    mov bx, sp\n";
             code_ << "    mov cx, [bx+" << (2 * (i + j)) << "]\n";
             code_ << "    add cx, ax\n";
@@ -1054,34 +803,19 @@ void I8086Codegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << "    mov ax, sp\n";
 }
 
-// Classic bit-serial shift/compare/subtract long division, generalized
-// from I386Codegen.cpp's own 2-word version to N words (N=2 for
-// `long`, N=4 for `long long` on this 16-bit-native target) - same
-// algorithm, same scratch-block shape, just a runtime-constant N
-// instead of a fixed 2: [0..N-1]=dividend-being-consumed, [N..2N-1]=
-// divisor, [2N..3N-1]=remainder being built, [3N..4N-1]=quotient being
-// built, [4N]=iteration countdown. `si` addresses the whole block for
-// this method's entire duration (nothing else here ever needs `bx`
-// for anything else, unlike every other wide helper in this file, so
-// it's set once and never repointed).
+// Classic bit-serial shift/compare/subtract long division, generalized to N words
+// (N=2 for `long`, N=4 for `long long`). Scratch block layout: [0..N-1]=dividend being
+// consumed, [N..2N-1]=divisor, [2N..3N-1]=remainder being built, [3N..4N-1]=quotient
+// being built, [4N]=iteration countdown.
 //
-// `isUnsigned` false divides *magnitudes*, negating each operand in
-// place if its own sign word (MSW) is negative, remembering both
-// signs in two more scratch words, then restoring them on the result
-// afterward per C's truncating-division rule (quotient negative iff
-// the signs differed; remainder always takes the dividend's own sign)
-// - the exact same two-step shape I386Codegen.cpp's own signed
-// genWideDivMod() uses.
-// genWideDivMod() itself is just a thin call site: copy lhs/rhs into
-// the shared N-word scratch block, `call` the one shared subroutine
-// for this N (emitted once by emitWideDivModSubroutine(), regardless
-// of how many division sites use it), then take a fresh stack copy
-// of whichever result (quotient or remainder) was asked for - the
-// same "fresh copy before the scratch might be reused" safety
-// copyWideBlock() already provides for a plain Var/Convert result,
-// needed here since a later division elsewhere in the very same
-// expression (e.g. two division results both still live as call
-// arguments) would otherwise overwrite this one's result first.
+// Signed division operates on magnitudes: negates each operand in place if its sign
+// word is negative, remembers both signs, then restores them on the result per C's
+// truncating-division rule (quotient negative iff signs differed; remainder takes the
+// dividend's sign).
+//
+// This function is a thin call site: copy lhs/rhs into the shared N-word scratch block,
+// call the one shared subroutine for this N, then take a fresh stack copy of whichever
+// result was asked for (needed since a later division could overwrite the same scratch).
 void I8086Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     int n = widthOfType(lhs.type) / 2;
     emitWideDivModSubroutine(n);
@@ -1107,15 +841,9 @@ void I8086Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool 
     copyWideBlock(n, n, /*isUnsignedExt=*/false);  // fresh copy, since __wdmN_blk may be reused by a later division
 }
 
-// The N-word bit-serial divide itself (see genWideDivMod()'s own
-// comment on why it's a shared subroutine, not inlined per call
-// site) - same algorithm/scratch layout the inlined version used to
-// use, just addressed through a fixed global block instead of a
-// stack-relative one (no `sub sp`/`add sp` needed around it at all),
-// and with `isUnsigned` now a RUNTIME flag word in that same block
-// (`uns`) rather than a compile-time branch, since this one routine
-// body is shared by both a signed and an unsigned division of the
-// same N from however many call sites each uses it.
+// The N-word bit-serial divide itself, emitted once per N as a shared subroutine
+// (addressed through a fixed global block, not the stack) - `isUnsigned` is a runtime
+// flag word in that block, since one routine body serves both signed and unsigned calls.
 void I8086Codegen::emitWideDivModSubroutine(int n) {
     if (!wideDivModEmitted_.insert(n).second) return;
     std::string blk = "__wdm" + std::to_string(n) + "_blk";
@@ -1124,16 +852,8 @@ void I8086Codegen::emitWideDivModSubroutine(int n) {
         for (int i = 0; i < 4 * n + 4; i++) s += (i ? ", 0" : "0");
         return s;
     }());
-    // The subroutine's own code has to land in `trailer_` (after
-    // every function body, never reached except by the explicit
-    // `call` at a division site - see __wret's own identical "data in
-    // the trailer" precedent in generate(), here used for code
-    // instead) rather than straight into `code_`, which is still mid-
-    // way through building the CALLER's own function body at this
-    // point - genWideNegateIf/genWideNegateAt below both write to
-    // `code_` directly with no stream parameter of their own, so
-    // `code_` is swapped out for a fresh scratch buffer for the
-    // length of this method and swapped back before returning.
+    // The subroutine's code must land in trailer_, not mid-way through the caller's own
+    // code_ - so code_ is swapped for a fresh buffer here and swapped back at the end.
     std::ostringstream callerCode;
     callerCode << code_.str();
     code_.str("");
@@ -1161,23 +881,15 @@ void I8086Codegen::emitWideDivModSubroutine(int n) {
     std::string LhiDiff = newLabel(), LsubYes = newLabel(), LsubNo = newLabel();
     code_ << Lloop << ":\n";
     code_ << "    mov ax, [bx+" << (2 * 4 * n) << "]\n    cmp ax, 0\n";
-    // Ldone sits just past this loop's own body, which for a 4-word
-    // (`long long`) operand is well past a short (rel8) jump's +-127-
-    // byte range - jne-around-a-near-jmp reaches it regardless of
-    // distance, same trick real 8086 assembly uses for any
-    // conditional branch wider than a short jump.
+    // jne-around-a-near-jmp reaches Ldone regardless of distance, since a 4-word
+    // loop body can exceed a short jump's +-127-byte range.
     {
         std::string Lcontinue = newLabel();
         code_ << "    jne " << Lcontinue << "\n    jmp " << Ldone << "\n" << Lcontinue << ":\n";
     }
     code_ << "    sub ax, 1\n    mov [bx+" << (2 * 4 * n) << "], ax\n";
-    // n <<= 1 (0-filled), capturing its own old top bit via the real
-    // carry flag (the same rcl-style low-to-high chain genWideShift()
-    // uses - `mov` never touches FLAGS on this target, so the carry
-    // the last word's own `shl`/`rcl` leaves behind survives the
-    // intervening loads/stores undisturbed) - `jc` right after reads
-    // that same still-pending carry back out as a plain 0/1 into cx,
-    // avoiding a 15-wide shift just to isolate one bit.
+    // n <<= 1, capturing its old top bit via the carry flag (shl/rcl chain, same as
+    // genWideShift); `jc` reads that pending carry into cx as a plain 0/1.
     code_ << "    mov ax, [bx+0]\n    shl ax, 1\n    mov [bx+0], ax\n";
     for (int w = 1; w < n; w++) {
         code_ << "    mov ax, [bx+" << (2 * w) << "]\n    rcl ax, 1\n    mov [bx+" << (2 * w) << "], ax\n";
@@ -1242,10 +954,8 @@ void I8086Codegen::emitWideDivModSubroutine(int n) {
     code_ << callerCode.str();
 }
 
-// Negates the N words at scratch offset `wordOffset` (word units, bx
-// already the scratch base) in place, only if the flag word at
-// `flagOffset` is non-zero - the signed genWideDivMod()'s own
-// "negate this operand's magnitude iff its sign flag is set" step.
+// Negates the N words at scratch offset wordOffset (bx = scratch base) only if the
+// flag word at flagOffset is non-zero.
 void I8086Codegen::genWideNegateIf(int wordOffset, int n, int flagOffset) {
     std::string Lskip = newLabel();
     code_ << "    mov ax, [bx+" << (2 * flagOffset) << "]\n    cmp ax, 0\n    je " << Lskip << "\n";
@@ -1253,11 +963,7 @@ void I8086Codegen::genWideNegateIf(int wordOffset, int n, int flagOffset) {
     code_ << Lskip << ":\n";
 }
 
-// Negates the N words at scratch offset `wordOffset` in place (bx
-// already the scratch base) - two's complement across the whole
-// block, same "not every word, then +1 with carry" shape as
-// genWideNegate(), just addressed by a fixed displacement from `bx`
-// instead of a separate address in a register.
+// Negates the N words at scratch offset wordOffset (bx = scratch base) in place.
 void I8086Codegen::genWideNegateAt(int wordOffset, int n) {
     for (int w = 0; w < n; w++) {
         code_ << "    mov ax, [bx+" << (2 * (wordOffset + w)) << "]\n    not ax\n    mov [bx+"
@@ -1271,20 +977,14 @@ void I8086Codegen::genWideNegateAt(int wordOffset, int n) {
     }
 }
 
-// `long`/`long long` shifted by a runtime count - no native
-// instruction shifts more than one native word at once, so this is a
-// counted loop of 1-bit shifts, each using the real carry flag to
-// chain across the N words (rcl/rcr - see I8086Assembler.cpp's own
-// comment on why `mov` never disturbing FLAGS is what makes that
-// safe with memory loads/stores interleaved). `isUnsigned` only
-// matters for `>>`: the first (most significant) word's own shift is
-// `sar` (sign-preserving) or `shr` (zero-filling) accordingly; `<<`
-// never cares about signedness.
+// long/long long shift by a runtime count: a counted loop of 1-bit shifts, chaining
+// across the N words via rcl/rcr and the carry flag. `>>` uses sar (signed) or shr
+// (unsigned) on the most significant word; `<<` doesn't care about signedness.
 void I8086Codegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
     int n = widthOfType(lhs.type) / 2;
     genExpr(lhs);
-    code_ << "    mov si, ax\n";  // si = value's own address (held as a value; bx repoints onto it each access)
-    genExpr(rhs);                  // ax = shift count (already promoted to a plain int)
+    code_ << "    mov si, ax\n";  // si = value's address, held across rhs's own evaluation
+    genExpr(rhs);                  // ax = shift count
     code_ << "    mov cx, ax\n";
     std::string Lloop = newLabel(), Ldone = newLabel();
     code_ << Lloop << ":\n    cmp cx, 0\n    je " << Ldone << "\n    sub cx, 1\n";
@@ -1306,20 +1006,13 @@ void I8086Codegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool i
     code_ << "    mov ax, si\n";
 }
 
-// `long`/`long long` comparison - compare the most significant word
-// first (using the signed or unsigned jcc per `isUnsigned`, since
-// that's where the sign bit lives); only if it's equal does the next
-// word down matter, and once any word differs the comparison is
-// always an unsigned magnitude compare from there (the standard big-
-// number ordered-comparison idiom, same as I386Codegen.cpp's own
-// genWideCompare, generalized from 2 words to N).
+// long/long long comparison: compares the most significant word first with the
+// signed/unsigned jcc (the sign bit lives there); once a word differs, every word
+// below is an unsigned magnitude compare.
 void I8086Codegen::genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned) {
     int n = widthOfType(lhs.type) / 2;
     genExpr(lhs);
-    // si = lhs address - see genWideAdd()'s own comment on why this
-    // has to be a plain register move, not a push/pop pair, across
-    // rhs's own evaluation.
-    code_ << "    mov si, ax\n";
+    code_ << "    mov si, ax\n";  // si = lhs address, held across rhs's own evaluation
     genExpr(rhs);
     code_ << "    mov di, ax\n";
     std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
@@ -1367,11 +1060,8 @@ void I8086Codegen::genLocalArrayInit(const ir::Slot *slot) {
 
 void I8086Codegen::genBinary(const ir::Expr &e) {
     const std::string &op = e.op;
-    // Every arithmetic/bitwise/comparison operand here already
-    // shares one common type (IRBuilder's own usual-arithmetic-
-    // conversion pass - see Type.h) - `e.lhs->type` names it, except
-    // for shift (only the LHS's own type matters) and &&/|| (width-
-    // independent truth-testing, handled by genLogicalAnd/Or below).
+    // e.lhs->type names the common operand type (IRBuilder's usual-arithmetic-conversion
+    // pass), except for shift (only LHS matters) and &&/|| (handled separately below).
     Type operandType = e.lhs->type;
     bool wide = isWide(operandType);
     bool isUnsigned = operandType.isUnsigned;
@@ -1408,17 +1098,11 @@ void I8086Codegen::genBinary(const ir::Expr &e) {
         return;
     }
     if (op == "&" || op == "|" || op == "^") {
-        // Real hardware and/or/xor - unlike pdp7 (see
-        // Pdp7Codegen.cpp's own comment), this target has all three
-        // directly, so no De Morgan's trick is needed for `|`.
         const char *insn = (op == "&") ? "and" : (op == "|") ? "or" : "xor";
         if (wide) {
             int n = widthOfType(operandType) / 2;
             genExpr(*e.lhs);
-            // si = lhs address - see genWideAdd()'s own comment on
-            // why this has to be a plain register move, not a
-            // push/pop pair, across rhs's own evaluation.
-            code_ << "    mov si, ax\n";
+            code_ << "    mov si, ax\n";  // si = lhs address, held across rhs's own evaluation
             genExpr(*e.rhs);
             code_ << "    mov di, ax\n";
             code_ << "    sub sp, " << (2 * n) << "\n";
@@ -1443,11 +1127,7 @@ void I8086Codegen::genBinary(const ir::Expr &e) {
             genWideShift(*e.lhs, *e.rhs, op == "<<", isUnsigned);
             return;
         }
-        // Real hardware variable-count shift (shl/shr/sar take the
-        // count from cl) - unlike pdp7, which has no such instruction
-        // and has to loop (see Pdp7Codegen.cpp's own comment). `>>`
-        // is `shr` (logical/unsigned) or `sar` (arithmetic/signed)
-        // per the shifted value's own signedness.
+        // Real hardware variable-count shift: shl/shr/sar take the count from cl.
         genExpr(*e.lhs);
         code_ << "    push ax\n";
         genExpr(*e.rhs);
@@ -1483,11 +1163,8 @@ void I8086Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const 
     err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
 }
 
-// cmp bx, ax compares lhs-rhs (bx=lhs, ax=rhs after the pop below),
-// so `jumpIfTrue` is a conditional jump matching C's comparison
-// semantics directly - no sza/sma-style workaround needed;
-// `isUnsigned` is unused here (the caller already baked it into
-// `jumpIfTrue`) but kept for symmetry with the wide path/call sites.
+// cmp bx, ax compares lhs-rhs (bx=lhs, ax=rhs), so jumpIfTrue matches C's comparison
+// semantics directly. isUnsigned is already baked into jumpIfTrue by the caller.
 void I8086Codegen::emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &jumpIfTrue, bool) {
     genExpr(lhs);
     code_ << "    push ax\n";
@@ -1501,10 +1178,6 @@ void I8086Codegen::emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const s
     code_ << Ldone << ":\n";
 }
 
-// A wide (`long`/`long long`) operand's truthiness needs every word -
-// `mov bx,ax` + OR-ing each further word into `ax` folds them
-// together before the usual "cmp ax,0" (the combined value is
-// discarded immediately after, so clobbering ax this way is safe).
 void I8086Codegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     if (isWide(lhs.type)) genWideTruthify(lhs.type);
@@ -1544,15 +1217,8 @@ void I8086Codegen::genLogicalNot(const ir::Expr &rhs) {
 }
 
 
-// Real hardware multiply/divide (IMUL/IDIV, or MUL/DIV for an
-// unsigned operand) - no software routine needed the way pdp7's lack
-// of a verified idiv required; only the low word of the product is
-// kept, matching C int wraparound.
-// Reduces the N-word value whose address is in AX down to a single
-// word in AX that's zero iff every word was zero - every other wide
-// helper here leaves an ADDRESS in ax, not a value, so a plain
-// "cmp ax,0" would only ever test whether that address happens to be
-// 0 (never true in practice), not the value it points to.
+// Reduces the N-word value at the address in ax to a single word in ax that's zero
+// iff every word was zero (every wide helper leaves an address in ax, not a value).
 void I8086Codegen::genWideTruthify(Type t) {
     int n = widthOfType(t) / 2;
     code_ << "    mov bx, ax\n    mov ax, [bx]\n";
@@ -1585,46 +1251,22 @@ std::string I8086Codegen::buildAssembleCommand(const std::string &assemblerPath,
     return "\"" + assemblerPath + "\" -f bin -o \"" + outPath + "\" \"" + srcPath + "\"";
 }
 
-// No external assembler for this target anymore either (see
-// ../pdp7/Pdp7Codegen.cpp's own version of this override) - a real
-// from-scratch x86 instruction encoder, not just text manipulation;
-// see I8086Assembler.h for what it does and doesn't support.
+// A from-scratch x86 instruction encoder, no external assembler needed.
 //
-// The boot-sector padding/signature (`times (510-($-$$)) db 0\ndw
-// 0xAA55`) is added here, only for `--format=raw`, not in generate()
-// itself - `generate()`'s own text is shared by every format, and
-// that padding only means anything for a direct, bootable, exactly-
-// one-sector image. Appending it unconditionally used to also apply
-// it to `--format=coff` - harmless for a small program, but a real
-// bug for a larger one: `times`'s count goes negative once the real
-// code+data is already past 510 bytes, and this backend's own
-// assembler doesn't reject that (confirmed directly: a plain NASM
-// build of the same text errors with "TIMES value N is negative",
-// but this one silently wraps the negative count to a huge unsigned
-// one instead, producing a multi-gigabyte "object file"). An object
-// file has no 510-byte limit at all - it's not meant to be booted
-// directly - so it should never see this padding in the first place.
+// The boot-sector padding/signature is only added for `--format=raw`, never in
+// generate() itself: an object file has no 510-byte limit (it's never booted
+// directly), so it must never see this padding.
 std::optional<std::string> I8086Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "raw") {
         std::string bootable = asmText + "\ntimes (510-($-$$)) db 0\ndw 0xAA55\n";
         return assembleI8086(bootable, I8086OutputFormat::Bin);
     }
-    // `--format=coff` always means real separate compilation (see
-    // IRBuilder.h's `allowExternal`) - an external/undefined symbol
-    // is always allowed here, whole-program single-file compile or
-    // not, deferred as a relocation for a future `--link` step.
+    // `--format=coff` is real separate compilation: an undefined symbol is deferred
+    // as a relocation for a future `--link` step.
     if (format == "coff") return assembleI8086(asmText, I8086OutputFormat::Coff, /*allowExternal=*/true);
-    // `--format=elf`, like `--format=raw`, is a *complete* self-
-    // contained program - an external/undefined symbol is a hard
-    // error (allowExternal defaults to false), same as "asm"/"raw",
-    // not a relocation to defer to a future `--link` step the way
-    // "coff" allows (see fileformat/elf/ElfFormat.h's own header comment for why
-    // this is a peer of `bin`'s "whole program" role, not of `coff`'s
-    // "relocatable object" one). Unlike "raw", there's no 510-byte
-    // sector limit to pad for - a real ELF file has no such
-    // constraint - so `asmText` is assembled exactly as generate()
-    // wrote it, with no boot-sector padding appended.
+    // `--format=elf`, like `--format=raw`, is a complete self-contained program: an
+    // undefined symbol is a hard error, and no boot-sector padding is appended.
     if (format == "elf") return assembleI8086(asmText, I8086OutputFormat::Elf);
     return std::nullopt;
 }

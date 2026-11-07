@@ -20,18 +20,12 @@ namespace pcc {
 
 namespace {
 
-// Same convention as ../../../../pdp-assembler/src/Assembler.h: bit
-// 0x40000 (01000000 octal) flags a value as relative-to-`..`.
+// Bit 0x40000 (01000000 octal) flags a value as relative-to-`..`.
 constexpr uint32_t RELATIVE = 01000000;
 constexpr uint32_t MASK18 = 0777777;
 constexpr uint32_t BASE = 0 | RELATIVE;
 
-// Builtin opcode table, copied verbatim (every mnemonic and octal
-// value) from ../../../../pdp-assembler/src/Assembler.cpp's
-// constructor - already verified correct by that project; Pdp7Codegen
-// only ever emits a subset of these, but keeping the full table costs
-// nothing and future-proofs against new instructions it might start
-// using.
+// Full pdp7 opcode table; Pdp7Codegen only emits a subset.
 const std::unordered_map<std::string, uint32_t> &builtins() {
     static const std::unordered_map<std::string, uint32_t> table = {
         {"save", 1}, {"getuid", 2}, {"open", 3}, {"read", 4}, {"write", 5},
@@ -77,16 +71,13 @@ const std::unordered_map<std::string, uint32_t> &builtins() {
 
 // --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
 //
-// ../../../../grammar/PccAsm.g4 is generic across backends (see its own
-// header comment): a statement is "mnemonic, operand (',' operand)*"
-// with no built-in notion of what the mnemonic or any operand *means*.
-// pdp7 has no real "instruction vs operand" distinction at all - an
-// opcode is just a symbol whose value happens to be a bit pattern, so
-// this backend's own semantic layer (buildSegment below) flattens a
-// parsed InstrStmtContext's mnemonic token plus every operand's own
-// syllables back into one combined expression, exactly reproducing
-// real pdp7as semantics (`jmp i F3` OR-combines three syllables: jmp,
-// i, F3) - see Pdp7Assembler.h's header comment for the fuller story.
+// The shared grammar is generic across backends: a statement is
+// "mnemonic, operand (',' operand)*" with no notion of what the
+// mnemonic or operand means. pdp7 has no real instruction/operand
+// distinction - an opcode is a symbol whose value is a bit pattern,
+// so buildSegment() below flattens the mnemonic token plus every
+// operand's syllables into one combined expression, reproducing
+// pdp7as semantics (`jmp i F3` OR-combines three syllables).
 
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("Pdp7Assembler: " + msg); }
 
@@ -160,11 +151,8 @@ Segment buildSegment(PccAsmParser::LineContext *ctx) {
     return seg;
 }
 
-// Throws immediately on the first syntax error, same "fail loudly"
-// posture as the rest of this file (and the rest of pcc's own
-// frontend) - the default ANTLR error listener only prints to stderr
-// and keeps going, which isn't what we want for text this backend
-// generated itself.
+// Throws immediately on the first syntax error, unlike the default
+// ANTLR listener which only prints to stderr and keeps going.
 class ThrowingErrorListener : public antlr4::BaseErrorListener {
    public:
     void syntaxError(antlr4::Recognizer *, antlr4::Token *, size_t line, size_t col, const std::string &msg,
@@ -174,8 +162,7 @@ class ThrowingErrorListener : public antlr4::BaseErrorListener {
 };
 
 // Dynamic_cast dispatch on the labeled-alternative Context subclasses,
-// the same convention ../../BuildAst.cpp already uses for the main C
-// grammar, rather than the generated Visitor interface.
+// rather than the generated Visitor interface.
 std::vector<Line> parseProgram(const std::string &text) {
     antlr4::ANTLRInputStream input(text);
     PccAsmLexer lexer(&input);
@@ -206,13 +193,11 @@ std::vector<Line> parseProgram(const std::string &text) {
 
 // --- Two-pass assembly ----------------------------------------------------
 
-// One combine-into-mem_[wordOffset] fixup a future linker still needs
-// to apply, for a symbol this file's own labels don't define - see
-// Pdp7Assembler.h's own comment on `allowExternal`. `op` is the
-// syllable's own combine operator ('+', '-', or '|' for the default
-// OR) - the external symbol's eventual resolved value gets combined
-// into whatever this word already holds (computed treating the
-// external syllable as contributing 0) using that same operator.
+// A combine-into-mem_[wordOffset] fixup the linker still needs to
+// apply, for a symbol undefined in this file. `op` is the syllable's
+// combine operator ('+', '-', or '|' for the default OR), applied
+// when the symbol's resolved value is combined into the word (which
+// was computed treating the external syllable as 0).
 struct Relocation {
     uint32_t wordOffset;
     std::string symbolName;
@@ -224,9 +209,8 @@ class Assembler {
     explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {
         symbols_ = builtins();
         symbols_["."] = BASE;
-        // An object file's own text starts at word 0, not the
-        // whole-program convention's 4096 - it's the linker's job to
-        // place it, not this assembler's (see Pdp7Assembler.h).
+        // An object file's text starts at word 0; placing it is the
+        // linker's job, not the assembler's.
         symbols_[".."] = allowExternal_ ? 0 : kPdp7BaseAddress;
     }
 
@@ -255,26 +239,18 @@ class Assembler {
                 std::vector<std::pair<char, std::string>> pending;
                 uint32_t word = evalExpr(seg.syllables, &pending);
                 if (stage_ == 2) {
-                    // A RELATIVE-flagged word embeds an address that
-                    // was resolved relative to this object's own `..`
-                    // (0 in object mode, see the constructor) - once
-                    // the linker places this object at its real,
-                    // final base, that embedded address needs exactly
-                    // the same "+base" shift storeWord() itself would
-                    // apply here if `..` were already final. In
-                    // object mode it isn't, so record that shift as a
-                    // relocation against the reserved pseudo-symbol
-                    // "..", which Linker.cpp resolves to this specific
-                    // object's own assigned base - never looked up in
-                    // any other object's symbol table - instead of
-                    // silently losing it the way a plain external
-                    // reference's `pending` entries already don't.
-                    // This applies to every address-valued word, not
-                    // only ones that also have a genuine external
-                    // reference (`pending` may be empty here and this
-                    // still fires) - pdp7 has no PC-relative
-                    // addressing mode at all, unlike 8086's rel16/rel8,
-                    // so there's no self-correcting case to exclude.
+                    // A RELATIVE-flagged word embeds an address
+                    // resolved relative to this object's own `..` (0
+                    // in object mode). Once the linker places the
+                    // object at its final base, that address needs
+                    // the same "+base" shift storeWord() would apply
+                    // if `..` were already final - recorded as a
+                    // relocation against the pseudo-symbol "..", which
+                    // Linker.cpp resolves to this object's own
+                    // assigned base. Applies to every address-valued
+                    // word, not just ones with a genuine external
+                    // reference, since pdp7 has no PC-relative
+                    // addressing mode to exclude.
                     bool needsBaseShift = allowExternal_ && (word & RELATIVE);
                     uint32_t idx = storeWord(line.sourceText, lineConsumed, word);
                     if (needsBaseShift) relocations_.push_back({idx, "..", '+'});
@@ -285,20 +261,16 @@ class Assembler {
         }
     }
 
-    // No local-vs-global label scoping (unlike pdp-assembler) -
-    // every label Pdp7Codegen emits is already globally unique by
-    // construction, so a flat map is enough; see Pdp7Assembler.h.
+    // Every label Pdp7Codegen emits is already globally unique, so a
+    // flat map is enough - no local/global label scoping needed.
     void setLabel(const std::string &name, uint32_t loc) {
         symbols_[name] = loc;
         labels_[name] = loc;
     }
 
     // `pending`, if given, collects (op, symbolName) for any syllable
-    // that turned out to be an external reference (allowExternal_
-    // only - see resolveSyllable) instead of failing; its caller
-    // (processLine) is what actually knows the final word offset to
-    // record the relocation against, since this function only ever
-    // sees one expression's own syllables, not where it lands.
+    // that resolved as an external reference; the caller (processLine)
+    // knows the final word offset to record the relocation against.
     uint32_t evalExpr(const std::vector<Syllable> &syls, std::vector<std::pair<char, std::string>> *pending) {
         uint32_t word = 0, flags = 0;
         for (const auto &syl : syls) {
@@ -328,11 +300,9 @@ class Assembler {
         return word;
     }
 
-    // `wasExternal`, if given, is set true when `syl` named a symbol
-    // not defined anywhere in this file and `allowExternal_` let that
-    // through rather than failing - the caller (evalExpr) is then
-    // responsible for recording a relocation, since this function
-    // doesn't know the combine-op or the eventual word offset.
+    // `wasExternal`, if given, is set true when `syl` names a symbol
+    // undefined in this file and `allowExternal_` lets it through; the
+    // caller (evalExpr) then records the relocation.
     uint32_t resolveSyllable(const Syllable &syl, bool *wasExternal = nullptr) {
         if (syl.kind == SylKind::Number) {
             const std::string &t = syl.text;
@@ -357,36 +327,25 @@ class Assembler {
     }
 
     // Checks the same invariant Pdp7LinkerFactory.cpp's own
-    // `checkAddressSafe` does, for the one code path that never goes
-    // near that file at all: the whole-program (non-`--format=coff`)
-    // compile, where `..` resolves to `kPdp7BaseAddress` directly, in
-    // this one pass, with no relocation or later linker patch step
-    // ever involved (see Pdp7Assembler.h's own `allowExternal`
-    // comment). `addrPart` isolates the low 13 bits the same way - an
-    // instruction's own opcode bits (every real pdp7 opcode occupies
-    // bit 13 or higher) ride through this check untouched, same
-    // reasoning as that file's own `patchPdp7Add`.
+    // `checkAddressSafe` does, for the whole-program compile path
+    // where `..` resolves to `kPdp7BaseAddress` directly with no
+    // linker patch step. `addrPart` isolates the low 13 bits the same
+    // way, so opcode bits above bit 13 ride through untouched.
     void checkAddressSafe(uint32_t addrPart) {
         if (addrPart >= kAddressFieldLimit) {
             std::ostringstream msg;
             msg << "address " << addrPart << " (0" << std::oct << addrPart
                 << " octal) is past the pdp7's 8192-word (020000 octal) direct-addressing field limit - "
-                   "program too large; a reference to any address at or beyond 8192 would silently "
-                   "corrupt the instruction it's stored in instead of erroring, so this is refused up "
-                   "front";
+                   "program too large";
             fail(msg.str());
         }
         if (addrPart >= kStackSafeLimit) {
             std::ostringstream msg;
             msg << "address " << addrPart << " (0" << std::oct << addrPart << " octal) is within " << std::dec
                 << kStackReserve
-                << " words of the pdp7's own 8192-word address space top - too close to where the "
-                   "runtime call stack (__sp, starting at 8191 and growing downward with no reserved "
-                   "region or bounds check of its own) will reach during real execution; a reference "
-                   "placed here wouldn't error, it would just get silently overwritten by ordinary "
-                   "stack usage at some real call depth, so this is refused up front instead - program "
-                   "too large, the same as the direct-addressing field limit above, just with a safety "
-                   "margin for the stack it doesn't know about";
+                << " words of the pdp7's 8192-word address space top, too close to where the runtime "
+                   "call stack (starting at 8191, growing downward with no bounds check) will reach - "
+                   "program too large";
             fail(msg.str());
         }
     }
@@ -424,9 +383,7 @@ class Assembler {
     int stage_ = 1;
 };
 
-// --- Output formats - same byte-packing as ----------------------------
-// ../../../../pdp-assembler/src/Assembler.cpp::writeOutput, verified
-// correct by that project; reimplemented here rather than reused.
+// --- Output formats -----------------------------------------------------
 
 std::string writeA7Out(const Assembler &a) {
     std::ostringstream out;
@@ -462,13 +419,10 @@ std::string writeList(const Assembler &a) {
 }
 
 // `Ptr`/`Rim`: 3 bytes per 18-bit word (6 bits each, high bit set),
-// only ever covering memory from `..` (the relocation base) upward -
-// an address placed below that is silently absent from the real
-// binary even though it shows up fine in an `a7out` listing. This
-// exact behavior must be preserved: it's load-bearing for the
-// placement feature (`. = ..+N`), and a previous version of that
-// feature that didn't respect it hung the real simulator outright
-// (see docs/ir.md's "Fixed absolute placement").
+// covering only memory from `..` (the relocation base) upward - an
+// address below that is absent from the binary even though it shows
+// in an `a7out` listing. Load-bearing for the placement feature
+// (`. = ..+N`).
 std::string writePtrOrRim(const Assembler &a, bool rim) {
     std::ostringstream out;
     uint32_t base = a.base();
@@ -488,31 +442,16 @@ std::string writePtrOrRim(const Assembler &a, bool rim) {
     return out.str();
 }
 
-// COFF (see ../../fileformat/coff/CoffFormat.h): same "only memory from `..`
-// upward" coverage as Ptr/Rim, packed 3 bytes per 18-bit word (the
-// top 6 bits of the 24-bit field are always zero, since no word ever
-// carries more than 18 significant bits) rather than Ptr/Rim's paper-
-// tape-specific 6-bits-per-byte/high-bit-set scheme - this is a plain
-// byte-oriented section, not a tape image. `kPdp7CoffMachine` (see
-// Pdp7Assembler.h) is a custom, non-registered COFF machine ID
-// (PDP-7 predates COFF, so there's no real one to use) chosen only
-// to be unique and memorable.
-
-// Relocation `type` values - see Pdp7Assembler.h's own
-// kPdp7RelocOr/Add/Sub comment (exported from there, not redeclared
-// here, so Pdp7Linker.cpp uses the exact same values).
+// COFF: same "only memory from `..` upward" coverage as Ptr/Rim,
+// packed 3 bytes per 18-bit word (a plain byte-oriented section, not
+// a tape image).
 
 // Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - shared by `writeCoff()` (serializes it
-// straight to COFF bytes, for `assemblePdp7`'s own `Coff` case) and
-// `assemblePdp7Object()` (returns it directly - see Pdp7Assembler.h's
-// own comment on why). Every word is packed into 3 raw `.textBytes`
-// bytes, big-endian (high 2 bits of the top byte always 0, since an
-// 18-bit word never needs more than 3 bytes) - see
-// GenericLinker.h's own `GenericLinkerConfig::addressUnitBytes`
-// comment for how ../../linker/factory/Pdp7LinkerFactory.cpp's own
-// `makePdp7Linker()` tells GenericLinker to treat every 3 of these
-// packed bytes as one addressable/relocatable pdp7 word.
+// Assembler produced - shared by `writeCoff()` (serializes it to COFF
+// bytes) and `assemblePdp7Object()` (returns it directly). Every word
+// is packed into 3 raw `.textBytes` bytes, big-endian; see
+// Pdp7LinkerFactory.cpp's `makePdp7Linker()` for how GenericLinker
+// treats every 3 of these bytes as one pdp7 word.
 ObjectFile buildObjectFile(const Assembler &a) {
     uint32_t base = a.base();
     const auto &mem = a.mem();

@@ -13,36 +13,25 @@ namespace {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
-// Where the whole program is loaded and starts executing - same
-// "bare flat binary, test harness sets PC here directly" convention
-// as every other target's own `kBaseAddress` (see
-// Pdp11Codegen.cpp/M68kCodegen.cpp), chosen well clear of the M16C's
-// own fixed low-memory special-function-register block (0x0000-
-// 0x03FF on real silicon) even though nothing here ever touches it.
+// Load/execution start address for a whole-program raw binary; chosen clear
+// of the M16C's fixed low-memory special-function-register block
+// (0x0000-0x03FF on real silicon).
 constexpr uint32_t kBaseAddress = 0x0400;
-// Where this backend's own entry sequence points SP (the real
-// hardware stack pointer, used by `push.w`/`pop.w` and by
-// `jsr.w`/`rts`) before calling main() - comfortably above the loaded
-// program and its data, growing down into otherwise-unused memory.
+// Initial stack pointer, comfortably above the loaded program and its data.
 constexpr uint32_t kInitialSp = 0xE000;
 }  // namespace
 
 void M16cCodegen::declareTemp(const std::string &lbl) { trailer_.push_back(lbl + ": dw 0"); }
 
-// A literal element's own decimal text, or a symbol element's own
-// label text (the referenced Slot's or Function's own address) -
-// M16cAssembler.cpp's own `dw`/`db` directives already evaluate any
-// expr operand, symbol included, the same way `lea`/`jsr`'s own label
-// operand already does.
+// A literal element's decimal text, or a symbol element's label text.
 std::string M16cCodegen::arrayElemText(const ir::ArrayInitElem &e) {
     if (!e.isSymbol) return std::to_string(static_cast<int>(static_cast<uint16_t>(e.value)));
     return e.slot ? label(e.slot) : label(e.func);
 }
 
-// `elemType`'s own width picks `db` (a `char` array, one byte per
-// element) vs `dw` (every other array - a `long`/`long long` array's
-// own elements still only ever occupy one native word each, a known
-// gap - see genIndex()'s own comment).
+// `elemType`'s width picks `db` (`char` array, one byte per element) vs `dw`
+// (every other array - a `long`/`long long` array element still only
+// occupies one native word, see genIndex()).
 void M16cCodegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType) {
     if (values.empty()) return;
     const char *directive = widthOfType(elemType) == 1 ? "db" : "dw";
@@ -55,18 +44,9 @@ void M16cCodegen::declareArray(const std::string &lbl, const std::vector<ir::Arr
     trailer_.push_back(line.str());
 }
 
-// Stores arrayInit into `slot`'s own frame slots - every call needs
-// this re-run, since (unlike a Global's one static trailer) a
-// Local's storage is this activation's own fresh frame region, not
-// pre-set to anything; arrayInit is always fully populated up to
-// arraySize (zero-padded even with no source-level initializer), so
-// this always leaves the whole array in a known state, same as a
-// Global array's static trailer always did. An element's own address
-// is `slot->frameOffset` plus `i` byte-widths below `fb` (see
-// genIndexAddr()'s own comment on this same `elemShift()`-scaled
-// arithmetic) - a `char` array's own elements are one byte apart
-// (`movb`), every other array's own elements one word apart (`mov.w`,
-// same known one-native-word-per-element gap as declareArray()).
+// Stores arrayInit into `slot`'s frame slots; re-run on every call since a
+// Local's storage (unlike a Global's static trailer) isn't pre-set. An
+// element's address is `slot->frameOffset` plus `i` byte-widths below `fb`.
 void M16cCodegen::genLocalArrayInit(const ir::Slot *slot) {
     int stride = widthOfType(slot->type) == 1 ? 1 : 2;
     bool isChar = stride == 1;
@@ -82,19 +62,12 @@ std::string M16cCodegen::generate(const ir::Program &prog, bool objectMode) {
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // IRBuilder guarantees a parameterless `main` exists whenever
-    // allowExternal is false (always true in whole-program mode), so
-    // mainFn is never null there.
 
     code_ << "org " << (objectMode ? 0 : kBaseAddress) << "\n\n";
     if (!objectMode) {
         code_ << "_start:\n";
         code_ << "    mov.w " << kInitialSp << ",sp\n";
         code_ << "    jsr.w " << label(mainFn) << "\n";
-        // The result sits in R0 the moment execution reaches `halt` - the
-        // same "a real, directly inspectable register" rationale as the
-        // pdp11/68000 backends' own R0/D0 (see M16cCodegen.h's own header
-        // comment).
         code_ << "halt:\n    jmp halt\n\n";
     }
 
@@ -102,8 +75,7 @@ std::string M16cCodegen::generate(const ir::Program &prog, bool objectMode) {
 
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        if (slot->isExternal) continue;  // never possible here (no real separate compilation - see above), but
-                                          // matches every other backend's own defensive check at this exact spot
+        if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit, slot->type);
@@ -116,10 +88,9 @@ std::string M16cCodegen::generate(const ir::Program &prog, bool objectMode) {
                                     std::to_string(static_cast<int>(static_cast<uint16_t>(v))) + "  ; " +
                                     slot->sourceName);
             } else {
-                // `long`/`long long` global - no 32-/64-bit data
-                // directive in this dialect, so its own words are
-                // emitted individually (least significant first,
-                // matching `wideWordOperand()`'s own layout).
+                // No 32-/64-bit data directive in this dialect, so a
+                // `long`/`long long` global's words are emitted individually
+                // (least significant first, matching wideWordOperand()).
                 auto uv = static_cast<unsigned long>(v);
                 std::ostringstream line;
                 line << lbl << ": dw ";
@@ -139,8 +110,6 @@ std::string M16cCodegen::generate(const ir::Program &prog, bool objectMode) {
     return out.str();
 }
 
-// Single-file-only - see M6502Codegen.cpp's own version of this same
-// comment (no `--format=coff` here either).
 std::map<std::string, std::string> M16cCodegen::perFileAsm() const { return perFileAsm_; }
 
 void M16cCodegen::genFunction(const ir::FunctionBody &fn) {
@@ -204,25 +173,16 @@ void M16cCodegen::genStmt(const ir::Stmt &s) {
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) {
                 genExpr(*s.initOrReturnOrExpr);
-                // A wide value sits on the stack (LSW on top - see
-                // M16cCodegen.h's own header comment) after genExpr()
-                // - pop it into r0(LSW)..r(words-1)(MSW) first, since
-                // the epilogue's own `mov.w fb,sp` is about to discard
-                // this call's whole frame (and anything still sitting
-                // above it on the stack) before `rts` ever runs - see
-                // genExpr()'s own Call case for the matching read-it-
-                // back-out-of-registers half of this convention. Every
-                // M16C register (`r0`-`r3`) is available for this - the
-                // widest type (`long long`, 4 words) exactly fills them.
+                // A wide value sits on the stack (LSW on top); pop it into
+                // r0(LSW)..r(words-1)(MSW) before the epilogue's `mov.w
+                // fb,sp` discards this call's whole frame.
                 if (isWide(s.initOrReturnOrExpr->type)) {
                     int words = wordCountOf(s.initOrReturnOrExpr->type);
                     for (int i = 0; i < words; i++) code_ << "    pop.w r" << i << "\n";
                 }
             }
-            // Early exit from the function - genFunction()'s own
-            // fall-through epilogue never runs for this path, so it
-            // needs this same frame teardown inline (see its own
-            // comment for what each instruction does).
+            // Inlined frame teardown, since genFunction()'s own epilogue
+            // never runs for this early-exit path.
             code_ << "    mov.w fb,sp\n";
             code_ << "    pop.w fb\n";
             code_ << "    rts\n";
@@ -239,11 +199,6 @@ void M16cCodegen::genStmt(const ir::Stmt &s) {
                     storeOperand(frameOperand(s.declSlot), s.declSlot->type);
                 }
             }
-            // No "else" case for a bare, uninitialized scalar: its
-            // own frame word already exists (genFunction()'s own
-            // `sub.w N,sp` reserved it) - same as a real, ordinary C
-            // automatic variable, its value is simply whatever was
-            // already in that stack slot until something assigns it.
             return;
         }
         case ir::StmtKind::ExprStmt: {
@@ -283,8 +238,7 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Assign: {
-            if (e.lhs) {  // slot[idx] = rhs - never wide (element width isn't threaded through genIndexAddr's own
-                           // store side - see genIndex()'s own comment on this known, documented limitation).
+            if (e.lhs) {  // slot[idx] = rhs - never wide (see genIndex()'s comment)
                 genIndexAddr(e.slot, *e.lhs);  // a0 = target address
                 code_ << "    push.w a0\n";
                 genExpr(*e.rhs);
@@ -307,31 +261,17 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Stores through at e.type's own width - the pointee type
-            // of a real typed pointer, or plain native-word width for
-            // the still-supported untyped-int-as-address style - see
-            // IRBuilder.cpp's own DerefAssign comment. A wide pointee
-            // has no `[a0+N]` offset addressing to lean on (this
-            // dialect's own `ld`/`st` only ever address through a0
-            // with no displacement - see M16cAssembler.cpp's own
-            // Operand comment), so each word is stored through a0
-            // one at a time, advancing it by 2 bytes between words.
+            // Stores through at e.type's width. A wide pointee has no
+            // `[a0+N]` offset addressing (this dialect's `ld`/`st` only
+            // address through a0 with no displacement), so each word is
+            // stored through a0 one at a time, advancing it 2 bytes between
+            // words.
             genExpr(*e.lhs);  // r0 = pointer value
             code_ << "    mov.w r0,a0\n";
             code_ << "    push.w a0\n";  // save the address below rhs's own pushed words
             genExpr(*e.rhs);
             if (isWide(e.type)) {
                 int words = wordCountOf(e.type);
-                // rhs left `words` words on the stack above the saved
-                // address, least-significant word on top (see
-                // genWideLoad()'s own header comment on this
-                // convention) - a0 is reloaded from beneath all of
-                // them (a non-destructive `[sp+N]` read, same idiom
-                // as the plain wide Assign's own branch above), then
-                // each word is popped off (least-significant first,
-                // matching genWideStore()'s own word-0-is-LSW
-                // convention) and stored at the matching offset from
-                // the pointer's own address.
                 code_ << "    mov.w [sp+" << (2 * words) << "],a0\n";
                 for (int i = 0; i < words; i++) {
                     code_ << "    pop.w r0\n";
@@ -346,18 +286,11 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::CompoundAssign: {
-            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--) - never wide, same known
-                           // limitation as the indexed Assign case above.
+            if (e.lhs) {  // slot[idx] op= rhs - never wide, same limitation as indexed Assign above
                 genIndexAddr(e.slot, *e.lhs);  // a0 = target address
                 genCompoundThroughA0(e);
                 return;
             }
-            // Plain scalar target - operandOf(slot) is a stable
-            // operand text (a label, or an fb-relative displacement -
-            // `fb` itself is restored by any nested call's own
-            // epilogue before that call ever returns, see
-            // genFunction()), never a register rhs's own evaluation
-            // could clobber, so there's nothing to hold across it here.
             genExpr(*e.rhs);              // r0 = rhs
             code_ << "    mov.w r0,r1\n";  // r1 = rhs
             loadOperand(operandOf(e.slot), e.type);  // r0 = old
@@ -398,16 +331,11 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                // Loads at e.type's own width - see DerefAssign's
-                // identical comment above.
                 genExpr(*e.rhs);  // r0 = pointer value
                 code_ << "    mov.w r0,a0\n";
                 if (isWide(e.type)) {
-                    // Pushes MSW first .. LSW last (ending on top),
-                    // matching genWideLoad()'s own convention - each
-                    // word is read through a0 one at a time (see
-                    // DerefAssign's identical comment above on why
-                    // there's no `[a0+N]` form to use instead).
+                    // Pushes MSW first .. LSW last (ending on top); each word
+                    // read through a0 one at a time (no `[a0+N]` form exists).
                     int words = wordCountOf(e.type);
                     if (words > 1) code_ << "    add.w " << (2 * (words - 1)) << ",a0\n";
                     for (int i = words - 1; i >= 0; i--) {
@@ -431,20 +359,12 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            // Arguments are pushed onto the real stack, last-declared
-            // one first, so the first argument ends up closest to the
-            // return address `jsr.w` is about to push - matching the
-            // address every Param already addresses itself by (see
-            // M16cCodegen.h's `frameOperand()`: paramIndex 0 is
-            // `fb+4`, the lowest positive offset). Each callee lays
-            // them into ITS OWN frame itself; nothing here needs to
-            // know anything about the callee's parameter count or
-            // names beyond `e.args.size()`. A wide argument's own
-            // genExpr() already pushes its own `words` words directly
-            // (see this file's own wide-value stack convention); a
-            // narrow one leaves its value in r0, which this loop
-            // pushes itself. The caller cleans the pushed words back
-            // off afterward (`add.w N,sp`).
+            // Arguments are pushed last-declared first, so argument 0 ends
+            // up closest to the return address `jsr.w` is about to push
+            // (matching frameOperand()'s `fb+4` for paramIndex 0). A wide
+            // argument pushes its own `words` words directly; a narrow one
+            // is pushed here from r0. The caller cleans the pushed words
+            // back off afterward.
             int totalWords = 0;
             for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
@@ -458,11 +378,9 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
             code_ << "    jsr.w " << label(e.func) << "\n";
             if (totalWords > 0) code_ << "    add.w " << (2 * totalWords) << ",sp\n";
             if (isWide(e.type)) {
-                // The callee left its own wide return value in
-                // r0(LSW)..r(words-1)(MSW) - see genStmt()'s own
-                // Return case - push it back onto the stack as this
-                // expression's own result, in the usual LSW-on-top
-                // order every wide helper expects.
+                // The callee left its wide return value in r0(LSW)..
+                // r(words-1)(MSW) (see genStmt()'s Return case); push it
+                // back as this expression's result, LSW on top.
                 int words = wordCountOf(e.type);
                 for (int i = words - 1; i >= 0; i--) {
                     code_ << "    mov.w r" << i << ",r0\n    push.w r0\n";
@@ -471,22 +389,11 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::CallPtr: {
-            // e.args is always empty here - IRBuilder.cpp rejects any
-            // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr): there's no way to push
-            // an argument into the callee's own frame (see
-            // ExprKind::Call's own comment) until the callee is known,
-            // which it never is at compile time for this kind.
-            //
-            // The real M16C `JSRI.W` indirect-call instruction doesn't
-            // treat its own operand's address as the callee directly -
-            // it fetches the actual entry address from the WORD stored
-            // there (see M16cAssembler.cpp's own comment), so the
-            // callee's own address (just computed into r0) is spilled
-            // to a fresh temp word cell first, then `jsri.w` is pointed
-            // at that cell - a real hardware instruction, used exactly
-            // the way it calls through an ordinary function-pointer
-            // variable in memory.
+            // The real `JSRI.W` indirect-call instruction fetches the entry
+            // address from the WORD stored at its operand (not the operand
+            // address itself), so the callee's address (just computed into
+            // r0) is spilled to a temp cell first, then `jsri.w` points at
+            // that cell.
             genExpr(*e.lhs);  // r0 = the callee's own entry address
             std::string T = allocTemp();
             declareTemp(T);
@@ -499,10 +406,6 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Intrinsic: {
-            // Real M16C flag-register interrupt enable/disable -
-            // `FSET I`/`FCLR I`, the same real hardware feature as the
-            // 8080/6502/8086 backends' own `ei`/`di`/`cli`/`sti` (see
-            // I8080Codegen.cpp).
             code_ << "    " << (e.op == "ion" ? "fset i" : "fclr i") << "\n";
             return;
         }
@@ -515,28 +418,16 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
     }
 }
 
-// Leaves slot[idxExpr]'s own effective address in `A0` - see
-// M16cCodegen.h's own header comment on why that's a dedicated
-// address register, never aliasing `R0`/`R1`. `slot->arraySize > 0`
-// means the base is a compile-time-known address (a Global's own
-// label, loaded via `lea`, or a Local's own `fb`-relative address,
-// also loaded via `lea` - see M16cCodegen.h's `frameOperand()`);
-// otherwise `slot` is a plain pointer variable, so the base instead
-// comes from *reading* that variable's own stored value first (via
-// `operandOf()`, the same for every Slot kind, since a runtime
-// pointer VALUE is being offset here, not the slot's own storage
-// address).
+// Leaves slot[idxExpr]'s effective address in `A0`. `slot->arraySize > 0`
+// means a compile-time-known base (loaded via `lea`); otherwise `slot` is a
+// plain pointer variable, so the base comes from reading its stored value.
 //
 // A Global array's elements sit at increasing addresses as the index
-// increases (an ordinary label-plus-offset layout), but a Local
-// array's elements sit at DECREASING addresses as the index increases
-// - `frameOperand()`'s own address is the array's *first* word,
-// closest to `fb`, and later words are further below it (each Local's
-// own frameOffset only ever grows downward from `fb` - see
-// M16cCodegen.h's own comment) - so this is base-minus-scaled-index
-// for a Local, not base-plus, the mirror image of a Global's layout.
-// Getting this backwards corrupts the saved `fb`/return address the
-// moment anything indexes a Local array past element 0.
+// increases, but a Local array's elements sit at DECREASING addresses
+// (frameOperand()'s address is the array's first word, closest to `fb`;
+// later words are further below it) - so indexing is base-minus-scaled-index
+// for a Local, base-plus for a Global. Getting this backwards corrupts the
+// saved `fb`/return address as soon as anything indexes past element 0.
 void M16cCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // r0 = index
     int shift = elemShift(slot->type);
@@ -554,16 +445,11 @@ void M16cCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     }
 }
 
-// A `char` array's own element is one byte (`ldb`, which sign/zero-
-// extends into `r0` the same way `loadOperand()`'s own `movb` does -
-// see M16cAssembler.cpp's own comment); every other array's own
-// element still only ever reads one native word (`ld`) regardless of
-// its own real width - a known, documented gap for `long`/`long long`
-// array elements specifically (genIndexAddr() already scales the
-// index correctly via elemShift(), but a multi-word element's own
-// remaining words are never read/written), the same scope limitation
-// this project's own pdp11 backend accepts (see Pdp11Codegen.h's own
-// header comment) - scalars of every width work fully.
+// A `char` array element is one byte (`ldb`); every other array element
+// still only reads one native word (`ld`) regardless of its real width - a
+// known gap for `long`/`long long` array elements (genIndexAddr() scales the
+// index correctly, but a multi-word element's remaining words are never
+// read/written); scalars of every width work fully.
 void M16cCodegen::genIndex(const ir::Expr &e) {
     genIndexAddr(e.slot, *e.lhs);
     code_ << "    " << (widthOfType(e.slot->type) == 1 ? "ldb" : "ld") << " a0,r0\n";
@@ -589,10 +475,8 @@ void M16cCodegen::genAddrOf(const ir::Expr &operand) {
 
 void M16cCodegen::genBinary(const ir::Expr &e) {
     const std::string &op = e.op;
-    // Every arithmetic/bitwise/comparison operand here already shares
-    // one common type (IRBuilder's own usual-arithmetic-conversion
-    // pass - see Type.h) via `e.lhs->type`, except shift (only the
-    // LHS's own type matters) and &&/|| (width-independent).
+    // Every operand here shares one common type via `e.lhs->type`, except
+    // shift (only the LHS's type matters) and &&/|| (width-independent).
     Type operandType = e.lhs->type;
     bool wide = isWide(operandType);
     bool isUnsigned = operandType.isUnsigned;
@@ -640,7 +524,7 @@ void M16cCodegen::genBinary(const ir::Expr &e) {
         genExpr(*e.rhs);
         code_ << "    pop.w r1\n";  // r1 = lhs, r0 = rhs
         const char *insn = (op == "&") ? "and.w" : (op == "|") ? "or.w" : "xor.w";
-        code_ << "    " << insn << " r1,r0\n";  // r0 = r0 OP r1 = rhs OP lhs (every one of these is commutative)
+        code_ << "    " << insn << " r1,r0\n";  // r0 = r0 OP r1 (commutative)
         return;
     }
     if (op == "<<" || op == ">>") {
@@ -666,12 +550,10 @@ void M16cCodegen::genBinary(const ir::Expr &e) {
     genCompare(op, *e.lhs, *e.rhs, isUnsigned);
 }
 
-// Real variable-count hardware shift - `SHL.W` for a left shift or an
-// unsigned (logical) right shift, `SHA.W` (arithmetic - sign-
-// preserving) for a signed right shift (see M16cCodegen.h's own
-// header comment on its own signed-count convention: negative =
-// right), which is why `isLeft` only ever decides whether to `NEG.W`
-// the count first, not which instruction to use.
+// Real variable-count hardware shift: `SHL.W` for a left shift or unsigned
+// right shift, `SHA.W` (sign-preserving) for a signed right shift - its
+// signed count convention (negative = right) is why `isLeft` only decides
+// whether to `NEG.W` the count, not which instruction to use.
 void M16cCodegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push.w r0\n";
@@ -682,11 +564,8 @@ void M16cCodegen::genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft
     code_ << "    " << ((isLeft || isUnsigned) ? "shl.w" : "sha.w") << " r1,r0\n";
 }
 
-// Real hardware multiply (`MUL.W`) - see M16cCodegen.h's own header
-// comment on which half of its 32-bit product (`R0`, the low word) is
-// this project's own 16-bit truncated answer; the low word of a
-// multiply's own full product is identical whether the operands are
-// signed or unsigned, so this one routine already serves both.
+// `MUL.W`'s low result word is identical whether the operands are signed or
+// unsigned, so this one routine serves both.
 void M16cCodegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     code_ << "    push.w r0\n";
@@ -695,17 +574,11 @@ void M16cCodegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << "    mul.w r1,r0\n";   // r2:r0 = r0 * r1 = rhs * lhs (high word:low word)
 }
 
-// Real hardware divide (`DIVU.W`) only ever divides unsigned
-// magnitudes - a signed division/modulo instead records each
-// operand's own sign as a 0/1 flag, negates it to that same
-// non-negative magnitude, divides, and restores the quotient's sign
-// (negative iff the operands' signs disagreed) and the remainder's
-// sign (always the dividend's own, matching C's truncating-toward-
-// zero convention) - the same "widen/fix up around a narrower real
-// hardware op" shape every signed-division backend here uses, just
-// fixing up the *sign* instead of the *width* (there's no dedicated
-// sign-extending widen instruction on this target to begin with - see
-// genConvert()'s own comment).
+// `DIVU.W` only divides unsigned magnitudes, so a signed division/modulo
+// records each operand's sign, negates to a non-negative magnitude, divides,
+// then restores the quotient's sign (negative iff the signs disagreed) and
+// the remainder's sign (always the dividend's, matching C's
+// truncate-toward-zero convention).
 void M16cCodegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
     if (isUnsigned) {
         code_ << "    mov.w 0,r2\n";
@@ -728,8 +601,7 @@ void M16cCodegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
     std::string Lskip = newLabel();
     if (wantRemainder) {
         code_ << "    mov.w r2,r0\n";
-        code_ << "    pop.w r3\n";  // r3 = dividend-negative flag (the divisor's own sign doesn't affect the
-                                     // remainder's own sign at all)
+        code_ << "    pop.w r3\n";  // r3 = dividend-negative flag (divisor's sign doesn't affect the remainder)
         code_ << "    cmp.w 0,r3\n    jeq " << Lskip << "\n";
         code_ << "    neg.w r0\n";
         code_ << Lskip << ":\n";
@@ -761,12 +633,8 @@ void M16cCodegen::genCompare(const std::string &op, const ir::Expr &lhs, const i
     err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
 }
 
-// `CMP.W src,dst` sets the real signed condition codes for `dst - src`
-// directly in hardware (matching every other two-operand mnemonic's
-// own `dst = dst OP src` convention - see M16cCodegen.h's own header
-// comment), so `r0`(rhs)/`r1`(lhs) is exactly `lhs - rhs`, with no
-// further sign/overflow fixup needed, the same as the pdp11/68000/
-// 8086 backends' own comparisons.
+// `CMP.W src,dst` sets flags for `dst - src`, so `cmp.w r0,r1` (r0=rhs,
+// r1=lhs) computes `lhs - rhs` with no further sign/overflow fixup needed.
 void M16cCodegen::emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &jumpIfTrue) {
     genExpr(lhs);
     code_ << "    push.w r0\n";
@@ -780,13 +648,6 @@ void M16cCodegen::emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const st
     code_ << Ldone << ":\n";
 }
 
-// After genExpr(e) just left `e`'s own value - r0, if narrow, or
-// `wordCountOf(e.type)` words on the stack if wide (see
-// M16cCodegen.h's own header comment on this convention) - this
-// leaves r0 holding a plain 0/nonzero truth value, with any wide
-// stack space already released; a bare `cmp.w 0,r0` is never wrong to
-// run again afterward (idempotent), so every call site here still
-// does its own, matching the narrow case's existing shape exactly.
 void M16cCodegen::testTruthy(const ir::Expr &e) {
     if (!isWide(e.type)) {
         code_ << "    cmp.w 0,r0\n";
@@ -835,12 +696,8 @@ void M16cCodegen::genLogicalNot(const ir::Expr &rhs) {
     code_ << Ldone << ":\n";
 }
 
-// A `char` load sign-extends for free (real M16C hardware: `MOV.B`
-// into a register destination always sign-extends to 16 bits, same as
-// the pdp11 backend's own `MOVB` - see Pdp11Codegen.cpp's own
-// `loadOperand()`), so an unsigned `char` has to mask the high byte
-// back off afterward - the one extra instruction a signed load
-// doesn't need.
+// `movb` into a register destination always sign-extends to 16 bits, so an
+// unsigned `char` has to mask the high byte back off afterward.
 void M16cCodegen::loadOperand(const std::string &mem, Type type) {
     if (widthOfType(type) == 1) {
         code_ << "    movb " << mem << ",r0\n";
@@ -867,14 +724,6 @@ void M16cCodegen::narrowR0To(Type to) {
     code_ << "    movb r0,r0\n";  // narrow to the low byte, then (register dest) sign-extend back up
 }
 
-// `op` applied to r0=old, r1=rhs, leaving the raw new value in r0 -
-// r0/r1 already sit in exactly the roles genBinary()'s own per-
-// operator case expects them in (dividend/value-to-shift in r0,
-// divisor/count in r1 - see this method's own header comment in
-// M16cCodegen.h), so every one of these is the exact same mnemonic/
-// operand-shape genBinary() already emits, give or take which of two
-// already-used operand orders a commutative op's own instruction
-// text happens to use.
 void M16cCodegen::genCompoundOp(const std::string &op, Type type) {
     bool isUnsigned = type.isUnsigned;
     if (op == "+") {
@@ -898,24 +747,14 @@ void M16cCodegen::genCompoundOp(const std::string &op, Type type) {
         code_ << "    " << insn << " r1,r0\n";
         return;
     }
-    // "<<" or ">>" - real variable-count hardware shift, same
-    // signed-count convention as genShift() (negative = right).
+    // "<<" or ">>" - same signed-count convention as genShift().
     if (op != "<<") code_ << "    neg.w r1\n";
     code_ << "    " << ((op == "<<" || isUnsigned) ? "shl.w" : "sha.w") << " r1,r0\n";
 }
 
-// `a0` must already hold the resolved address on entry (see
-// genIndexAddr()/the indexed Assign case, or `mov.w r0,a0` off a
-// dereferenced pointer value, for the two ways a caller gets there).
-// `e.rhs`'s own evaluation can recursively reach arbitrarily complex
-// codegen (calls, nested expressions) that's free to clobber r0-r3 -
-// exactly the reason the indexed Assign case and DerefAssign already
-// stash `a0` on the real hardware stack across it rather than
-// trusting it to survive in place; genCompoundOp() itself never
-// touches `a0` (see genBinary()'s/genMul()'s/genDivMod()'s/
-// genShift()'s own bodies, none of which ever reference it), so
-// unlike this backend's divide-by-reuse counterparts on the 8008/
-// 65C02, `a0` needs no second re-stash around that call.
+// `e.rhs`'s evaluation can recursively reach codegen that clobbers r0-r3, so
+// `a0` is stashed on the stack across it; genCompoundOp() itself never
+// touches `a0`.
 void M16cCodegen::genCompoundThroughA0(const ir::Expr &e) {
     code_ << "    push.w a0\n";    // stash address across rhs's own evaluation
     genExpr(*e.rhs);               // r0 = rhs
@@ -930,11 +769,6 @@ void M16cCodegen::genCompoundThroughA0(const ir::Expr &e) {
     if (e.yieldOld) code_ << "    pop.w r0\n";  // r0 = old (final result)
 }
 
-// Word `wordIndex` (0 = least significant) of `slot`'s own multi-word
-// storage - word 0 sits at `slot`'s own ordinary (scalar) address,
-// each later word 2 bytes further from `fb`/the label (see IR.h's own
-// comment on how a type wider than one word occupies consecutive
-// storage units).
 std::string M16cCodegen::wideWordOperand(const ir::Slot *slot, int wordIndex) const {
     int off = 2 * wordIndex;
     if (slot->kind == ir::SlotKind::Global) {
@@ -946,9 +780,6 @@ std::string M16cCodegen::wideWordOperand(const ir::Slot *slot, int wordIndex) co
     return "[fb-" + std::to_string(slot->frameOffset + off) + "]";
 }
 
-// Pushes `slot`'s own `words`-word value, least-significant word on
-// top (pushed last) - see M16cCodegen.h's own header comment on this
-// convention, shared by every wide (`long`/`long long`) helper below.
 void M16cCodegen::genWideLoad(const ir::Slot *slot, int words) {
     for (int i = words - 1; i >= 0; i--) {
         code_ << "    mov.w " << wideWordOperand(slot, i) << ",r0\n";
@@ -965,8 +796,6 @@ void M16cCodegen::genWideLoadLiteral(long value, int words) {
     }
 }
 
-// Pops `words` words off the stack (least-significant on top) into
-// `slot`'s own storage.
 void M16cCodegen::genWideStore(const ir::Slot *slot, int words) {
     for (int i = 0; i < words; i++) {
         code_ << "    pop.w r0\n";
@@ -974,19 +803,10 @@ void M16cCodegen::genWideStore(const ir::Slot *slot, int words) {
     }
 }
 
-// `long`/`long long` add/sub - word 0 is a plain `add.w`/`sub.w`
-// (setting the real carry/borrow flag for the next word), each later
-// word folds that flag in via `adc.w`/`sbb.w` (real M16C add-with-
-// carry/subtract-with-borrow - see M16cAssembler.cpp's own comment).
-// Both operands are ordinary `[sp+N]` memory operands directly (no
-// register needed in between - this dialect's own two-operand
-// instructions accept any addressing mode on either side) - they
-// already sit on the stack after evaluating lhs then rhs (lhs pushed
-// first, so it's the deeper block; rhs is on top). Writing every
-// result word over lhs's own slot, then discarding exactly rhs's now-
-// stale block with one `add.w`, leaves lhs's block - now holding the
-// result - as the new top, matching every wide helper's shared
-// "result replaces both operands" convention.
+// Word 0 is a plain `add.w`/`sub.w` (sets the carry/borrow flag), each later
+// word folds that flag in via `adc.w`/`sbb.w`. Writing every result word
+// over lhs's slot, then discarding rhs's now-stale block, leaves lhs's
+// block - holding the result - as the new stack top.
 void M16cCodegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd, int words) {
     genExpr(lhs);
     genExpr(rhs);
@@ -999,22 +819,12 @@ void M16cCodegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAd
     code_ << "    add.w " << (2 * words) << ",sp\n";
 }
 
-// Two's-complement negation in place: `not.w` every word first, then
-// `add.w 1` into the least significant word and `adc.w 0` (fold the
-// resulting carry in, add nothing else) up through the rest - the
-// same chained-carry shape as genWideAdd().
 void M16cCodegen::genWideNegate(int words) {
     for (int i = 0; i < words; i++) code_ << "    not.w [sp+" << (2 * i) << "]\n";
     code_ << "    add.w 1,[sp+0]\n";
     for (int i = 1; i < words; i++) code_ << "    adc.w 0,[sp+" << (2 * i) << "]\n";
 }
 
-// Every bitwise operator here has a real, direct M16C instruction
-// (`and.w`/`or.w`/`xor.w`, each already working against any operand
-// kind, memory included - unlike this project's own pdp11 backend,
-// which has no real hardware AND and has to synthesize one via
-// De Morgan's law - see Pdp11Codegen.cpp's own comment), so this is
-// simply that one instruction applied word by word.
 void M16cCodegen::genWideBitwise(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &op, int words) {
     genExpr(lhs);
     genExpr(rhs);
@@ -1027,14 +837,10 @@ void M16cCodegen::genWideBitwise(const ir::Expr &lhs, const ir::Expr &rhs, const
     code_ << "    add.w " << (2 * words) << ",sp\n";
 }
 
-// Compares two `words`-word values most-significant word first (only
-// that one comparison needs the signed/unsigned distinction - see
-// M16cCodegen.h's own header comment on `isUnsigned`); once a word
-// differs, that comparison alone decides the whole result, same as
-// every other backend's own multi-word compare. `CMP.W src,dst` sets
-// the real flags for `dst - src` (this file's own established
-// convention), so `cmp.w rhsWord,lhsWord` is directly `lhs - rhs`,
-// with no operand-order inversion needed.
+// Compares most-significant word first; once a word differs, that
+// comparison alone decides the result. Only the most significant word's
+// comparison uses the signed jump when the type is signed - lower words,
+// once reached, compare a pure magnitude.
 void M16cCodegen::genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned,
                                    int words) {
     genExpr(lhs);
@@ -1057,10 +863,6 @@ void M16cCodegen::genWideCompare(const std::string &op, const ir::Expr &lhs, con
             std::string Lcontinue = newLabel();
             code_ << "    cmp.w " << rhsOperand << "," << lhsOperand << "\n";
             code_ << "    jeq " << Lcontinue << "\n";
-            // Only the most significant word (i == words-1) uses the
-            // signed jump when the overall type is signed - every
-            // lower word, once reached, is comparing a pure
-            // magnitude (the higher words already matched).
             bool useSigned = (i == words - 1) && !isUnsigned;
             code_ << "    " << (useSigned ? signedJ : unsignedJ) << " " << Ltrue << "\n";
             code_ << "    jmp " << Lfalse << "\n";
@@ -1071,16 +873,12 @@ void M16cCodegen::genWideCompare(const std::string &op, const ir::Expr &lhs, con
     code_ << Lfalse << ":\n    mov.w 0,r0\n    jmp " << Ldone << "\n";
     code_ << Ltrue << ":\n    mov.w 1,r0\n";
     code_ << Ldone << ":\n";
-    code_ << "    add.w " << (4 * words) << ",sp\n";  // release both operand blocks - the result is a plain int
-                                                        // in r0
+    code_ << "    add.w " << (4 * words) << ",sp\n";  // release both operand blocks
 }
 
-// A `long`/`long long` shifted by a runtime count - `SHL.W`/`SHA.W`
-// only ever shift one native word, not `words` words at once, so this
-// loops over every word, one bit at a time, chaining the bit that
-// crosses a word boundary through the real carry flag via `ROL.W`/
-// `ROR.W` (real M16C single-bit rotate-through-carry - see
-// M16cAssembler.cpp's own comment).
+// `SHL.W`/`SHA.W` only shift one native word at a time, so this loops one
+// bit at a time, chaining the bit that crosses a word boundary through the
+// carry flag via `ROL.W`/`ROR.W`.
 void M16cCodegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned, int words) {
     genExpr(lhs);                // pushes `words` words
     code_ << "    push.w r1\n";  // reserve a slot to stash the shift count
@@ -1096,11 +894,9 @@ void M16cCodegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool is
         if (isUnsigned) {
             code_ << "    clc\n";
         } else {
-            // Arithmetic (sign-preserving) right shift: seed the
-            // carry from the top word's own current sign bit instead
-            // of clearing it, so the first `ror.w` below rotates that
-            // same sign bit back into the vacated top bit - the
-            // bit-serial equivalent of the narrow case's own `SHA.W`.
+            // Seed the carry from the top word's current sign bit instead of
+            // clearing it, so the first `ror.w` rotates that sign bit back
+            // into the vacated top bit.
             std::string topWord = "[sp+" + std::to_string(2 + 2 * (words - 1)) + "]";
             std::string Lneg = newLabel(), Lcdone = newLabel();
             code_ << "    cmp.w 0," << topWord << "\n    jlt " << Lneg << "\n";
@@ -1116,17 +912,9 @@ void M16cCodegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool is
     code_ << "    pop.w r1\n";  // discard the shift-count slot; the `words`-word result stays on top
 }
 
-// `long`/`long long` multiply/divide need a genuine bit-serial
-// software routine (the real `MUL.W`/`DIVU.W` only ever widen one
-// native word to two, not `words` words to `2*words`) - deliberately
-// not implemented here: this backend has no simulator in this
-// project's own test harness to verify a hand-written multi-word
-// multiply/divide algorithm against at all (the same situation this
-// project's own pdp11 backend is in - see Pdp11Codegen.cpp's own
-// genWideMul() comment) - failing loudly here is safer than shipping
-// an unverifiable, possibly wrong one. `+`/`-`/comparisons/shifts/
-// bitwise ops/negation on `long`/`long long` are all implemented and
-// don't depend on this.
+// Not implemented: `MUL.W`/`DIVU.W` only widen one native word to two, and
+// this project has no simulator to verify a hand-written multi-word
+// multiply/divide against.
 void M16cCodegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int) {
     err(lhs.line, "multiplying two 'long'/'long long' values isn't supported on this target yet - "
                   "see M16cCodegen.cpp's own genWideMul() comment");
@@ -1139,13 +927,6 @@ void M16cCodegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool, 
     (void)rhs;
 }
 
-// An implicit or explicit type conversion (see IR.h's ExprKind::
-// Convert). Every arithmetic/comparison operand narrower than `int`
-// is already promoted by IRBuilder before any Binary/Unary ever sees
-// it, so the real work here is crossing the native-word/`long`-or-
-// `long long` boundary (pushing `words` more words of sign/zero
-// extension, or popping down to just the low word) and re-narrowing a
-// `char` result (mask or sign-extend its own top byte back off).
 void M16cCodegen::genConvert(const ir::Expr &e) {
     Type from = e.lhs->type;
     Type to = e.type;
@@ -1201,12 +982,8 @@ void M16cCodegen::genConvert(const ir::Expr &e) {
     }
 }
 
-// Leaves `r1` holding `0xFFFF` if `r0` (already loaded) is negative,
-// else `0` - the "extra high word" of a sign-extending widen, used
-// wherever more than one such word is needed - no dedicated widen-
-// with-sign instruction exists on this target (unlike the pdp11
-// backend's own `SXT` - see Pdp11Codegen.cpp's own `genConvert()`), so
-// this branches on the sign once and reuses that one result.
+// No dedicated widen-with-sign instruction exists on this target, so this
+// branches on the sign once and reuses the result for every extra word.
 void M16cCodegen::genSignFillWord() {
     std::string Lneg = newLabel(), Ldone = newLabel();
     code_ << "    cmp.w 0,r0\n    jlt " << Lneg << "\n";

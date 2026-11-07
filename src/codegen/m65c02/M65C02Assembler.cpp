@@ -20,11 +20,8 @@ namespace {
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("M65C02Assembler: " + msg); }
 
 // --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
-// Same shape as ../x86_8086/I8086Assembler.cpp's own Syllable/Group -
-// a signed sum of numbers/symbols/parenthesized groups - see that
-// file's own comment. No register syntax exists in this dialect at
-// all, so there's nothing here like I8086Assembler.cpp's own
-// Operand::Reg/Mem distinction - every operand is just one of these.
+// A signed sum of numbers/symbols/parenthesized groups. No register syntax
+// exists in this dialect, so every operand is just one of these.
 
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
@@ -37,10 +34,10 @@ struct Syllable {
 struct Line {
     std::vector<std::string> labels;
     enum Kind { None, Equate, Org, Db, DbLo, DbHi, Instr } kind = None;
-    std::string equateName;                         // Equate
-    std::vector<std::vector<Syllable>> exprList;     // Equate (1)/Org (1)/Db/DbLo/DbHi (N)
-    std::string mnemonic;                             // Instr
-    std::vector<std::vector<Syllable>> operands;      // Instr
+    std::string equateName;                       // Equate
+    std::vector<std::vector<Syllable>> exprList;  // Equate (1)/Org (1)/Db/DbLo/DbHi (N)
+    std::string mnemonic;                         // Instr
+    std::vector<std::vector<Syllable>> operands;  // Instr
 };
 
 std::string toLower(std::string s) {
@@ -92,11 +89,8 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         line.kind = Line::None;
         return line;
     }
-    // A pure compile-time symbol=value binding (no bytes emitted, no
-    // relation to the current location counter) - used for this
-    // backend's own fixed zero-page pseudo-registers (`ptr`/`ac`/
-    // `bc`/`cx`/`dx` - see M65C02Codegen.cpp's own comment on why
-    // those need a *fixed*, not sequentially-laid-out, address).
+    // A compile-time symbol=value binding, independent of the location
+    // counter (used for the fixed zero-page pseudo-registers).
     if (auto *assign = dynamic_cast<PccAsmParser::AssignStmtContext *>(stmt)) {
         line.kind = Line::Equate;
         line.equateName = assign->lhs->getText();
@@ -121,16 +115,9 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         for (auto *op : instr->operand()) line.exprList.push_back(buildOperand(op));
         return line;
     }
-    // `dblo`/`dbhi` - a data byte that's the low/high byte of a 16-bit
-    // expression (a label's own address included) rather than an
-    // already-8-bit value, used for a dispatch-table array element
-    // that names a function/global directly (M65C02Codegen.cpp's own
-    // `arrayElemText()`/`declareArray()`): there's no 16-bit load on
-    // this target to resolve a symbol's address in one piece the way
-    // `jsr`/`jmp`'s own absolute operand does, so each half is written
-    // out as its own directive instead, resolved the same way
-    // `ldai`/`ldai_hi`'s own immediate operand already is (see
-    // `emitImmLow`/`emitImmHigh` below).
+    // dblo/dbhi: the low/high byte of a 16-bit expression (e.g. a label's
+    // address) rather than an already-8-bit value, since there's no 16-bit
+    // data directive that can resolve a symbol's address in one piece.
     if (mnemonic == "dblo" || mnemonic == "dbhi") {
         line.kind = mnemonic == "dblo" ? Line::DbLo : Line::DbHi;
         for (auto *op : instr->operand()) line.exprList.push_back(buildOperand(op));
@@ -164,18 +151,11 @@ std::vector<Line> parseProgram(const std::string &text) {
 
 // --- Two-pass assembly ----------------------------------------------------
 //
-// Every instruction's size is fixed by its mnemonic alone (see
-// M65C02Assembler.h) - pass 1 and pass 2 run the exact same encoding
-// logic, same reasoning as ../x86_8086/I8086Assembler.cpp's own
-// version of this comment. `labels_` (which also holds every Equate
-// binding - see processLine's own comment) deliberately isn't reset
-// between passes: pass 1 already resolves every value correctly
-// (since sizes never depend on values), pass 2 just re-derives the
-// identical bindings and this time actually emits bytes using them.
-// One pending fixup `assembleM65C02Object()` turns into a real
-// ObjRelocation once assembly is done - see
-// ../z80/Z80Assembler.cpp's own `Relocation` comment (identical
-// role).
+// Every instruction's size is fixed by its mnemonic alone, so pass 1 and
+// pass 2 run identical encoding logic. `labels_` isn't reset between
+// passes: pass 1 already resolves every value correctly (sizes never
+// depend on values), so pass 2 just re-derives the same bindings and emits
+// bytes using them.
 struct Relocation {
     uint32_t byteOffset;
     std::string symbolName;
@@ -207,17 +187,12 @@ class Assembler {
         for (const auto &line : lines) processLine(line);
     }
 
-    // A label (`name:`) and an Equate (`name = expr`) both just bind
-    // `name` in the same symbol table - a label's value is simply
-    // "the current location", an Equate's is whatever its own
-    // expression evaluates to right now, independent of location.
-    // `equates_` remembers which names came from the Equate side of
-    // that split: M65C02Codegen.cpp's own `ptr`/`ac`/`bc`/`cx`/`dx`
-    // are bound this way specifically because their value is a fixed
-    // compile-time constant, not a real address - a reference to one
-    // must never be treated as needing the ".." base-shift relocation
-    // the way an ordinary label does (see resolveSyllable() below and
-    // M65C02Assembler.h's own `kM65C02RelocAbs16` comment).
+    // A label and an Equate both bind a name in the same symbol table: a
+    // label's value is the current location, an Equate's is its own
+    // expression's value, independent of location. `equates_` tracks which
+    // names came from an Equate, since those (the fixed zero-page
+    // pseudo-registers) must never get the ".." base-shift relocation an
+    // ordinary label reference needs (see resolveSyllable() below).
     void processLine(const Line &line) {
         for (const auto &lbl : line.labels) labels_[lbl] = orgBase_ + offset_;
         switch (line.kind) {
@@ -245,8 +220,6 @@ class Assembler {
         }
     }
 
-    // `externalName`/`needsBaseShift` mirror ../z80/Z80Assembler.cpp's
-    // own `evalExpr` exactly.
     uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
@@ -275,8 +248,6 @@ class Assembler {
         }
         auto it = labels_.find(syl.text);
         if (it != labels_.end()) {
-            // An Equate's own value is a fixed constant, identical in
-            // every object - see this class's own `equates_` comment.
             if (allowExternal_ && wasLocalAddress && !equates_.count(syl.text)) *wasLocalAddress = true;
             return it->second;
         }
@@ -297,18 +268,15 @@ class Assembler {
         offset_ += 1;
     }
 
-    // `db`'s own operand - a real, standalone byte value (not a
-    // register-form's own encoding), so (unlike every other emit*
-    // helper below) it's a hard error for it to not fit in a byte.
+    // db's operand is a standalone byte value, so (unlike the other emit*
+    // helpers) it's a hard error for it not to fit in a byte.
     void emitByteOperand(const std::vector<Syllable> &e) {
         uint32_t v = evalExpr(e);
         if (stage_ == 2 && v > 0xFF) fail("'db' value doesn't fit in a byte");
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
 
-    // Absolute addressing's own 2-byte little-endian operand - the
-    // full 16-bit resolved value, no range check (any symbol in this
-    // program's own 64KB address space is valid here).
+    // Absolute addressing's 2-byte little-endian operand; no range check.
     void emitAbsOperand(const std::vector<Syllable> &e) {
         std::string externalName;
         bool needsBaseShift = false;
@@ -321,16 +289,8 @@ class Assembler {
         emit8(static_cast<uint8_t>((v >> 8) & 0xFF));
     }
 
-    // `ldai`/`adci`/`andi`/`eori`/`ldyi`'s own immediate operand, and
-    // `dblo`'s own data byte - the LOW byte of whatever `e` resolves
-    // to, whether that's already a plain literal (M65C02Codegen.cpp
-    // always keeps an *instruction* operand's own literal <256 itself)
-    // or a label's own address (M65C02Codegen.cpp's genAddrOf()/
-    // genIndexAddr()/arrayElemText() - taking just the low byte of a
-    // resolved address this way is exactly what a real assembler's
-    // `#<label` low-byte operator means, just spelled as a plain
-    // mnemonic here instead of needing a grammar token for `<`/`>`
-    // that doesn't exist).
+    // The LOW byte of e's resolved value - equivalent to a real assembler's
+    // #<label low-byte operator, just spelled as a plain mnemonic.
     void emitImmLow(const std::vector<Syllable> &e) {
         std::string externalName;
         bool needsBaseShift = false;
@@ -341,9 +301,7 @@ class Assembler {
         }
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
-    // `ldai_hi`/`adci_hi`'s own immediate operand, and `dbhi`'s own
-    // data byte - the HIGH byte of the resolved value (a real
-    // assembler's `#>label`).
+    // The HIGH byte of e's resolved value (a real assembler's #>label).
     void emitImmHigh(const std::vector<Syllable> &e) {
         std::string externalName;
         bool needsBaseShift = false;
@@ -354,39 +312,28 @@ class Assembler {
         }
         emit8(static_cast<uint8_t>((v >> 8) & 0xFF));
     }
-    // `ldaind`/`staind`'s own operand - the zero-page indirect-
-    // indexed addressing mode is only legal for an address that
-    // actually fits in zero page; M65C02Codegen.cpp only ever passes
-    // `ptr` here, but this still fails loudly rather than silently
-    // truncate if that ever stopped being true.
+    // ldaind/staind's operand: zero-page indirect-indexed addressing is
+    // only legal for an address that fits in zero page.
     void emitZpOperand(const std::vector<Syllable> &e) {
         uint32_t v = evalExpr(e);
         if (stage_ == 2 && v > 0xFF) fail("indirect-indexed operand must be a zero-page address");
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
-    // A branch's own signed rel8 operand. M65C02Codegen.cpp's own
-    // safeBranch() (see that file's comment) guarantees every branch
-    // it ever emits targets the very next instruction - always
-    // trivially in range - so an out-of-range target here can only
-    // mean a real bug in that guarantee, not a legitimately-far
-    // user-code target that needs handling.
+    // A branch's signed rel8 operand. safeBranch() in M65C02Codegen.cpp
+    // guarantees every branch targets the very next instruction, so an
+    // out-of-range target here means a bug in that guarantee.
     void emitBranchOperand(const std::vector<Syllable> &target) {
-        uint32_t endAddr = orgBase_ + offset_ + 1;  // this field is 1 byte, right after the opcode already emitted
+        uint32_t endAddr = orgBase_ + offset_ + 1;  // 1-byte field, right after the opcode
         uint32_t targetAddr = evalExpr(target);
         int32_t rel = static_cast<int32_t>(targetAddr) - static_cast<int32_t>(endAddr);
         if (stage_ == 2 && (rel < -128 || rel > 127)) {
-            fail("internal: branch target out of range - M65C02Codegen.cpp's safeBranch() should have prevented this");
+            fail("internal: branch target out of range - safeBranch() should have prevented this");
         }
         emit8(static_cast<uint8_t>(static_cast<int8_t>(rel)));
     }
 
-    // The full instruction vocabulary ../M65C02Codegen.cpp ever emits -
-    // see M65C02Assembler.h's header comment. Not a general 65C02
-    // encoder: exactly these mnemonic/operand-shape combinations,
-    // nothing else - most notably, no X/Y-indexed addressing modes
-    // and no absolute-mode LDX/LDY/STX/STY/CMP/CPX/CPY at all (see
-    // M65C02Codegen.cpp's own comment for why none of those are ever
-    // actually needed).
+    // Not a general 65C02 encoder: only the mnemonic/operand-shape
+    // combinations M65C02Codegen.cpp emits.
     void encodeInstr(const std::string &mnemonic, const std::vector<std::vector<Syllable>> &ops) {
         auto one = [&]() -> const std::vector<Syllable> & {
             if (ops.size() != 1) fail("'" + mnemonic + "' needs exactly one operand");
@@ -404,17 +351,7 @@ class Assembler {
             {"lda", 0xAD}, {"sta", 0x8D}, {"adc", 0x6D}, {"sbc", 0xED}, {"and", 0x2D}, {"ora", 0x0D}, {"eor", 0x4D},
             {"asl", 0x0E}, {"lsr", 0x4E}, {"rol", 0x2E}, {"ror", 0x6E}, {"inc", 0xEE}, {"dec", 0xCE},
             {"jmp", 0x4C}, {"jsr", 0x20},
-            // Real opcode $6C, JMP indirect: the operand is the
-            // address of a two-byte cell holding the actual jump
-            // target, little-endian, encoded exactly like every other
-            // absolute operand above - the only difference is what the
-            // real CPU does with it at runtime, not how it's
-            // assembled. The 65C02 fixes the NMOS page-boundary bug
-            // this opcode has when its own operand's low byte is
-            // $FF, but M65C02Codegen.cpp only ever uses it on `ptr`
-            // (zero-page address $0000), so that fix is never actually
-            // exercised by this backend's own output.
-            {"jmpi", 0x6C},
+            {"jmpi", 0x6C},  // JMP indirect ($6C): operand is the address of a two-byte jump-target cell
         };
         if (auto it = absolute.find(mnemonic); it != absolute.end()) {
             emit8(it->second);
@@ -456,16 +393,10 @@ class Assembler {
             emitBranchOperand(one());
             return;
         }
-        // STZ - the one genuinely CMOS-only (not on the original NMOS
-        // 6502) instruction this backend uses; see M65C02Codegen.cpp's
-        // own comment for where/why. Two distinct mnemonics instead of
-        // one disambiguated-by-operand-value the way a real assembler
-        // would, same reason ../m6502/M6502Assembler.cpp's own
-        // encodeInstr() comment gives for why every mnemonic here has
-        // a single fixed size: `stzp` is zero-page (2 bytes, opcode
-        // $64 - only ever used on M65C02Codegen.h's own fixed
-        // zero-page pseudo-registers), `stz` absolute (3 bytes,
-        // opcode $9C - every other, non-zero-page, target).
+        // STZ: the one CMOS-only instruction this backend uses. Two
+        // distinct mnemonics, not one disambiguated by operand value, so
+        // every mnemonic keeps a single fixed size: stzp is zero-page
+        // (opcode $64), stz absolute (opcode $9C).
         if (mnemonic == "stzp") {
             emit8(0x64);
             uint32_t v = evalExpr(one());
@@ -491,9 +422,7 @@ class Assembler {
     bool allowExternal_;
 };
 
-// Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - see ../z80/Z80Assembler.cpp's own
-// `buildObjectFile` (identical algorithm).
+// Builds the format-neutral ObjectFile from a completed object-mode Assembler.
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kM65C02CoffMachine;

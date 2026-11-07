@@ -5,7 +5,13 @@ retro hardware through pluggable backends.
 
 # platforms
 
-Supported platforms are:   arm, arm64, armm, i386, i8008, i8080, m16c, m6502, m65c02, m68k, mc68328, mcs51, mips, pdp11, pic16, pic18, powerpc, stm32, stm8, z80,  pdp7, x86_8086
+Supported `--target` values: `pdp7`, `8086`/`8088`, `6502`/`65c02`,
+`68000`, `mc68328`, `pdp11`, `stm8`, `m16c`, `8080`, `z80`, `8008`,
+`8051`/`8052`/`8031`/`8032`, `pic16`, `pic18`, `stm32`, `i386`,
+`armv7a`, `armv8a`, `cortex-m3`/`cortex-m4`/`cortex-m7`,
+`r10000`/`r4000`, `powerpc`, `sparc` — see
+[`docs/platforms.md`](docs/platforms.md) for what each target's real
+hardware is and how it's tested.
 
 ## Language
 

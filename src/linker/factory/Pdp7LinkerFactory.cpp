@@ -14,14 +14,9 @@ namespace {
 
 constexpr uint32_t kMask18 = 0777777;
 
-// kAddressFieldLimit/kStackReserve/kStackSafeLimit are shared with
-// Pdp7Assembler.cpp's own `storeWord()` (see Pdp7Assembler.h's own
-// header comment on both) - this file's job is the real separate-
-// compilation/`--link` path's own copy of the same two checks, where
-// the equivalent of `storeWord()`'s single-pass `..` resolution
-// happens later, via a relocation (see makePdp7Linker()'s own
-// `__sp: 8191` and this namespace's `patchPdp7Or`/`patchPdp7Add`
-// below).
+// kAddressFieldLimit/kStackReserve/kStackSafeLimit mirror
+// Pdp7Assembler.cpp's own storeWord() checks, reapplied here at
+// link time since address resolution there is deferred to a relocation.
 
 uint32_t read18(const std::vector<uint8_t> &image, uint32_t siteOffset) {
     return (static_cast<uint32_t>(image[siteOffset]) << 16) | (static_cast<uint32_t>(image[siteOffset + 1]) << 8) |
@@ -34,16 +29,9 @@ void write18(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t word) {
     image[siteOffset + 2] = static_cast<uint8_t>(word & 0xFF);
 }
 
-// Shared by patchPdp7Or (a fresh OR-combine, where `resultingAddress`
-// is just `value` itself - the whole address being combined in) and
-// patchPdp7Add's own address case below (where `resultingAddress` is
-// this word's own already-resolved low-13-bit address plus the base
-// being added, isolated from whatever opcode bits occupy the bits
-// above it - see patchPdp7Add's own comment for why that isolation
-// matters). Either way, this is the one real invariant that matters:
-// whatever ends up in the low 13 bits once this patch is done has to
-// be both a real, in-range address and comfortably clear of where the
-// runtime stack will reach.
+// Checks that a resolved address is both in-range and clear of where the
+// runtime stack (__sp, starting at 8191 and growing downward with no
+// bounds check of its own) will reach.
 void checkAddressSafe(uint32_t resultingAddress) {
     if (resultingAddress >= kAddressFieldLimit) {
         std::ostringstream msg;
@@ -73,31 +61,10 @@ void patchPdp7Or(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t valu
     checkAddressSafe(value);
     write18(image, siteOffset, read18(image, siteOffset) | value);
 }
-// Used for two different-looking but equally address-shaped cases -
-// Pdp7Assembler.cpp's own two emitters of a `'+'`-typed relocation
-// (see its own `processLine()` comment on `needsBaseShift`, and
-// `evalExpr()`'s `pending` syllables): a same-file address shifted by
-// this object's own real base once linked (the one `value` is always
-// that base itself), and an external symbol combined with `+` in the
-// source (`jmp externalLabel+5`, say - `value` there is that
-// symbol's own resolved address). Both leave this word's existing low
-// 13 bits holding a *real address* that was only ever 0-relative
-// (or, for a word with no opcode bits riding along in the high bits
-// at all - a plain data declaration, not an instruction - the entire
-// word) until this patch adds the missing piece; any opcode bits
-// riding along in the bits above that field (every real pdp7 opcode
-// occupies bit 13 or higher - see the `builtins()` table above) ride
-// through untouched, exactly the same as every other reference this
-// backend ever makes to that same label would. Isolating the low 13
-// bits before checking is what lets this use the same
-// checkAddressSafe() as a fresh OR-combine does without tripping over
-// those opcode bits themselves being large numbers - confirmed
-// directly: a same-file reference engineered to land within
-// kStackReserve of 8191 silently corrupted the runtime stack (see
-// kStackReserve's own comment) with no error at all before this
-// isolation was added, even though an otherwise-identical *cross*-
-// file reference to the same address was already refused by
-// patchPdp7Or above.
+// Handles a same-file address shifted by this object's base, or an
+// external symbol combined with `+` in the source. The low 13 address
+// bits are isolated from any opcode bits above them before the safety
+// check, so opcode bits are never mistaken for part of the address.
 void patchPdp7Add(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t) {
     uint32_t existing = read18(image, siteOffset);
     uint32_t addrPart = existing & (kAddressFieldLimit - 1);
@@ -114,27 +81,12 @@ std::unique_ptr<TargetLinker> makePdp7Linker() {
     GenericLinkerConfig config;
     config.baseAddress = kPdp7BaseAddress * 3;
     config.machineType = kPdp7CoffMachine;
-    // Beyond the entry sequence itself, this object is also the one
-    // place that defines the software stack/frame mechanism's shared
-    // runtime cells (`__sp`/`__fp`/`__stmp`/`__stmp2`/`__addr`/
-    // `__retval`/`__retaddr` - see Pdp7Codegen.h's own header comment
-    // and pushAC()/emitPrologue()'s comments for what each one does)
-    // and the shared division/modulo routine (`__divmod` and its own
-    // `__dm_a`/`__dm_b`/`__dm_q`, exactly Pdp7Codegen::
-    // ensureDivModRoutine()'s own body) - under real separate
-    // compilation, Pdp7Codegen::generate() deliberately leaves every
-    // one of these as a plain external reference in every object file
-    // instead of defining its own copy (see that function's own
-    // comment on why: each file assembling its own private copy,
-    // never unified by the linker, silently broke any call crossing
-    // an object-file boundary - confirmed directly). `config.
-    // entryObject` is already the one object every link includes
-    // exactly once regardless of how many user files there are, so
-    // it's the natural single owner of these too. The divmod routine
-    // is included unconditionally (a handful of extra words) rather
-    // than only when some linked file needs it, since this object is
-    // built once, here, with no visibility into what any later link's
-    // own input files will actually use.
+    // Beyond the entry sequence, this is the single object that defines
+    // the shared runtime cells (__sp/__fp/__stmp/__stmp2/__addr/
+    // __retval/__retaddr) and the shared __divmod routine, since every
+    // user object leaves these as external references rather than
+    // defining its own copy. divmod is included unconditionally since
+    // this object has no visibility into what later input files need.
     config.entryObject = assemblePdp7Object(
         "jms FN_main\n"
         "hlt\n"

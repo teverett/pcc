@@ -16,18 +16,10 @@ namespace {
     throw std::runtime_error("line " + std::to_string(ctx->getStart()->getLine()) + ": " + msg);
 }
 
-// `asm { ... }`'s body is never parsed as part of normal compilation
-// - it's copied verbatim into whatever text the backend builds (see
-// grammar/CLexer.g4's own comment on `asm`) - but that means a typo
-// inside one would otherwise go completely unnoticed until/unless
-// something later actually assembles the output (`--format=rim`/
-// `bin`/...), surfacing as a bare, uncaught exception from deep
-// inside Pdp7Assembler.cpp/I8086Assembler.cpp with no connection back
-// to the C source at all. Checking it here - against the exact same
-// grammar (grammar/PccAsm.g4) and parser those assemblers themselves
-// use, parse-only, no codegen - catches that right away, anchored to
-// the real `asm { ... }`'s own line, the same way every other syntax
-// error in this compiler is reported.
+// `asm { ... }` text is copied verbatim and only ever parsed by the backend
+// assembler at codegen time; this runs the same grammar/parser eagerly here
+// so a typo is reported at the asm block's own line instead of surfacing
+// later as an uncaught exception deep in a backend assembler.
 class AsmSyntaxErrorListener : public antlr4::BaseErrorListener {
    public:
     void syntaxError(antlr4::Recognizer *, antlr4::Token *, size_t line, size_t col, const std::string &msg,
@@ -63,10 +55,8 @@ void checkAsmSyntax(const std::string &asmText, int sourceLine) {
 
 ExprPtr buildExpr(CParser::ExprContext *ctx);
 
-// `size=NUMBER`/`addr=NUMBER`/array-initializer elements are plain,
-// untyped compiler-internal integers, never a real typed C value -
-// they reject the integer-suffix syntax a general NUMBER token now
-// carries (see grammar/CLexer.g4's own comment on NUMBER).
+// `size=`/`addr=`/array-initializer NUMBERs are untyped compiler-internal
+// integers and reject an integer suffix, unlike a general NUMBER token.
 long parsePlainNumber(antlr4::Token *tok, antlr4::ParserRuleContext *ctx, const char *what) {
     std::string text = tok->getText();
     for (char ch : text) {
@@ -75,11 +65,8 @@ long parsePlainNumber(antlr4::Token *tok, antlr4::ParserRuleContext *ctx, const 
     return std::stol(text);
 }
 
-// Parses a NUMBER token's optional integer suffix (u/U any number of
-// times at most once, l/L zero/one/two times, same spelling ISO C
-// uses) into the literal's own Type - see grammar/CLexer.g4's own
-// comment on NUMBER for why the lexer admits the syntax but defers
-// its meaning to here.
+// Parses a NUMBER token's integer suffix (ISO C spelling: u/U once, l/L
+// zero to two times, not mixed case) into the literal's Type.
 Type parseNumberSuffix(const std::string &suffix, antlr4::ParserRuleContext *ctx) {
     bool isUnsigned = false;
     int longCount = 0;
@@ -112,11 +99,9 @@ void parseIntLiteral(const std::string &text, antlr4::ParserRuleContext *ctx, lo
     type = parseNumberSuffix(text.substr(digitsEnd), ctx);
 }
 
-// Strips the surrounding quotes from a STRINGLIT token's raw text and
-// resolves each of its own STRINGLIT_ESC escapes - the grammar only
-// admits the small fixed set CLexer.g4's own STRINGLIT_ESC fragment
-// lists (\\ \" \n \t \r \0), so every escape seen here is one of
-// those by construction.
+// Strips the surrounding quotes from a STRINGLIT token and resolves its
+// escapes; the grammar admits only \\ \" \n \t \r \0, so no other case
+// can occur here.
 std::string decodeStringLit(const std::string &raw) {
     std::string out;
     out.reserve(raw.size());
@@ -177,8 +162,6 @@ Type buildBaseType(CParser::BaseTypeSpecContext *ctx) {
     err(ctx, "internal: unhandled baseTypeSpec alternative");
 }
 
-// A typeSpec is a baseTypeSpec plus a trailing run of '*'s - see
-// grammar/CParser.g4's own comment on typeSpec/Type::ptrDepth.
 Type buildType(CParser::TypeSpecContext *ctx) {
     Type t = buildBaseType(ctx->baseTypeSpec());
     t.ptrDepth = static_cast<int>(ctx->STAR().size());
@@ -320,9 +303,7 @@ ExprPtr buildCondExpr(CParser::CondExprContext *ctx) {
         e->kind = ExprKind::IntLit;
         e->line = c->getStart()->getLine();
         std::string text = c->CHARLIT()->getText();  // "'x'"
-        // A character constant's type is plain int, same as real C
-        // (see ../../README.md's "Scope and limitations").
-        e->intValue = static_cast<unsigned char>(text[1]);
+        e->intValue = static_cast<unsigned char>(text[1]);  // type stays plain int, as in C
         return e;
     }
     if (auto *c = dynamic_cast<CParser::StringLitExprContext *>(ctx)) {
@@ -416,11 +397,8 @@ ExprPtr buildCondExpr(CParser::CondExprContext *ctx) {
     err(ctx, "internal: unhandled condExpr alternative");
 }
 
-// A compound-assignment token's text with its trailing '=' stripped
-// ("+=" -> "+"), or "" for a bare '=' (a plain, non-compound
-// assignment) - the one spot that turns the grammar's assignOp token
-// into "which AST node, and which underlying binary op" for all three
-// assignment lhs shapes below.
+// Strips an assignOp token's trailing '=' ("+=" -> "+"), or returns ""
+// for a bare '=' (plain, non-compound assignment).
 std::string stripAssignEq(const std::string &opText) {
     if (opText == "=") return "";
     return opText.substr(0, opText.size() - 1);
@@ -464,10 +442,8 @@ ExprPtr buildExpr(CParser::ExprContext *ctx) {
     err(ctx, "internal: unhandled expr alternative");
 }
 
-// Shared by every pre/postIncDec*Expr alternative in buildCondExpr
-// below: builds the common CompoundAssign/CompoundDerefAssign shape
-// for '++'/'--' (op="+"/"-" per the operator token, rhs=IntLit(1),
-// yieldOld set by the caller - true only for postfix).
+// Builds the common CompoundAssign(DerefAssign) shape for '++'/'--';
+// caller sets kind/name/lhs and whether yieldOld (postfix only).
 ExprPtr makeIncDec(antlr4::ParserRuleContext *ctx, const std::string &opToken, bool yieldOld) {
     auto one = std::make_unique<Expr>();
     one->kind = ExprKind::IntLit;
@@ -546,11 +522,8 @@ StmtPtr buildStmt(CParser::StatementContext *ctx) {
     if (auto *c = dynamic_cast<CParser::ForStmtContext *>(ctx)) {
         int line = c->getStart()->getLine();
 
-        // Desugar: { init; while (cond) body; } - post is kept as its
-        // own field (Stmt::postStmt), NOT appended into the loop body,
-        // specifically so `continue` can skip the rest of the body
-        // while still running post before the condition is retested;
-        // see AST.h's own comment on Stmt::postStmt.
+        // Desugars to { init; while (cond) body; }; see AST.h's Stmt::postStmt
+        // for why post is kept separate from the loop body.
         StmtPtr init = c->init ? buildSimpleStmt(c->init) : nullptr;
         ExprPtr cond = c->cond ? buildExpr(c->cond) : nullptr;
         StmtPtr post = c->post ? buildSimpleStmt(c->post) : nullptr;

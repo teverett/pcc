@@ -6,10 +6,7 @@
 namespace pcc {
 
 namespace {
-// `65280` (0xFF00) is the same stack-top value as I8080Codegen.cpp's
-// own (private) `kStackTop` - the 8080's SP is undefined at reset and
-// this backend's real CALL/RET/PUSH/POP all need a real initial
-// value, same reasoning as that file's own comment.
+// 65280 (0xFF00): the 8080's SP is undefined at reset and CALL/RET/PUSH/POP need a real value.
 constexpr const char *kEntryAsm =
     "org 0\n"
     "_start:\n"

@@ -19,9 +19,7 @@ namespace {
 
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("I8080Assembler: " + msg); }
 
-// --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
-// Same shape as ../m6502/M6502Assembler.cpp's own Syllable/Line - see
-// that file's own comment.
+// --- Parsing, via the shared grammar/PccAsm.g4 ----------------------------
 
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
@@ -111,13 +109,8 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         for (auto *op : instr->operand()) line.exprList.push_back(buildOperand(op));
         return line;
     }
-    // `dw` - a full little-endian 16-bit data word, resolved exactly
-    // like `lxi`/`lhld`/`shld`'s own 16-bit operand (I8080Codegen.cpp's
-    // own `arrayElemText()`/`declareArray()` uses this for a dispatch-
-    // table array element that names a function/global directly: a
-    // symbol's own address is only known to the assembler, once every
-    // label is bound, never to the codegen that writes this directive
-    // out).
+    // `dw` - a full little-endian 16-bit data word, resolved like `lxi`/`lhld`/`shld`'s own
+    // 16-bit operand.
     if (mnemonic == "dw") {
         line.kind = Line::Dw;
         for (auto *op : instr->operand()) line.exprList.push_back(buildOperand(op));
@@ -149,11 +142,8 @@ std::vector<Line> parseProgram(const std::string &text) {
     return lines;
 }
 
-// A single-syllable, unsigned, bare-identifier operand - the shape
-// every register name (`a`, `b`, ..., `psw`) always takes. Returns
-// its lowercased text, or nullopt if the operand isn't that shape at
-// all (a real symbol/number/signed-or-grouped expression instead),
-// in which case the caller evaluates it as an ordinary expr.
+// A single-syllable, unsigned, bare-identifier operand - the shape a register name always
+// takes. Returns its lowercased text, or nullopt if the operand isn't that shape.
 std::optional<std::string> asBareIdent(const std::vector<Syllable> &operand) {
     if (operand.size() != 1) return std::nullopt;
     const Syllable &s = operand[0];
@@ -161,11 +151,9 @@ std::optional<std::string> asBareIdent(const std::vector<Syllable> &operand) {
     return toLower(s.text);
 }
 
-// One pending fixup `assembleI8080Object()` (see I8080Assembler.h's
-// own header comment) turns into a real ObjRelocation once assembly
-// is done - `byteOffset` into `bytes()`, `symbolName` the reference
-// that couldn't be resolved locally (or the reserved pseudo-symbol
-// ".." for a same-file address's own needed base-shift).
+// One pending fixup that assembleI8080Object() turns into a real ObjRelocation once assembly is
+// done - `byteOffset` into `bytes()`, `symbolName` the reference that couldn't be resolved
+// locally (or the reserved pseudo-symbol ".." for a same-file address's needed base-shift).
 struct Relocation {
     uint32_t byteOffset;
     std::string symbolName;
@@ -217,11 +205,8 @@ class Assembler {
         }
     }
 
-    // `externalName`/`needsBaseShift` mirror
-    // ../z80/Z80Assembler.cpp's own `evalExpr` exactly - see
-    // I8080Assembler.h's own header comment on why *any* local
-    // address reference, not just an external one, needs a
-    // relocation here once `allowExternal_` is set.
+    // `externalName`/`needsBaseShift`: once `allowExternal_` is set, any local address
+    // reference (not just an external one) needs a relocation here, for the base-shift.
     uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
@@ -307,9 +292,8 @@ class Assembler {
         return ops[i];
     }
 
-    // The 8080's own r/M register field encoding, shared by MOV/MVI/
-    // INR/DCR/ADD-family/CMP: b=0,c=1,d=2,e=3,h=4,l=5,m=6(memory via
-    // HL),a=7.
+    // The 8080's r/M register field encoding, shared by MOV/MVI/INR/DCR/ADD-family/CMP:
+    // b=0,c=1,d=2,e=3,h=4,l=5,m=6(memory via HL),a=7.
     uint8_t reg8Code(const std::vector<Syllable> &operand, const std::string &mnemonic) {
         auto name = asBareIdent(operand);
         if (!name) fail("'" + mnemonic + "' needs a register name (a/b/c/d/e/h/l/m), not an expression");
@@ -356,10 +340,8 @@ class Assembler {
         return it->second;
     }
 
-    // The full instruction vocabulary ../I8080Codegen.cpp ever emits,
-    // encoded as real, standard Intel 8080 opcodes (see
-    // I8080Assembler.h's own header comment) - not every 8080
-    // instruction exists here, only the ones that backend needs.
+    // The instruction vocabulary I8080Codegen.cpp emits, encoded as standard Intel 8080
+    // opcodes - not every 8080 instruction exists here, only the ones that backend needs.
     void encodeInstr(const std::string &mnemonic, const std::vector<std::vector<Syllable>> &ops) {
         static const std::unordered_map<std::string, uint8_t> implied = {
             {"nop", 0x00}, {"rlc", 0x07}, {"rrc", 0x0F}, {"ral", 0x17}, {"rar", 0x1F}, {"cma", 0x2F},
@@ -464,10 +446,7 @@ class Assembler {
     bool allowExternal_;
 };
 
-// Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - see I8080Assembler.h's own `assembleI8080Object`
-// comment, and ../z80/Z80Assembler.cpp's own `buildObjectFile` for the
-// original version this is ported from (identical algorithm).
+// Builds the format-neutral ObjectFile a completed object-mode Assembler produced.
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kI8080CoffMachine;

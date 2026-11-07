@@ -14,26 +14,15 @@ namespace {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
-// Real STM32 flash: this is where the reset vector table, every
-// instruction, and nothing else lives - confirmed read-only against
-// qemu's own `stm32vldiscovery` board model (see STM32Codegen.h's own
-// header comment). `-kernel` loads this backend's own `--format=raw`
-// output straight here.
+// Flash: holds the reset vector table and every instruction, nothing else - read-only on
+// this board. `-kernel` loads the `--format=raw` output here.
 constexpr uint32_t kFlashBase = 0x08000000;
 
-// Real STM32 SRAM on this board (8KB, `0x20000000`-`0x20001FFF` - see
-// tests/run_tests.sh's own check_stm32() comment on how this was
-// confirmed): every global/local/temp/array slot lives here instead
-// (see STM32Codegen.h's own header comment on why), reserved via
-// `ds`, never given image bytes.
+// SRAM on this board (8KB, 0x20000000-0x20001FFF): every global/local/temp/array slot lives
+// here, reserved via `ds`, never given image bytes.
 constexpr uint32_t kRamBase = 0x20000000;
 
-// Top of that same SRAM - where `sp` starts out, loaded by the real
-// Cortex-M reset exception from the vector table's own first word
-// (confirmed directly: booting a hand-assembled image with this
-// exact value at vector 0 leaves `sp` reading it back unchanged - no
-// redundant explicit reload needed here the way MC68328Codegen.cpp's
-// own comment says its own simulator board needs).
+// Top of SRAM - where sp starts, loaded by the Cortex-M reset exception from vector 0.
 constexpr uint32_t kInitialSP = 0x20002000;
 }  // namespace
 
@@ -46,17 +35,11 @@ void STM32Codegen::declareArray(const std::string &lbl, const std::vector<ir::Ar
     ramTrailer_.push_back(lbl + ": dsb " + std::to_string(widthOfType(elemType) * values.size()));
 }
 
-// A literal element's own value via `movl`; a symbol element's
-// address via the same `lea` genAddrOf() uses for &slot, with that
-// same function's own thumb-bit adjustment (`+1`, for `blx` - see
-// genAddrOf()'s own comment) when the element names a Function
-// rather than a Slot. Either way the loaded value then gets copied
-// into the RAM cell `lbl+offset` resolves to (truncating to
-// `elemType`'s own width via `strb`/`strh`/`str` - a `long long`
-// array's own literal element additionally needs its own high word
-// written, since `str` here is always exactly 4 bytes) - see
-// genGlobalInit()'s own comment on why RAM needs this explicit
-// one-time copy at all.
+// A literal element's value via `movl`; a symbol element's address via the same `lea`
+// genAddrOf() uses, with the thumb-bit adjustment (+1) when the element names a Function. The
+// loaded value is copied into the RAM cell `lbl+offset` resolves to, truncated to `elemType`'s
+// width; a `long long` literal also needs its high word written separately since `str` here is
+// always exactly 4 bytes.
 void STM32Codegen::genArrayElemInit(const std::string &lbl, size_t offset, Type elemType, const ir::ArrayInitElem &e) {
     if (!e.isSymbol && e.value == 0) return;  // RAM already starts zeroed - nothing to copy
     int w = widthOfType(elemType);
@@ -82,16 +65,9 @@ void STM32Codegen::genArrayElemInit(const std::string &lbl, size_t offset, Type 
     }
 }
 
-// Flash-resident code that writes `value` into the RAM cell `lbl`
-// resolves to, truncated to `type`'s own width - see
-// STM32Codegen.h's own header comment on why a slot's own real
-// initial value can't just sit there in the image the way every
-// other backend's flat-blob data does: RAM starts out with whatever
-// qemu/real silicon happens to leave it as, so a nonzero initializer
-// needs an explicit one-time copy, emitted as ordinary code into
-// whichever stream the caller is building (this backend's own
-// `_start`, for a global; right where a `LocalDecl` executes, for a
-// local - see genStmt()'s own `LocalDecl` case).
+// Flash-resident code that writes `value` into the RAM cell `lbl` resolves to, truncated to
+// `type`'s width. RAM starts out undefined, so a nonzero initializer needs this explicit
+// one-time copy, emitted into `_start` for a global or at the `LocalDecl` site for a local.
 void STM32Codegen::genGlobalInit(const std::string &ramLabel, Type type, long value) {
     if (value == 0) return;  // RAM already starts zeroed - nothing to copy
     int w = widthOfType(type);
@@ -106,14 +82,9 @@ void STM32Codegen::genGlobalInit(const std::string &ramLabel, Type type, long va
     }
 }
 
-// `byteOffsetFromFp` is a real byte displacement now (not a word
-// count pre-scaled by 4 here) - see IR.h's own comment on
-// Slot::frameOffset: IRBuilder.cpp computes it as an already-correct
-// byte offset (accounting for each slot's own type's width/alignment,
-// and - for a Param - the 2-native-int-width reservation past the
-// saved r7/return address), so this function's own job shrinks to
-// "add or subtract exactly that many bytes from r7", no multiplying
-// by this backend's own word size any more.
+// `byteOffsetFromFp` is already a byte displacement (IRBuilder.cpp accounts for the slot's
+// width/alignment and, for a Param, the reservation past the saved r7/return address), so this
+// just adds or subtracts it from r7 directly.
 void STM32Codegen::loadFrameWordAddr(const std::string &reg, int byteOffsetFromFp) {
     code_ << "    mov " << reg << ",r7\n";
     if (byteOffsetFromFp == 0) return;
@@ -151,42 +122,22 @@ std::string STM32Codegen::generate(const ir::Program &prog, bool objectMode) {
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // Real separate compilation (`--format=coff`/`elf`/`macho`/
-    // `aout` from a single file - see IRBuilder.h's own
-    // `allowExternal`) means `prog` may not define `main` at all.
-    // `objectMode` (see Codegen.h) means no object file ever emits
-    // the vector table/reset-handler/`_start` sequence itself -
-    // STM32LinkerFactory.cpp is solely responsible for synthesizing
-    // exactly one, once every object is merged and `fn_main`'s linked
-    // address is resolvable (see Linker.h). An object file's own
-    // flash section is `org 0` - it's the linker's job to place it,
-    // not this backend's (see STM32Assembler.h's own header comment).
+    // In object mode, `prog` may not define `main`; no object file emits the vector
+    // table/reset-handler/`_start` - STM32LinkerFactory.cpp synthesizes exactly one once every
+    // object is merged. An object's flash section is `org 0`; placing it is the linker's job.
     //
-    // RAM, unlike flash, keeps using its real fixed hardware base
-    // (`kRamBase`) unchanged even here: RAM is a genuinely separate
-    // address space whose placement has nothing to do with where this
-    // object's own code ends up in flash once linked, so (unlike a
-    // flash address) a RAM address resolves to its final value right
-    // here, at assembly time, never needing a linker-time base-shift
-    // relocation at all (see STM32Assembler.cpp's own `isRamLabel_`
-    // comment).
-    // Running byte offset within RAM (byte-granular reservation now -
-    // see declareTemp()'s/declareArray()'s own `dsb` comment), used
-    // only to pad ahead of a global whose own type is wider than 1
-    // byte - same reasoning as ArmCodegen.cpp's own identical comment
-    // (an unaligned `ldr`/`str`/`ldrh`/`strh` is UNPREDICTABLE/
-    // implementation-defined on this real core). `kRamBase` is itself
-    // word-aligned, so tracking this from 0 is exact.
+    // RAM keeps its real fixed hardware base (kRamBase) even in object mode, since its
+    // placement is independent of where this object's flash ends up linked - so a RAM address
+    // resolves to its final value at assembly time, no base-shift relocation needed.
+    //
+    // Running byte offset within RAM, used to pad ahead of a global wider than 1 byte (an
+    // unaligned ldr/str/ldrh/strh is UNPREDICTABLE on this core). kRamBase is word-aligned, so
+    // tracking this from 0 is exact.
     size_t ramOffset = 0;
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        // An external global (real separate compilation - see IR.h's
-        // own `isExternal`/IRBuilder.cpp's `resolveExternalVar`) is
-        // defined in some *other* file, which is the one that
-        // reserves its real RAM storage - this file only ever
-        // references it by name (see label()), letting
-        // STM32Assembler.cpp's own undefined-symbol handling defer it
-        // to a relocation.
+        // An external global is defined and reserves its RAM storage in another file; this
+        // file only references it by name, deferred to a relocation.
         if (slot->isExternal) continue;
         int align = std::min(widthOfType(slot->type), 4);
         size_t padding = (align - (ramOffset % align)) % align;
@@ -198,17 +149,8 @@ std::string STM32Codegen::generate(const ir::Program &prog, bool objectMode) {
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit, slot->type);
             ramOffset += static_cast<size_t>(widthOfType(slot->type)) * static_cast<size_t>(slot->arraySize);
-            // The startup copy below writes each nonzero element into
-            // RAM before `main` runs - see genGlobalInit()'s own
-            // comment on why RAM needs this at all. It's emitted as
-            // ordinary flash-resident code spliced into `_start`
-            // (never into this file's own functions), so in object
-            // mode - where this file never emits a `_start` of its
-            // own (see this function's own comment above) - it's
-            // skipped entirely: a nonzero RAM-resident global
-            // initializer only gets its copy from the single-file
-            // `--format=raw` entry sequence, not yet from a real
-            // multi-object `--link`.
+            // The startup copy writes each nonzero element into RAM before `main` runs, spliced
+            // into `_start`; skipped in object mode since no `_start` is emitted there.
             if (!objectMode) {
                 int w = widthOfType(slot->type);
                 for (size_t i = 0; i < slot->arrayInit.size(); i++) {
@@ -231,10 +173,7 @@ std::string STM32Codegen::generate(const ir::Program &prog, bool objectMode) {
         code_ << "_start:\n";
         code_ << initCode;
         code_ << "    bl " << label(mainFn) << "\n";
-        // The result sits in r0 the moment execution reaches `halt` -
-        // see STM32Codegen.h's own header comment on why that's the
-        // authoritative place to read it from (a real, directly
-        // inspectable 32-bit register).
+        // main's result sits in r0 when execution reaches `halt`.
         code_ << "halt:\n    b halt\n\n";
     }
 
@@ -246,8 +185,6 @@ std::string STM32Codegen::generate(const ir::Program &prog, bool objectMode) {
     return code_.str();
 }
 
-// Single-file-only - see M6502Codegen.cpp's own version of this same
-// comment (no `--format=coff` here either).
 std::map<std::string, std::string> STM32Codegen::perFileAsm() const { return perFileAsm_; }
 
 void STM32Codegen::genFunction(const ir::FunctionBody &fn) {
@@ -255,17 +192,13 @@ void STM32Codegen::genFunction(const ir::FunctionBody &fn) {
     code_ << "    pushlr\n";
     code_ << "    push r7\n";
     code_ << "    mov r7,sp\n";
-    // frameSize is now a real byte count (see IR.h's own comment on
-    // Function::frameSize) - each dummy push/pop still only ever
-    // reserves/releases a whole 4-byte register regardless (this
-    // dialect's PUSH is always register-width, see this file's own
-    // header comment on why there's no `sub sp,#imm` here yet), so
-    // this rounds up to the nearest whole word's worth of pushes.
+    // frameSize is a byte count; each push/pop reserves/releases a whole 4-byte word (there's
+    // no `sub sp,#imm` here), so this rounds up to whole words.
     frameSize_ = fn.func->frameSize;
     int frameWords = (frameSize_ + 3) / 4;
     for (int i = 0; i < frameWords; i++) code_ << "    push r0\n";
     genStmt(*fn.body);
-    emitEpilogue();  // reached only if control falls off the end with no explicit `return`
+    emitEpilogue();  // only reached if control falls off the end with no `return`
     code_ << "\n";
 }
 
@@ -327,9 +260,7 @@ void STM32Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            // Early exit - genFunction()'s own fall-off-the-end
-            // epilogue never runs for this path, so it needs this
-            // same frame teardown inline.
+            // Early exit, so genFunction()'s fall-off-the-end epilogue never runs for this path.
             emitEpilogue();
             return;
         }
@@ -341,12 +272,8 @@ void STM32Codegen::genStmt(const ir::Stmt &s) {
                 loadFrameAddr("r2", s.declSlot);
                 storeOperand("r2", s.declSlot->type);
             }
-            // No "else" case for a bare, uninitialized scalar: its own
-            // frame word already exists (genFunction()'s own reserve-
-            // pushes already made room for it) - same as a real,
-            // ordinary C automatic variable, its value is simply
-            // whatever was already in that stack slot until something
-            // assigns it.
+            // No "else" for a bare, uninitialized scalar: its frame word already exists
+            // (genFunction()'s reserve-pushes made room for it), like an ordinary C automatic.
             return;
         }
         case ir::StmtKind::ExprStmt: {
@@ -399,10 +326,8 @@ void STM32Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Stores through at e.type's own width/signedness - the
-            // pointee type of a real typed pointer, or a plain native
-            // int word for the still-supported untyped-int-as-address
-            // style - see IRBuilder.cpp's own DerefAssign comment.
+            // Stores at e.type's width/signedness: the pointee type of a typed pointer, or a
+            // plain native int word for the untyped-int-as-address style.
             genExpr(*e.lhs);  // r0 = pointer value
             code_ << "    mov r2,r0\n";
             code_ << "    push r2\n";
@@ -417,10 +342,8 @@ void STM32Codegen::genExpr(const ir::Expr &e) {
                 genCompoundThroughR2(e);
                 return;
             }
-            // Plain scalar target - loadSlotAddr() is side-effect-free
-            // (no indexed sub-expression to re-evaluate), so it's
-            // computed after `e.rhs`, same order the existing Assign
-            // case above already uses.
+            // Plain scalar target - loadSlotAddr() is side-effect-free, so it's computed after
+            // e.rhs, same order as the Assign case above.
             genExpr(*e.rhs);  // r0 = rhs
             code_ << "    mov r1,r0\n";
             loadSlotAddr("r2", e.slot);
@@ -463,8 +386,7 @@ void STM32Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                // Loads at e.type's own width/signedness - see
-                // DerefAssign's identical comment above.
+                // Loads at e.type's width/signedness, as DerefAssign above.
                 genExpr(*e.rhs);  // r0 = pointer value
                 code_ << "    mov r2,r0\n";
                 loadOperand("r2", e.type);
@@ -478,20 +400,10 @@ void STM32Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            // Arguments are pushed onto the real stack, last-declared
-            // one first, so the first argument ends up closest to the
-            // return address `bl` is about to set `lr` for - see this
-            // file's own header comment. Each callee lays them into
-            // ITS OWN frame itself; nothing here needs to know
-            // anything about the callee's own parameter count or
-            // names beyond `e.args.size()`. The caller cleans the
-            // pushed words back off afterward with one dummy `pop r1`
-            // per argument (no `add sp,#imm` instruction exists in
-            // this dialect - see genFunction()'s own identical
-            // reasoning for the Local-frame reserve/release).
-            // A wide (`long long`) argument pushes its high word
-            // first so its low word ends up closer to `r7`, matching
-            // a wide Param's own frameOffset/frameOffset+4 layout.
+            // Arguments are pushed last-declared one first, matching Param addressing. The
+            // caller cleans them back off with one dummy `pop r1` per argument (no
+            // `add sp,#imm` here). A wide argument pushes its high word first so its low word
+            // ends up closer to r7, matching a wide Param's frameOffset/frameOffset+4 layout.
             int pushedWords = 0;
             for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
@@ -508,14 +420,8 @@ void STM32Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::CallPtr: {
-            // e.args is always empty here - IRBuilder.cpp rejects any
-            // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr): there's no per-callee
-            // p_<fn>_<i> cell to write one into until the callee is
-            // known, which it never is at compile time for this kind.
-            // "blx r0" (STM32Assembler.cpp's new register-indirect
-            // branch-with-link encoding) is a real Thumb indirect call
-            // through whatever address r0 holds.
+            // e.args is always empty: no per-callee p_<fn>_<i> cell exists until the callee is
+            // known. `blx r0` is an indirect call through whatever address r0 holds.
             genExpr(*e.lhs);  // r0 = the callee's own entry address
             code_ << "    blx r0\n";
             return;
@@ -525,11 +431,8 @@ void STM32Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Intrinsic: {
-            // Same "real but nothing for a bare-metal no-OS compile
-            // to meaningfully do" stance as M68kCodegen.cpp's own
-            // `_ion()`/`_iof()` comment - a real Cortex-M has a real
-            // PRIMASK/`cpsie`/`cpsid`, but nothing here ever sets up
-            // an exception/interrupt table for it to matter against.
+            // Cortex-M has real PRIMASK/cpsie/cpsid, but nothing here sets up an
+            // exception/interrupt table for it to matter against on a bare-metal no-OS compile.
             (void)e;
             return;
         }
@@ -542,23 +445,14 @@ void STM32Codegen::genExpr(const ir::Expr &e) {
     }
 }
 
-// `r2` holds the computed address, the same role m68k's `A0` plays
-// (no zero-page-style placement restriction the 6502 backend's own
-// `ptr` has). `arraySize > 0` means the base is the array's own first
-// word - a compile-time-known label for a Global, or (see
-// loadFrameAddr()) a runtime r7-relative address for a Local/Param;
-// otherwise `slot` is a plain pointer variable, so the base instead
-// comes from *reading* that variable's own stored value first (again
-// from a label or an r7-relative address, depending on `slot->kind`).
-// A Local/Param array's own element i sits *below* element 0
-// (addresses decrease as the index increases - see this file's own
-// header comment), the mirror image of a Global array's increasing-
-// address layout, so this is base-minus-scaled-index there, not
-// base-plus.
+// `r2` holds the computed address. `arraySize > 0` means the base is the array's first word
+// (a label for a Global, or an r7-relative address for a Local/Param); otherwise `slot` is a
+// pointer variable, so the base comes from reading that variable's stored value first. A
+// Local/Param array's element i sits below element 0 (addresses decrease as the index
+// increases), the mirror of a Global array's layout, so this is base-minus-scaled-index there.
 void STM32Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // r0 = index
-    // r0 *= the element type's own width (1/2/4/8 bytes, via
-    // elemShift()) - a real variable-count `lsl`, no loop needed.
+    // r0 *= the element type's width via a variable-count `lsl`.
     int shift = elemShift(slot->type);
     if (shift > 0) {
         code_ << "    movl " << shift << ",r3\n";
@@ -588,8 +482,6 @@ void STM32Codegen::genCompoundOp(const std::string &op, Type type) {
     bool isUnsigned = type.isUnsigned;
     if (op == "+") { code_ << "    add r0,r0,r1\n"; return; }
     if (op == "-") { code_ << "    sub r0,r0,r1\n"; return; }
-    // `muls r1,r0` (see genMul()'s own identical form) - a genuine
-    // 32x32->32 hardware product, no operand-width caveat here.
     if (op == "*") { code_ << "    mul r1,r0\n"; return; }
     if (op == "&") { code_ << "    and r0,r1\n"; return; }
     if (op == "|") { code_ << "    orr r0,r1\n"; return; }
@@ -599,14 +491,8 @@ void STM32Codegen::genCompoundOp(const std::string &op, Type type) {
         code_ << "    " << insn << " r0,r0,r1\n";
         return;
     }
-    // "/" or "%" - a real hardware divide (see genDivMod()'s own
-    // identical form): r4 = old / rhs, then (for "%") a real multiply-
-    // subtract recovers the remainder the same way genDivMod() already
-    // does. r4 (never r2) holds the quotient - r2 is this backend's
-    // own dedicated address register (see genCompoundThroughR2()'s own
-    // comment, and the plain-scalar CompoundAssign case in genExpr()),
-    // which a caller still needs intact for the store right after this
-    // call returns.
+    // "/" or "%": r4 = old / rhs (never r2, which must stay intact as the address register for
+    // the store right after this call returns); "%" recovers the remainder via multiply-subtract.
     code_ << "    " << (isUnsigned ? "udiv" : "sdiv") << " r4,r0,r1\n";
     if (op == "%") {
         code_ << "    mul r1,r4\n";     // r4 = r4 * r1 = quotient * rhs
@@ -616,12 +502,9 @@ void STM32Codegen::genCompoundOp(const std::string &op, Type type) {
     }
 }
 
-// r2 must already hold the resolved address on entry, and nothing
-// else live - mirrors genExpr()'s own indexed-Assign case, which
-// already stashes r2 on the real hardware stack across `e.rhs`'s own
-// evaluation for the identical reason: that evaluation can
-// recursively reach arbitrary codegen (calls included), which may
-// freely use every other register.
+// r2 must already hold the resolved address on entry; it's stashed on the stack across e.rhs's
+// evaluation, since that can recursively reach arbitrary codegen (calls included) that may
+// clobber every other register.
 void STM32Codegen::genCompoundThroughR2(const ir::Expr &e) {
     code_ << "    push r2\n";
     genExpr(*e.rhs);              // r0 = rhs
@@ -643,15 +526,9 @@ void STM32Codegen::genCompoundThroughR2(const ir::Expr &e) {
     }
 }
 
-// Stores arrayInit into `slot`'s own frame slots - every call needs
-// this re-run, since (unlike a Global's one static trailer) a Local's
-// storage is this activation's own fresh frame region, not pre-set to
-// anything; arrayInit is always fully populated up to arraySize, so
-// this always leaves the whole array in a known state, same as a
-// Global array's static trailer always did. An element's own address
-// is slot->frameOffset+i*widthOfType(slot->type) bytes below r7, the
-// same arithmetic loadFrameAddr() uses for the array's own first
-// word, just advanced by i element widths.
+// Stores arrayInit into `slot`'s frame slots. Unlike a Global's static trailer, a Local's
+// storage is a fresh frame region each call, so this must re-run every time. An element's
+// address is slot->frameOffset+i*widthOfType(slot->type) bytes below r7.
 void STM32Codegen::genLocalArrayInit(const ir::Slot *slot) {
     int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
@@ -668,11 +545,8 @@ void STM32Codegen::genLocalArrayInit(const ir::Slot *slot) {
 
 void STM32Codegen::narrowR0To(Type to) {
     int w = widthOfType(to);
-    // Re-truncate+re-extend via a real variable-count `lsl` then
-    // `asr`/`lsr` (zero-fill for unsigned, sign-fill for signed) -
-    // `movl` loads the shift amount itself (24 or 16) with no 8-bit
-    // immediate limit to work around, unlike ../armm/ArmMCodegen.cpp's
-    // own version of this same idiom.
+    // Re-truncate+re-extend via `lsl` then `asr`/`lsr` (zero-fill for unsigned, sign-fill for
+    // signed).
     if (w == 1) {
         code_ << "    movl 24,r3\n";
         code_ << "    lsl r0,r0,r3\n";
@@ -684,11 +558,8 @@ void STM32Codegen::narrowR0To(Type to) {
     }
 }
 
-// `addrReg` holds the already-computed effective address (r2, by
-// this backend's own convention); loads into r0 (or r0:r1, for a
-// `long long`), sign- or zero-extending a narrower-than-native-int
-// value per its own signedness. `ldrb`/`ldrh` always zero-extend
-// (see STM32Assembler.cpp's own comment) - a signed source needs an
+// `addrReg` holds the already-computed effective address (r2 by convention); loads into r0
+// (or r0:r1 for `long long`). `ldrb`/`ldrh` always zero-extend, so a signed source needs an
 // additional re-sign-extend via narrowR0To().
 void STM32Codegen::loadOperand(const std::string &addrReg, Type type) {
     int w = widthOfType(type);
@@ -722,12 +593,9 @@ void STM32Codegen::storeOperand(const std::string &addrReg, Type type) {
     }
 }
 
-// An implicit or explicit type conversion (see IR.h's ExprKind::
-// Convert). Every arithmetic/comparison operand narrower than `int`
-// is already promoted by IRBuilder before any Binary/Unary ever sees
-// it, so the only real work here is crossing the native-int/`long
-// long` boundary, or re-truncating+re-extending r0 for a narrower
-// target - see narrowR0To().
+// An implicit or explicit type conversion. IRBuilder already promotes narrower operands before
+// Binary/Unary sees them, so the only work here is crossing the int/`long long` boundary or
+// renarrowing via narrowR0To().
 void STM32Codegen::genConvert(const ir::Expr &e) {
     Type from = e.lhs->type;
     Type to = e.type;
@@ -768,15 +636,9 @@ void STM32Codegen::genAddrOf(const ir::Expr &operand) {
         return;
     }
     if (operand.kind == ir::ExprKind::Func) {
-        // Real Cortex-M (Thumb-only) interworking: a function's own
-        // numeric address value must carry the Thumb-select bit
-        // (LSB=1) for `blx` (CallPtr's own register-indirect call,
-        // below) to branch into it correctly - same convention this
-        // backend's own vector table already uses for `_start`'s own
-        // reset-handler entry (see STM32Assembler.h's own `dlt`
-        // comment). Every function label here is always even (Thumb
-        // instructions are 2-byte aligned), so this is exactly
-        // "address + 1".
+        // Cortex-M Thumb interworking: a function address must carry the Thumb-select bit
+        // (LSB=1) for `blx` to branch into it correctly. Every function label is always even
+        // (2-byte aligned), so this is exactly "address + 1".
         code_ << "    lea " << label(operand.func) << ",r0\n";
         code_ << "    movl 1,r1\n";
         code_ << "    add r0,r0,r1\n";
@@ -785,10 +647,8 @@ void STM32Codegen::genAddrOf(const ir::Expr &operand) {
     err(operand.line, "internal: unhandled addressable-operand kind");
 }
 
-// `long long` add/sub (lhs OP rhs) - evaluate lhs into r0:r1,
-// stashing its two words on the stack while rhs evaluates into
-// r4:r5, then ripple the carry/borrow across the word pair with
-// `adc`/`sbc`.
+// `long long` add/sub: evaluate lhs into r0:r1, stash it on the stack while rhs evaluates into
+// r4:r5, then ripple the carry/borrow across the word pair with `adc`/`sbc`.
 void STM32Codegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd) {
     genExpr(lhs);
     code_ << "    push r1\n    push r0\n";  // stack (top->bottom): lhs_lo, lhs_hi
@@ -802,57 +662,39 @@ void STM32Codegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isA
     }
 }
 
-// 32x32->64 unsigned widening multiply: {r1:r0} = r6(a) * r4(b),
-// both consumed - the caller must place `a` in r6 and `b` in r4
-// before calling. This dialect's real variable-count `lsl`/`lsr`
-// only ever shift within one 32-bit register, so a genuine 64-bit
-// product still needs the same bit-serial shift-and-add loop as
-// ../armm/ArmMCodegen.cpp's own `genMul64()`: `a` consumed 1 bit at
-// a time (shifted right, carry tested via `bhs`/`blo` - the real
-// carry-flag condition codes, no separate AND/compare needed); `b`'s
-// own current doubled value (r4:r5, growing to 64 bits) added into
-// the 64-bit accumulator (r0:r1) whenever that bit is 1. Clobbers
-// r0-r6.
+// 32x32->64 unsigned widening multiply: {r1:r0} = r6(a) * r4(b), both consumed. No widening
+// multiply instruction exists, so this is a bit-serial shift-and-add loop: `a` consumed one
+// bit at a time (shifted right, carry tested via `bhs`/`blo`); `b`'s doubled value (r4:r5,
+// growing to 64 bits) added into the accumulator (r0:r1) whenever that bit is 1. Clobbers r0-r6.
 void STM32Codegen::genMul64() {
-    code_ << "    movl 0,r5\n";  // r5 = b's own high word (b, r4, is only ever 32 bits wide)
+    code_ << "    movl 0,r5\n";  // r5 = b's high word (b, r4, is only ever 32 bits wide)
     code_ << "    movl 0,r0\n    movl 0,r1\n";
     code_ << "    movl 0,r2\n";  // r2 = iteration count-up (0..32)
     std::string Lloop = newLabel(), LdoAdd = newLabel(), LskipAdd = newLabel(), Ldone = newLabel();
     code_ << Lloop << ":\n";
     code_ << "    movl 32,r3\n    cmp r2,r3\n    beq " << Ldone << "\n";
     code_ << "    movl 1,r3\n    add r2,r2,r3\n";
-    // Consume `a`'s own low bit by shifting it out - the carry flag
-    // this leaves behind (the real "last bit shifted out" convention
-    // every shift instruction here follows) IS that bit, tested
-    // directly via `bhs`/`blo` (literally the carry-set/carry-clear
-    // condition codes) with no separate AND/compare needed - same
-    // idiom as ../armm/ArmMCodegen.cpp's own `genMul64()`.
+    // The carry flag left by shifting out a's low bit IS that bit, tested via `bhs`/`blo`.
     code_ << "    lsr r6,r6,r3\n    bhs " << LdoAdd << "\n    b " << LskipAdd << "\n";
     code_ << LdoAdd << ":\n";
     code_ << "    add r0,r0,r4\n    adc r1,r5\n";
     code_ << LskipAdd << ":\n";
-    // Double `b` (r4:r5) by 1 bit for the next iteration - `add
-    // r4,r4,r4` is a self-add, doubling r4 while leaving its own old
-    // top bit in the carry flag for `adc r5,r5` to fold in.
+    // Double b (r4:r5) via self-add, carrying its old top bit into r5 through `adc`.
     code_ << "    add r4,r4,r4\n    adc r5,r5\n";
     code_ << "    b " << Lloop << "\n";
     code_ << Ldone << ":\n";
 }
 
-// `long long` multiply, keeping the low 64 bits of the true 128-bit
-// product: result = lo(lhs)*lo(rhs) (the full 64-bit product, via
-// genMul64()) plus the two cross terms lhs_hi*rhs_lo/lhs_lo*rhs_hi
-// folded into the high word only (truncating `mul` is exactly right
-// for them - see ArmCodegen.cpp's own identical reasoning).
+// `long long` multiply, keeping the low 64 bits of the true 128-bit product: result =
+// lo(lhs)*lo(rhs) (via genMul64()) plus the cross terms lhs_hi*rhs_lo/lhs_lo*rhs_hi folded into
+// the high word only (truncating `mul` is exactly right for them).
 void STM32Codegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     code_ << "    push r1\n    push r0\n";  // stash lhs: top->bottom = lhs_lo, lhs_hi
     genExpr(rhs);
     code_ << "    mov r6,r0\n    mov r5,r1\n";  // r6=rhs_lo, r5=rhs_hi
     code_ << "    pop r4\n    pop r2\n";        // r4=lhs_lo, r2=lhs_hi
-    // Cross terms, computed now (before genMul64() clobbers r4/r6):
-    // r3 = lhs_hi*rhs_lo, then r2 = rhs_hi*lhs_lo, summed into r2 -
-    // r4 (lhs_lo) and r6 (rhs_lo) are left untouched for genMul64().
+    // Cross terms computed now, before genMul64() clobbers r4/r6.
     code_ << "    mov r3,r2\n    mul r6,r3\n";  // r3 = lhs_hi*rhs_lo
     code_ << "    mov r2,r5\n    mul r4,r2\n";  // r2 = rhs_hi*lhs_lo
     code_ << "    add r2,r2,r3\n";
@@ -862,19 +704,12 @@ void STM32Codegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << "    add r1,r1,r2\n";
 }
 
-// A `long long` shifted by a runtime count - no instruction here
-// shifts more than 32 bits at once, so this is a counted loop of
-// 1-bit shifts (r6 = count). `<<` doubles r0:r1 via the self-add
-// carry-chained-doubling trick; `>>` needs the opposite direction,
-// which this dialect's real `lsr`/`asr` can do directly within one
-// register but without a carry-chain analogue of `adc` for the
-// *downward* direction, so the bit crossing the r1/r0 boundary is
-// captured by hand into r4 (the high word's own old bit 0) before
-// shifting, then OR'd into r0's own new top bit via a precomputed
-// 0x80000000 mask (r3) - `isUnsigned` only matters here, picking
-// `asr` (sign-preserving) or `lsr` (zero-filling) for r1's own
-// shift. Same overall shape as ../armm/ArmMCodegen.cpp's own
-// `genWideShift()`.
+// A `long long` shifted by a runtime count: no instruction here shifts more than 32 bits at
+// once, so this is a counted loop of 1-bit shifts (r6 = count). `<<` doubles r0:r1 via the
+// self-add carry-chained-doubling trick. `>>` has no `adc` analogue for the downward direction,
+// so the bit crossing the r1/r0 boundary is captured into r4 before shifting, then OR'd into
+// r0's new top bit via a precomputed 0x80000000 mask (r3); `isUnsigned` picks `asr` vs `lsr`
+// for r1's shift.
 void STM32Codegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push r1\n    push r0\n";
@@ -903,17 +738,12 @@ void STM32Codegen::genWideShift(const ir::Expr &lhs, const ir::Expr &rhs, bool i
     code_ << Ldone << ":\n";
 }
 
-// Classic bit-serial shift/compare/subtract long division (no
-// instruction here is wide enough for a genuine 64/64 divide) - same
-// overall shape as ../armm/ArmMCodegen.cpp's own `genWideDivMod()`:
-// r0:r1 start as the dividend and finish as the quotient (the
-// standard restoring-division trick of building the quotient into
-// the bits vacated by the dividend as it shifts left); r4:r5 is the
-// remainder (starts 0); r2:r3 is the divisor. `isUnsigned` false
-// divides *magnitudes* (each operand's own sign bit, read before
-// negating, is stashed on the stack across the whole loop and
-// restored on the result afterward per C's truncating-division
-// rule).
+// Bit-serial shift/compare/subtract long division (no instruction here is wide enough for a
+// genuine 64/64 divide): r0:r1 start as the dividend and finish as the quotient (restoring
+// division, building the quotient into bits vacated as the dividend shifts left); r4:r5 is the
+// remainder (starts 0); r2:r3 is the divisor. `isUnsigned` false divides magnitudes (each
+// operand's sign bit, read before negating, is stashed and restored afterward per C's
+// truncating-division rule).
 void STM32Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push r1\n    push r0\n";
@@ -936,37 +766,29 @@ void STM32Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool 
     }
 
     code_ << "    movl 0,r4\n    movl 0,r5\n";  // remainder = 0
-    code_ << "    movl 64,r6\n";                 // iteration count-down (64..0) - see this
-                                                   // function's own header comment on why
-                                                   // `cmpz` (no second register needed) picks
-                                                   // this direction over armm's own count-up
+    code_ << "    movl 64,r6\n";                 // iteration count-down (64..0), using `cmpz`
+                                                   // instead of a second compare register
 
     std::string Lloop = newLabel(), Ldone = newLabel();
     std::string LhiDiff = newLabel(), LsubYes = newLabel(), LsubNo = newLabel();
     code_ << Lloop << ":\n    cmpz r6\n    beq " << Ldone << "\n";
-    // Every register 0-6 already holds live loop state (dividend/
-    // quotient, divisor, remainder, counter) with nothing spare for
-    // a "1" constant - `push r3`/`pop r3` borrows the divisor's own
-    // high word as a one-instruction scratch slot, safe since
-    // nothing reads it again until well after this restore.
+    // No register is spare for a "1" constant - `push r3`/`pop r3` borrows the divisor's high
+    // word as a scratch slot, safe since nothing reads it again until this restores it.
     code_ << "    push r3\n    movl 1,r3\n    sub r6,r6,r3\n    pop r3\n";
 
-    // Shift {remainder:dividend} left by 1 as one combined 128-bit
-    // value, via the carry-chained-doubling trick (self-add on r0,
-    // `adc` on r1/r4/r5 in sequence) - the bit that overflows out of
-    // the dividend half (r1's own old top bit) lands, via the carry
-    // chain, directly into the remainder's own new bit 0.
+    // Shift {remainder:dividend} left by 1 as one combined value via carry-chained doubling;
+    // the bit overflowing out of the dividend (r1's old top bit) lands in the remainder's new
+    // bit 0 through the carry chain.
     code_ << "    add r0,r0,r0\n    adc r1,r1\n    adc r4,r4\n    adc r5,r5\n";
 
-    // if (remainder >= divisor) { remainder -= divisor; quotient bit = 1 }
-    // (always an unsigned magnitude compare - both operands were
-    // already negated to non-negative above for the signed case).
+    // if (remainder >= divisor) { remainder -= divisor; quotient bit = 1 } - an unsigned
+    // magnitude compare, since both operands were already negated non-negative for the signed case.
     code_ << "    cmp r5,r3\n    bne " << LhiDiff << "\n";
     code_ << "    cmp r4,r2\n    bhs " << LsubYes << "\n    b " << LsubNo << "\n";
     code_ << LhiDiff << ":\n    bhi " << LsubYes << "\n    b " << LsubNo << "\n";
     code_ << LsubYes << ":\n";
     code_ << "    sub r4,r4,r2\n    sbc r5,r3\n";
-    code_ << "    push r3\n    movl 1,r3\n    add r0,r0,r3\n    pop r3\n";  // set the quotient bit the shift above just vacated
+    code_ << "    push r3\n    movl 1,r3\n    add r0,r0,r3\n    pop r3\n";  // set the vacated quotient bit
     code_ << LsubNo << ":\n";
     code_ << "    b " << Lloop << "\n";
 
@@ -988,11 +810,8 @@ void STM32Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool 
     }
 }
 
-// `long long` comparison - compare the high words first (per
-// `isUnsigned`, since that's where the sign bit lives); only if
-// those are equal does the low word's own comparison matter, and at
-// that point it's always unsigned regardless of the overall type's
-// signedness.
+// `long long` comparison: compare the high words first (per `isUnsigned`, since that's where
+// the sign bit lives); only if equal does the low word matter, always compared unsigned.
 void STM32Codegen::genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push r1\n    push r0\n";
@@ -1024,10 +843,9 @@ void STM32Codegen::genWideCompare(const std::string &op, const ir::Expr &lhs, co
 
 void STM32Codegen::genBinary(const ir::Expr &e) {
     const std::string &op = e.op;
-    // Every arithmetic/bitwise/comparison operand here already
-    // shares one common type (IRBuilder's own usual-arithmetic-
-    // conversion pass - see Type.h), except shift (only the LHS's own
-    // type matters) and &&/|| (width-independent, handled below).
+    // Arithmetic/bitwise/comparison operands already share one common type (IRBuilder's usual
+    // arithmetic conversions), except shift (only the LHS's type matters) and &&/|| (handled
+    // below, width-independent).
     Type operandType = e.lhs->type;
     bool wide = isWide(operandType);
     bool isUnsigned = operandType.isUnsigned;
@@ -1106,9 +924,7 @@ void STM32Codegen::genBinary(const ir::Expr &e) {
     genCompare(op, *e.lhs, *e.rhs);
 }
 
-// Real hardware multiply (`muls`) - a genuine 32x32->32 product, no
-// operand-width caveat the way m68k's word-sized `MULS.W` needs (see
-// STM32Codegen.h's own header comment).
+// Hardware multiply (`muls`): a genuine 32x32->32 product, no operand-width caveat.
 void STM32Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     code_ << "    push r0\n";
@@ -1117,13 +933,8 @@ void STM32Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << "    mul r1,r0\n";  // r0 = r0 * r1 = rhs * lhs
 }
 
-// Real hardware divide (`sdiv`) - this CPU, unlike every other target
-// here (even the original 68000), has a genuine signed integer divide
-// with no operand-width limitation at all, so unlike every other
-// backend's own genDivMod() there's no software loop or quotient/
-// remainder-packing trick needed: `%` is computed directly from a
-// real division plus one real multiply-subtract (see STM32Codegen.h's
-// own header comment). `isUnsigned` picks `udiv`/`sdiv`.
+// Hardware divide (`sdiv`/`udiv`): a genuine signed/unsigned integer divide, so no software
+// loop is needed; `%` is computed directly via one multiply-subtract.
 void STM32Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push r0\n";
@@ -1153,12 +964,9 @@ void STM32Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const 
     err(lhs.line, "internal: unhandled comparison operator '" + op + "'");
 }
 
-// Real `cmp` + condition-code branch - this CPU's own flags already
-// encode signed/unsigned ordering correctly in hardware (same as
-// m68k's `CMP.L`+`Bcc` - see STM32Codegen.h's own header comment),
-// no fixup needed the way the 6502 backend's own comparisons do.
-// `isUnsigned` is unused directly here (already baked into which
-// `branchIfTrue` mnemonic genCompare() picked) but documents why.
+// `cmp` + condition-code branch: flags already encode signed/unsigned ordering correctly, no
+// fixup needed. `isUnsigned` is unused here directly (baked into genCompare()'s choice of
+// `branchIfTrue`) but documents why.
 void STM32Codegen::emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const std::string &branchIfTrue,
                                  bool isUnsigned) {
     (void)isUnsigned;
@@ -1174,10 +982,7 @@ void STM32Codegen::emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const s
     code_ << Ldone << ":\n";
 }
 
-// A wide (`long long`) operand's truthiness needs both words - `orr
-// r0,r1` folds them together before the usual "cmpz r0" (the
-// combined value is discarded immediately after, so clobbering r0
-// this way is safe).
+// A wide operand's truthiness needs both words: `orr r0,r1` folds them before `cmpz r0`.
 void STM32Codegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
     if (isWide(lhs.type)) code_ << "    orr r0,r1\n";
@@ -1226,13 +1031,8 @@ std::string STM32Codegen::buildAssembleCommand(const std::string &, const std::s
 std::optional<std::string> STM32Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "raw") return assembleSTM32(asmText);
-    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
-    // (see generate()'s own `objectMode` comment) - this backend's
-    // own assembler builds one format-neutral ObjectFile exactly once
-    // (see STM32Assembler.h's own `assembleSTM32Object`), and
-    // whichever of these five names was asked for just picks that
-    // format's own FileFormatWriter (see fileformat/FileFormat.h)
-    // to serialize it.
+    // `coff`/`elf`/`macho`/`aout`/`objraw`: builds one format-neutral ObjectFile, then picks
+    // that format's FileFormatWriter to serialize it.
     if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleSTM32Object(asmText);
         return makeFileFormatWriter(*kind)->write(obj);

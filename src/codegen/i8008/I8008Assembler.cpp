@@ -21,8 +21,6 @@ namespace {
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("I8008Assembler: " + msg); }
 
 // --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
-// Same Syllable/Line shape as ../i8080/I8080Assembler.cpp's own - see
-// that file's own comment.
 
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
@@ -115,11 +113,8 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         for (auto *op : instr->operand()) line.exprList.push_back(buildOperand(op));
         return line;
     }
-    // "dw" is a full, real 16-bit value (same shape as a `jmp`/`cal`
-    // operand - see emit16()'s own comment) written out low byte then
-    // high byte - unlike `db`, its own expression can resolve to any
-    // 16-bit value, symbol address included, not just one that fits
-    // in a single byte.
+    // "dw" writes a full 16-bit value low byte then high byte (unlike `db`, its expression may be any 16-bit
+    // value, symbol address included).
     if (mnemonic == "dw") {
         line.kind = Line::Dw;
         for (auto *op : instr->operand()) line.exprList.push_back(buildOperand(op));
@@ -158,11 +153,8 @@ std::optional<std::string> asBareIdent(const std::vector<Syllable> &operand) {
     return toLower(s.text);
 }
 
-// One pending fixup `assembleI8008Object()` (see I8008Assembler.h's
-// own header comment) turns into a real ObjRelocation once assembly
-// is done - mirrors ../m6502/M6502Assembler.cpp's own `Relocation`
-// (a `kind` field, not just one implied type, since this dialect also
-// has three relocation kinds).
+// A pending fixup, turned into a real ObjRelocation once assembly is done; `kind` distinguishes this dialect's
+// three relocation kinds.
 struct Relocation {
     uint32_t byteOffset;
     std::string symbolName;
@@ -203,13 +195,8 @@ class Assembler {
                 return;
             case Line::Equate:
                 labels_[line.equateName] = evalExpr(line.exprList.at(0));
-                // A compile-time constant, the same in every object
-                // regardless of where it's linked (this backend's own
-                // fixed `ac`/`bc`/.../`sp` cells - see
-                // I8008Codegen.h's own header comment) - never treated
-                // as needing a `..` base-shift relocation, see
-                // resolveSyllable()'s own check below. Mirrors
-                // ../m6502/M6502Assembler.cpp's own `equateNames_`.
+                // A compile-time constant, the same in every object regardless of where it's linked - never needs
+                // a `..` base-shift relocation (see resolveSyllable()).
                 equateNames_.insert(line.equateName);
                 return;
             case Line::Org:
@@ -227,11 +214,8 @@ class Assembler {
         }
     }
 
-    // `externalName`/`needsBaseShift` mirror
-    // ../z80/Z80Assembler.cpp's own `evalExpr` exactly - see
-    // I8008Assembler.h's own header comment on why *any* local
-    // address reference, not just an external one, needs a
-    // relocation here once `allowExternal_` is set.
+    // In object mode (`allowExternal_`), any local-address reference, not just an external one, needs a relocation
+    // once linked, since the final load address isn't known yet.
     uint32_t evalExpr(const std::vector<Syllable> &syls, std::string *externalName = nullptr,
                        bool *needsBaseShift = nullptr) {
         uint32_t total = 0;
@@ -286,16 +270,7 @@ class Assembler {
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
 
-    // `mvi`'s own immediate operand - the LOW byte of whatever `e`
-    // resolves to (a real assembler's `#<label` low-byte operator,
-    // spelled as a plain mnemonic here - see I8008Codegen.h's own
-    // header comment on pointAt()). Also the one place a *named*
-    // cell's address (including an external global's own, via
-    // pointAt()) needs a relocation - an ordinary numeric immediate
-    // (e.g. `mvi a, 5`) never touches a symbol at all, so
-    // `externalName`/`needsBaseShift` naturally stay empty/false for
-    // that case with no special-casing needed (see I8008Assembler.h's
-    // own header comment).
+    // `mvi`'s immediate operand - the low byte of whatever `e` resolves to.
     void emitImmLow(const std::vector<Syllable> &e) {
         std::string externalName;
         bool needsBaseShift = false;
@@ -306,7 +281,7 @@ class Assembler {
         }
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
-    // `mvihi`'s own immediate operand - the HIGH byte.
+    // `mvihi`'s immediate operand - the high byte.
     void emitImmHigh(const std::vector<Syllable> &e) {
         std::string externalName;
         bool needsBaseShift = false;
@@ -328,9 +303,7 @@ class Assembler {
         return ops[i];
     }
 
-    // The 8008's own r/M register field - a=0,b=1,c=2,d=3,e=4,h=5,
-    // l=6,m=7 (memory via HL) - *not* the 8080/Z80's own numbering
-    // (see I8008Codegen.h's own header comment).
+    // The 8008's r/M register field: a=0,b=1,c=2,d=3,e=4,h=5,l=6,m=7 (memory via HL) - different from the 8080/Z80.
     uint8_t regCode(const std::vector<Syllable> &operand, const std::string &mnemonic) {
         auto name = asBareIdent(operand);
         if (!name) fail("'" + mnemonic + "' needs a register name (a/b/c/d/e/h/l/m), not an expression");
@@ -342,11 +315,8 @@ class Assembler {
         return it->second;
     }
 
-    // The full instruction vocabulary ../I8008Codegen.cpp ever emits,
-    // encoded as real, standard Intel 8008 opcodes (see
-    // I8008Assembler.h's own header comment) - not every 8008
-    // instruction exists here (no RST, no INP/OUT, no conditional
-    // RET), only the ones that backend needs.
+    // Covers only the instructions I8008Codegen.cpp emits, not the full 8008 ISA (no RST, no INP/OUT, no
+    // conditional RET).
     void encodeInstr(const std::string &mnemonic, const std::vector<std::vector<Syllable>> &ops) {
         static const std::unordered_map<std::string, uint8_t> implied = {
             {"rlc", 0x02}, {"rrc", 0x0A}, {"ral", 0x12}, {"rar", 0x1A}, {"ret", 0x07},
@@ -435,10 +405,8 @@ class Assembler {
         fail("unsupported instruction '" + mnemonic + "'");
     }
 
-    // addr16 - little-endian, full 16-bit resolved value (every
-    // JMP/CAL and conditional variant here is a plain absolute
-    // 3-byte instruction - see I8008Codegen.h's own header comment:
-    // no branch-range workaround needed anywhere in this backend).
+    // addr16 - little-endian, full 16-bit resolved value (every JMP/CAL variant here is a plain absolute 3-byte
+    // instruction, so no branch-range workaround is needed).
     void emit16(const std::vector<Syllable> &e) {
         std::string externalName;
         bool needsBaseShift = false;
@@ -461,10 +429,7 @@ class Assembler {
     int stage_ = 1;
 };
 
-// Builds the format-neutral ObjectFile a completed object-mode
-// Assembler produced - see ../m6502/M6502Assembler.cpp's own
-// `buildObjectFile` for the template this is ported from (identical
-// algorithm).
+// Builds the format-neutral ObjectFile a completed object-mode Assembler produced.
 ObjectFile buildObjectFile(const Assembler &a) {
     ObjectFile obj;
     obj.machineType = kI8008CoffMachine;

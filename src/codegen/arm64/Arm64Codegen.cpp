@@ -14,36 +14,24 @@ namespace {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
-// Rounds `n` up to the next multiple of 8 - see genFunction()'s own
-// comment on why the per-call frame reservation needs this (on top
-// of, not instead of, IRBuilder's own `frameSize`, which only ever
-// guarantees a 4-byte-aligned result).
+// Rounds `n` up to the next multiple of 8, on top of IRBuilder's
+// `frameSize`, which only guarantees a 4-byte-aligned result.
 int alignUp8(int n) { return (n + 7) & ~7; }
 
-// Where the whole program is loaded and starts executing. qemu's own
-// `-kernel` raw-image convention for the `virt` machine's AArch64
-// boot (confirmed directly: no ELF header, no Linux `Image` magic -
-// just a flat binary) loads it at RAM base + 0x80000 and sets the
-// CPU's PC there directly, no vector table or `loader`-device PC-
-// forcing trick needed at all (unlike M68kCodegen.cpp's own
-// kBaseAddress) - see tests/run_tests.sh's own qemu-system-aarch64
-// invocation. RAM base on `virt` is a fixed, documented 0x40000000.
+// Where the whole program is loaded and starts executing: qemu's
+// `-kernel` raw-image convention for the `virt` machine's AArch64 boot
+// loads it at RAM base + 0x80000 and sets the CPU's PC there directly.
+// RAM base on `virt` is a fixed, documented 0x40000000.
 constexpr uint64_t kBaseAddress = 0x40080000ull;
 
-// Where this backend's own entry sequence points `sp` before calling
-// main() - comfortably above the loaded program and its data,
-// growing down into otherwise-unused RAM (the test harness gives the
-// guest 256M, so this is nowhere near the top).
+// Where the entry sequence points `sp` before calling main() -
+// comfortably above the loaded program and its data.
 constexpr uint64_t kInitialSP = 0x44000000ull;
 
 // The "w" or "x" view of general register number `n`, per `wide` -
-// every arithmetic/compare/shift mnemonic this backend emits already
-// derives its own 32-vs-64-bit form from the register name alone
-// (see Arm64Assembler.cpp's own `width` field), so threading this
-// through genBinary()/genMul()/genDivMod()/genCompare()/
-// genLogicalAnd()/Or()/Not() is all a `long long` operand needs - no
-// separate multi-word emulation the way a narrower-register target
-// needs (see I386Codegen.cpp's own genWideAdd() for the contrast).
+// threading this through genBinary()/genMul()/genDivMod()/genCompare()/
+// genLogicalAnd()/Or()/Not() is all a `long long` operand needs; a real
+// 64-bit register holds the whole value, no multi-word emulation needed.
 std::string reg(int n, bool wide) { return (wide ? "x" : "w") + std::to_string(n); }
 }  // namespace
 
@@ -72,10 +60,9 @@ void Arm64Codegen::loadImm64(const std::string &dstReg, uint64_t uv) {
 
 void Arm64Codegen::narrowW0To(Type to) {
     int w = widthOfType(to);
-    // Re-truncate+re-extend by shifting the unwanted high bits out
-    // and back in (real immediate `lsl`/`lsr`/`asr` - zero-fill for
-    // unsigned, sign-fill for signed) - no dedicated sign/zero-extend
-    // instruction needed.
+    // Re-truncate+re-extend by shifting the unwanted high bits out and
+    // back in (immediate `lsl`/`lsr`/`asr` - zero-fill for unsigned,
+    // sign-fill for signed).
     if (w == 1) {
         code_ << "    lsl w0,w0,24\n";
         code_ << "    " << (to.isUnsigned ? "lsr" : "asr") << " w0,w0,24\n";
@@ -85,14 +72,10 @@ void Arm64Codegen::narrowW0To(Type to) {
     }
 }
 
-// See loadOperand()'s own header comment. `byteReg` is `x4` for an
-// 8-byte destination/source, `w4` otherwise - either name addresses
-// the identical register, but keeping the shift/OR/AND chain's own
-// operand widths consistent with `destReg`/`srcReg` (both "w" or
-// both "x") is what makes each instruction's own `sf` bit (taken
-// from its *first* operand - see Arm64Assembler.cpp's own
-// encodeLogical()/encodeShift()) match the width the other operand
-// actually needs.
+// `byteReg` is `x4` for an 8-byte destination/source, `w4` otherwise -
+// keeping the shift/OR/AND chain's widths consistent with
+// `destReg`/`srcReg` matches each instruction's `sf` bit to the width
+// the other operand needs.
 void Arm64Codegen::loadIntUnaligned(const std::string &addrReg, const std::string &destReg, int nBytes) {
     std::string byteReg = nBytes > 4 ? "x4" : "w4";
     code_ << "    ldindb " << addrReg << "," << byteReg << "\n";
@@ -113,11 +96,9 @@ void Arm64Codegen::storeIntUnaligned(const std::string &addrReg, const std::stri
     }
 }
 
-// `addrReg` holds the already-computed 64-bit effective address;
-// loads into w0 (or x0, for a `long long` - a real 64-bit register
-// holds the whole value directly on this target, no multi-word
-// emulation needed), sign- or zero-extending a narrower-than-native-
-// int value per its own signedness.
+// `addrReg` holds the already-computed 64-bit effective address; loads
+// into w0 (or x0, for a `long long`), sign- or zero-extending a
+// narrower-than-native-int value per its signedness.
 void Arm64Codegen::loadOperand(const std::string &addrReg, Type type, bool mayBeUnaligned) {
     int w = widthOfType(type);
     if (w == 1) {
@@ -165,12 +146,10 @@ void Arm64Codegen::storeOperand(const std::string &addrReg, Type type, bool mayB
     }
 }
 
-// An implicit or explicit type conversion (see IR.h's ExprKind::
-// Convert). Every arithmetic/comparison operand narrower than `int`
-// is already promoted by IRBuilder before any Binary/Unary ever sees
-// it, so the only real work here is crossing the native-int/`long
-// long` boundary, or re-truncating+re-extending w0 for a narrower
-// target - see narrowW0To().
+// An implicit or explicit type conversion. Arithmetic/comparison
+// operands narrower than `int` are already promoted by IRBuilder, so the
+// only real work here is crossing the native-int/`long long` boundary,
+// or re-truncating+re-extending w0 for a narrower target - see narrowW0To().
 void Arm64Codegen::genConvert(const ir::Expr &e) {
     Type from = e.lhs->type;
     Type to = e.type;
@@ -181,19 +160,12 @@ void Arm64Codegen::genConvert(const ir::Expr &e) {
         narrowW0To(to);  // the extra 32 bits in x0 are simply ignored from here on
     } else if (!fromWide && toWide) {
         if (from.isUnsigned) {
-            // w0's own value is already correct in x0's low 32 bits,
-            // zero-extended (every W-form write zeros the upper 32
-            // bits of its own X view - see this file's own header
-            // comment) - nothing to do.
+            // w0's value is already correct in x0's low 32 bits,
+            // zero-extended by the architectural W-form guarantee.
         } else {
-            // Sign-extend w0 into x0: no dedicated sign-extend
-            // instruction in this dialect (real AArch64's SXTW is
-            // itself just an alias for exactly this) - shift w0's own
-            // value (already zero-extended into x0's low 32 bits) up
-            // into the x-register's own top half, then shift back
-            // down arithmetically, sign-filling from what is now
-            // bit63 - exactly w0's own original sign bit. Same idea
-            // as narrowW0To()'s own, one step wider.
+            // Sign-extend w0 into x0: shift its value up into the
+            // x-register's top half, then shift back down arithmetically,
+            // sign-filling from what is now bit63 (w0's original sign bit).
             code_ << "    lsl x0,x0,32\n    asr x0,x0,32\n";
         }
     } else if (!fromWide && !toWide) {
@@ -209,18 +181,12 @@ void Arm64Codegen::loadSlotAddr(const std::string &reg, const ir::Slot *slot) {
         return;
     }
     code_ << "    mov " << reg << ",x29\n";
-    // `frameOffset` is already a real byte offset, computed by
-    // IRBuilder from this slot's own declared type's width (see IR.h's
-    // own comment on Slot::frameOffset) - no backend-side multiply by
-    // a fixed word size any more. IRBuilder's own reservation below a
-    // Param's own frameOffset=0 point is a flat two-native-`int`-
-    // widths (8 bytes here), but this backend's own prologue actually
-    // reserves 32 (two 16-byte-aligned pushes, each only 4 bytes
-    // "real" - see genFunction()'s own comment on why: real AArch64
-    // wants `sp` 16-byte-aligned) - `kParamExtra` makes up that
-    // difference so a Param's real address still lands on the
-    // caller's own pushed argument, not inside the saved-x30/x29
-    // region.
+    // `frameOffset` is a byte offset from IRBuilder, which reserves a
+    // flat two-native-`int`-widths (8 bytes) below a Param's
+    // frameOffset=0 point. This prologue actually reserves 32 bytes
+    // (two 16-byte-aligned pushes, since AArch64 wants `sp`
+    // 16-byte-aligned) - `kParamExtra` makes up the difference so a
+    // Param's address lands on the caller's pushed argument.
     constexpr int kParamExtra = 32 - 8;
     if (slot->kind == ir::SlotKind::Param) {
         code_ << "    add " << reg << "," << reg << "," << (slot->frameOffset + kParamExtra) << "\n";
@@ -230,12 +196,10 @@ void Arm64Codegen::loadSlotAddr(const std::string &reg, const ir::Slot *slot) {
 }
 
 // A literal element is its own decimal text; a symbol element (a
-// dispatch-table address-of-function/global, see IR.h's
-// ArrayInitElem) is the referenced Slot's or Function's own label,
-// written out bare - `dw`'s own expression evaluator
-// (Arm64Assembler.cpp's Line::Dw) already resolves a bare symbol the
-// same way `movz`/`movk`'s own label operand already does for an
-// address loaded into a register (see loadAddress/genAddrOf).
+// dispatch-table address-of-function/global) is the referenced Slot's
+// or Function's label, written out bare - Arm64Assembler.cpp's `dw`
+// evaluator resolves it the same way a label operand resolves for
+// MOVZ/MOVK.
 std::string Arm64Codegen::arrayElemText(const ir::ArrayInitElem &e) {
     if (!e.isSymbol) return std::to_string(static_cast<int32_t>(static_cast<uint32_t>(e.value)));
     return e.slot ? label(e.slot) : label(e.func);
@@ -244,11 +208,10 @@ std::string Arm64Codegen::arrayElemText(const ir::ArrayInitElem &e) {
 void Arm64Codegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType) {
     if (values.empty()) return;
     int w = widthOfType(elemType);
-    // No 64-bit data directive in this dialect - a `long long`
-    // array's own literal elements are emitted as two "dw"s (low
-    // word, then high) per element instead; a symbol element always
-    // means a plain native-int-width address (the dispatch-table
-    // idiom - see AST.h's ArrayInitElem), so it still gets one "dw".
+    // No 64-bit data directive in this dialect - a `long long` array's
+    // literal elements are emitted as two "dw"s (low word, then high) per
+    // element; a symbol element is always a native-int-width address, so
+    // it still gets one "dw".
     const char *directive = w == 1 ? "db" : w == 2 ? "dh" : "dw";
     std::ostringstream line;
     line << lbl << ": " << directive << " ";
@@ -278,15 +241,11 @@ std::string Arm64Codegen::generate(const ir::Program &prog, bool objectMode) {
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
-    // Real separate compilation (`--format=coff`/`elf`/`macho`/`aout`
-    // from a single file - see IRBuilder.h's `allowExternal`) means
-    // `prog` may not define `main` at all. `objectMode` (see
-    // Codegen.h) means no object file ever emits this entry sequence
-    // itself - Arm64LinkerFactory.cpp is solely responsible for
-    // synthesizing exactly one, once every object is merged and
-    // `main`'s linked address is resolvable (see Linker.h). An object
-    // file's own base is `org 0` - it's the linker's job to place it,
-    // not this backend's (see Arm64Assembler.h's own header comment).
+    // Separate compilation means `prog` may not define `main` at all.
+    // `objectMode` means no entry sequence is emitted here -
+    // Arm64LinkerFactory.cpp synthesizes one once every object is merged
+    // and `main`'s linked address is resolvable. An object file's base is
+    // `org 0`; placing it is the linker's job.
     code_ << "org " << (objectMode ? 0 : kBaseAddress) << "\n\n";
     if (!objectMode) {
         code_ << "_start:\n";
@@ -294,35 +253,25 @@ std::string Arm64Codegen::generate(const ir::Program &prog, bool objectMode) {
         code_ << "    movk x9," << static_cast<int32_t>((kInitialSP >> 16) & 0xFFFFu) << "\n";
         code_ << "    add sp,x9,0\n";
         code_ << "    bl " << label(mainFn) << "\n";
-        // The result sits in w0 the moment execution reaches `halt` -
-        // see Arm64Codegen.h's own header comment on why that's the
-        // authoritative place to read it from.
+        // The result sits in w0 the moment execution reaches `halt`.
         code_ << "halt:\n    b halt\n\n";
     }
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
 
-    // Running byte offset within the data segment - used only to
-    // insert alignment padding ahead of a global whose own type is
-    // wider than 1 byte, same reasoning (and the same fix) as
-    // ArmCodegen.cpp's own identical comment: a misaligned
-    // `ldindh`/`stindh`/`ldind`/`stind` is UNPREDICTABLE/
-    // implementation-defined on this core, and would otherwise
-    // clobber whatever *previous* global happens to sit there. Every
-    // instruction above is exactly 4 bytes and the image's own load
-    // address is itself 4-byte-aligned (see kBaseAddress), so the
-    // data segment always starts 4-byte-aligned - the coarsest
-    // alignment ever actually needed here, since even a `long long`
-    // is only ever accessed as two separate word-sized ldind/stind.
+    // Running byte offset within the data segment (4-byte aligned from
+    // the start), used to insert alignment padding ahead of a global
+    // wider than 1 byte: a misaligned `ldindh`/`stindh`/`ldind`/`stind`
+    // is UNPREDICTABLE on this core and would clobber whatever previous
+    // global sits there. Even a `long long` is only ever accessed as two
+    // separate word-sized ldind/stind, so word alignment is the coarsest
+    // ever needed.
     size_t dataOffset = 0;
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
-        // An external global (real separate compilation - see IR.h's
-        // `isExternal`/IRBuilder.cpp's resolveExternalVar) isn't
-        // defined in this file at all - it must never get a local
-        // storage word here, only ever be referenced by name (see
-        // label()) in code, letting the assembler's own undefined-
-        // symbol handling defer it to a relocation.
+        // An external global isn't defined in this file - it must never
+        // get a local storage word, only be referenced by name, letting
+        // the assembler's undefined-symbol handling defer it to a relocation.
         if (slot->isExternal) continue;
         int align = std::min(widthOfType(slot->type), 4);
         size_t padding = (align - (dataOffset % align)) % align;
@@ -359,71 +308,41 @@ std::string Arm64Codegen::generate(const ir::Program &prog, bool objectMode) {
     return out.str();
 }
 
-// Single-file-only - see M68kCodegen.cpp's own version of this same
-// comment (no `--format=coff` here either).
 std::map<std::string, std::string> Arm64Codegen::perFileAsm() const { return perFileAsm_; }
 
-// Every function here saves/restores `x30` (the link register) and
-// `x29` (the frame pointer) around its own body, whether or not it
-// happens to call anything else - `bl` sets `x30` to its own return
-// address unconditionally, so a non-leaf function's own call to
-// another function overwrites it; see MipsCodegen.cpp's own identical
-// comment on `$ra` for the full reasoning (A64's `x30` plays exactly
-// the same role MIPS's `$ra` does). Each save/restore here only ever
-// moves its own register's low 32 bits through `stind`/`ldind` (this
-// backend's 32-bit-transfer-only load/store - see Arm64Codegen.h's
-// own header comment) - safe only because every address in this
-// backend's own universe (the program's own base/stack addresses,
-// both fixed well under 4GB - see this file's own kBaseAddress/
-// kInitialSP) fits in 32 bits, so the reload's automatic zero-
-// extension (see Arm64Codegen.h's own header comment on why every
-// 32-bit op here already guarantees this) reconstructs the exact
-// original 64-bit value.
+// Every function saves/restores `x30` (link register) and `x29` (frame
+// pointer) around its body, whether or not it calls anything else: `bl`
+// sets `x30` unconditionally, so a non-leaf function's call overwrites
+// it. Each save/restore only moves the register's low 32 bits through
+// `stind`/`ldind`, safe only because every address in this backend's
+// universe fits in 32 bits, so the reload's automatic zero-extension
+// reconstructs the exact original 64-bit value.
 //
-// The prologue pushes the caller's own `x30` then its own `x29`, each
-// in its own 16-byte-aligned block (matching every other temp-save in
-// this file), then points the new `x29` at the saved-old-`x29` word -
-// so the caller's own pushed arguments (see the `Call` case below)
-// sit 32 bytes above the new `x29`, and this call's own Locals are
-// reserved immediately below it by `sub sp,sp,frameSize*4` (see
-// loadSlotAddr()'s own comment for the full address arithmetic this
-// sets up). The epilogue (here, and inline in the `Return` case
-// below, since a `return` statement is its own early exit from the
-// function, bypassing this fall-through epilogue entirely) reverses
+// The prologue pushes the caller's `x30` then its `x29`, each in its own
+// 16-byte-aligned block, then points the new `x29` at the saved-old-`x29`
+// word - so the caller's pushed arguments sit 32 bytes above the new
+// `x29`, and this call's Locals are reserved immediately below it by
+// `sub sp,sp,frameSize*4` (see loadSlotAddr() for the full address
+// arithmetic). The epilogue (here, and inline in the `Return` case,
+// since an early return bypasses this fall-through epilogue) reverses
 // all of this in the opposite order.
 void Arm64Codegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
     code_ << "    sub sp,sp,16\n    stind sp,w30\n";
     code_ << "    sub sp,sp,16\n    stind sp,w29\n";
-    // `add x29,sp,0`, not `mov x29,sp`: this dialect's own `mov` alias
-    // is `orr rd,<zr>,rn` (see Arm64Assembler.cpp's own encodeInstr())
-    // - a real ORR's register fields always mean the zero register
-    // for operand number 31, never `sp`, exactly like real AArch64
-    // (`sp` is only ever addressable through an instruction whose own
-    // encoding gives register 31 that meaning, e.g. `add`/`sub`
-    // immediate - same reason this file's own entry sequence already
-    // uses `add sp,x9,0` instead of `mov sp,x9` below).
+    // `add x29,sp,0`, not `mov x29,sp`: this dialect's `mov` alias is
+    // `orr rd,<zr>,rn`, and a real ORR's register fields mean the zero
+    // register for operand 31, never `sp` - `sp` is only addressable
+    // through an instruction whose encoding gives register 31 that
+    // meaning, e.g. `add`/`sub` immediate.
     code_ << "    add x29,sp,0\n";
-    // IRBuilder's own `frameSize` is only ever rounded up to the
-    // native `int`'s width (see IRBuilder.cpp's own assignFrameOffsets()
-    // comment) - fine for every Local's own frameOffset (an `int`-
-    // sized slot only ever needs 4-byte alignment), but `sp` itself
-    // has to stay a real AArch64 "Normal, Device-mapped" address: this
-    // program never sets up the MMU, so every access (including every
-    // later 64-bit `sub sp,sp,16 / stind sp,xN` temp push an `x`
-    // register's own value or address ever uses - see genIndexAddr()/
-    // the `Call` case below) runs against Device memory, which
-    // enforces real natural alignment unconditionally (confirmed
-    // directly: a `str x2,[sp]` at an `sp` that's a multiple of 4 but
-    // not of 8 takes a real Data Abort under qemu). `x29` itself is
-    // always 16- (hence 8-) byte aligned (every caller's own `sp`
-    // before `bl` already is, and the 32 bytes of saved `x30`/`x29`
-    // above don't change that), so rounding this one `sub`/`add sp`
-    // pair's own amount up to a multiple of 8 - a purely backend-local
-    // decision, independent of the frameOffset values IRBuilder
-    // already assigned every Local - keeps `sp` 8-aligned for the
-    // entire body, with at most 4 extra, otherwise-unused bytes below
-    // the frame.
+    // IRBuilder's `frameSize` is only rounded up to the native `int`'s
+    // width, fine for a Local's frameOffset, but `sp` itself must stay
+    // 8-byte aligned at all times on this target (every access runs
+    // against Device memory, which enforces natural alignment
+    // unconditionally). `x29` is always 16-byte aligned already, so
+    // rounding this `sub`/`add sp` amount up to a multiple of 8 keeps
+    // `sp` 8-aligned for the entire body.
     int spFrameSize = alignUp8(fn.func->frameSize);
     if (spFrameSize > 0) code_ << "    sub sp,sp," << spFrameSize << "\n";
     currentFrameSize_ = spFrameSize;
@@ -482,11 +401,9 @@ void Arm64Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            // Reverses genFunction()'s own prologue, in the opposite
-            // order - a `return` statement is its own early exit from
-            // the function, bypassing genFunction()'s own fall-
-            // through epilogue entirely, so it needs this same
-            // teardown inline (see genFunction()'s own comment).
+            // An early return bypasses genFunction()'s fall-through
+            // epilogue, so it needs this same teardown inline, in the
+            // opposite order from the prologue.
             if (currentFrameSize_ > 0) code_ << "    add sp,sp," << currentFrameSize_ << "\n";
             code_ << "    ldind sp,w29\n    add sp,sp,16\n";
             code_ << "    ldind sp,w30\n    add sp,sp,16\n";
@@ -557,9 +474,8 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
                 return;
             }
             // A plain scalar target still needs its address computed
-            // (A64 has no absolute-addressing memory operand - see
-            // this file's own header comment), so it goes through the
-            // exact same held-address tail as the indexed form above.
+            // (A64 has no absolute-addressing memory operand), so it
+            // goes through the same held-address tail as the indexed form.
             loadSlotAddr("x2", e.slot);
             genCompoundThroughX2(e);
             return;
@@ -583,10 +499,8 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::DerefAssign: {
-            // Stores at e.type's own width/signedness - the pointee
-            // type of a real typed pointer, or plain native-int-width
-            // for the still-supported untyped-int-as-address style -
-            // see IRBuilder.cpp's own DerefAssign comment.
+            // Stores at e.type's width/signedness - the pointee type of a
+            // typed pointer, or native-int-width for untyped-int-as-address.
             genExpr(*e.lhs);  // w0 = pointer value
             code_ << "    sub sp,sp,16\n    stind sp,w0\n";
             genExpr(*e.rhs);  // w0, or x0 if wide
@@ -602,8 +516,7 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
             } else if (e.op == "!") {
                 genLogicalNot(*e.rhs);
             } else if (e.op == "*") {
-                // Loads at e.type's own width/signedness - see
-                // DerefAssign's identical comment above.
+                // Loads at e.type's width/signedness - see DerefAssign above.
                 genExpr(*e.rhs);  // w0 = pointer value
                 code_ << "    mov x2,x0\n";
                 loadOperand("x2", e.type, /*mayBeUnaligned=*/true);
@@ -616,33 +529,20 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
-            // Pushes each argument right-to-left so arg 0 ends up
-            // closest to the top of this call's own pushed-argument
-            // space - see loadSlotAddr()'s own comment on how the
-            // callee then finds them. Caller cleans the pushed words
-            // back up once `bl` returns. Every argument reserves at
-            // least one native word (the same rule IRBuilder.cpp's
-            // own param-offset layout already applies), and a wide
-            // (`long long`) argument pushes a full 8 bytes via `x0`.
+            // Pushes each argument right-to-left so arg 0 ends up closest
+            // to the top of the pushed-argument space. The caller cleans
+            // the pushed words up once `bl` returns. Every argument
+            // reserves at least one native word, and a wide (`long long`)
+            // argument pushes a full 8 bytes via `x0`.
             //
-            // The real pushed bytes (4 per plain arg, 8 per wide one)
-            // can add up to a total that isn't itself a multiple of 8
-            // (e.g. three plain `int`s: 12) - harmless for the args'
-            // own tight packing (matching IRBuilder's param-offset
-            // layout exactly needs no alignment at all), but `sp`
-            // itself has to stay a real multiple of 8 at all times on
-            // this target (see genFunction()'s own comment on why) -
-            // including right where the callee computes its own `x29`
-            // as `sp - 32`. So any padding needed is reserved first,
-            // *before* any argument is pushed: that leaves it sitting
-            // in otherwise-unused space just above the tightly packed
-            // argument region (nearer the caller's own frame), with
-            // arg 0 still the very last thing pushed and so still
-            // landing exactly `x29 + 32` bytes up, regardless of how
-            // much padding came before it - unlike padding added
-            // *after* the arguments, which would shift every single
-            // one of them away from the fixed offset IRBuilder already
-            // assigned it.
+            // The pushed bytes (4 per plain arg, 8 per wide one) can add
+            // up to a total that isn't itself a multiple of 8, but `sp`
+            // must stay a multiple of 8 at all times. So any padding
+            // needed is reserved first, before any argument is pushed:
+            // that leaves arg 0 still the last thing pushed, landing
+            // exactly `x29 + 32` bytes up regardless of padding - unlike
+            // padding added after the arguments, which would shift every
+            // one away from the fixed offset IRBuilder assigned it.
             int totalBytes = 0;
             for (const auto &arg : e.args) totalBytes += isWide(arg->type) ? 8 : 4;
             int padding = (8 - totalBytes % 8) % 8;
@@ -661,16 +561,10 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
         }
         case ir::ExprKind::CallPtr: {
             // e.args is always empty here - IRBuilder.cpp rejects any
-            // argument on this kind before it ever reaches a backend
-            // (see IR.h's ExprKind::CallPtr): the callee isn't known
-            // at compile time for this kind, so there's no fixed
-            // parameter count to push arguments against.
-            // `blr x2` is this dialect's own real AArch64 "BLR Xn"
-            // encoding (see Arm64Assembler.cpp's own emitBranchReg())
-            // - a real near call through whatever address x2 holds,
-            // setting `x30` to the return address exactly like `bl`
-            // does.
-            genExpr(*e.lhs);  // w0 = the callee's own entry address
+            // argument on this kind, since the callee isn't known at
+            // compile time. `blr x2` is a near call through whatever
+            // address x2 holds, setting `x30` like `bl` does.
+            genExpr(*e.lhs);  // w0 = the callee's entry address
             code_ << "    mov x2,x0\n";
             code_ << "    blr x2\n";
             return;
@@ -680,11 +574,8 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Intrinsic: {
-            // No real portable notion of interrupt enable/disable on
-            // a bare-metal A64 core with no exception/interrupt setup
-            // done at all here - treated as a no-op, same reasoning
-            // (and the same choice) as M68kCodegen.cpp's own/
-            // MipsCodegen.cpp's own Intrinsic case.
+            // No portable interrupt enable/disable on this bare-metal
+            // core with no exception/interrupt setup - treated as a no-op.
             (void)e;
             return;
         }
@@ -697,28 +588,19 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
     }
 }
 
-// `x2` holds the computed address, no zero-page-style placement
-// restriction. `arraySize > 0` means the base is the array's own
-// first-word address (a Global's compile-time-known label, or a
-// Local's own `x29`-relative address - see loadSlotAddr()); otherwise
-// `slot` is a plain pointer variable, so the base instead comes from
-// *reading* that variable's own stored value first.
+// `x2` holds the computed address. `arraySize > 0` means the base is the
+// array's own first-word address (loadSlotAddr() dispatches Global vs.
+// Local); otherwise `slot` is a plain pointer variable, so the base comes
+// from reading that variable's stored value first.
 //
-// A Global array's element addresses increase with the index (its
-// storage is ordinary ascending-address trailer data); a Local
-// array's instead *decrease* with the index (element i sits at
-// frameOffset+i - see IR.h's own Slot::frameOffset comment - and
-// loadSlotAddr() already points `x2` at frameOffset's own, lowest-
-// indexed, highest address), so indexing a Local array subtracts the
-// scaled index instead of adding it.
+// A Global array's element addresses increase with the index; a Local
+// array's decrease (element i sits at frameOffset+i, and loadSlotAddr()
+// already points `x2` at the lowest-indexed, highest address), so
+// indexing a Local array subtracts the scaled index instead of adding it.
 //
-// Multiplying the index by 4 (this target's own word size) uses a
-// real `mul` against a loaded constant rather than a shift, since
-// this dialect has no dedicated shift-by-immediate mnemonic at all
-// (unlike MIPS's own `sll`) - `lslv`/`lsrv` (variable, register-form
-// shift) cover every *language*-level `<<`/`>>` this backend ever
-// needs, and a fixed `mul` by 4 is no less "real hardware" for this
-// one compile-time-known case.
+// Multiplying the index by a fixed element width uses `mul` against a
+// loaded constant rather than a shift, since this dialect has no
+// dedicated shift-by-immediate mnemonic.
 void Arm64Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // w0 = index
     int shift = elemShift(slot->type);
@@ -727,11 +609,9 @@ void Arm64Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     }
     if (slot->arraySize > 0) {
         loadSlotAddr("x2", slot);
-        // `x0`'s own upper 32 bits are already zero (the `mul` above
-        // is a 32-bit "W-form" op - see Arm64Codegen.h's own header
-        // comment on why that's an architectural guarantee, not an
-        // assumption), so `x0` is already a valid 64-bit operand here
-        // with no explicit zero-extension needed.
+        // `x0`'s upper 32 bits are already zero (the `mul` above is a
+        // 32-bit "W-form" op, an architectural guarantee), so `x0` is
+        // already a valid 64-bit operand with no explicit extension.
         if (slot->kind == ir::SlotKind::Global) {
             code_ << "    add x2,x2,x0\n";
         } else {
@@ -749,14 +629,10 @@ void Arm64Codegen::genIndex(const ir::Expr &e) {
     loadOperand("x2", e.slot->type, /*mayBeUnaligned=*/e.slot->arraySize == 0);
 }
 
-// Stores `slot`'s own arrayInit values into its own per-call frame
-// slots, at runtime, every time this LocalDecl executes - unlike a
-// Global array (whose initial values are fixed trailer data, written
-// once at load time), a Local array's storage is a fresh `x29`-
-// relative frame slot on every call, so its own initial values have
-// to be written freshly on every call too. See genIndexAddr()'s own
-// comment on why a Local array's element i sits at frameOffset+i,
-// not frameOffset-i.
+// Stores `slot`'s arrayInit values into its per-call frame slots, at
+// runtime, every time this LocalDecl executes - unlike a Global array,
+// a Local array's storage is a fresh `x29`-relative frame slot on every
+// call, so its initial values are written freshly each time too.
 void Arm64Codegen::genLocalArrayInit(const ir::Slot *slot) {
     int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
@@ -792,16 +668,7 @@ void Arm64Codegen::genAddrOf(const ir::Expr &operand) {
     err(operand.line, "internal: unhandled addressable-operand kind");
 }
 
-// Entry: w0 = old, w1 = rhs (both already at `type`'s own width/
-// signedness, never wide - see this file's own header on genCompoundOp()).
-// Every instruction shape here is exactly the one genBinary()/genMul()/
-// genDivMod() already use for that same operator at native (32-bit)
-// width, just with w0/w1 as the two operands instead of whichever
-// registers a Binary node happens to leave them in - this assembler's
-// own data-processing/multiply/divide encoders take their register
-// operands as plain bitfields (see Arm64Assembler.cpp's own
-// encodeAddSub()/encodeLogical() and friends), so which actual
-// register holds which operand is free to pick.
+// Entry: w0 = old, w1 = rhs (both at `type`'s width/signedness; never wide).
 void Arm64Codegen::genCompoundOp(const std::string &op, Type type) {
     bool isUnsigned = type.isUnsigned;
     if (op == "+") { code_ << "    add w0,w0,w1\n"; return; }
@@ -815,11 +682,8 @@ void Arm64Codegen::genCompoundOp(const std::string &op, Type type) {
         code_ << "    " << insn << " w0,w0,w1\n";
         return;
     }
-    // "/" or "%" - w3 (unused by this helper's own caller, which holds
-    // the live target address in x2 across this whole computation - see
-    // genCompoundThroughX2()) is the quotient scratch the remainder
-    // form needs, since old and rhs both have to stay live in w0/w1 for
-    // msub.
+    // "/" or "%" - w3 is the quotient scratch the remainder form needs,
+    // since old and rhs both have to stay live in w0/w1 for msub.
     const char *divInsn = isUnsigned ? "udiv" : "sdiv";
     if (op == "%") {
         code_ << "    " << divInsn << " w3,w0,w1\n";
@@ -830,12 +694,9 @@ void Arm64Codegen::genCompoundOp(const std::string &op, Type type) {
 }
 
 // x2 must already hold the resolved address on entry. The address is
-// stashed on the real hardware stack across evaluating e.rhs (the
-// same mechanism Assign's own indexed case and DerefAssign already
-// use for the identical problem - genExpr(*e.rhs) can reach arbitrary
-// nested codegen that may use w0/w1/w2/w3), never recomputed
-// afterward, so an indexed/pointer target's own address sub-
-// expression is evaluated exactly once.
+// stashed on the stack across evaluating e.rhs (which can reach
+// arbitrary nested codegen using w0/w1/w2/w3) and never recomputed, so
+// an indexed/pointer target's address sub-expression is evaluated exactly once.
 void Arm64Codegen::genCompoundThroughX2(const ir::Expr &e, bool mayBeUnaligned) {
     code_ << "    sub sp,sp,16\n    stind sp,x2\n";  // stash address
     genExpr(*e.rhs);                                   // w0 = rhs
@@ -859,14 +720,11 @@ void Arm64Codegen::genCompoundThroughX2(const ir::Expr &e, bool mayBeUnaligned) 
 
 void Arm64Codegen::genBinary(const ir::Expr &e) {
     const std::string &op = e.op;
-    // Every arithmetic/bitwise/comparison operand here already shares
-    // one common type (IRBuilder's own usual-arithmetic-conversion
-    // pass - see Type.h), except shift (only the LHS's own type
-    // matters) and &&/|| (width-independent, handled below). A real
-    // 64-bit register holds a `long long` value directly on this
-    // target - `reg(0,wide)` etc. just pick "x" over "w", no separate
-    // multi-word emulation needed (contrast I386Codegen.cpp's own
-    // genWideAdd() and friends).
+    // Every arithmetic/bitwise/comparison operand here shares one common
+    // type (IRBuilder's usual-arithmetic-conversion pass), except shift
+    // (only the LHS's type matters) and &&/|| (width-independent). A real
+    // 64-bit register holds a `long long` value directly - `reg(0,wide)`
+    // etc. just pick "x" over "w".
     Type operandType = e.lhs->type;
     bool wide = isWide(operandType);
     bool isUnsigned = operandType.isUnsigned;
@@ -917,9 +775,7 @@ void Arm64Codegen::genBinary(const ir::Expr &e) {
     genCompare(op, *e.lhs, *e.rhs);
 }
 
-// Real hardware multiply (`mul`, a full NxN->N product, N per
-// `wide`) - no operand-size limitation the way 68000's own `MULS.W`
-// has.
+// Real hardware multiply (`mul`, a full NxN->N product, N per `wide`).
 void Arm64Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     bool wide = isWide(lhs.type);
     genExpr(lhs);
@@ -929,9 +785,8 @@ void Arm64Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << "    mul " << reg(0, wide) << "," << reg(1, wide) << "," << reg(0, wide) << "\n";
 }
 
-// Real hardware divide (`sdiv`/`udiv`) plus `msub` (`rd = ra -
-// rn*rm`, one instruction) for the remainder - no packed HI/LO
-// register pair to unpack the way MIPS's own `mflo`/`mfhi` need.
+// Real hardware divide (`sdiv`/`udiv`) plus `msub` (`rd = ra - rn*rm`,
+// one instruction) for the remainder.
 void Arm64Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     bool wide = isWide(lhs.type);
     genExpr(lhs);
@@ -948,13 +803,10 @@ void Arm64Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool want
     }
 }
 
-// `cmp` (real flags-setting `subs`) plus a dedicated `cset<cc>` per
-// comparison operator - each one directly produces the boolean this
-// language needs (1 or 0), no branch at all needed - see
-// Arm64Codegen.h's own header comment on why this dialect spells
-// `cset` as fixed mnemonics instead of one taking a condition-code
-// operand. `isUnsigned` picks the HS/LO/HI/LS family instead of
-// LT/GE/LE/GT for the ordered operators.
+// `cmp` (`subs` with a discarded result) plus a dedicated `cset<cc>`
+// per comparison operator - each directly produces the boolean this
+// language needs (1 or 0), no branch needed. `isUnsigned` picks the
+// HS/LO/HI/LS family instead of LT/GE/LE/GT for the ordered operators.
 void Arm64Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs) {
     bool wide = isWide(lhs.type);
     bool isUnsigned = lhs.type.isUnsigned;
@@ -1004,8 +856,7 @@ void Arm64Codegen::genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << Ldone << ":\n";
 }
 
-// `cmp w0,wzr` + `cseteq` is exactly "w0 = (w0 == 0)" - logical not,
-// no branch needed, same idea as MIPS's own `sltiu t0,t0,1`.
+// `cmp w0,wzr` + `cseteq` is exactly "w0 = (w0 == 0)" - no branch needed.
 void Arm64Codegen::genLogicalNot(const ir::Expr &rhs) {
     bool wide = isWide(rhs.type);
     genExpr(rhs);
@@ -1021,13 +872,9 @@ std::string Arm64Codegen::buildAssembleCommand(const std::string &, const std::s
 std::optional<std::string> Arm64Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "raw") return assembleArm64(asmText);
-    // `coff`/`elf`/`macho`/`aout`/`objraw`: real separate compilation
-    // (see generate()'s own `objectMode` comment) - this backend's
-    // own assembler builds one format-neutral ObjectFile exactly once
-    // (see Arm64Assembler.h's own `assembleArm64Object`), and
-    // whichever of these five names was asked for just picks that
-    // format's own FileFormatWriter (see fileformat/FileFormat.h)
-    // to serialize it.
+    // `coff`/`elf`/`macho`/`aout`/`objraw`: assembleArm64Object() builds
+    // one format-neutral ObjectFile, and the requested format just picks
+    // that format's own FileFormatWriter to serialize it.
     if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleArm64Object(asmText);
         return makeFileFormatWriter(*kind)->write(obj);

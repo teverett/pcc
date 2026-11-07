@@ -33,13 +33,7 @@ constexpr uint16_t kEtRel = 1;
 constexpr uint32_t kShtNull = 0, kShtProgbits = 1, kShtSymtab = 2, kShtStrtab = 3, kShtRel = 9, kShtNobits = 8;
 constexpr uint32_t kShfAlloc = 0x2, kShfExecinstr = 0x4, kShfWrite = 0x1;
 
-// Section indices, fixed by this writer's own layout (see
-// ElfFormat.h's own header comment) - never computed, since
-// every object this writer ever produces has exactly these seven
-// sections in exactly this order. ".bss" (SHT_NOBITS - real ELF's own
-// "has a size but no file bytes" section type) is a Harvard target's
-// own data-space size reservation (see ObjectFile::dataSize's own
-// comment) - always present, always size 0 for a von-Neumann target.
+// Fixed section order this writer always produces.
 constexpr uint32_t kSecNull = 0, kSecText = 1, kSecBss = 2, kSecSymtab = 3, kSecStrtab = 4, kSecRel = 5,
                     kSecShstrtab = 6;
 constexpr uint32_t kNumSections = 7;
@@ -51,9 +45,7 @@ std::string ElfFormatWriter::write(const ObjectFile &obj) const {
         if (r.type > 0xFF) fail("relocation type " + std::to_string(r.type) + " doesn't fit in ELF32_Rel's 8 bits");
     }
 
-    // --- .strtab (symbol names) and the symbol table itself ---
-    // index 0 is the mandatory null symbol; ObjSymbol i -> Elf32_Sym
-    // index i+1 (see ElfFormat.h's own header comment).
+    // Elf32_Sym index 0 is the mandatory null symbol; ObjSymbol i -> index i+1.
     std::string strtab;
     strtab.push_back('\0');
     std::vector<uint32_t> nameOffsets(obj.symbols.size());
@@ -74,14 +66,11 @@ std::string ElfFormatWriter::write(const ObjectFile &obj) const {
         put32(symtab, 0);                                                   // st_size
         symtab.push_back(static_cast<char>((1 << 4) | 0));                  // st_info: STB_GLOBAL<<4 | STT_NOTYPE
         symtab.push_back(static_cast<char>(0));                             // st_other
-        // st_shndx: .text or .bss (whichever address space this
-        // symbol actually lives in - see ObjSymbol::isData's own
-        // comment), or SHN_UNDEF.
+        // st_shndx: .text or .bss, whichever address space the symbol lives in, or SHN_UNDEF.
         uint16_t shndx = !sym.isDefined ? 0 : static_cast<uint16_t>(sym.isData ? kSecBss : kSecText);
         put16(symtab, shndx);
     }
 
-    // --- .rel.text ---
     std::string reltab;
     for (const auto &r : obj.relocations) {
         auto it = symIndex.find(r.symbolName);
@@ -90,7 +79,6 @@ std::string ElfFormatWriter::write(const ObjectFile &obj) const {
         put32(reltab, (it->second << 8) | (r.type & 0xFF));  // r_info
     }
 
-    // --- .shstrtab (section names) ---
     std::string shstrtab;
     std::vector<uint32_t> secNameOffset(kNumSections, 0);
     auto addSecName = [&](uint32_t idx, const char *name) {
@@ -106,9 +94,6 @@ std::string ElfFormatWriter::write(const ObjectFile &obj) const {
     addSecName(kSecRel, ".rel.text");
     addSecName(kSecShstrtab, ".shstrtab");
 
-    // --- lay out every section's own raw bytes, back to back,
-    // right after the header; the section header table itself comes
-    // last. ---
     uint32_t textOff = static_cast<uint32_t>(kEhdrSize);
     uint32_t relOff = textOff + static_cast<uint32_t>(obj.textBytes.size());
     uint32_t symOff = relOff + static_cast<uint32_t>(reltab.size());
@@ -118,7 +103,6 @@ std::string ElfFormatWriter::write(const ObjectFile &obj) const {
 
     std::string out;
 
-    // --- Elf32_Ehdr ---
     const uint8_t ident[16] = {0x7F, 'E', 'L', 'F', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     putBytes(out, ident, 16);
     put16(out, kEtRel);
@@ -135,14 +119,12 @@ std::string ElfFormatWriter::write(const ObjectFile &obj) const {
     put16(out, static_cast<uint16_t>(kNumSections));
     put16(out, static_cast<uint16_t>(kSecShstrtab));  // e_shstrndx
 
-    // --- section raw data, in file order ---
     if (!obj.textBytes.empty()) putBytes(out, obj.textBytes.data(), obj.textBytes.size());
     out += reltab;
     out += symtab;
     out += strtab;
     out += shstrtab;
 
-    // --- Elf32_Shdr table ---
     auto putShdr = [&](uint32_t nameOff, uint32_t type, uint32_t flags, uint32_t offset, uint32_t size,
                         uint32_t link, uint32_t info, uint32_t addralign, uint32_t entsize) {
         put32(out, nameOff);
@@ -159,11 +141,7 @@ std::string ElfFormatWriter::write(const ObjectFile &obj) const {
     putShdr(0, kShtNull, 0, 0, 0, 0, 0, 0, 0);  // null section
     putShdr(secNameOffset[kSecText], kShtProgbits, kShfAlloc | kShfExecinstr, textOff,
             static_cast<uint32_t>(obj.textBytes.size()), 0, 0, 1, 0);
-    // SHT_NOBITS: sh_size is real (`obj.dataSize`), but takes no file
-    // space at all (sh_offset is conventionally wherever the next
-    // real section would start - real readelf/objdump tolerate this;
-    // ElfFormatReader::read() below never looks at it anyway,
-    // only at sh_size).
+    // SHT_NOBITS: sh_size is real but occupies no file space; sh_offset is conventional.
     putShdr(secNameOffset[kSecBss], kShtNobits, kShfAlloc | kShfWrite, textOff + static_cast<uint32_t>(obj.textBytes.size()),
             obj.dataSize, 0, 0, 1, 0);
     putShdr(secNameOffset[kSecSymtab], kShtSymtab, 0, symOff, static_cast<uint32_t>(symtab.size()), kSecStrtab,
@@ -210,11 +188,7 @@ ObjectFile ElfFormatReader::read(const std::string &bytes) const {
     uint16_t shnum = get16(bytes, 48);
     if (shentsize != kShdrSize) fail("unexpected section header size " + std::to_string(shentsize));
 
-    // Find .text/.symtab/.strtab/.rel.text by real section *type*
-    // (SHT_PROGBITS/SHT_SYMTAB/SHT_STRTAB/SHT_REL), not by assuming
-    // this reader's own fixed section-index layout - any ET_REL this
-    // writer itself produced satisfies that anyway, but reading by
-    // type is the more honestly "real ELF" way to find them.
+    // Found by section type, not fixed index, so any valid ET_REL object can be read.
     uint32_t textOff = 0, textSize = 0;
     uint32_t dataSize = 0;
     uint32_t symOff = 0, symSize = 0, symLink = 0;
@@ -232,10 +206,6 @@ ObjectFile ElfFormatReader::read(const std::string &bytes) const {
             textOff = offset;
             textSize = size;
         } else if (type == kShtNobits) {
-            // The one SHT_NOBITS section every object this project's
-            // own writer produces always carries (see this writer's
-            // own comment above): a Harvard target's own data-space
-            // size reservation (0 for a von-Neumann target).
             dataSize = size;
             bssShndx = i;
         } else if (type == kShtSymtab) {
@@ -247,17 +217,10 @@ ObjectFile ElfFormatReader::read(const std::string &bytes) const {
             relOff = offset;
             relSize = size;
         }
-        // .strtab/.shstrtab (both SHT_STRTAB) aren't matched by
-        // position here at all - the real symbol-name string table
-        // is found below via .symtab's own sh_link, the honestly
-        // "real ELF" way, not by assuming this writer's own fixed
-        // section order.
     }
     if (!haveSymtab) fail("no SHT_SYMTAB section found");
 
-    // The real symbol-name string table is whichever section
-    // .symtab's own sh_link actually points to - not assumed by
-    // position.
+    // The string table is whichever section .symtab's sh_link points to.
     size_t strtabBase = symLink * kShdrSize + shoff;
     need(bytes, strtabBase, kShdrSize);
     uint32_t strOff = get32(bytes, strtabBase + 16);

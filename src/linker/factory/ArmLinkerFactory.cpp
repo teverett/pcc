@@ -7,9 +7,6 @@ namespace pcc {
 
 namespace {
 
-// Little-endian 32-bit load/store - every A32 instruction word here
-// is always little-endian in memory (see ArmAssembler.cpp's own
-// `emit32` comment).
 uint32_t get32(const std::vector<uint8_t> &image, size_t idx) {
     return static_cast<uint32_t>(image[idx]) | (static_cast<uint32_t>(image[idx + 1]) << 8) |
            (static_cast<uint32_t>(image[idx + 2]) << 16) | (static_cast<uint32_t>(image[idx + 3]) << 24);
@@ -21,16 +18,8 @@ void put32(std::vector<uint8_t> &image, size_t idx, uint32_t v) {
     image[idx + 3] = static_cast<uint8_t>((v >> 24) & 0xFF);
 }
 
-// `B`/`BL`'s own 24-bit offset field (bits [23:0]), word-granularity -
-// the field itself is left zero by ArmAssembler.cpp's own
-// encodeBranch() for a target undefined within its own object (see
-// that function's own comment), so this patcher only ever needs to
-// write the field, never add to it. The "+8" reproduces A32's own
-// architectural "PC reads as this instruction's own address plus 8"
-// convention (see ArmAssembler.cpp's own encodeBranch() for the
-// identical arithmetic it uses for a same-object branch at assembly
-// time) at link time instead, now that `value`/`siteFinalAddr` are
-// both real linked addresses.
+// `B`/`BL`'s 24-bit word-granularity offset field. The "+8" reproduces A32's architectural "PC
+// reads as this instruction's address plus 8" convention.
 void patchArmRel24(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t siteFinalAddr) {
     int32_t rel = (static_cast<int32_t>(value) - static_cast<int32_t>(siteFinalAddr + 8)) / 4;
     uint32_t word = get32(image, siteOffset);
@@ -38,12 +27,8 @@ void patchArmRel24(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t va
     put32(image, siteOffset, word);
 }
 
-// `MOVW`'s own imm4:imm12 split (bits [19:16] and [11:0]) - additive
-// (the field already holds whatever locally-resolved half the
-// assembler baked in - see Arm64LinkerFactory.cpp's own
-// `patchA64MovZLo` for the identical "already the right half, just
-// add the other" convention). Low half: a plain truncated mod-65536
-// addition is always carry-correct on its own.
+// `MOVW`'s imm4:imm12 split (bits [19:16], [11:0]), additive: a truncated mod-65536 addition is
+// always carry-correct on its own.
 void patchArmMovWLo(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t) {
     uint32_t word = get32(image, siteOffset);
     uint32_t imm16 = (((word >> 16) & 0xFu) << 12) | (word & 0xFFFu);
@@ -52,15 +37,8 @@ void patchArmMovWLo(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t v
     put32(image, siteOffset, word);
 }
 
-// `MOVT`'s own imm4:imm12 split (the high half) - needs the carry out
-// of the low half's own addition, computed here by re-reading that
-// already-patched sibling site, always exactly one instruction (4
-// bytes) earlier, since ArmCodegen.cpp's own loadAddress() always
-// emits `movw` immediately followed by `movt` for the same label, and
-// GenericLinker::merge() patches relocations for one object in the
-// order ArmAssembler.cpp recorded them, i.e. the low site's own
-// relocation always lands before the high site's - same precedent as
-// Arm64LinkerFactory.cpp's own `patchA64MovKHi`.
+// `MOVT`'s high half: needs the carry out of the low half's addition, read back from the
+// already-patched `movw` site, always exactly 4 bytes earlier.
 void patchArmMovTHi(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t) {
     uint32_t lowWord = get32(image, siteOffset - 4);
     uint32_t lowImm = (((lowWord >> 16) & 0xFu) << 12) | (lowWord & 0xFFFu);
@@ -73,12 +51,7 @@ void patchArmMovTHi(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t v
     put32(image, siteOffset, word);
 }
 
-// `0x100000` is the same initial-stack-pointer value as
-// ArmCodegen.cpp's own (private) `kInitialSP` - comfortably above the
-// loaded program and its data, same reasoning as that file's own
-// comment. Split into its own low/high 16-bit halves exactly as
-// ArmCodegen.cpp's own entry sequence does for a plain (non-label)
-// immediate.
+// 16 << 16 == 0x100000, the initial stack pointer, split into movw/movt halves.
 constexpr const char *kEntryAsm =
     "org 0\n"
     "_start:\n"

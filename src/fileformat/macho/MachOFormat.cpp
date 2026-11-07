@@ -47,7 +47,6 @@ std::string MachOFormatWriter::write(const ObjectFile &obj) const {
         if (r.type > 0xF) fail("relocation type " + std::to_string(r.type) + " doesn't fit in Mach-O's 4-bit r_type");
     }
 
-    // --- string table (symbol names) ---
     std::string strtab;
     strtab.push_back('\0');  // offset 0 conventionally means "no name"
     std::vector<uint32_t> nameOffsets(obj.symbols.size());
@@ -56,37 +55,27 @@ std::string MachOFormatWriter::write(const ObjectFile &obj) const {
         strtab += obj.symbols[i].name;
         strtab.push_back('\0');
     }
-    // Unlike COFF/ELF, Mach-O's own symbol table has no mandatory
-    // null entry at index 0 - ObjSymbol i is nlist index i directly.
+    // Unlike COFF/ELF, Mach-O has no mandatory null entry: ObjSymbol i is nlist index i directly.
     std::unordered_map<std::string, uint32_t> symIndex;
     for (size_t i = 0; i < obj.symbols.size(); i++) symIndex[obj.symbols[i].name] = static_cast<uint32_t>(i);
 
-    // --- relocation_info entries for __text ---
     std::string reloctab;
     for (const auto &r : obj.relocations) {
         auto it = symIndex.find(r.symbolName);
         if (it == symIndex.end()) fail("relocation references unknown symbol '" + r.symbolName + "'");
         put32(reloctab, r.offset);  // r_address
         // Bitfield word: r_symbolnum(24) | r_pcrel(1)<<24 | r_length(2)<<25 | r_extern(1)<<27 | r_type(4)<<28.
-        // r_length=1 means "2 bytes" (every relocation this project's
-        // own backends emit patches a 16-bit field).
+        // r_length=1 means 2 bytes (every relocation patches a 16-bit field).
         uint32_t word = (it->second & 0xFFFFFFu) | (0u << 24) | (1u << 25) | (1u << 27) |
                          ((static_cast<uint32_t>(r.type) & 0xF) << 28);
         put32(reloctab, word);
     }
 
-    // --- nlist entries ---
     std::string symtab;
     for (size_t i = 0; i < obj.symbols.size(); i++) {
         const ObjSymbol &sym = obj.symbols[i];
         put32(symtab, nameOffsets[i]);  // n_strx
-        // N_EXT (0x01) always set - every symbol here is globally
-        // visible, same convention CoffWriter.cpp's own
-        // StorageClass=C_EXT already uses. Defined: N_SECT (0x0e) |
-        // N_EXT, n_sect=1 (__text) or 2 (__bss - a Harvard target's
-        // own data-space symbol, see ObjSymbol::isData's own
-        // comment). Undefined: N_UNDF (0x00) | N_EXT, n_sect=NO_SECT
-        // (0).
+        // N_EXT always set. Defined: N_SECT, n_sect=1(__text)/2(__bss). Undefined: N_UNDF, n_sect=NO_SECT.
         symtab.push_back(static_cast<char>(sym.isDefined ? (0x0e | 0x01) : (0x00 | 0x01)));  // n_type
         symtab.push_back(static_cast<char>(!sym.isDefined ? 0 : (sym.isData ? 2 : 1)));        // n_sect
         put16(symtab, 0);                                                                      // n_desc
@@ -101,30 +90,28 @@ std::string MachOFormatWriter::write(const ObjectFile &obj) const {
 
     std::string out;
 
-    // --- mach_header ---
     put32(out, kMhMagic);
-    put32(out, obj.machineType);  // cputype - see MachOFormat.h's own header comment
+    put32(out, obj.machineType);  // cputype
     put32(out, 0);                 // cpusubtype
     put32(out, kMhObject);          // filetype
     put32(out, 2);                   // ncmds
     put32(out, static_cast<uint32_t>(kSegmentCmdSize + 2 * kSectionSize + kSymtabCmdSize));  // sizeofcmds
     put32(out, 0);                    // flags
 
-    // --- LC_SEGMENT + two sections (__text,__text and __bss,__bss) ---
     put32(out, kLcSegment);
     put32(out, static_cast<uint32_t>(kSegmentCmdSize + 2 * kSectionSize));
-    putName16(out, "");  // segname - left blank, matching each section's own blank segname below
+    putName16(out, "");  // segname
     put32(out, 0);        // vmaddr
     put32(out, static_cast<uint32_t>(obj.textBytes.size()) + obj.dataSize);  // vmsize
     put32(out, textOff);                                       // fileoff
-    put32(out, static_cast<uint32_t>(obj.textBytes.size()));    // filesize - __bss has none of its own
+    put32(out, static_cast<uint32_t>(obj.textBytes.size()));    // filesize (__bss has none)
     put32(out, 7);                                                // maxprot (rwx)
     put32(out, 7);                                                 // initprot
     put32(out, 2);                                                  // nsects
     put32(out, 0);                                                   // flags
 
     putName16(out, "__text");
-    putName16(out, "");  // segname, matching the segment_command's own
+    putName16(out, "");  // segname
     put32(out, 0);         // addr
     put32(out, static_cast<uint32_t>(obj.textBytes.size()));  // size
     put32(out, textOff);                                        // offset
@@ -135,17 +122,12 @@ std::string MachOFormatWriter::write(const ObjectFile &obj) const {
     put32(out, 0);                                                    // reserved1
     put32(out, 0);                                                     // reserved2
 
-    // __bss - a Harvard target's own data-space size reservation (see
-    // ObjectFile::dataSize's own comment), 0 for every von-Neumann
-    // target. S_ZEROFILL (1) is real Mach-O's own "has a size, no
-    // file bytes at all" section type, same role as ELF's SHT_NOBITS/
-    // COFF's IMAGE_SCN_CNT_UNINITIALIZED_DATA above - `offset` is
-    // conventionally left at 0 for a zerofill section.
+    // S_ZEROFILL (flags=1): has a size but no file bytes, so offset is left 0.
     putName16(out, "__bss");
     putName16(out, "");
-    put32(out, static_cast<uint32_t>(obj.textBytes.size()));  // addr - right after __text in the one segment
+    put32(out, static_cast<uint32_t>(obj.textBytes.size()));  // addr: right after __text
     put32(out, obj.dataSize);                                   // size
-    put32(out, 0);                                               // offset - meaningless for S_ZEROFILL
+    put32(out, 0);                                               // offset
     put32(out, 0);                                                // align
     put32(out, 0);                                                 // reloff
     put32(out, 0);                                                  // nreloc
@@ -153,7 +135,6 @@ std::string MachOFormatWriter::write(const ObjectFile &obj) const {
     put32(out, 0);                                                     // reserved1
     put32(out, 0);                                                      // reserved2
 
-    // --- LC_SYMTAB ---
     put32(out, kLcSymtab);
     put32(out, static_cast<uint32_t>(kSymtabCmdSize));
     put32(out, symOff);
@@ -161,7 +142,6 @@ std::string MachOFormatWriter::write(const ObjectFile &obj) const {
     put32(out, strOff);
     put32(out, static_cast<uint32_t>(strtab.size()));
 
-    // --- section data, in file order ---
     if (!obj.textBytes.empty()) putBytes(out, obj.textBytes.data(), obj.textBytes.size());
     out += reloctab;
     out += symtab;
@@ -221,10 +201,7 @@ ObjectFile MachOFormatReader::read(const std::string &bytes) const {
                 relOff = get32(bytes, secOff + 48);
                 nreloc = get32(bytes, secOff + 52);
             }
-            // __bss (always this writer's own second section - see
-            // its own comment above): a pure size reservation, so
-            // only its own `size` field (offset 36 within its own
-            // section struct) matters here.
+            // __bss is a pure size reservation; only its size field (offset 36) matters.
             if (nsects >= 2) {
                 size_t bssSecOff = cmdOff + kSegmentCmdSize + kSectionSize;
                 need(bytes, bssSecOff, kSectionSize);
