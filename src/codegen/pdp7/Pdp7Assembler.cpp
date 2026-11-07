@@ -356,6 +356,41 @@ class Assembler {
         return 0;
     }
 
+    // Checks the same invariant Pdp7LinkerFactory.cpp's own
+    // `checkAddressSafe` does, for the one code path that never goes
+    // near that file at all: the whole-program (non-`--format=coff`)
+    // compile, where `..` resolves to `kPdp7BaseAddress` directly, in
+    // this one pass, with no relocation or later linker patch step
+    // ever involved (see Pdp7Assembler.h's own `allowExternal`
+    // comment). `addrPart` isolates the low 13 bits the same way - an
+    // instruction's own opcode bits (every real pdp7 opcode occupies
+    // bit 13 or higher) ride through this check untouched, same
+    // reasoning as that file's own `patchPdp7Add`.
+    void checkAddressSafe(uint32_t addrPart) {
+        if (addrPart >= kAddressFieldLimit) {
+            std::ostringstream msg;
+            msg << "address " << addrPart << " (0" << std::oct << addrPart
+                << " octal) is past the pdp7's 8192-word (020000 octal) direct-addressing field limit - "
+                   "program too large; a reference to any address at or beyond 8192 would silently "
+                   "corrupt the instruction it's stored in instead of erroring, so this is refused up "
+                   "front";
+            fail(msg.str());
+        }
+        if (addrPart >= kStackSafeLimit) {
+            std::ostringstream msg;
+            msg << "address " << addrPart << " (0" << std::oct << addrPart << " octal) is within " << std::dec
+                << kStackReserve
+                << " words of the pdp7's own 8192-word address space top - too close to where the "
+                   "runtime call stack (__sp, starting at 8191 and growing downward with no reserved "
+                   "region or bounds check of its own) will reach during real execution; a reference "
+                   "placed here wouldn't error, it would just get silently overwritten by ordinary "
+                   "stack usage at some real call depth, so this is refused up front instead - program "
+                   "too large, the same as the direct-addressing field limit above, just with a safety "
+                   "margin for the stack it doesn't know about";
+            fail(msg.str());
+        }
+    }
+
     uint32_t storeWord(const std::string &sourceText, bool &lineConsumed, uint32_t word) {
         long location = static_cast<long>(symbols_["."]);
         if (location & RELATIVE) {
@@ -364,6 +399,7 @@ class Assembler {
         }
         if (word & RELATIVE) {
             word &= MASK18;
+            if (!allowExternal_) checkAddressSafe((word & (kAddressFieldLimit - 1)) + (symbols_[".."] & MASK18));
             word += symbols_[".."] & MASK18;
         }
         if (location < 0) fail("location below base");

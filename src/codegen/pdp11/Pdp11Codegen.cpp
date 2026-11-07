@@ -112,6 +112,14 @@ std::string Pdp11Codegen::generate(const ir::Program &prog, bool objectMode) {
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
 
+    // Globals are laid out back-to-back in declaration order with no
+    // gaps of their own - real PDP-11 hardware traps on an odd-
+    // address word access, so a `dw`-or-wider global landing right
+    // after an odd number of accumulated `db` bytes needs one byte of
+    // padding first to stay on an even address. A `db`/byte-array
+    // global never needs this itself (byte access is fine anywhere),
+    // just tracked here for whatever comes after it.
+    size_t globalByteOffset = 0;
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
         // An external global (real separate compilation - see IR.h's
@@ -122,6 +130,14 @@ std::string Pdp11Codegen::generate(const ir::Program &prog, bool objectMode) {
         // symbol handling defer it to a relocation.
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
+        int elemW = widthOfType(slot->type);
+        size_t totalBytes = slot->arraySize > 0 ? static_cast<size_t>(slot->arraySize) * elemW
+                                                  : static_cast<size_t>(elemW);
+        if (elemW >= 2 && (globalByteOffset % 2) != 0) {
+            trailer_.push_back("db 0  ; alignment padding");
+            globalByteOffset += 1;
+        }
+        globalByteOffset += totalBytes;
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit, slot->type);
         } else {
@@ -299,14 +315,16 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Assign: {
-            if (e.lhs) {  // slot[idx] = rhs (never wide - see Pdp11Codegen.h's own "Scope restriction"-style note:
-                           // element width isn't threaded through genIndexAddr here, same gap i386 doesn't have -
-                           // flagged as a known limitation).
+            if (e.lhs) {  // slot[idx] = rhs (never wide - see Pdp11Codegen.h's own "Scope restriction"-style note).
                 genIndexAddr(e.slot, *e.lhs);  // r2 = target address
                 code_ << "    push r2\n";
                 genExpr(*e.rhs);
                 code_ << "    pop r2\n";
-                code_ << "    stind r0,r2\n";
+                if (widthOfType(e.slot->type) == 1) {
+                    code_ << "    stindb r0,r2\n";
+                } else {
+                    code_ << "    stind r0,r2\n";
+                }
                 return;
             }
             if (isWide(e.slot->type)) {
@@ -340,8 +358,7 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::CompoundAssign: {
-            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--) - never wide, same gap as Assign's own
-                           // indexed case (element width isn't threaded through genIndexAddr here).
+            if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--) - never wide.
                 genIndexAddr(e.slot, *e.lhs);  // r2 = address
                 genCompoundThroughR2(e);
                 return;
@@ -438,10 +455,15 @@ void Pdp11Codegen::genExpr(const ir::Expr &e) {
                 // r0(LSW)..r(words-1)(MSW) - see genStmt()'s own
                 // Return case - push it back onto the stack as this
                 // expression's own result, in the usual LSW-on-top
-                // order every wide helper expects.
+                // order every wide helper expects. Pushes each
+                // register directly (never routes r1..r(words-1)
+                // through r0 first) - r0 itself is one of the values
+                // being pushed here, so clobbering it to relay an
+                // earlier register would lose r0's own original
+                // value before its own turn comes up.
                 int words = wordCountOf(e.type);
                 for (int i = words - 1; i >= 0; i--) {
-                    code_ << "    mov r" << i << ",r0\n    push r0\n";
+                    code_ << "    push r" << i << "\n";
                 }
             }
             return;
@@ -881,7 +903,16 @@ void Pdp11Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
 
 void Pdp11Codegen::genIndex(const ir::Expr &e) {
     genIndexAddr(e.slot, *e.lhs);
-    code_ << "    ldind r2,r0\n";
+    if (widthOfType(e.slot->type) == 1) {
+        // Real PDP-11 hardware: MOVB into a register destination
+        // always sign-extends to 16 bits, same as loadOperand()'s own
+        // direct-memory byte load - an unsigned char still needs its
+        // high byte masked back off afterward.
+        code_ << "    ldindb r2,r0\n";
+        if (e.slot->type.isUnsigned) code_ << "    bic 0xFF00,r0\n";
+    } else {
+        code_ << "    ldind r2,r0\n";
+    }
 }
 
 // A Local array is no longer a static `dw`-declared data block (see
@@ -1061,7 +1092,7 @@ void Pdp11Codegen::genBinary(const ir::Expr &e) {
         if (wide) {
             genWideDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/op == "%", isUnsigned, words);
         } else {
-            genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/op == "%");
+            genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/op == "%", isUnsigned);
         }
         return;
     }
@@ -1158,13 +1189,22 @@ void Pdp11Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
 // - the same "widen with a dedicated instruction, then use the real
 // hardware op" shape as the 8086 backend's own `CWD`+`IDIV` (see
 // Pdp11Codegen.h's own header comment).
-void Pdp11Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder) {
+void Pdp11Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push r0\n";
     genExpr(rhs);
     code_ << "    mov r0,r2\n";  // r2 = divisor
     code_ << "    pop r1\n";     // r1 = dividend (low word)
-    code_ << "    tst r1\n    sxt r0\n";  // r0 = sign extension of the dividend (high word)
+    // Widen the 16-bit dividend into the 32-bit R0:R1 pair DIV
+    // expects: zero-extend (R0 = 0) for an unsigned dividend, sign-
+    // extend (via TST+SXT) for a signed one - using SXT regardless
+    // would reinterpret a large unsigned value (top bit set) as
+    // negative and widen it accordingly, corrupting the division.
+    if (isUnsigned) {
+        code_ << "    mov 0,r0\n";
+    } else {
+        code_ << "    tst r1\n    sxt r0\n";  // r0 = sign extension of the dividend (high word)
+    }
     code_ << "    div r2,r0\n";           // r0 = quotient, r1 = remainder
     if (wantRemainder) code_ << "    mov r1,r0\n";
 }

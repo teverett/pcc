@@ -124,6 +124,17 @@ std::string MipsCodegen::generate(const ir::Program &prog, bool objectMode) {
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
 
+    // Globals are laid out back-to-back in declaration order with no
+    // gaps of their own - real MIPS hardware raises an address-error
+    // exception on a misaligned halfword/word access, so a `dh`/`dw`
+    // global landing on the wrong boundary after a `db` (or an odd-
+    // sized array) needs padding bytes first to reach its own
+    // natural alignment (2 bytes for `dh`, 4 for `dw`, including the
+    // two `dw`s a `long long` global's own 8-byte value splits into).
+    // A `db`/byte-array global never needs this itself (byte access
+    // has no alignment requirement at all), just tracked here for
+    // whatever comes after it.
+    size_t globalByteOffset = 0;
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
         // An external global (real separate compilation - see IR.h's
@@ -134,6 +145,15 @@ std::string MipsCodegen::generate(const ir::Program &prog, bool objectMode) {
         // symbol handling defer it to a relocation.
         if (slot->isExternal) continue;
         const std::string lbl = label(slot.get());
+        int elemW = widthOfType(slot->type);
+        size_t totalBytes = slot->arraySize > 0 ? static_cast<size_t>(slot->arraySize) * elemW
+                                                  : static_cast<size_t>(elemW);
+        size_t align = elemW >= 4 ? 4 : static_cast<size_t>(elemW);
+        while (align > 1 && (globalByteOffset % align) != 0) {
+            trailer_.push_back("db 0  ; alignment padding");
+            globalByteOffset += 1;
+        }
+        globalByteOffset += totalBytes;
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit, slot->type);
         } else {

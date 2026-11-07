@@ -399,7 +399,10 @@ class Assembler {
             if (stage_ == 2 && allowExternal_ && !externalName.empty()) {
                 relocations_.push_back({offset_, externalName, kPdp11RelocRel16});
             }
-            emit16(static_cast<uint16_t>(target - extAddr));
+            // Mode 067's own displacement adds to the PC as it stands
+            // once the CPU has already fetched this extension word -
+            // i.e. extAddr + 2, not extAddr itself.
+            emit16(static_cast<uint16_t>(target - (extAddr + 2)));
         } else if (op.kind == Operand::Indexed) {
             // A plain additive displacement, never PC-relative and
             // never a symbol (buildOperand() only ever lets a literal
@@ -527,7 +530,9 @@ class Assembler {
         }
         if (mnemonic == "mul" || mnemonic == "div") {
             uint8_t rn = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
-            encodeRegEa(mnemonic == "mul" ? 0x7000 : 0x7400, rn, requireOperand(ops, 0, mnemonic));
+            // MUL is 070RSS (0x7000); DIV is 071RSS (0x7200) - not
+            // 0x7400, which is ASH's own opcode (072RSS).
+            encodeRegEa(mnemonic == "mul" ? 0x7000 : 0x7200, rn, requireOperand(ops, 0, mnemonic));
             return;
         }
         static const std::unordered_map<std::string, uint16_t> oneOp = {
@@ -589,6 +594,22 @@ class Assembler {
             emit16(static_cast<uint16_t>(0x1000 | (0b000 << 9) | (src << 6) | (0b001 << 3) | addr));
             return;
         }
+        // Byte-sized counterparts of ldind/stind above (MOVB instead
+        // of MOV - opcode 0x9000 instead of 0x1000, same operand
+        // field layout) - a `char`-element array's own indexed
+        // load/store needs these instead of the word-only ones above.
+        if (mnemonic == "ldindb") {
+            uint8_t addr = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            uint8_t dst = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+            emit16(static_cast<uint16_t>(0x9000 | (0b001 << 9) | (addr << 6) | (0b000 << 3) | dst));
+            return;
+        }
+        if (mnemonic == "stindb") {
+            uint8_t src = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            uint8_t addr = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+            emit16(static_cast<uint16_t>(0x9000 | (0b000 << 9) | (src << 6) | (0b001 << 3) | addr));
+            return;
+        }
         if (mnemonic == "jsr") {
             // JSR PC,label - the "link register" is always PC here
             // (a plain call, saving only the return address, exactly
@@ -637,7 +658,9 @@ class Assembler {
             // carry/zero flags directly rather than N/V the signed
             // ones above use) - Pdp11Codegen.cpp's own unsigned
             // comparisons (see genWideCompare()'s own comment).
-            {"blo", 0xA400}, {"bhis", 0xA000}, {"blos", 0x8C00}, {"bhi", 0x8800},
+            // BHI=101000, BLOS=101400, BHIS(=BCC)=103000, BLO(=BCS)=103400
+            // octal, per the real PDP-11 instruction set.
+            {"bhi", 0x8200}, {"blos", 0x8300}, {"bhis", 0x8600}, {"blo", 0x8700},
         };
         if (auto it = branchCond.find(mnemonic); it != branchCond.end()) {
             encodeBranch(it->second, requireOperand(ops, 0, mnemonic), mnemonic);
