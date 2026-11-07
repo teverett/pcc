@@ -85,32 +85,81 @@ void Arm64Codegen::narrowW0To(Type to) {
     }
 }
 
+// See loadOperand()'s own header comment. `byteReg` is `x4` for an
+// 8-byte destination/source, `w4` otherwise - either name addresses
+// the identical register, but keeping the shift/OR/AND chain's own
+// operand widths consistent with `destReg`/`srcReg` (both "w" or
+// both "x") is what makes each instruction's own `sf` bit (taken
+// from its *first* operand - see Arm64Assembler.cpp's own
+// encodeLogical()/encodeShift()) match the width the other operand
+// actually needs.
+void Arm64Codegen::loadIntUnaligned(const std::string &addrReg, const std::string &destReg, int nBytes) {
+    std::string byteReg = nBytes > 4 ? "x4" : "w4";
+    code_ << "    ldindb " << addrReg << "," << byteReg << "\n";
+    code_ << "    mov " << destReg << "," << byteReg << "\n";
+    for (int byteIdx = 1; byteIdx < nBytes; byteIdx++) {
+        code_ << "    mov x3," << addrReg << "\n    add x3,x3," << byteIdx << "\n    ldindb x3," << byteReg << "\n";
+        code_ << "    lsl " << byteReg << "," << byteReg << "," << (byteIdx * 8) << "\n";
+        code_ << "    orr " << destReg << "," << destReg << "," << byteReg << "\n";
+    }
+}
+void Arm64Codegen::storeIntUnaligned(const std::string &addrReg, const std::string &srcReg, int nBytes) {
+    std::string byteReg = nBytes > 4 ? "x4" : "w4";
+    code_ << "    stindb " << addrReg << "," << srcReg << "\n";
+    for (int byteIdx = 1; byteIdx < nBytes; byteIdx++) {
+        code_ << "    mov " << byteReg << "," << srcReg << "\n    lsr " << byteReg << "," << byteReg << ","
+              << (byteIdx * 8) << "\n";
+        code_ << "    mov x3," << addrReg << "\n    add x3,x3," << byteIdx << "\n    stindb x3," << byteReg << "\n";
+    }
+}
+
 // `addrReg` holds the already-computed 64-bit effective address;
 // loads into w0 (or x0, for a `long long` - a real 64-bit register
 // holds the whole value directly on this target, no multi-word
 // emulation needed), sign- or zero-extending a narrower-than-native-
 // int value per its own signedness.
-void Arm64Codegen::loadOperand(const std::string &addrReg, Type type) {
+void Arm64Codegen::loadOperand(const std::string &addrReg, Type type, bool mayBeUnaligned) {
     int w = widthOfType(type);
     if (w == 1) {
         code_ << "    " << (type.isUnsigned ? "ldindb " : "ldindsb ") << addrReg << ",w0\n";
     } else if (w == 2) {
-        code_ << "    " << (type.isUnsigned ? "ldindh " : "ldindsh ") << addrReg << ",w0\n";
+        if (mayBeUnaligned) {
+            loadIntUnaligned(addrReg, "w0", 2);
+            if (!type.isUnsigned) code_ << "    lsl w0,w0,16\n    asr w0,w0,16\n";
+        } else {
+            code_ << "    " << (type.isUnsigned ? "ldindh " : "ldindsh ") << addrReg << ",w0\n";
+        }
     } else if (w == 4) {
-        code_ << "    ldind " << addrReg << ",w0\n";
+        if (mayBeUnaligned) {
+            loadIntUnaligned(addrReg, "w0", 4);
+        } else {
+            code_ << "    ldind " << addrReg << ",w0\n";
+        }
+    } else if (mayBeUnaligned) {
+        loadIntUnaligned(addrReg, "x0", 8);
     } else {
         code_ << "    ldind " << addrReg << ",x0\n";
     }
 }
 
-void Arm64Codegen::storeOperand(const std::string &addrReg, Type type) {
+void Arm64Codegen::storeOperand(const std::string &addrReg, Type type, bool mayBeUnaligned) {
     int w = widthOfType(type);
     if (w == 1) {
         code_ << "    stindb " << addrReg << ",w0\n";
     } else if (w == 2) {
-        code_ << "    stindh " << addrReg << ",w0\n";
+        if (mayBeUnaligned) {
+            storeIntUnaligned(addrReg, "w0", 2);
+        } else {
+            code_ << "    stindh " << addrReg << ",w0\n";
+        }
     } else if (w == 4) {
-        code_ << "    stind " << addrReg << ",w0\n";
+        if (mayBeUnaligned) {
+            storeIntUnaligned(addrReg, "w0", 4);
+        } else {
+            code_ << "    stind " << addrReg << ",w0\n";
+        }
+    } else if (mayBeUnaligned) {
+        storeIntUnaligned(addrReg, "x0", 8);
     } else {
         code_ << "    stind " << addrReg << ",x0\n";
     }
@@ -493,7 +542,7 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
                 code_ << "    sub sp,sp,16\n    stind sp,x2\n";
                 genExpr(*e.rhs);
                 code_ << "    ldind sp,x2\n    add sp,sp,16\n";
-                storeOperand("x2", e.slot->type);
+                storeOperand("x2", e.slot->type, /*mayBeUnaligned=*/e.slot->arraySize == 0);
                 return;
             }
             genExpr(*e.rhs);
@@ -504,7 +553,7 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
         case ir::ExprKind::CompoundAssign: {
             if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--)
                 genIndexAddr(e.slot, *e.lhs);  // x2 = target address
-                genCompoundThroughX2(e);
+                genCompoundThroughX2(e, /*mayBeUnaligned=*/e.slot->arraySize == 0);
                 return;
             }
             // A plain scalar target still needs its address computed
@@ -518,7 +567,7 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
         case ir::ExprKind::CompoundDerefAssign: {
             genExpr(*e.lhs);  // w0 = pointer value
             code_ << "    mov x2,x0\n";  // x2 = address
-            genCompoundThroughX2(e);
+            genCompoundThroughX2(e, /*mayBeUnaligned=*/true);
             return;
         }
         case ir::ExprKind::Ternary: {
@@ -542,7 +591,7 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
             code_ << "    sub sp,sp,16\n    stind sp,w0\n";
             genExpr(*e.rhs);  // w0, or x0 if wide
             code_ << "    ldind sp,w2\n    add sp,sp,16\n";
-            storeOperand("x2", e.type);
+            storeOperand("x2", e.type, /*mayBeUnaligned=*/true);
             return;
         }
         case ir::ExprKind::Unary: {
@@ -557,7 +606,7 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
                 // DerefAssign's identical comment above.
                 genExpr(*e.rhs);  // w0 = pointer value
                 code_ << "    mov x2,x0\n";
-                loadOperand("x2", e.type);
+                loadOperand("x2", e.type, /*mayBeUnaligned=*/true);
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "    mvn " << reg(0, wide) << "," << reg(0, wide) << "\n";
@@ -697,7 +746,7 @@ void Arm64Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
 
 void Arm64Codegen::genIndex(const ir::Expr &e) {
     genIndexAddr(e.slot, *e.lhs);
-    loadOperand("x2", e.slot->type);
+    loadOperand("x2", e.slot->type, /*mayBeUnaligned=*/e.slot->arraySize == 0);
 }
 
 // Stores `slot`'s own arrayInit values into its own per-call frame
@@ -787,12 +836,12 @@ void Arm64Codegen::genCompoundOp(const std::string &op, Type type) {
 // nested codegen that may use w0/w1/w2/w3), never recomputed
 // afterward, so an indexed/pointer target's own address sub-
 // expression is evaluated exactly once.
-void Arm64Codegen::genCompoundThroughX2(const ir::Expr &e) {
+void Arm64Codegen::genCompoundThroughX2(const ir::Expr &e, bool mayBeUnaligned) {
     code_ << "    sub sp,sp,16\n    stind sp,x2\n";  // stash address
     genExpr(*e.rhs);                                   // w0 = rhs
     code_ << "    mov w1,w0\n";                          // w1 = rhs
     code_ << "    ldind sp,x2\n    add sp,sp,16\n";       // x2 = address (restored)
-    loadOperand("x2", e.type);                              // w0 = old
+    loadOperand("x2", e.type, mayBeUnaligned);              // w0 = old
     if (e.yieldOld) code_ << "    sub sp,sp,16\n    stind sp,w0\n";  // stash old
     genCompoundOp(e.op, e.type);                              // w0 = new (raw)
     narrowW0To(e.type);
@@ -801,10 +850,10 @@ void Arm64Codegen::genCompoundThroughX2(const ir::Expr &e) {
         code_ << "    ldind sp,w0\n    add sp,sp,16\n";           // w0 = old
         code_ << "    mov w1,w0\n";                                // w1 = old, preserved across the store below
         code_ << "    mov w0,w3\n";                                 // w0 = new - storeOperand always stores from w0
-        storeOperand("x2", e.type);
+        storeOperand("x2", e.type, mayBeUnaligned);
         code_ << "    mov w0,w1\n";                                  // w0 = old (final result)
     } else {
-        storeOperand("x2", e.type);  // w0 already = new
+        storeOperand("x2", e.type, mayBeUnaligned);  // w0 already = new
     }
 }
 

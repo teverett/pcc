@@ -785,11 +785,11 @@ void MCS51Codegen::genBinary(const ir::Expr &e) {
         return;
     }
     if (op == "/") {
-        genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/false);
+        genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/false, e.lhs->type.isUnsigned);
         return;
     }
     if (op == "%") {
-        genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/true);
+        genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/true, e.lhs->type.isUnsigned);
         return;
     }
     if (op == "&" || op == "|" || op == "^") {
@@ -939,14 +939,44 @@ void MCS51Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
 // quotient, counting how many times `bc` was subtracted out of `dx`
 // before it would've gone negative - the tentative subtraction's low
 // byte is stashed in `cx` (free for the duration of this routine)
-// until it's known whether to actually commit it. Only verified
-// against non-negative operands.
-void MCS51Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder) {
+// until it's known whether to actually commit it. A signed operand
+// is divided via its absolute value: `ptr`'s own low/high byte holds
+// the dividend's/divisor's original sign (0/1), so the quotient's
+// sign (1 iff those two signs differed) and the remainder's sign
+// (always the dividend's own original sign) can be restored on the
+// unsigned core loop's result afterward.
+void MCS51Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push ac\n    push ac+1\n";
     genExpr(rhs);
     copy16("bc", "ac");  // bc = divisor
     code_ << "    pop dx+1\n    pop dx\n";                  // dx = dividend (running remainder)
+    auto isNeg = [&](const char *cell, const char *dst) {
+        code_ << "    mova " << cell << "+1\n    anli 128\n";
+        std::string Lneg = newLabel(), Lnonneg = newLabel(), Ldone = newLabel();
+        safeBranch("jz", Lnonneg, Lneg);
+        code_ << Lneg << ":\n    movai 1\n    movd " << dst << "\n    ljmp " << Ldone << "\n";
+        code_ << Lnonneg << ":\n    movai 0\n    movd " << dst << "\n";
+        code_ << Ldone << ":\n";
+    };
+    auto negate16 = [&](const char *cell) {
+        code_ << "    movai 0\n    clrc\n    subb " << cell << "\n    movd " << cell << "\n";
+        code_ << "    movai 0\n    subb " << cell << "+1\n    movd " << cell << "+1\n";
+    };
+    auto negateIf = [&](const char *flagCell, const char *cell) {
+        code_ << "    mova " << flagCell << "\n";
+        std::string Lskip = newLabel(), Ldo = newLabel();
+        safeBranch("jz", Lskip, Ldo);
+        code_ << Ldo << ":\n";
+        negate16(cell);
+        code_ << Lskip << ":\n";
+    };
+    if (!isUnsigned) {
+        isNeg("dx", "ptr");
+        isNeg("bc", "ptr+1");
+        negateIf("ptr", "dx");
+        negateIf("ptr+1", "bc");
+    }
     code_ << "    movai 0\n    movd ac\n    movai 0\n    movd ac+1\n";  // ac = quotient = 0
     std::string Lloop = newLabel(), Lcommit = newLabel(), Llt = newLabel(), Ldone = newLabel();
     code_ << Lloop << ":\n";
@@ -961,6 +991,17 @@ void MCS51Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool want
     code_ << Llt << ":\n";
     code_ << "    ljmp " << Ldone << "\n";
     code_ << Ldone << ":\n";
+    if (!isUnsigned) {
+        // Quotient is negative iff the two original signs differed;
+        // the remainder always takes the dividend's own original sign.
+        code_ << "    mova ptr\n    xrl ptr+1\n";
+        std::string Lskip = newLabel(), Ldo = newLabel();
+        safeBranch("jz", Lskip, Ldo);
+        code_ << Ldo << ":\n";
+        negate16("ac");
+        code_ << Lskip << ":\n";
+        negateIf("ptr", "dx");
+    }
     if (wantRemainder) copy16("ac", "dx");
 }
 

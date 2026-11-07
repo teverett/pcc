@@ -7,27 +7,27 @@ namespace pcc {
 
 namespace {
 // Replicates I8008Codegen.cpp's own whole-program entry sequence
-// exactly (`kPseudoBase`=12288/0x3000, `kStackBase`=`kPseudoBase`+12
-// - see that file's own anonymous-namespace comment), spelled as
-// literal decimal constants since this text is handed to a from-
-// scratch assembler that only ever sees its own generated input,
-// never a real #include.
+// exactly (`ac`/`bc`/`cx`/`dx`/`ptr`/`sp` at `kPseudoBase`=15360/0x3c00
+// plus 0/2/4/6/8/10 - see that file's own anonymous-namespace
+// comment), spelled as literal decimal constants since this text is
+// handed to a from-scratch assembler that only ever sees its own
+// generated input, never a real #include.
 constexpr const char *kEntryAsm =
     "org 0\n"
-    "ac = 12288\n"
-    "bc = 12290\n"
-    "cx = 12292\n"
-    "dx = 12294\n"
-    "ptr = 12296\n"
-    "sp = 12298\n"
+    "ac = 15360\n"
+    "bc = 15362\n"
+    "cx = 15364\n"
+    "dx = 15366\n"
+    "ptr = 15368\n"
+    "sp = 15370\n"
     "_start:\n"
     "    mvihi h, sp\n"
     "    mvi l, sp\n"
-    "    mvi a, 12300\n"
+    "    mvi a, 15372\n"
     "    mov m, a\n"
     "    mvihi h, sp+1\n"
     "    mvi l, sp+1\n"
-    "    mvihi a, 12300\n"
+    "    mvihi a, 15372\n"
     "    mov m, a\n"
     "    cal fn_main\n"
     "halt:\n"
@@ -47,10 +47,7 @@ constexpr const char *kEntryAsm =
 // own (mod-256 addition commutes with truncation), but the high byte
 // also needs any carry OUT of that low-byte addition, which this
 // patch order lets us compute by reading the Lo site's own
-// still-unpatched byte - plain independent byte-wise addition here
-// (the earlier, broken version of this function) silently drops that
-// carry whenever a local address's low byte plus the object's own
-// base address overflows 0xFF, corrupting the high byte.
+// still-unpatched byte.
 void patchAbs16Lo(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t) {
     image[siteOffset] = static_cast<uint8_t>(image[siteOffset] + (value & 0xFF));
 }

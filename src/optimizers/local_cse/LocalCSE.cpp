@@ -190,6 +190,27 @@ void invalidateSlot(std::unordered_map<std::string, Avail> &avail, ir::Slot *wri
 void cseExpr(ir::ExprPtr &e, std::unordered_map<std::string, Avail> &avail, std::vector<ir::StmtPtr> &body,
               size_t &i, ir::Program &prog, int &tempCounter, bool &changed) {
     if (!e) return;
+
+    // `&operand` needs operand's own real lvalue location, never a
+    // cached copy of its value - rewriting it into a temp's own read
+    // would take that temp's address instead of the real one, and
+    // wrapping an earlier plain occurrence elsewhere into `temp =
+    // operand` so THIS read can become a temp read would just move
+    // the same problem onto that occurrence (see IRBuilder.cpp's
+    // buildAddressableOperand: operand is always exactly a Var or an
+    // Index, never anything CSE could safely stand in for). So
+    // operand itself is never treated as a CSE candidate in either
+    // direction here - skipped entirely, not just left ineligible.
+    // An Index's own index sub-expression has no such restriction
+    // (`&arr[i+1]` only needs `i+1`'s VALUE, not its own address), so
+    // that still gets the normal treatment below.
+    if (e->kind == ir::ExprKind::Unary && e->op == "&") {
+        if (e->rhs && e->rhs->kind == ir::ExprKind::Index) {
+            cseExpr(e->rhs->lhs, avail, body, i, prog, tempCounter, changed);
+        }
+        return;
+    }
+
     // Bottom-up, same shape every other optimizer here uses - a
     // nested candidate is fully resolved (recorded, matched, or
     // promoted) before its own enclosing expression is even looked
@@ -201,12 +222,19 @@ void cseExpr(ir::ExprPtr &e, std::unordered_map<std::string, Avail> &avail, std:
     for (auto &arg : e->args) cseExpr(arg, avail, body, i, prog, tempCounter, changed);
 
     // Apply this node's own invalidating effect - after its children,
-    // which (on every backend here) evaluate before it does.
+    // which (on every backend here) evaluate before it does. A
+    // CompoundAssign writes exactly one slot, same as a plain Assign;
+    // a CompoundDerefAssign writes through an arbitrary pointer, same
+    // as a plain DerefAssign - both need the exact same treatment as
+    // their non-compound counterparts, not the "unlisted kind, no
+    // invalidation at all" default below.
     switch (e->kind) {
         case ir::ExprKind::Assign:
+        case ir::ExprKind::CompoundAssign:
             invalidateSlot(avail, e->slot);
             break;
         case ir::ExprKind::DerefAssign:
+        case ir::ExprKind::CompoundDerefAssign:
         case ir::ExprKind::Call:
         case ir::ExprKind::CallPtr:
         case ir::ExprKind::Intrinsic:

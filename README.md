@@ -14,8 +14,10 @@ signed or unsigned, pointers (`T*`, with real pointee-typed arithmetic
 and dereference), arrays, casts, and `sizeof`. String literals
 (`"like this"`) are supported - each one lowers to the address of an
 anonymous, NUL-terminated `char` array holding its decoded bytes, the
-same as a hand-declared `char` array would. No structs, no floats, no
-preprocessor.
+same as a hand-declared `char` array would. A text-level preprocessor
+handles `#include`, object-like `#define`/`#undef`, and `#ifdef`/
+`#ifndef`/`#if`/`#else`/`#elif`/`#endif` (no function-like macros with
+parameters, no token-pasting/stringizing). No structs, no floats.
 
 ## Documentation
 

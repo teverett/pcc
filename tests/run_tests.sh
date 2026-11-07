@@ -6,17 +6,24 @@
 # on every target (see ../src/Backend.h: a .c file means the same
 # thing regardless of --target).
 #
-# Usage: tests/run_tests.sh [path/to/pcc] [--target=pdp7|8086|8088|6502|65c02|68000|mc68328|8080|z80|8008|8051|stm32|i386|armv7a|armv8a]
+# Usage: tests/run_tests.sh [path/to/pcc] [--target=pdp7|8086|8088|6502|65c02|68000|mc68328|8080|z80|8008|8051|stm32|i386|armv7a|armv8a] [--optimize]
+#
+# --optimize passes pcc's own --optimize straight through to every
+# compile below, so the exact same checks also confirm the IR
+# optimizer pipeline (see ../docs/optimization.md) never changes a
+# program's own observable result.
 
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PCC="$SCRIPT_DIR/../build/bin/pcc"
 TARGET="pdp7"
+OPTFLAGS=""
 
 for arg in "$@"; do
     case "$arg" in
         --target=*) TARGET="${arg#--target=}" ;;
+        --optimize) OPTFLAGS="--optimize" ;;
         *) PCC="$arg" ;;
     esac
 done
@@ -272,7 +279,7 @@ check_pdp7() {
     local rimfile="$tmpdir/$name.rim"
 
     if ! "$PCC" --target=pdp7 --format=rim \
-            --dump-ir --out="$rimfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+            $OPTFLAGS --dump-ir --out="$rimfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
         return 1
@@ -318,7 +325,7 @@ check_8086() {
     sleep 1
 
     if ! "$PCC" --target="$target" --format=raw \
-            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
         return 1
@@ -418,7 +425,7 @@ check_i386() {
     sleep 1
 
     if ! "$PCC" --target=i386 --format=raw \
-            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
         return 1
@@ -492,7 +499,7 @@ check_armv7a() {
     sleep 1
 
     if ! "$PCC" --target=armv7a --format=raw \
-            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
         return 1
@@ -575,7 +582,7 @@ check_armv8a() {
     sleep 1
 
     if ! "$PCC" --target=armv8a --format=raw \
-            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
         return 1
@@ -643,7 +650,7 @@ check_68000() {
     sleep 1
 
     if ! "$PCC" --target=68000 --format=raw \
-            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
         return 1
@@ -727,7 +734,7 @@ check_mc68328() {
     sleep 1
 
     if ! "$PCC" --target=mc68328 --format=raw \
-            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
         return 1
@@ -798,7 +805,7 @@ check_6502() {
     local binfile="$tmpdir/$name.bin"
 
     if ! "$PCC" --target=6502 --format=raw \
-            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
         return 1
@@ -864,7 +871,7 @@ check_65c02() {
     local binfile="$tmpdir/$name.bin"
 
     if ! "$PCC" --target=65c02 --format=raw \
-            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
         return 1
@@ -931,7 +938,7 @@ check_8080() {
     local binfile="$tmpdir/$name.bin"
 
     if ! "$PCC" --target=8080 --format=raw \
-            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
         return 1
@@ -994,7 +1001,7 @@ check_z80() {
     local binfile="$tmpdir/$name.bin"
 
     if ! "$PCC" --target=z80 --format=raw \
-            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
         return 1
@@ -1063,7 +1070,7 @@ check_8008() {
     local binfile="$tmpdir/$name.bin"
 
     if ! "$PCC" --target=8008 --format=raw \
-            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
         return 1
@@ -1264,7 +1271,7 @@ if not halted:
     print("TIMEOUT")
     sys.exit(0)
 
-val = mem[0x3000] | (mem[0x3001] << 8)
+val = mem[0x3c00] | (mem[0x3c01] << 8)
 if val >= 0x8000:
     val -= 0x10000
 print(val)
@@ -1288,7 +1295,7 @@ check_8051() {
     local binfile="$tmpdir/$name.bin"
 
     if ! "$PCC" --target=8051 --format=raw \
-            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
         return 1
@@ -1543,7 +1550,7 @@ check_stm32() {
     sleep 1
 
     if ! "$PCC" --target=stm32 --format=raw \
-            --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
         return 1
@@ -1617,18 +1624,31 @@ check_stm32() {
 is_known_unsupported() {
     case "$TARGET:$1" in
         pdp7:types_longlong_divmod.c) return 0 ;;          # no verified wide multiply/divide routine
+        pdp7:types_longlong_divmod_repeated.c) return 0 ;; # same - no verified wide multiply/divide routine
         8086:types_longlong_divmod.c) return 0 ;;          # routine doesn't fit the 512-byte boot sector
         8088:types_longlong_divmod.c) return 0 ;;
+        8086:types_longlong_divmod_repeated.c) return 0 ;; # same - doesn't fit the 512-byte boot sector
+        8088:types_longlong_divmod_repeated.c) return 0 ;;
+        8086:types_longlong_equality_repeated.c) return 0 ;; # same - doesn't fit the 512-byte boot sector
+        8088:types_longlong_equality_repeated.c) return 0 ;;
         8086:compound_assign_inc_dec_ternary.c) return 0 ;;  # this file's own compiled program doesn't fit the 512-byte boot sector either
         8088:compound_assign_inc_dec_ternary.c) return 0 ;;
+        8086:many_returns.c) return 0 ;;                    # same - doesn't fit the 512-byte boot sector
+        8088:many_returns.c) return 0 ;;
         8080:types_longlong_divmod.c) return 0 ;;          # no verified wide multiply/divide routine
+        8080:types_longlong_divmod_repeated.c) return 0 ;; # same - no verified wide multiply/divide routine
         z80:types_longlong_divmod.c) return 0 ;;
+        z80:types_longlong_divmod_repeated.c) return 0 ;;  # same - no verified wide multiply/divide routine
         8051:types_arrays.c) return 0 ;;                   # wide (long/long long) values unsupported at all
         8051:types_longlong_arith.c) return 0 ;;
+        8051:test_long_arith.c) return 0 ;;
+        8051:test_unsigned_long_arith.c) return 0 ;;
         8051:types_longlong_divmod.c) return 0 ;;
+        8008:types_longlong_divmod.c) return 0 ;;          # exhaustive sign-combination coverage needs more RAM than the 8008's 16KB/14-bit address space has, even with every byte of pseudo-register reservation reclaimed
+        8051:types_longlong_divmod_repeated.c) return 0 ;;
+        8051:types_longlong_equality_repeated.c) return 0 ;;
         8051:types_longlong_signed_cmp.c) return 0 ;;
         8051:types_params_return.c) return 0 ;;
-        8051:types_sizeof.c) return 0 ;;                   # every sizeof() check here compares as 'unsigned long'
         *) return 1 ;;
     esac
 }

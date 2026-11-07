@@ -149,8 +149,11 @@ class ArmCodegen : public Backend {
     // Shared tail for CompoundAssign (both its scalar and indexed
     // forms) and CompoundDerefAssign - r2 must already hold the
     // resolved target address on entry (and nothing else live). See
-    // the .cpp's own comment.
-    void genCompoundThroughR2(const ir::Expr &e);
+    // the .cpp's own comment. `mayBeUnaligned` - see loadOperand()'s
+    // own comment; true only when r2 came from dereferencing a plain
+    // pointer value (CompoundDerefAssign, or CompoundAssign indexing
+    // through a pointer variable rather than a real array).
+    void genCompoundThroughR2(const ir::Expr &e, bool mayBeUnaligned = false);
 
     int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
@@ -170,10 +173,34 @@ class ArmCodegen : public Backend {
     // (or r0:r1, for a `long long` - see isWide()), sign- or zero-
     // extending a narrower-than-native-int source per its own
     // signedness. `addrReg` must not be r0/r1 (both get clobbered).
-    void loadOperand(const std::string &addrReg, Type type);
+    // `mayBeUnaligned` is true wherever `addrReg` is a plain pointer
+    // *value* the program computed at runtime (a dereferenced `int`/
+    // pointer variable, not this backend's own Slot/array-element
+    // address arithmetic, which always keeps a multi-byte access on
+    // its type's own natural boundary by construction): a real A32
+    // LDR/STR word or halfword transfer at an address that isn't
+    // aligned to its own width takes an Alignment Fault on real
+    // ARMv7-A hardware (unlike every other backend's own native CPU/
+    // simulator, which tolerates it silently), so a width wider than
+    // a byte is reassembled from individual byte transfers instead
+    // (see loadWordUnaligned()/loadHalfUnaligned()) whenever the
+    // address can't be proven aligned ahead of time.
+    void loadOperand(const std::string &addrReg, Type type, bool mayBeUnaligned = false);
     // Stores r0 (or r0:r1, for a `long long`) into the address in
-    // `addrReg`, truncating to `type`'s own width.
-    void storeOperand(const std::string &addrReg, Type type);
+    // `addrReg`, truncating to `type`'s own width. `mayBeUnaligned` -
+    // see loadOperand()'s own comment.
+    void storeOperand(const std::string &addrReg, Type type, bool mayBeUnaligned = false);
+    // Byte-by-byte reassembly of a 32-bit/16-bit load or store at a
+    // runtime address that might not be aligned to its own width,
+    // using r3/r4 as scratch (the same "self-contained, never spans a
+    // nested genExpr()" scratch convention ArmAssembler.cpp's own
+    // r4-r10/r12 comment already documents for genWideAdd() and
+    // friends) - `destReg`/`srcReg` is always r0 or r1, never r3/r4,
+    // and `addrReg` (always r2 at every call site) is left unchanged.
+    void loadWordUnaligned(const std::string &addrReg, const std::string &destReg);
+    void storeWordUnaligned(const std::string &addrReg, const std::string &srcReg);
+    void loadHalfUnaligned(const std::string &addrReg, const std::string &destReg, bool isUnsigned);
+    void storeHalfUnaligned(const std::string &addrReg, const std::string &srcReg);
     // Re-extends r0 from its own low widthOf(to) bytes, per `to`'s
     // signedness - every Convert between two types no wider than a
     // native int.

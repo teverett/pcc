@@ -27,6 +27,46 @@ constexpr uint32_t kMask18 = 0777777;
 // can use the full 18-bit range.
 constexpr uint32_t kAddressFieldLimit = 010000 << 1;  // 020000 octal = 8192 decimal
 
+// The runtime call stack (`__sp` in makePdp7Linker()'s own entry
+// object, below) starts at the very top of this same address space -
+// 8191, one word under kAddressFieldLimit - and grows *downward* by
+// one word per pushed argument/local/return-address/saved-frame-
+// pointer on every single function call (see Pdp7Codegen.h's own
+// pushAC()/emitPrologue() comments). It has no reserved region of
+// its own, and nothing ever checks it against where the program's
+// own code/data/trailer ends: the linker just lays every object out
+// sequentially from a low base address, growing upward, with no
+// notion that a stack exists at all, let alone where it will
+// actually reach at runtime.
+//
+// Confirmed directly, not just suspected: two otherwise byte-
+// identical programs (the one function that actually misbehaves
+// compiles to identical instructions in both - diffed and confirmed)
+// built only to leave a different amount of headroom between their
+// own highest-addressed symbol and 8191 (roughly 150 words in one
+// case, 2 words in the other) - the narrow-headroom one hangs/
+// misbehaves at runtime (the stack's own perfectly ordinary usage
+// during a handful of nested calls reaches down far enough to
+// silently overwrite that high-addressed data), the wide one
+// doesn't. Every individual instruction's own address field stayed
+// comfortably under kAddressFieldLimit in both cases - this is a
+// distinct hazard from the one that check catches, not a wider
+// version of the same thing.
+//
+// kStackReserve is a deliberately generous safety margin - several
+// times over the deepest real call chain anything in this project's
+// own test programs has needed (a handful of nested calls, each a
+// handful of words of frame plus temporarily-pushed arguments) - not
+// a tight calculation of any one program's own worst case, since the
+// linker has no way to know that for an arbitrary program. Any
+// symbol address landing within this many words of the top is
+// refused here, before the stack ever gets a chance to reach it -
+// the same "refuse rather than silently corrupt" policy
+// kAddressFieldLimit's own check already uses, just for a hazard
+// that check doesn't cover.
+constexpr uint32_t kStackReserve = 512;
+constexpr uint32_t kStackSafeLimit = kAddressFieldLimit - kStackReserve;
+
 uint32_t read18(const std::vector<uint8_t> &image, uint32_t siteOffset) {
     return (static_cast<uint32_t>(image[siteOffset]) << 16) | (static_cast<uint32_t>(image[siteOffset + 1]) << 8) |
            static_cast<uint32_t>(image[siteOffset + 2]);
@@ -46,6 +86,19 @@ void patchPdp7Or(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t valu
                "too many/too large object files given; a reference to any address at or beyond 8192 "
                "would silently corrupt the instruction it's stored in instead of erroring, so this is "
                "refused up front";
+        fail(msg.str());
+    }
+    if (value >= kStackSafeLimit) {
+        std::ostringstream msg;
+        msg << "address " << value << " (0" << std::oct << value << " octal) is within " << std::dec
+            << kStackReserve
+            << " words of the pdp7's own 8192-word address space top - too close to where the runtime "
+               "call stack (__sp, starting at 8191 and growing downward with no reserved region or "
+               "bounds check of its own) will reach during real execution; a reference placed here "
+               "wouldn't error, it would just get silently overwritten by ordinary stack usage at some "
+               "real call depth, so this is refused up front instead - too many/too large object files "
+               "given, the same as the direct-addressing field limit above, just with a safety margin "
+               "for the stack it doesn't know about";
         fail(msg.str());
     }
     write18(image, siteOffset, read18(image, siteOffset) | value);

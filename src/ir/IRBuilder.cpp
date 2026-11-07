@@ -865,12 +865,43 @@ class Builder {
                 }
                 lhs = promote(std::move(lhs), e.line);
                 rhs = promote(std::move(rhs), e.line);
+                bool isComparison = e.op == "==" || e.op == "!=" || e.op == "<" || e.op == "<=" || e.op == ">" ||
+                                     e.op == ">=";
+                // A comparison between two values already known at
+                // compile time (most commonly two `sizeof`s, or a
+                // `sizeof` against a literal - see IR.h's own
+                // ExprKind::Sizeof comment: it's already an IntLit by
+                // this point) never needs any actual comparison
+                // *instruction* at all, wide or narrow - the C
+                // standard already settles it during translation. The
+                // result is always a plain narrow `int` 0/1 regardless
+                // of how wide `lhs`/`rhs`'s own static type is (`long`/
+                // `long long` for `sizeof`), so folding it away here
+                // keeps that width from ever reaching a backend that
+                // can't actually do wide arithmetic at all (see
+                // MCS51Codegen.cpp's own requireNarrow()) purely to
+                // decide something this compile-time comparison
+                // already knows regardless of target.
+                if (isComparison && lhs->kind == ir::ExprKind::IntLit && rhs->kind == ir::ExprKind::IntLit) {
+                    long a = lhs->intValue, b = rhs->intValue;
+                    long result = 0;
+                    if (e.op == "==") result = (a == b) ? 1 : 0;
+                    else if (e.op == "!=") result = (a != b) ? 1 : 0;
+                    else if (e.op == "<") result = (a < b) ? 1 : 0;
+                    else if (e.op == "<=") result = (a <= b) ? 1 : 0;
+                    else if (e.op == ">") result = (a > b) ? 1 : 0;
+                    else result = (a >= b) ? 1 : 0;
+                    out->kind = ir::ExprKind::IntLit;
+                    out->intValue = result;
+                    out->type = Type{BaseType::Int, false};
+                    return out;
+                }
                 Type common = commonType(lhs->type, rhs->type);
                 lhs = wrapConvert(std::move(lhs), common, e.line);
                 rhs = wrapConvert(std::move(rhs), common, e.line);
                 out->lhs = std::move(lhs);
                 out->rhs = std::move(rhs);
-                if (e.op == "==" || e.op == "!=" || e.op == "<" || e.op == "<=" || e.op == ">" || e.op == ">=") {
+                if (isComparison) {
                     // The comparison itself happens at `common`
                     // (both operands now share it, so codegen reads
                     // either side's .type.isUnsigned to pick a signed

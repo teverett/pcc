@@ -249,6 +249,18 @@ class I8008Codegen : public Backend {
     // compile-time label for one of these to begin with, since `fp`
     // itself differs on every call.
     void pointAtSlot(const ir::Slot *slot, int extraByteOffset = 0);
+    // Advances H,L from `slot`'s byte `justPointedOffset` (wherever a
+    // just-made `pointAtSlot(slot, justPointedOffset)` left it, with
+    // nothing in between touching H,L) to the very next byte. A
+    // Global's own next byte is still a single compile-time label, so
+    // another plain pointAtSlot() stays cheapest there; a Local/Param
+    // instead reuses the H,L that pointAtSlot() already computed via
+    // incHL(), rather than reloading `fp` and re-adding the frame
+    // offset from scratch for a destination exactly one byte past
+    // where H,L already sits - the same "point once, incHL() for the
+    // next byte" idiom storeAcIndirect() already uses against a plain
+    // named cell.
+    void pointAtSlotNextByte(const ir::Slot *slot, int justPointedOffset);
 
     // "pointAt(cell); mov a, m" / "pointAt(cell); mov m, a" - the one-
     // byte read/write every wide (`long`/`long long`) helper below is
@@ -273,12 +285,10 @@ class I8008Codegen : public Backend {
     // mechanism: three more fixed 8-byte memory-cell buffers
     // (`wac`/`wbc`/`wtmp`/`wtmp2`), byte-addressed little-endian,
     // with this backend's own real `sp`-indexed runtime stack (see
-    // pushByte()/popByte() below - a byte-granular version of the
+    // pushWide()/popWide() below - a byte-granular version of the
     // existing word-granular pushCell()/popCell()) used only as a
     // transient save slot for one operand while the other is
     // evaluated.
-    void pushByte(const std::string &srcCell);
-    void popByte(const std::string &dstCell);
     void pushWide(const char *base, int nbytes);
     void popWide(const char *base, int nbytes);
     void copyWide(const char *dst, const char *src, int nbytes);
@@ -472,10 +482,63 @@ class I8008Codegen : public Backend {
     // frameByteOffset()'s own comment; set once per genFunction()
     // call alongside currentParamCount_.
     int currentParamBytes_ = 0;
+    // The current function's own single shared epilogue label - every
+    // `return` in its body (see genStmt()'s own Return case) jumps
+    // here instead of each emitting its own full copy of
+    // emitEpilogue()'s own real frame-teardown code (a handful of
+    // instructions, but real ones, not something `--optimize` folds
+    // away across separate call sites) plus `ret`; genFunction() lands
+    // this same body right after the function's own last statement,
+    // so control simply falls into it when nothing explicitly returns.
+    // Set once per genFunction() call, for the whole of that
+    // function's own body.
+    std::string currentEpilogueLabel_;
     // One entry per currently-open loop (innermost last) - {continue
     // label, break label} - pushed/popped by genStmt's own While
     // case, consulted by its Break/Continue cases.
     std::vector<std::pair<std::string, std::string>> loopLabels_;
+
+    // Every real 8008 instruction genWideDivMod() emits operates on
+    // the same fixed, globally-named cells (`wbc`/`wac`/`wtmp`/`wtmp2`/
+    // `dx`) regardless of which source-level `/`/`%` expression asked
+    // for it, so - unlike this backend's every other genExpr() helper,
+    // each inlined fresh at its own call site - the whole routine is
+    // already shareable as a single real subroutine, called via `cal`/
+    // `ret` from every `/`/`%` on a given (signedness, word count)
+    // pair instead of being duplicated byte-for-byte at each one. A
+    // `long`/`long long` program with several divisions or moduli
+    // (see tests/types_longlong_divmod.c) would otherwise multiply
+    // this routine's own considerable size by its own number of call
+    // sites - see getWideDivModSubroutine()'s own comment. Keyed by
+    // (isUnsigned, words); the label is created, and its body queued
+    // in wideDivModSubroutineBodies_, the first time a given pair is
+    // ever requested.
+    std::map<std::pair<bool, int>, std::string> wideDivModSubroutineLabel_;
+    std::vector<std::string> wideDivModSubroutineBodies_;
+    // Returns the shared subroutine's own label for (isUnsigned,
+    // words), emitting its body (once, into
+    // wideDivModSubroutineBodies_) the first time this pair is asked
+    // for. On entry, `wbc` holds the dividend and `wac` the divisor
+    // (both `words`-word wide); on return, `wtmp` holds the remainder
+    // and `wtmp2` the quotient - the call site itself (genWideDivMod())
+    // still does the final `copyWide` into `wac`, since that part
+    // alone differs (`wtmp` vs `wtmp2`) by `wantRemainder`, not by
+    // signedness or width.
+    std::string getWideDivModSubroutine(bool isUnsigned, int words);
+
+    // Same sharing idea as getWideDivModSubroutine() - and for the
+    // same reason (tests/types_longlong_divmod.c's own several `!=`
+    // checks on `long`/`long long` would otherwise each duplicate
+    // this routine in full) - applied to the byte-wise XOR/OR scan
+    // emitWideEqualityCompare() needs. Equality doesn't care about
+    // signedness at all, so this is keyed on `words` alone. On entry,
+    // `wbc` and `wac` hold the two operands (`words`-word wide); on
+    // return, the single byte at `dx` is zero iff they were equal -
+    // the call site itself still does the final `wantEqual`-dependent
+    // branch, since that part alone differs between `==` and `!=`.
+    std::map<int, std::string> wideEqualitySubroutineLabel_;
+    std::vector<std::string> wideEqualitySubroutineBodies_;
+    std::string getWideEqualitySubroutine(int words);
 };
 
 }  // namespace pcc

@@ -1609,16 +1609,21 @@ void M6502Codegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
         code_ << Lskip << ":\n";
     };
     // `cx`'s own low/high byte double as this operation's two 0/1
-    // sign flags (dividend/divisor) - `cx` itself is otherwise never
-    // touched by this routine (unlike genShift()/genMul(), which use
-    // it as their own loop counter).
+    // sign flags (dividend/divisor). `isNeg()` itself always uses
+    // `cx` as scratch while computing its result (regardless of
+    // which byte `dst` names), so the dividend's flag - computed
+    // first, into `cx` itself - has to be stashed in `aBase` (free
+    // here) and restored back into `cx` before either flag is read
+    // by `negateIf()` below; only `cx+1` (the divisor's flag, written
+    // last and never used as anyone else's scratch) can be read
+    // straight out of its own cell.
     if (!isUnsigned) {
         isNeg("dx", "cx");
         code_ << "    lda cx\n    sta aBase\n";  // stash the dividend's own sign flag (aBase: free here)
         isNeg("bc", "cx+1");
+        code_ << "    lda aBase\n    sta cx\n";  // restore the dividend's own sign flag over cx's own low byte
         negateIf("cx", "dx");
         negateIf("cx+1", "bc");
-        code_ << "    lda aBase\n    sta cx\n";  // restore the dividend's own sign flag over cx's own low byte
     }
     code_ << "    ldai 0\n    sta ac\n    ldai 0\n    sta ac+1\n";  // ac = quotient = 0
     std::string Lloop = newLabel(), Lcommit = newLabel(), Llt = newLabel(), Ldone = newLabel();

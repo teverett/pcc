@@ -159,18 +159,67 @@ void ArmCodegen::narrowR0To(Type to) {
     }
 }
 
+// A byte-at-a-time word load, little-endian, that tolerates `addrReg`
+// landing on any byte boundary - `ldindb`/`stindb` (real LDRB/STRB)
+// never fault on alignment at all, unlike `ldind`/`stind` (real LDR/
+// STR) - see loadOperand()'s own header comment. `r3` holds the
+// running byte address (`addrReg` itself is read, never written), `r4`
+// the byte just transferred; `destReg` only ever receives its own
+// final, fully-assembled value, one OR per byte.
+void ArmCodegen::loadWordUnaligned(const std::string &addrReg, const std::string &destReg) {
+    code_ << "    ldindb " << addrReg << ",r4\n";
+    code_ << "    mov " << destReg << ",r4\n";
+    for (int byteIdx = 1; byteIdx < 4; byteIdx++) {
+        code_ << "    mov r3," << addrReg << "\n    add r3,r3," << byteIdx << "\n    ldindb r3,r4\n";
+        code_ << "    lsl r4,r4," << (byteIdx * 8) << "\n    orr " << destReg << "," << destReg << ",r4\n";
+    }
+}
+void ArmCodegen::storeWordUnaligned(const std::string &addrReg, const std::string &srcReg) {
+    code_ << "    stindb " << addrReg << "," << srcReg << "\n";
+    for (int byteIdx = 1; byteIdx < 4; byteIdx++) {
+        code_ << "    mov r4," << srcReg << "\n    lsr r4,r4," << (byteIdx * 8) << "\n";
+        code_ << "    mov r3," << addrReg << "\n    add r3,r3," << byteIdx << "\n    stindb r3,r4\n";
+    }
+}
+void ArmCodegen::loadHalfUnaligned(const std::string &addrReg, const std::string &destReg, bool isUnsigned) {
+    code_ << "    ldindb " << addrReg << "," << destReg << "\n";
+    code_ << "    mov r3," << addrReg << "\n    add r3,r3,1\n    ldindb r3,r4\n";
+    code_ << "    lsl r4,r4,8\n    orr " << destReg << "," << destReg << ",r4\n";
+    if (!isUnsigned) {
+        code_ << "    lsl " << destReg << "," << destReg << ",16\n    asr " << destReg << "," << destReg << ",16\n";
+    }
+}
+void ArmCodegen::storeHalfUnaligned(const std::string &addrReg, const std::string &srcReg) {
+    code_ << "    stindb " << addrReg << "," << srcReg << "\n";
+    code_ << "    mov r4," << srcReg << "\n    lsr r4,r4,8\n";
+    code_ << "    mov r3," << addrReg << "\n    add r3,r3,1\n    stindb r3,r4\n";
+}
+
 // `addrReg` holds the already-computed effective address (r2, by
 // this backend's own convention - see loadSlotAddr()/genIndexAddr());
 // loads into r0 (or r0:r1, for a `long long`), sign- or zero-
 // extending a narrower-than-native-int value per its own signedness.
-void ArmCodegen::loadOperand(const std::string &addrReg, Type type) {
+void ArmCodegen::loadOperand(const std::string &addrReg, Type type, bool mayBeUnaligned) {
     int w = widthOfType(type);
     if (w == 1) {
         code_ << "    " << (type.isUnsigned ? "ldindb " : "ldindsb ") << addrReg << ",r0\n";
     } else if (w == 2) {
-        code_ << "    " << (type.isUnsigned ? "ldindh " : "ldindsh ") << addrReg << ",r0\n";
+        if (mayBeUnaligned) {
+            loadHalfUnaligned(addrReg, "r0", type.isUnsigned);
+        } else {
+            code_ << "    " << (type.isUnsigned ? "ldindh " : "ldindsh ") << addrReg << ",r0\n";
+        }
     } else if (w == 4) {
-        code_ << "    ldind " << addrReg << ",r0\n";
+        if (mayBeUnaligned) {
+            loadWordUnaligned(addrReg, "r0");
+        } else {
+            code_ << "    ldind " << addrReg << ",r0\n";
+        }
+    } else if (mayBeUnaligned) {
+        loadWordUnaligned(addrReg, "r0");
+        code_ << "    add " << addrReg << "," << addrReg << ",4\n";
+        loadWordUnaligned(addrReg, "r1");
+        code_ << "    sub " << addrReg << "," << addrReg << ",4\n";
     } else {
         code_ << "    ldind " << addrReg << ",r0\n";
         code_ << "    add " << addrReg << "," << addrReg << ",4\n";
@@ -179,14 +228,27 @@ void ArmCodegen::loadOperand(const std::string &addrReg, Type type) {
     }
 }
 
-void ArmCodegen::storeOperand(const std::string &addrReg, Type type) {
+void ArmCodegen::storeOperand(const std::string &addrReg, Type type, bool mayBeUnaligned) {
     int w = widthOfType(type);
     if (w == 1) {
         code_ << "    stindb " << addrReg << ",r0\n";
     } else if (w == 2) {
-        code_ << "    stindh " << addrReg << ",r0\n";
+        if (mayBeUnaligned) {
+            storeHalfUnaligned(addrReg, "r0");
+        } else {
+            code_ << "    stindh " << addrReg << ",r0\n";
+        }
     } else if (w == 4) {
-        code_ << "    stind " << addrReg << ",r0\n";
+        if (mayBeUnaligned) {
+            storeWordUnaligned(addrReg, "r0");
+        } else {
+            code_ << "    stind " << addrReg << ",r0\n";
+        }
+    } else if (mayBeUnaligned) {
+        storeWordUnaligned(addrReg, "r0");
+        code_ << "    add " << addrReg << "," << addrReg << ",4\n";
+        storeWordUnaligned(addrReg, "r1");
+        code_ << "    sub " << addrReg << "," << addrReg << ",4\n";
     } else {
         code_ << "    stind " << addrReg << ",r0\n";
         code_ << "    add " << addrReg << "," << addrReg << ",4\n";
@@ -676,7 +738,7 @@ void ArmCodegen::genExpr(const ir::Expr &e) {
                 code_ << "    sub sp,sp,4\n    stind sp,r2\n";
                 genExpr(*e.rhs);
                 code_ << "    ldind sp,r2\n    add sp,sp,4\n";
-                storeOperand("r2", e.slot->type);
+                storeOperand("r2", e.slot->type, /*mayBeUnaligned=*/e.slot->arraySize == 0);
                 return;
             }
             genExpr(*e.rhs);
@@ -687,7 +749,7 @@ void ArmCodegen::genExpr(const ir::Expr &e) {
         case ir::ExprKind::CompoundAssign: {
             if (e.lhs) {  // slot[idx] op= rhs (including slot[idx]++/--)
                 genIndexAddr(e.slot, *e.lhs);  // r2 = target address
-                genCompoundThroughR2(e);
+                genCompoundThroughR2(e, /*mayBeUnaligned=*/e.slot->arraySize == 0);
                 return;
             }
             // A plain scalar target still needs its address computed
@@ -701,7 +763,7 @@ void ArmCodegen::genExpr(const ir::Expr &e) {
         case ir::ExprKind::CompoundDerefAssign: {
             genExpr(*e.lhs);  // r0 = pointer value
             code_ << "    mov r2,r0\n";  // r2 = address
-            genCompoundThroughR2(e);
+            genCompoundThroughR2(e, /*mayBeUnaligned=*/true);
             return;
         }
         case ir::ExprKind::Ternary: {
@@ -731,7 +793,7 @@ void ArmCodegen::genExpr(const ir::Expr &e) {
             code_ << "    sub sp,sp,4\n    stind sp,r0\n";
             genExpr(*e.rhs);  // r0, or r0:r1 if wide
             code_ << "    ldind sp,r2\n    add sp,sp,4\n";
-            storeOperand("r2", e.type);
+            storeOperand("r2", e.type, /*mayBeUnaligned=*/true);
             return;
         }
         case ir::ExprKind::Unary: {
@@ -749,7 +811,7 @@ void ArmCodegen::genExpr(const ir::Expr &e) {
                 // DerefAssign's identical comment above.
                 genExpr(*e.rhs);  // r0 = pointer value
                 code_ << "    mov r2,r0\n";
-                loadOperand("r2", e.type);
+                loadOperand("r2", e.type, /*mayBeUnaligned=*/true);
             } else if (e.op == "~") {
                 genExpr(*e.rhs);
                 code_ << "    mvn r0,r0\n";
@@ -856,7 +918,7 @@ void ArmCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
 
 void ArmCodegen::genIndex(const ir::Expr &e) {
     genIndexAddr(e.slot, *e.lhs);
-    loadOperand("r2", e.slot->type);
+    loadOperand("r2", e.slot->type, /*mayBeUnaligned=*/e.slot->arraySize == 0);
 }
 
 void ArmCodegen::genAddrOf(const ir::Expr &operand) {
@@ -919,12 +981,12 @@ void ArmCodegen::genCompoundOp(const std::string &op, Type type) {
 // nested codegen that may use r0 through r5), never recomputed
 // afterward, so an indexed/pointer target's own address sub-
 // expression is evaluated exactly once.
-void ArmCodegen::genCompoundThroughR2(const ir::Expr &e) {
+void ArmCodegen::genCompoundThroughR2(const ir::Expr &e, bool mayBeUnaligned) {
     code_ << "    sub sp,sp,4\n    stind sp,r2\n";  // stash address
     genExpr(*e.rhs);                                  // r0 = rhs
     code_ << "    mov r1,r0\n";                        // r1 = rhs
     code_ << "    ldind sp,r2\n    add sp,sp,4\n";      // r2 = address (restored)
-    loadOperand("r2", e.type);                            // r0 = old
+    loadOperand("r2", e.type, mayBeUnaligned);            // r0 = old
     if (e.yieldOld) code_ << "    sub sp,sp,4\n    stind sp,r0\n";  // stash old
     genCompoundOp(e.op, e.type);                           // r0 = new (raw)
     narrowR0To(e.type);
@@ -933,10 +995,10 @@ void ArmCodegen::genCompoundThroughR2(const ir::Expr &e) {
         code_ << "    ldind sp,r0\n    add sp,sp,4\n";         // r0 = old
         code_ << "    mov r1,r0\n";                             // r1 = old, preserved across the store below
         code_ << "    mov r0,r3\n";                              // r0 = new - storeOperand always stores from r0
-        storeOperand("r2", e.type);
+        storeOperand("r2", e.type, mayBeUnaligned);
         code_ << "    mov r0,r1\n";                               // r0 = old (final result)
     } else {
-        storeOperand("r2", e.type);  // r0 already = new
+        storeOperand("r2", e.type, mayBeUnaligned);  // r0 already = new
     }
 }
 

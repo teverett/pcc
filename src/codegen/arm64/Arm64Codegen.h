@@ -166,8 +166,11 @@ class Arm64Codegen : public Backend {
     // Shared tail for CompoundAssign (both its scalar and indexed
     // forms) and CompoundDerefAssign - x2 must already hold the
     // resolved target address on entry (and nothing else live). See
-    // the .cpp's own comment.
-    void genCompoundThroughX2(const ir::Expr &e);
+    // the .cpp's own comment. `mayBeUnaligned` - see loadOperand()'s
+    // own comment; true only when x2 came from dereferencing a plain
+    // pointer value (CompoundDerefAssign, or CompoundAssign indexing
+    // through a pointer variable rather than a real array).
+    void genCompoundThroughX2(const ir::Expr &e, bool mayBeUnaligned = false);
 
     int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
@@ -188,10 +191,33 @@ class Arm64Codegen : public Backend {
     // bit register holds the whole value directly on this target, no
     // multi-word emulation needed), sign- or zero-extending a
     // narrower-than-native-int source per its own signedness.
-    void loadOperand(const std::string &addrReg, Type type);
+    // `mayBeUnaligned` is true wherever `addrReg` is a plain pointer
+    // *value* the program computed at runtime (a dereferenced `int`/
+    // pointer variable, not this backend's own Slot/array-element
+    // address arithmetic, which always keeps a multi-byte access on
+    // its type's own natural boundary by construction): a real A64
+    // LDR/STR transfer wider than a byte takes an Alignment Fault at
+    // an address that isn't aligned to its own width on real AArch64
+    // hardware (unlike every other backend's own native CPU/
+    // simulator, which tolerates it silently), so such a width is
+    // reassembled from individual byte transfers instead (see
+    // loadIntUnaligned()) whenever the address can't be proven
+    // aligned ahead of time.
+    void loadOperand(const std::string &addrReg, Type type, bool mayBeUnaligned = false);
     // Stores w0 (or x0, for a `long long`) into the address in
-    // `addrReg`, truncating to `type`'s own width.
-    void storeOperand(const std::string &addrReg, Type type);
+    // `addrReg`, truncating to `type`'s own width. `mayBeUnaligned` -
+    // see loadOperand()'s own comment.
+    void storeOperand(const std::string &addrReg, Type type, bool mayBeUnaligned = false);
+    // Byte-by-byte reassembly of an `nBytes`-wide (2, 4, or 8) load or
+    // store at a runtime address that might not be aligned to its own
+    // width, using `x3` as the running byte address and `w4`/`x4` (the
+    // same register either name - see this file's own header comment
+    // on why a "w" write already zero-extends into its "x" counterpart)
+    // as the byte just transferred. `destReg`/`srcReg` is always w0/x0
+    // (never x3/x4), and `addrReg` (always x2 at every call site) is
+    // left unchanged.
+    void loadIntUnaligned(const std::string &addrReg, const std::string &destReg, int nBytes);
+    void storeIntUnaligned(const std::string &addrReg, const std::string &srcReg, int nBytes);
     // Re-extends w0 from its own low widthOf(to) bytes, per `to`'s
     // signedness - every Convert between two types no wider than a
     // native int.

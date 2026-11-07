@@ -14,6 +14,9 @@ namespace {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
+// The 8008's real address space tops out at 16KB (14-bit addresses) -
+// see I8008Codegen.h's own header comment.
+constexpr uint32_t kMemTop = 0x4000;
 // Where this backend's own fixed memory cells live - `ac`/`bc`/`cx`/
 // `dx`/`ptr`/`sp`/`fp`/`fnext`/`fpsp`, plus the two real runtime
 // stacks `sp` and `fpsp` point into (see I8008Codegen.h's own header
@@ -23,10 +26,18 @@ namespace {
 // so tests/run_tests.sh's own from-scratch Python 8008 emulator can
 // read the final result straight out of memory at a known address,
 // without needing to parse this assembler's own symbol table at all.
-// Comfortably above where this backend's own generated code and
-// globals could ever reach for an ordinary test program, and
-// comfortably inside the 8008's real 14-bit (16KB) address space.
-constexpr uint32_t kPseudoBase = 0x3000;
+// Anchored a fixed distance *below* `kMemTop` rather than a fixed
+// distance above address 0: every byte below `kPseudoBase` is
+// generated code plus global data, whose combined size grows with
+// the size of the program being compiled, while everything from
+// `kPseudoBase` up to `kMemTop` (pseudo-registers, the wide-value
+// buffers, and the two runtime stacks below - see each one's own
+// comment) stays a small, fixed size regardless of program size.
+// Anchoring near the top instead leaves the whole rest of the address
+// space - comfortably more than this backend's own generated code and
+// globals need for an ordinary test program - available to code and
+// globals instead of being walled off below an arbitrary low address.
+constexpr uint32_t kPseudoBase = kMemTop - 0x400;
 // `wac`/`wbc`/`wtmp`/`wtmp2` - the wide (`long`/`long long`) value
 // buffers (see I8008Codegen.h's own header comment on this
 // mechanism), 8 bytes each, right after the other fixed pseudo-
@@ -109,43 +120,51 @@ namespace {
 std::string byteAt(const char *base, int i) { return i == 0 ? base : (std::string(base) + "+" + std::to_string(i)); }
 }  // namespace
 
-// A one-byte version of pushCell()/popCell(), against the same `sp`
-// stack - used by every wide (`long`/`long long`) helper below (see
-// I8008Codegen.h's own header comment on that whole mechanism), which
-// needs to save/restore individual bytes, not always whole 16-bit
-// words. `incHL()`/`decHL()` already operate in units of 1 on the
-// real H,L pair (not 2 - they're not word-stack-specific at all), so
-// this is exactly pushCell()'s/popCell()'s own body with the second
-// byte's own read/write simply dropped.
-void I8008Codegen::pushByte(const std::string &srcCell) {
-    loadByte(srcCell);
-    code_ << "    mov b, a\n";
+// A one-byte-granular version of pushCell()/popCell(), against the
+// same `sp` stack - used by every wide (`long`/`long long`) helper
+// (see I8008Codegen.h's own header comment on that whole mechanism),
+// which needs to save/restore individual bytes, not always whole
+// 16-bit words. `sp`'s own runtime value stays resident in the real
+// H,L pair for the whole loop instead of being reloaded from the `sp`
+// memory cell before every single byte - the one read/write pair of
+// `sp` itself happens outside the loop entirely. Reading `base`'s own
+// byte `i` still needs `pointAt()`, which repoints H,L away from the
+// running stack-top address, so that address is stashed in D,E across
+// the read and restored right after - cheaper than the full memory
+// round-trip loadHLFromCell()/storeHLToCell() would otherwise cost on
+// every iteration.
+void I8008Codegen::pushWide(const char *base, int nbytes) {
     loadHLFromCell("sp");
-    code_ << "    mov a, b\n    mov m, a\n";
-    incHL();
+    for (int i = 0; i < nbytes; i++) {
+        code_ << "    mov a, l\n    mov d, a\n    mov a, h\n    mov e, a\n";  // d,e = this byte's own stack slot
+        loadByte(byteAt(base, i));                                           // a = source byte (clobbers H,L)
+        code_ << "    mov l, d\n    mov h, e\n";                             // h,l restored to that same slot
+        code_ << "    mov m, a\n";
+        incHL();
+    }
     storeHLToCell("sp");
 }
 
-void I8008Codegen::popByte(const std::string &dstCell) {
-    loadHLFromCell("sp");
-    decHL();
-    code_ << "    mov a, l\n    mov d, a\n";
-    code_ << "    mov a, h\n    mov e, a\n";
-    code_ << "    mov a, m\n    mov b, a\n";
-    pointAt("sp");
-    code_ << "    mov a, d\n    mov m, a\n";
-    pointAt("sp+1");
-    code_ << "    mov a, e\n    mov m, a\n";
-    pointAt(dstCell);
-    code_ << "    mov a, b\n    mov m, a\n";
-}
-
-void I8008Codegen::pushWide(const char *base, int nbytes) {
-    for (int i = 0; i < nbytes; i++) pushByte(byteAt(base, i));
-}
-
+// Same idea as pushWide() above, the other direction: `sp` is read
+// once, dropped by `nbytes` in a single addConstToHL() (not `nbytes`
+// separate decHL() calls) to land on this value's own first (lowest)
+// byte, written back once as the new top-of-stack, then walked
+// forward one byte at a time - each byte's own stack address stashed
+// in D,E across the `storeByte()` that writes it into `base`, for the
+// same reason pushWide() stashes it across its own `loadByte()`.
 void I8008Codegen::popWide(const char *base, int nbytes) {
-    for (int i = nbytes - 1; i >= 0; i--) popByte(byteAt(base, i));
+    loadHLFromCell("sp");
+    addConstToHL(-nbytes);
+    storeHLToCell("sp");  // sp = this value's own first byte's address; storeHLToCell() itself leaves H,L
+                          // pointing at `sp+1` (its own last pointAt()), not at that address - see its own body
+    loadHLFromCell("sp");  // h,l reloaded from `sp`, now genuinely holding that same address again
+    for (int i = 0; i < nbytes; i++) {
+        code_ << "    mov a, l\n    mov d, a\n    mov a, h\n    mov e, a\n";  // d,e = this byte's own stack slot
+        code_ << "    mov a, m\n";                                           // a = the byte at that slot
+        storeByte(byteAt(base, i));                                         // clobbers H,L
+        code_ << "    mov l, d\n    mov h, e\n";                             // h,l restored to that same slot
+        incHL();
+    }
 }
 
 void I8008Codegen::copyWide(const char *dst, const char *src, int nbytes) {
@@ -432,10 +451,18 @@ void I8008Codegen::pointAtSlot(const ir::Slot *slot, int extraByteOffset) {
     addConstToHL(frameByteOffset(slot) + extraByteOffset);
 }
 
+void I8008Codegen::pointAtSlotNextByte(const ir::Slot *slot, int justPointedOffset) {
+    if (slot->kind == ir::SlotKind::Global) {
+        pointAtSlot(slot, justPointedOffset + 1);
+        return;
+    }
+    incHL();
+}
+
 void I8008Codegen::copy16FromSlot(const std::string &dst, const ir::Slot *slot) {
     pointAtSlot(slot, 0);
     code_ << "    mov a, m\n    mov b, a\n";
-    pointAtSlot(slot, 1);
+    pointAtSlotNextByte(slot, 0);
     code_ << "    mov a, m\n    mov c, a\n";
     pointAt(dst);
     code_ << "    mov a, b\n    mov m, a\n";
@@ -450,14 +477,14 @@ void I8008Codegen::copy16ToSlot(const ir::Slot *slot, const std::string &src) {
     code_ << "    mov a, m\n    mov c, a\n";
     pointAtSlot(slot, 0);
     code_ << "    mov a, b\n    mov m, a\n";
-    pointAtSlot(slot, 1);
+    pointAtSlotNextByte(slot, 0);
     code_ << "    mov a, c\n    mov m, a\n";
 }
 
 void I8008Codegen::storeImmediate16ToSlot(const ir::Slot *slot, int elemOffset, const std::string &exprText) {
     pointAtSlot(slot, elemOffset);
     code_ << "    mvi a, " << exprText << "\n    mov m, a\n";
-    pointAtSlot(slot, elemOffset + 1);
+    pointAtSlotNextByte(slot, elemOffset);
     code_ << "    mvihi a, " << exprText << "\n    mov m, a\n";
 }
 
@@ -481,7 +508,7 @@ void I8008Codegen::popIntoSlot(const ir::Slot *slot) {
         code_ << "    mov a, e\n    mov m, a\n";
         pointAtSlot(slot, 0);
         code_ << "    mov a, b\n    mov m, a\n";
-        pointAtSlot(slot, 1);
+        pointAtSlotNextByte(slot, 0);
         code_ << "    mov a, c\n    mov m, a\n";
         return;
     }
@@ -603,6 +630,13 @@ std::string I8008Codegen::generate(const ir::Program &prog, bool objectMode) {
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
 
+    // Every shared `cal`-able subroutine any `/`/`%` on a `long`/`long
+    // long` asked for (see getWideDivModSubroutine()'s own comment) -
+    // only ever reached via `cal`, never fallen into, so it's safe to
+    // place these after every real function's own code.
+    for (const std::string &body : wideDivModSubroutineBodies_) code_ << body;
+    for (const std::string &body : wideEqualitySubroutineBodies_) code_ << body;
+
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
         // An external global (real separate compilation - see IR.h's
@@ -659,7 +693,9 @@ void I8008Codegen::genFunction(const ir::FunctionBody &fn) {
     copy16("fp", "fnext");
     if (totalBytes > 0) addConstToCell("fnext", totalBytes);
     for (int i = currentParamCount_ - 1; i >= 0; i--) popIntoSlot(fn.func->params[static_cast<size_t>(i)]);
+    currentEpilogueLabel_ = newLabel();
     genStmt(*fn.body);
+    code_ << currentEpilogueLabel_ << ":\n";
     emitEpilogue();
     code_ << "    ret\n\n";
 }
@@ -713,8 +749,7 @@ void I8008Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
-            emitEpilogue();
-            code_ << "    ret\n";
+            code_ << "    jmp " << currentEpilogueLabel_ << "\n";
             return;
         }
         case ir::StmtKind::LocalDecl: {
@@ -1023,11 +1058,13 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Intrinsic: {
-            err(e.line,
-                "the 8008 has no interrupt enable/disable instruction at all (interrupts work by an external "
-                "signal forcing an instruction onto the bus, not a software EI/DI the way every later chip in "
-                "this family has one) - _ion()/_iof() aren't supported on this target, see I8008Codegen.h's own "
-                "header comment");
+            // The 8008 has no interrupt enable/disable instruction at all
+            // (interrupts work by an external signal forcing an instruction
+            // onto the bus, not a software EI/DI the way every later chip in
+            // this family has one), so there is nothing here for ion()/iof()
+            // to meaningfully affect. Treated as a no-op, same choice as
+            // MipsCodegen.cpp/PowerPCCodegen.cpp/etc.'s own Intrinsic case.
+            (void)e;
             return;
         }
         case ir::ExprKind::Convert: {
@@ -1104,7 +1141,7 @@ void I8008Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
         // pointAtSlot() handles all three).
         pointAtSlot(slot, 0);
         code_ << "    mov a, m\n    mov b, a\n";
-        pointAtSlot(slot, 1);
+        pointAtSlotNextByte(slot, 0);
         code_ << "    mov a, m\n    mov c, a\n";
     }
     pointAt("ptr");
@@ -1377,12 +1414,18 @@ void I8008Codegen::genWideBitwise(const ir::Expr &lhs, const ir::Expr &rhs, cons
     }
 }
 
-void I8008Codegen::emitWideEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, int words, bool wantEqual) {
+std::string I8008Codegen::getWideEqualitySubroutine(int words) {
+    if (auto it = wideEqualitySubroutineLabel_.find(words); it != wideEqualitySubroutineLabel_.end()) {
+        return it->second;
+    }
+    std::string label = newLabel();
+    wideEqualitySubroutineLabel_.emplace(words, label);
+
+    std::ostringstream callSiteCode;
+    std::swap(callSiteCode, code_);
+    code_ << label << ":\n";
+
     int n = 2 * words;
-    genExpr(lhs);
-    pushWide("wac", n);
-    genExpr(rhs);
-    popWide("wbc", n);  // wbc = lhs, wac = rhs
     pointAt(byteAt("wbc", 0));
     code_ << "    mov a, m\n";
     pointAt(byteAt("wac", 0));
@@ -1397,6 +1440,19 @@ void I8008Codegen::emitWideEqualityCompare(const ir::Expr &lhs, const ir::Expr &
         code_ << "    or m\n";
         storeByte("dx");
     }
+    code_ << "    ret\n\n";
+    wideEqualitySubroutineBodies_.push_back(code_.str());
+    std::swap(callSiteCode, code_);
+    return label;
+}
+
+void I8008Codegen::emitWideEqualityCompare(const ir::Expr &lhs, const ir::Expr &rhs, int words, bool wantEqual) {
+    int n = 2 * words;
+    genExpr(lhs);
+    pushWide("wac", n);
+    genExpr(rhs);
+    popWide("wbc", n);  // wbc = lhs, wac = rhs
+    code_ << "    cal " << getWideEqualitySubroutine(words) << "\n";
     std::string Ltrue = newLabel(), Ldone = newLabel();
     pointAt("dx");
     code_ << "    mov a, m\n    and a\n";
@@ -1554,8 +1610,25 @@ void I8008Codegen::genWideMul(const ir::Expr &lhs, const ir::Expr &rhs, int word
     copyWide("wac", "wtmp", n);
 }
 
-void I8008Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned,
-                                  int words) {
+std::string I8008Codegen::getWideDivModSubroutine(bool isUnsigned, int words) {
+    auto key = std::make_pair(isUnsigned, words);
+    if (auto it = wideDivModSubroutineLabel_.find(key); it != wideDivModSubroutineLabel_.end()) {
+        return it->second;
+    }
+    std::string label = newLabel();
+    wideDivModSubroutineLabel_.emplace(key, label);
+
+    // Builds this subroutine's own body into a fresh stream instead of
+    // `code_` directly, so it can be queued (into
+    // wideDivModSubroutineBodies_) rather than landing wherever this
+    // particular `/`/`%` call site happens to sit - every pointAt()/
+    // loadByte()/etc. helper this body calls still reaches it through
+    // the `code_` member exactly as usual, since the two streams are
+    // simply swapped for the duration.
+    std::ostringstream callSiteCode;
+    std::swap(callSiteCode, code_);
+    code_ << label << ":\n";
+
     int n = 2 * words;
     auto isNegByte = [&](const std::string &byteCell, const std::string &dstCell) {
         pointAt(byteCell);
@@ -1577,10 +1650,10 @@ void I8008Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool 
         negateWideBuffer(buf, n);
         code_ << Lskip << ":\n";
     };
-    genExpr(lhs);
-    pushWide("wac", n);
-    genExpr(rhs);
-    popWide("wbc", n);  // wbc = dividend, wac = divisor
+    // On entry, `wbc` already holds the dividend and `wac` the
+    // divisor - see getWideDivModSubroutine()'s own comment; the
+    // call site (genWideDivMod()) is what actually evaluates and
+    // places them there before `cal`-ing this label.
     if (!isUnsigned) {
         isNegByte(byteAt("wbc", n - 1), "dx");
         isNegByte(byteAt("wac", n - 1), "dx+1");
@@ -1659,6 +1732,21 @@ void I8008Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool 
         code_ << Lskip << ":\n";
         negateIfFlag("dx", "wtmp");
     }
+    code_ << "    ret\n\n";
+    wideDivModSubroutineBodies_.push_back(code_.str());
+    std::swap(callSiteCode, code_);
+    return label;
+}
+
+void I8008Codegen::genWideDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned,
+                                  int words) {
+    int n = 2 * words;
+    genExpr(lhs);
+    pushWide("wac", n);
+    genExpr(rhs);
+    popWide("wbc", n);  // wbc = dividend, wac = divisor
+    std::string label = getWideDivModSubroutine(isUnsigned, words);
+    code_ << "    cal " << label << "\n";
     copyWide("wac", wantRemainder ? "wtmp" : "wtmp2", n);
 }
 

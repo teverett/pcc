@@ -8,5 +8,7 @@ tree and let the user review and commit them themselves.
 * Do not create boot loaders or boot disks
 * Do not write historical documentation explaining changes or bug fixes. Only write documentation that explains how code works.
 * Remove any history or bug-fix comments from code. Only leave comments that explain how the code works.
+* For every bug fix we make in pcc add a minimum of two tests to verify it
+
 
 
