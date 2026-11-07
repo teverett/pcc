@@ -22,7 +22,7 @@ namespace pcc {
 class UnusedGlobalElimination : public Optimizer {
    public:
     std::string name() const override { return "unused-global-elimination"; }
-    bool run(ir::Program &prog) const override;
+    bool run(ir::Program &prog, const std::string &sourceFile) const override;
 };
 
 }  // namespace pcc

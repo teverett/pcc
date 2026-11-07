@@ -33,7 +33,7 @@ namespace pcc {
 class LocalCSE : public Optimizer {
    public:
     std::string name() const override { return "local-cse"; }
-    bool run(ir::Program &prog) const override;
+    bool run(ir::Program &prog, const std::string &sourceFile) const override;
 };
 
 }  // namespace pcc

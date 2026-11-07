@@ -49,23 +49,28 @@ std::optional<long> evalBinary(const std::string &op, long a, long b) {
 }
 
 // Folds children first (bottom-up), then tries to fold `e` itself.
-void foldExpr(ir::ExprPtr &e, bool &changed) {
+void foldExpr(ir::ExprPtr &e, bool &changed, const std::string &sourceFile) {
     if (!e) return;
-    foldExpr(e->lhs, changed);
-    foldExpr(e->rhs, changed);
-    for (auto &arg : e->args) foldExpr(arg, changed);
+    foldExpr(e->lhs, changed, sourceFile);
+    foldExpr(e->rhs, changed, sourceFile);
+    for (auto &arg : e->args) foldExpr(arg, changed, sourceFile);
 
     if (e->kind == ir::ExprKind::Unary && e->rhs->kind == ir::ExprKind::IntLit) {
         if (std::optional<long> v = evalUnary(e->op, e->rhs->intValue)) {
-            std::cerr << "constant-folding: line " << e->line << ": folded `" << e->op
-                       << e->rhs->intValue << "` to `" << *v << "`\n";
+            // Unlike the Binary case below, the printed value often doesn't
+            // change (e.g. `-64` is parsed as Unary("-", IntLit(64)), whose
+            // fold prints as "-64" both before and after) - what's actually
+            // collapsing here is two IR nodes into one, not the value, so
+            // say that explicitly instead of a misleading "folded X to X".
+            std::cerr << sourceFile << ": constant-folding: line " << e->line << ": collapsed unary `" << e->op
+                       << e->rhs->intValue << "` into the single literal `" << *v << "`\n";
             e = makeIntLit(*v, e->line, e->type);
             changed = true;
         }
     } else if (e->kind == ir::ExprKind::Binary && e->lhs->kind == ir::ExprKind::IntLit &&
                e->rhs->kind == ir::ExprKind::IntLit) {
         if (std::optional<long> v = evalBinary(e->op, e->lhs->intValue, e->rhs->intValue)) {
-            std::cerr << "constant-folding: line " << e->line << ": folded `" << e->lhs->intValue
+            std::cerr << sourceFile << ": constant-folding: line " << e->line << ": folded `" << e->lhs->intValue
                        << " " << e->op << " " << e->rhs->intValue << "` to `" << *v << "`\n";
             e = makeIntLit(*v, e->line, e->type);
             changed = true;
@@ -73,26 +78,26 @@ void foldExpr(ir::ExprPtr &e, bool &changed) {
     }
 }
 
-void foldStmt(ir::Stmt *s, bool &changed) {
+void foldStmt(ir::Stmt *s, bool &changed, const std::string &sourceFile) {
     if (!s) return;
     switch (s->kind) {
         case ir::StmtKind::Block:
-            for (auto &child : s->body) foldStmt(child.get(), changed);
+            for (auto &child : s->body) foldStmt(child.get(), changed, sourceFile);
             return;
         case ir::StmtKind::If:
-            foldExpr(s->cond, changed);
-            foldStmt(s->thenStmt.get(), changed);
-            foldStmt(s->elseStmt.get(), changed);
+            foldExpr(s->cond, changed, sourceFile);
+            foldStmt(s->thenStmt.get(), changed, sourceFile);
+            foldStmt(s->elseStmt.get(), changed, sourceFile);
             return;
         case ir::StmtKind::While:
-            foldExpr(s->cond, changed);
-            foldStmt(s->loopBody.get(), changed);
-            foldStmt(s->postStmt.get(), changed);
+            foldExpr(s->cond, changed, sourceFile);
+            foldStmt(s->loopBody.get(), changed, sourceFile);
+            foldStmt(s->postStmt.get(), changed, sourceFile);
             return;
         case ir::StmtKind::Return:
         case ir::StmtKind::LocalDecl:
         case ir::StmtKind::ExprStmt:
-            foldExpr(s->initOrReturnOrExpr, changed);
+            foldExpr(s->initOrReturnOrExpr, changed, sourceFile);
             return;
         case ir::StmtKind::Break:
         case ir::StmtKind::Continue:
@@ -104,9 +109,9 @@ void foldStmt(ir::Stmt *s, bool &changed) {
 
 }  // namespace
 
-bool ConstantFolding::run(ir::Program &prog) const {
+bool ConstantFolding::run(ir::Program &prog, const std::string &sourceFile) const {
     bool changed = false;
-    for (auto &fb : prog.functionBodies) foldStmt(fb.body.get(), changed);
+    for (auto &fb : prog.functionBodies) foldStmt(fb.body.get(), changed, sourceFile);
     return changed;
 }
 

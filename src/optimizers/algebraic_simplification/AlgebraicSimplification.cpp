@@ -76,11 +76,11 @@ ir::ExprPtr applyIdentityRewrite(const std::string &op, ir::ExprPtr nonLit, long
 }
 
 // Simplifies children first, then tries to rewrite `e` itself in place.
-void simplifyExpr(ir::ExprPtr &e, bool &changed) {
+void simplifyExpr(ir::ExprPtr &e, bool &changed, const std::string &sourceFile) {
     if (!e) return;
-    simplifyExpr(e->lhs, changed);
-    simplifyExpr(e->rhs, changed);
-    for (auto &arg : e->args) simplifyExpr(arg, changed);
+    simplifyExpr(e->lhs, changed, sourceFile);
+    simplifyExpr(e->rhs, changed, sourceFile);
+    for (auto &arg : e->args) simplifyExpr(arg, changed, sourceFile);
 
     if (e->kind != ir::ExprKind::Binary) return;
     bool lhsLit = e->lhs->kind == ir::ExprKind::IntLit;
@@ -90,7 +90,7 @@ void simplifyExpr(ir::ExprPtr &e, bool &changed) {
     long litVal = rhsLit ? e->rhs->intValue : e->lhs->intValue;
     if (!hasIdentityRewrite(e->op, litVal, /*literalWasLhs=*/lhsLit)) return;
 
-    std::cerr << "algebraic-simplification: line " << e->line << ": rewrote `"
+    std::cerr << sourceFile << ": algebraic-simplification: line " << e->line << ": rewrote `"
                << (lhsLit ? std::to_string(litVal) + " " + e->op + " <expr>"
                           : "<expr> " + e->op + " " + std::to_string(litVal))
                << "`\n";
@@ -101,26 +101,26 @@ void simplifyExpr(ir::ExprPtr &e, bool &changed) {
     changed = true;
 }
 
-void simplifyStmt(ir::Stmt *s, bool &changed) {
+void simplifyStmt(ir::Stmt *s, bool &changed, const std::string &sourceFile) {
     if (!s) return;
     switch (s->kind) {
         case ir::StmtKind::Block:
-            for (auto &child : s->body) simplifyStmt(child.get(), changed);
+            for (auto &child : s->body) simplifyStmt(child.get(), changed, sourceFile);
             return;
         case ir::StmtKind::If:
-            simplifyExpr(s->cond, changed);
-            simplifyStmt(s->thenStmt.get(), changed);
-            simplifyStmt(s->elseStmt.get(), changed);
+            simplifyExpr(s->cond, changed, sourceFile);
+            simplifyStmt(s->thenStmt.get(), changed, sourceFile);
+            simplifyStmt(s->elseStmt.get(), changed, sourceFile);
             return;
         case ir::StmtKind::While:
-            simplifyExpr(s->cond, changed);
-            simplifyStmt(s->loopBody.get(), changed);
-            simplifyStmt(s->postStmt.get(), changed);
+            simplifyExpr(s->cond, changed, sourceFile);
+            simplifyStmt(s->loopBody.get(), changed, sourceFile);
+            simplifyStmt(s->postStmt.get(), changed, sourceFile);
             return;
         case ir::StmtKind::Return:
         case ir::StmtKind::LocalDecl:
         case ir::StmtKind::ExprStmt:
-            simplifyExpr(s->initOrReturnOrExpr, changed);
+            simplifyExpr(s->initOrReturnOrExpr, changed, sourceFile);
             return;
         case ir::StmtKind::Break:
         case ir::StmtKind::Continue:
@@ -132,9 +132,9 @@ void simplifyStmt(ir::Stmt *s, bool &changed) {
 
 }  // namespace
 
-bool AlgebraicSimplification::run(ir::Program &prog) const {
+bool AlgebraicSimplification::run(ir::Program &prog, const std::string &sourceFile) const {
     bool changed = false;
-    for (auto &fb : prog.functionBodies) simplifyStmt(fb.body.get(), changed);
+    for (auto &fb : prog.functionBodies) simplifyStmt(fb.body.get(), changed, sourceFile);
     return changed;
 }
 

@@ -37,6 +37,7 @@
 #include "optimizers/algebraic_simplification/AlgebraicSimplification.h"
 #include "optimizers/constant_folding/ConstantFolding.h"
 #include "optimizers/dead_code_elimination/DeadCodeElimination.h"
+#include "optimizers/identical_code_folding/IdenticalCodeFolding.h"
 #include "optimizers/local_cse/LocalCSE.h"
 #include "optimizers/unused_global_elimination/UnusedGlobalElimination.h"
 #include "preprocessor/Preprocessor.h"
@@ -258,25 +259,29 @@ std::string compileOneFile(const std::string &srcPath, const std::map<std::strin
         // Constant folding first, so DeadCodeElimination can reason about
         // initializers it collapses to a side-effect-free constant.
         pcc::ConstantFolding cf;
-        cf.run(irProg);
+        cf.run(irProg, srcPath);
         // Strength reduction only rewrites an op whose other operand isn't
         // a literal, so ordering after constant folding loses nothing.
         pcc::AlgebraicSimplification algsimp;
-        algsimp.run(irProg);
+        algsimp.run(irProg, srcPath);
         // Local CSE after the above so it matches each pass's canonicalized
         // form (e.g. a strength-reduced `x << 1`, not the original `x * 2`).
         pcc::LocalCSE cse;
-        cse.run(irProg);
+        cse.run(irProg, srcPath);
         pcc::DeadCodeElimination dce;
-        dce.run(irProg);
+        dce.run(irProg, srcPath);
         // LocalCSE may have introduced new locals after buildIR() already
         // assigned frame offsets once.
         pcc::recomputeFrameLayout(irProg, backend.typeWidths());
-        // Only when this compile sees the entire program, and after DCE so
-        // a global touched only from now-unreachable code looks unused too.
+        // Only when this compile sees the entire program: dropping a
+        // function/global's own definition is only safe once every
+        // reference to it is known, which --format=coff's separate
+        // compilation doesn't guarantee.
         if (!allowExternal) {
+            pcc::IdenticalCodeFolding icf;
+            icf.run(irProg, srcPath);
             pcc::UnusedGlobalElimination uge;
-            uge.run(irProg);
+            uge.run(irProg, srcPath);
         }
     }
 

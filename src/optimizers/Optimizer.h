@@ -16,7 +16,9 @@ class Optimizer {
 
     // Mutates `prog` in place; returns true if anything changed, so a
     // driver re-running passes to a fixpoint knows whether to continue.
-    virtual bool run(ir::Program &prog) const = 0;
+    // `sourceFile` is used only to prefix this pass's own diagnostic
+    // output, so callers that don't care about diagnostics may pass "".
+    virtual bool run(ir::Program &prog, const std::string &sourceFile) const = 0;
 };
 
 }  // namespace pcc

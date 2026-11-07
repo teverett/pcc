@@ -15,7 +15,7 @@ namespace pcc {
 class DeadCodeElimination : public Optimizer {
    public:
     std::string name() const override { return "dce"; }
-    bool run(ir::Program &prog) const override;
+    bool run(ir::Program &prog, const std::string &sourceFile) const override;
 };
 
 }  // namespace pcc
