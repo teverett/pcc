@@ -17,6 +17,12 @@ tree and let the user review and commit them themselves.
 * Documentation in code should be limited to explaining what a method or fucntion does and should only be written if
   it is non-obvious
 
+## CI
+
+* Every github project should have a dependabot configuration
+* Every githi ub project should have a CI configuration that runs tests on every push and pull request
+* The CI configuration should run on Windows, Linux, and MacOS
+
 ## Lumpy
 
 * Sync to lumpy at the end of every turn

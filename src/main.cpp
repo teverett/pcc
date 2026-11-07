@@ -36,7 +36,9 @@
 #include "ir/IRValidator.h"
 #include "optimizers/algebraic_simplification/AlgebraicSimplification.h"
 #include "optimizers/constant_folding/ConstantFolding.h"
+#include "optimizers/constant_propagation/ConstantPropagation.h"
 #include "optimizers/dead_code_elimination/DeadCodeElimination.h"
+#include "optimizers/dead_store_elimination/DeadStoreElimination.h"
 #include "optimizers/identical_code_folding/IdenticalCodeFolding.h"
 #include "optimizers/local_cse/LocalCSE.h"
 #include "optimizers/unused_global_elimination/UnusedGlobalElimination.h"
@@ -256,7 +258,14 @@ std::string compileOneFile(const std::string &srcPath, const std::map<std::strin
     pcc::ir::Program irProg = pcc::buildIR(prog, backend.typeWidths(), allowExternal);
 
     if (optimize) {
-        // Constant folding first, so DeadCodeElimination can reason about
+        // Constant propagation first: substituting a Var read with its
+        // known literal value both feeds ConstantFolding new
+        // literal-literal expressions to fold and, once a local's only
+        // reads are gone, feeds DeadCodeElimination a now-unused
+        // declaration to drop.
+        pcc::ConstantPropagation cprop;
+        cprop.run(irProg, srcPath);
+        // Constant folding next, so DeadCodeElimination can reason about
         // initializers it collapses to a side-effect-free constant.
         pcc::ConstantFolding cf;
         cf.run(irProg, srcPath);
@@ -268,6 +277,10 @@ std::string compileOneFile(const std::string &srcPath, const std::map<std::strin
         // form (e.g. a strength-reduced `x << 1`, not the original `x * 2`).
         pcc::LocalCSE cse;
         cse.run(irProg, srcPath);
+        // Before DeadCodeElimination, so a LocalDecl this pass strips down
+        // to a bare, unread declaration looks unused to it too.
+        pcc::DeadStoreElimination dse;
+        dse.run(irProg, srcPath);
         pcc::DeadCodeElimination dce;
         dce.run(irProg, srcPath);
         // LocalCSE may have introduced new locals after buildIR() already
