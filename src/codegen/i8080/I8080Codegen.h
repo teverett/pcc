@@ -188,7 +188,7 @@ class I8080Codegen : public Backend {
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
-    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
+    void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
     void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
     void genIndex(const ir::Expr &e);         // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]

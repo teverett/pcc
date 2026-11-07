@@ -1390,7 +1390,7 @@ void Z80Codegen::genBinary(const ir::Expr &e) {
         if (wide) {
             genWideDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/op == "%", words);
         } else {
-            genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/op == "%");
+            genDivMod(*e.lhs, *e.rhs, /*wantRemainder=*/op == "%", isUnsigned);
         }
         return;
     }
@@ -1497,14 +1497,46 @@ void Z80Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
 // bc?" (the carry flag) and computes the committed subtraction
 // result in one instruction - no separate tentative-then-commit byte
 // reconstruction needed the way the 8080 backend's own version
-// needs (see I8080Codegen.cpp). Only verified against non-negative
-// operands.
-void Z80Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder) {
+// needs (see I8080Codegen.cpp). The core loop only handles non-
+// negative operands, so a signed operand is divided via its absolute
+// value instead: `ptr`'s own low/high byte holds the dividend's/
+// divisor's original sign (0/1) while the unsigned core runs, then
+// the quotient's sign (1 iff those two signs differed) and the
+// remainder's sign (always the dividend's own original sign) are
+// restored on its result afterward.
+void Z80Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);                                // ac = dividend
     code_ << "    ld hl, [ac]\n    push hl\n";  // saved across evaluating the divisor
     genExpr(rhs);
     code_ << "    pop hl\n    ld [dx], hl\n";  // dx = dividend (restored only now)
     copy16("_bc", "ac");                          // bc = divisor
+    auto isNeg = [&](const char *cell, const char *dst) {
+        code_ << "    ld a, [" << cell << "+1]\n    and 128\n";
+        std::string Lnonneg = newLabel(), Ldone = newLabel();
+        code_ << "    jp z, " << Lnonneg << "\n";
+        code_ << "    ld a, 1\n    ld [" << dst << "], a\n    jp " << Ldone << "\n";
+        code_ << Lnonneg << ":\n    ld a, 0\n    ld [" << dst << "], a\n";
+        code_ << Ldone << ":\n";
+    };
+    auto negate16 = [&](const char *cell) {
+        code_ << "    ld hl, [" << cell << "]\n";
+        code_ << "    xor a\n    sub l\n    ld l, a\n";
+        code_ << "    ld a, 0\n    sbc a, h\n    ld h, a\n";
+        code_ << "    ld [" << cell << "], hl\n";
+    };
+    auto negateIf = [&](const char *flagCell, const char *cell) {
+        code_ << "    ld a, [" << flagCell << "]\n";
+        std::string Lskip = newLabel();
+        code_ << "    or a\n    jp z, " << Lskip << "\n";
+        negate16(cell);
+        code_ << Lskip << ":\n";
+    };
+    if (!isUnsigned) {
+        isNeg("dx", "ptr");
+        isNeg("_bc", "ptr+1");
+        negateIf("ptr", "dx");
+        negateIf("ptr+1", "_bc");
+    }
     code_ << "    ld hl, 0\n    ld [ac], hl\n";
     std::string Lloop = newLabel(), Ldone = newLabel();
     code_ << Lloop << ":\n";
@@ -1516,6 +1548,17 @@ void Z80Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRe
     code_ << "    ld hl, [ac]\n    inc hl\n    ld [ac], hl\n";
     code_ << "    jp " << Lloop << "\n";
     code_ << Ldone << ":\n";
+    if (!isUnsigned) {
+        // Quotient is negative iff the two original signs differed;
+        // the remainder always takes the dividend's own original
+        // sign (same rule as every other backend's signed div/mod).
+        code_ << "    ld a, [ptr]\n    ld b, a\n    ld a, [ptr+1]\n    xor b\n";
+        std::string Lskip = newLabel();
+        code_ << "    jp z, " << Lskip << "\n";
+        negate16("ac");
+        code_ << Lskip << ":\n";
+        negateIf("ptr", "dx");
+    }
     if (wantRemainder) copy16("ac", "dx");
 }
 
