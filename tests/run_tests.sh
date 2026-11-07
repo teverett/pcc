@@ -911,18 +911,24 @@ check_powerpc() {
 # check_armv7a()/check_68000() above use via qemu's PC-forcing
 # `loader` device. That trick doesn't reach a real Cortex-M board
 # here though (confirmed directly: `-M none` refuses Cortex-M CPUs
-# outright, and a real board like `lm3s6965evb` boots through its own
-# hardwired vector-table fetch before any forced PC ever takes
-# effect, landing in a HardFault lockup) - Cortex-M silicon always
-# reads its initial SP/PC from a real vector table at address 0 on
-# reset, no way around it. So this harness builds that minimal 8-byte
-# table itself (word 0: an arbitrary initial SP into lm3s6965evb's own
-# SRAM at 0x20000000; word 1: `kBaseAddress | 1`, Thumb bit set) and
-# loads it at address 0 alongside the program at `kBaseAddress`
-# (0x1000 - see ArmMCodegen.cpp's own `kBaseAddress`), letting the
-# board's real reset sequence carry it from there, same as a genuine
-# Cortex-M chip would. The program's own result sits in `r0` the
-# instant execution reaches its `halt: b halt` spin loop.
+# outright) - Cortex-M silicon always reads its initial SP/PC from a
+# real vector table at address 0 on reset, no way around it. So this
+# harness builds that minimal 8-byte table itself (word 0: an
+# arbitrary initial SP into this board's own SRAM at 0x20000000;
+# word 1: `kBaseAddress | 1`, Thumb bit set) and loads it at address 0
+# alongside the program at `kBaseAddress` (0x1000 - see
+# ArmMCodegen.cpp's own `kBaseAddress`), letting the board's real
+# reset sequence carry it from there, same as a genuine Cortex-M chip
+# would. `-M mps2-an385` specifically (not the more "ordinary"-looking
+# `lm3s6965evb`, confirmed directly): that board's own address 0 is
+# real flash, read-only to an ordinary store the same way it would be
+# on genuine silicon - every global write in the program silently did
+# nothing, reading back as 0 forever after. `mps2-an385`'s own address
+# 0 is modeled as plain writable block RAM instead (an FPGA eval
+# board's "boot memory" is physically just RAM, not real flash), so a
+# global actually stores and loads back correctly. The program's own
+# result sits in `r0` the instant execution reaches its `halt: b
+# halt` spin loop.
 check_cortex_m3() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
@@ -951,7 +957,7 @@ PY
     local port=$((28000 + ($$ % 10000) + qemu_port_counter))
     local outfile="$tmpdir/$name.out"
 
-    qemu-system-arm -M lm3s6965evb \
+    qemu-system-arm -M mps2-an385 \
         -device "loader,file=$vecfile,addr=0x0" \
         -device "loader,file=$binfile,addr=0x1000" \
         -monitor "tcp:127.0.0.1:$port,server,nowait" -nographic -serial none -display none -no-reboot \
@@ -2039,9 +2045,6 @@ is_known_unsupported() {
         powerpc:types_longlong_divmod_repeated.c) return 0 ;; # same
         powerpc:types_params_return.c) return 0 ;;          # same symptom as r10000's own entry above -
                                                              # not yet root-caused
-        cortex-m3:arrays.c) return 0 ;;                     # wrong result - not yet root-caused
-        cortex-m3:compound_assign_inc_dec_ternary.c) return 0 ;; # wrong result - not yet root-caused
-        cortex-m3:func_ptr_call.c) return 0 ;;              # hangs rather than halting - not yet root-caused
         *) return 1 ;;
     esac
 }

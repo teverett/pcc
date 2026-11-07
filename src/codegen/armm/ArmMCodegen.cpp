@@ -44,8 +44,16 @@ std::string ArmMCodegen::arrayElemText(const ir::ArrayInitElem &e, Type elemType
         return std::to_string(static_cast<int32_t>(static_cast<uint32_t>(e.value)));
     }
     // A symbol element always means a plain native-int-width address
-    // (the dispatch-table idiom - see AST.h's ArrayInitElem).
-    return e.slot ? label(e.slot) : label(e.func);
+    // (the dispatch-table idiom - see AST.h's ArrayInitElem). A
+    // function's own address needs the same Thumb interworking bit
+    // genAddrOf()'s own `ExprKind::Func` case sets on `&f` - calling
+    // through this slot later means `BLX (register)` on whatever
+    // value sits here, which raises a UsageFault if bit 0 isn't 1 (no
+    // ARM state to switch to on M-profile, Thumb is the only one) -
+    // a plain data Slot's own address is never called through, so it
+    // never needs this.
+    if (e.slot) return label(e.slot);
+    return label(e.func) + "+1";
 }
 
 void ArmMCodegen::declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType) {
@@ -113,7 +121,15 @@ void ArmMCodegen::loadArrayInitElem(const std::string &reg, const ir::ArrayInitE
         loadImm32(reg, static_cast<uint32_t>(e.value));
         return;
     }
-    loadAddress(reg, e.slot ? label(e.slot) : label(e.func));
+    if (e.slot) {
+        loadAddress(reg, label(e.slot));
+        return;
+    }
+    // Same Thumb-interworking-bit requirement as
+    // arrayElemText()'s own identical comment, for a Local array's
+    // literal initializer instead of a Global's.
+    loadAddress(reg, label(e.func));
+    code_ << "    adds " << reg << "," << reg << ",1\n";
 }
 
 std::string ArmMCodegen::generate(const ir::Program &prog, bool objectMode) {
