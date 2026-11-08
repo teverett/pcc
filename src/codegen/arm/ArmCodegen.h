@@ -163,10 +163,10 @@ class ArmCodegen : public Backend {
     // Loads a Local or Param's frame-relative effective address into
     // `reg`. Each function's prologue pushes the caller's `fp` and `lr`,
     // then points `fp` at that saved pair, so a Param's address is
-    // `fp+8+4*paramIndex` and a Local's is `fp-4*frameOffset`. `elemIndex`
-    // (a Local array's compile-time element index) adds further words to
-    // a Local's offset, since a Local array's addresses decrease as its
-    // index increases, the mirror of a Global array's increasing layout.
+    // `fp+8+4*paramIndex` and a Local's is its lowest address (see
+    // ir::localLowOffset()). For a Local array, `elemIndex` (a compile-time
+    // index) counts elements upward from there, the same direction as a
+    // Global array's.
     void loadFrameAddr(const std::string &reg, const ir::Slot *slot, int elemIndex = 0);
 
     // Adds (`isAdd`) or subtracts `offsetBytes` from `reg` in place.

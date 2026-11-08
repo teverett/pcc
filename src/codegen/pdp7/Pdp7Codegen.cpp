@@ -379,7 +379,7 @@ void Pdp7Codegen::emitLoadSlotAddress(const ir::Slot *slot) {
         return;
     }
     long offset = (slot->kind == ir::SlotKind::Param) ? static_cast<long>(slot->frameOffset)
-                                                       : -static_cast<long>(slot->frameOffset);
+                                                       : -localBaseOffset(slot);
     code_ << "   lac __fp\n";
     code_ << "   tad " << literalLabel(offset) << "\n";
 }
@@ -425,10 +425,15 @@ void Pdp7Codegen::emitSlotBaseAddress(const ir::Slot *slot) {
     }
 }
 
+// A Local's address is its lowest word (see ir::localLowOffset()), and
+// its words (an array's elements, a wide value's low word first) run
+// upward from there, the same direction as a Global's.
+long Pdp7Codegen::localBaseOffset(const ir::Slot *slot) { return ir::localLowOffset(*slot, typeWidths()); }
+
 void Pdp7Codegen::emitLocalArrayInit(const ir::Slot *slot) {
     // Each element occupies `elemW` consecutive words, word 0 at the
     // lowest address: element i's word j sits at
-    // `__fp-(frameOffset+i*elemW-j)`.
+    // `__fp-localBaseOffset(slot)+i*elemW+j`.
     int elemW = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
         const ir::ArrayInitElem &elem = slot->arrayInit[i];
@@ -447,7 +452,7 @@ void Pdp7Codegen::emitLocalArrayInit(const ir::Slot *slot) {
             }
             code_ << "   dac __stmp\n";
             code_ << "   lac __fp\n";
-            long offset = -(static_cast<long>(slot->frameOffset) + static_cast<long>(i) * elemW - j);
+            long offset = -localBaseOffset(slot) + static_cast<long>(i) * elemW + j;
             code_ << "   tad " << literalLabel(offset) << "\n";
             code_ << "   dac __addr\n";
             code_ << "   lac __stmp\n";
@@ -1417,17 +1422,12 @@ void Pdp7Codegen::computeElementAddress(const ir::Slot *slot, const ir::Expr &id
     pushAC();
 }
 
-// A Local array's elements sit at decreasing addresses as the index
-// increases (opposite a Global array's layout), so its scaled index is
-// subtracted from the base rather than added. The base address never
-// calls or touches `__stmp2`, so the index waits there while it's
-// computed.
+// The base address never calls or touches `__stmp2`, so the scaled
+// index waits there while it's computed.
 void Pdp7Codegen::computeElementAddressAC(const ir::Slot *slot, const ir::Expr &idxExpr) {
-    bool descending = slot->arraySize > 0 && slot->kind == ir::SlotKind::Local;
     int elemW = widthOfType(slot->type);
     if (idxExpr.kind == ir::ExprKind::IntLit) {
         long offset = idxExpr.intValue * elemW;
-        if (descending) offset = -offset;
         emitSlotBaseAddress(slot);
         if (offset != 0) code_ << "   tad " << literalLabel(offset) << "\n";
         return;
@@ -1441,7 +1441,6 @@ void Pdp7Codegen::computeElementAddressAC(const ir::Slot *slot, const ir::Expr &
         code_ << "   dac " << Tidx << "\n";
         for (int i = 1; i < elemW; i++) code_ << "   tad " << Tidx << "\n";
     }
-    if (descending) code_ << "   cma\n   tad __one\n";
     code_ << "   dac __stmp2\n";
     emitSlotBaseAddress(slot);
     code_ << "   tad __stmp2\n";

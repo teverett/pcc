@@ -83,7 +83,8 @@ void ArmCodegen::loadFrameAddr(const std::string &reg, const ir::Slot *slot, int
     if (slot->kind == ir::SlotKind::Param) {
         emitFrameOffset(reg, slot->frameOffset, /*isAdd=*/true);
     } else {
-        emitFrameOffset(reg, slot->frameOffset + elemIndex * widthOfType(slot->type), /*isAdd=*/false);
+        emitFrameOffset(reg, ir::localLowOffset(*slot, typeWidths()) - elemIndex * widthOfType(slot->type),
+                        /*isAdd=*/false);
     }
 }
 
@@ -798,16 +799,15 @@ void ArmCodegen::genExpr(const ir::Expr &e) {
 // `r2` holds the computed address. `arraySize > 0` means the base is the
 // array's own address (loadSlotAddr() dispatches Global vs. Local);
 // otherwise `slot` is a plain pointer variable, so the base comes from
-// reading that variable's stored value first. A Global array's element
-// addresses increase with `idx` (`add`); a Local array's decrease
-// (`sub`), since its later elements sit further below `fp`.
+// reading that variable's stored value first. Either array's element
+// addresses increase with `idx`.
 void ArmCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // r0 = index
     int shift = elemShift(slot->type);
     if (shift > 0) code_ << "    lsl r0,r0," << shift << "\n";  // r0 *= the element type's own width
     if (slot->arraySize > 0) {
         loadSlotAddr("r2", slot);
-        code_ << "    " << (slot->kind == ir::SlotKind::Global ? "add" : "sub") << " r2,r2,r0\n";
+        code_ << "    add r2,r2,r0\n";
     } else {
         loadSlotAddr("r1", slot);
         code_ << "    ldind r1,r1\n";  // r1 = the pointer variable's own stored value

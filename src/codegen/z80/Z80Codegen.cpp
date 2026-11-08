@@ -74,9 +74,12 @@ void Z80Codegen::storePair(const std::string &dst, const std::string &pairReg) {
 void Z80Codegen::loadFrameAddr(const ir::Slot *slot, long extraBytes) {
     code_ << "    push ix\n    pop hl\n";
     // Param bytes sit at increasing addresses above `ix`; Local bytes grow
-    // down from `ix`, at decreasing addresses as `extraBytes` increases.
+    // down from `ix`, at decreasing addresses as `extraBytes` increases,
+    // except a Local array's, which ascend from element 0, its lowest
+    // address (see ir::localLowOffset()).
     long off = slot->kind == ir::SlotKind::Param ? (static_cast<long>(slot->frameOffset) + extraBytes)
-                                                   : (-(static_cast<long>(slot->frameOffset) + extraBytes));
+               : slot->arraySize > 0 ? (-static_cast<long>(ir::localLowOffset(*slot, typeWidths())) + extraBytes)
+                                     : (-(static_cast<long>(ir::localOffsetDescendingWide(*slot, typeWidths())) + extraBytes));
     uint16_t off16 = static_cast<uint16_t>(off);
     code_ << "    ld de, " << off16 << "\n    add hl, de\n";
 }
@@ -942,13 +945,9 @@ void Z80Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
             code_ << "    ld de, " << label(slot) << "\n";
             code_ << "    ld hl, [ptr]\n    add hl, de\n    ld [ptr], hl\n";
         } else {
-            // A Local array's words sit at decreasing addresses as its
-            // element index increases (the mirror image of a Global array's
-            // increasing-address layout), so this subtracts the scaled
-            // index rather than adding it.
-            loadFrameAddr(slot);               // hl = array's own base address
+            loadFrameAddr(slot);               // hl = array's element 0, its lowest address
             code_ << "    ld de, [ptr]\n";     // de = scaled index, saved above
-            code_ << "    or a\n    sbc hl, de\n";
+            code_ << "    add hl, de\n";
             code_ << "    ld [ptr], hl\n";
         }
         return;

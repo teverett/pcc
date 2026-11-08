@@ -362,10 +362,9 @@ void MC68328Codegen::genExpr(const ir::Expr &e) {
 }
 
 // Leaves the computed address in A0. `slot->arraySize > 0` means a compile-time-known base
-// (a Global's label via `leal`, or a Local's frame-relative addr()); a Local array's elements
-// sit at decreasing addresses below `a6` (addr(slot) is the first element), so it indexes
-// base-minus-scaled-index (`suba`) while a Global indexes base-plus (`adda`). Otherwise `slot`
-// is a pointer variable, so the base is read from its stored value first.
+// (a Global's label via `leal`, or a Local's frame-relative addr()); either array's elements
+// sit at increasing addresses, so both index base-plus (`adda`). Otherwise `slot` is a
+// pointer variable, so the base is read from its stored value first.
 void MC68328Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // d0 = index
     // d0 *= widthOf(slot->type) via repeated doubling.
@@ -376,7 +375,7 @@ void MC68328Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr)
             code_ << "    adda d0,a0\n";
         } else {
             code_ << "    leal " << addr(slot) << ",a0\n";
-            code_ << "    suba d0,a0\n";
+            code_ << "    adda d0,a0\n";
         }
     } else {
         code_ << "    movel " << operandOf(slot) << ",a0\n";

@@ -415,8 +415,7 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
 
 // `arraySize > 0` means `slot` itself is the array, so the base address is
 // either a compile-time-known label (a Global) or `fp+slotDisp(slot)` (a
-// Local - a decreasing address as the index increases, hence `subf` below
-// rather than `add`). `arraySize == 0` means `slot` is a plain pointer
+// Local); either way the scaled index is added. `arraySize == 0` means `slot` is a plain pointer
 // variable, so the base comes from reading its stored value instead.
 void PowerPCCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // t0 = index
@@ -428,7 +427,7 @@ void PowerPCCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr)
             code_ << "    add t2,t2,t0\n";
         } else {
             code_ << "    addi t2,fp," << slotDisp(slot) << "\n";
-            code_ << "    subf t2,t0,t2\n";  // t2 = t2 - t0 ("subf rD,rA,rB" = rB - rA)
+            code_ << "    add t2,t2,t0\n";
         }
     } else {
         loadSlotValue("t1", slot);  // t1 = the pointer variable's own stored value
@@ -500,7 +499,7 @@ void PowerPCCodegen::genLocalArrayInit(const ir::Slot *slot) {
     int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
         const ir::ArrayInitElem &elem = slot->arrayInit[i];
-        int disp = slotDisp(slot) - w * static_cast<int>(i);
+        int disp = slotDisp(slot) + w * static_cast<int>(i);
         if (w == 8 && !elem.isSymbol) {
             auto v = static_cast<uint64_t>(elem.value);
             loadImmediate("t0", static_cast<int32_t>(static_cast<uint32_t>(v)));

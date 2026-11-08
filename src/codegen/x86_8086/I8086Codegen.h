@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -117,12 +118,17 @@ class I8086Codegen : public Backend {
     // A Local/Param's effective-address text, e.g. "[bp-4]"/"[bp+6]": the prologue's
     // `push bp`/`mov bp,sp` puts bp just above the saved old bp, with the return
     // address above that and pushed args above that (param 0 closest), so a Param's
-    // address is bp+frameOffset; Locals live below bp (bp-frameOffset).
-    static std::string addr(const ir::Slot *slot, int byteOffset = 0) {
+    // address is bp+frameOffset; Locals live below bp (bp-frameOffset). A Local array is
+    // addressed from its lowest address, element 0 (see ir::localLowOffset()), and
+    // `byteOffset` counts upward from there, the same direction as a Global array's elements.
+    std::string addr(const ir::Slot *slot, int byteOffset = 0) const {
         if (slot->kind == ir::SlotKind::Param) {
             return "[bp+" + std::to_string(slot->frameOffset + byteOffset) + "]";
         }
-        return "[bp-" + std::to_string(slot->frameOffset + byteOffset) + "]";
+        if (slot->arraySize > 0) {
+            return "[bp-" + std::to_string(ir::localLowOffset(*slot, typeWidths()) - byteOffset) + "]";
+        }
+        return "[bp-" + std::to_string(ir::localOffsetDescendingWide(*slot, typeWidths()) + byteOffset) + "]";
     }
 
     // The memory-operand text for a plain read/write of `slot`'s own
@@ -133,7 +139,7 @@ class I8086Codegen : public Backend {
     // for the two places that still have to tell them apart, since
     // only a Global's own address folds into a compile-time immediate
     // the way `mov ax, g_x` does).
-    static std::string operandOf(const ir::Slot *slot, int byteOffset = 0) {
+    std::string operandOf(const ir::Slot *slot, int byteOffset = 0) const {
         if (slot->kind != ir::SlotKind::Global) return addr(slot, byteOffset);
         std::string lbl = label(slot);
         return byteOffset == 0 ? ("[" + lbl + "]") : ("[" + lbl + "+" + std::to_string(byteOffset) + "]");
@@ -143,6 +149,25 @@ class I8086Codegen : public Backend {
     void declareArray(const std::string &label, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel();
+
+    // Wide values are built in stack temporaries that nothing pops; wideScope() runs `gen`
+    // with `sp` saved in a frame cell below the Locals (one per nesting level) and restores
+    // it afterward, reclaiming them. Used wherever a wide value is consumed into a narrow
+    // result or a statement ends, so a narrow value pushed earlier pops back correctly and
+    // a loop doesn't grow the stack.
+    void wideScope(const std::function<void()> &gen);
+    // genExpr(), then for a wide value reduce it to a nonzero-if-true word in ax. At a
+    // statement's top level nothing else is on the stack, so `sp` is just reset to the
+    // frame's bottom (resetStackToFrame()) instead of saved and restored.
+    void genTruthValue(const ir::Expr &e, bool atStatement = false);
+    // Resets `sp` to the bottom of this function's frame, where it is between statements.
+    void resetStackToFrame();
+    // Stands in for the frame size in the function body until genFunction() knows it.
+    static constexpr const char *kFrameBottomPlaceholder = "@FRAME@";
+    bool involvesWide(const ir::Expr &e) const;
+    int curFrameSize_ = 0;
+    int wideScopeDepth_ = 0;
+    int maxWideScopeDepth_ = 0;
 
     std::ostringstream code_;
     std::vector<std::string> trailer_;  // "label: dw v0, v1, ..." data lines, emitted once at the end

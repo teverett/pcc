@@ -93,7 +93,8 @@ void STM32Codegen::loadFrameWordAddr(const std::string &reg, int byteOffsetFromF
 }
 
 void STM32Codegen::loadFrameAddr(const std::string &reg, const ir::Slot *slot) {
-    int byteOffsetFromFp = slot->kind == ir::SlotKind::Param ? slot->frameOffset : -slot->frameOffset;
+    int byteOffsetFromFp =
+        slot->kind == ir::SlotKind::Param ? slot->frameOffset : -ir::localLowOffset(*slot, typeWidths());
     loadFrameWordAddr(reg, byteOffsetFromFp);
 }
 
@@ -447,9 +448,8 @@ void STM32Codegen::genExpr(const ir::Expr &e) {
 
 // `r2` holds the computed address. `arraySize > 0` means the base is the array's first word
 // (a label for a Global, or an r7-relative address for a Local/Param); otherwise `slot` is a
-// pointer variable, so the base comes from reading that variable's stored value first. A
-// Local/Param array's element i sits below element 0 (addresses decrease as the index
-// increases), the mirror of a Global array's layout, so this is base-minus-scaled-index there.
+// pointer variable, so the base comes from reading that variable's stored value first. Either
+// array's element addresses increase with the index.
 void STM32Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // r0 = index
     // r0 *= the element type's width via a variable-count `lsl`.
@@ -464,7 +464,7 @@ void STM32Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
             code_ << "    add r2,r2,r0\n";
         } else {
             loadFrameAddr("r2", slot);
-            code_ << "    sub r2,r2,r0\n";
+            code_ << "    add r2,r2,r0\n";
         }
         return;
     }
@@ -528,7 +528,7 @@ void STM32Codegen::genCompoundThroughR2(const ir::Expr &e) {
 
 // Stores arrayInit into `slot`'s frame slots. Unlike a Global's static trailer, a Local's
 // storage is a fresh frame region each call, so this must re-run every time. An element's
-// address is slot->frameOffset+i*widthOfType(slot->type) bytes below r7.
+// address is i*widthOfType(slot->type) bytes above element 0's.
 void STM32Codegen::genLocalArrayInit(const ir::Slot *slot) {
     int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
@@ -538,7 +538,7 @@ void STM32Codegen::genLocalArrayInit(const ir::Slot *slot) {
             auto v = static_cast<uint64_t>(elem.value);
             code_ << "    movl " << static_cast<int32_t>(static_cast<uint32_t>(v >> 32)) << ",r1\n";
         }
-        loadFrameWordAddr("r2", -(slot->frameOffset + w * static_cast<int>(i)));
+        loadFrameWordAddr("r2", -ir::localLowOffset(*slot, typeWidths()) + w * static_cast<int>(i));
         storeOperand("r2", slot->type);
     }
 }

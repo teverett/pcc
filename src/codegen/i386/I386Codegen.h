@@ -107,16 +107,24 @@ class I386Codegen : public Backend {
     // A Local or Param's effective-address operand text, e.g. "[ebp-8]"/"[ebp+12]",
     // optionally offset `byteOffset` more bytes in (a wide value's high dword). `ebp` points
     // just above the saved old `ebp`, return address one dword above that; a Param grows
-    // upward from there, a Local grows downward into the prologue's `sub esp,N` space.
-    static std::string addr(const ir::Slot *slot, int byteOffset = 0) {
+    // upward from there, a Local grows downward into the prologue's `sub esp,N` space, at
+    // ir::localOffsetDescendingWide() (a wide value's high dword below its low one).
+    std::string addr(const ir::Slot *slot, int byteOffset = 0) const {
         if (slot->kind == ir::SlotKind::Param) {
             return "[ebp+" + std::to_string(slot->frameOffset + byteOffset) + "]";
         }
-        return "[ebp-" + std::to_string(slot->frameOffset + byteOffset) + "]";
+        return "[ebp-" + std::to_string(ir::localOffsetDescendingWide(*slot, typeWidths()) + byteOffset) + "]";
+    }
+
+    // A Local array's elements ascend from its lowest address, element 0, the same
+    // direction as a Global array's; this is that address's operand text, `byteOffset`
+    // bytes up from it.
+    std::string localArrayAddr(const ir::Slot *slot, int byteOffset = 0) const {
+        return "[ebp-" + std::to_string(ir::localLowOffset(*slot, typeWidths()) - byteOffset) + "]";
     }
 
     // Memory-operand text for a plain read/write of `slot`'s value, `byteOffset` bytes in.
-    static std::string operandOf(const ir::Slot *slot, int byteOffset = 0) {
+    std::string operandOf(const ir::Slot *slot, int byteOffset = 0) const {
         if (slot->kind != ir::SlotKind::Global) return addr(slot, byteOffset);
         std::string lbl = label(slot);
         return byteOffset == 0 ? ("[" + lbl + "]") : ("[" + lbl + "+" + std::to_string(byteOffset) + "]");

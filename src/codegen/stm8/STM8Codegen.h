@@ -79,9 +79,9 @@ class STM8Codegen : public Backend {
 
     // Leaves a Slot's effective storage address in `x`: a Global's fixed
     // label, a Param's `fp + (paramIndex+1)*2`, or a Local's
-    // `fp - frameOffset*2` - locals grow downward from `fp`, so a Local
-    // array's element i sits at *decreasing* addresses as i increases
-    // (the opposite of a Global array).
+    // `fp - frameOffset` - locals grow downward from `fp`. A Local array's
+    // is its element 0, its lowest address (see ir::localLowOffset()), with
+    // element i above it, the same direction as a Global array's.
     void genSlotAddress(const ir::Slot *slot);
 
     void genBinary(const ir::Expr &e);

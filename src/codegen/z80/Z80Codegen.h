@@ -129,8 +129,9 @@ class Z80Codegen : public Backend {
     // Leaves `slot`'s effective address in HL. HL has no direct load from IX,
     // so this goes through the real stack ("push ix"/"pop hl"). A Local lives
     // at ix-(frameOffset+extraBytes) (frame grows down from ix); a Param at
-    // ix+frameOffset+extraBytes. `extraBytes` lets a caller address an array
-    // element or a wide scalar's word i.
+    // ix+frameOffset+extraBytes. A Local array's address is its element 0,
+    // its lowest, with `extraBytes` counting upward from there. `extraBytes`
+    // lets a caller address an array element or a wide scalar's word i.
     void loadFrameAddr(const ir::Slot *slot, long extraBytes = 0);
 
     // Reads the 16-bit value at [HL] into (loReg, hiReg), low byte first; HL ends up pointing at the high byte.

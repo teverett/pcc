@@ -191,7 +191,7 @@ void Arm64Codegen::loadSlotAddr(const std::string &reg, const ir::Slot *slot) {
     if (slot->kind == ir::SlotKind::Param) {
         code_ << "    add " << reg << "," << reg << "," << (slot->frameOffset + kParamExtra) << "\n";
     } else {
-        code_ << "    sub " << reg << "," << reg << "," << slot->frameOffset << "\n";
+        code_ << "    sub " << reg << "," << reg << "," << ir::localLowOffset(*slot, typeWidths()) << "\n";
     }
 }
 
@@ -259,13 +259,13 @@ std::string Arm64Codegen::generate(const ir::Program &prog, bool objectMode) {
 
     for (const auto &fb : prog.functionBodies) genFunction(fb);
 
-    // Running byte offset within the data segment (4-byte aligned from
+    // Running byte offset within the data segment (8-byte aligned from
     // the start), used to insert alignment padding ahead of a global
     // wider than 1 byte: a misaligned `ldindh`/`stindh`/`ldind`/`stind`
     // is UNPREDICTABLE on this core and would clobber whatever previous
-    // global sits there. Even a `long long` is only ever accessed as two
-    // separate word-sized ldind/stind, so word alignment is the coarsest
-    // ever needed.
+    // global sits there. A `long long` is accessed with one 8-byte
+    // `ldind`/`stind`, so it needs 8-byte alignment.
+    trailer_.push_back("    align 8");
     size_t dataOffset = 0;
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
@@ -273,7 +273,7 @@ std::string Arm64Codegen::generate(const ir::Program &prog, bool objectMode) {
         // get a local storage word, only be referenced by name, letting
         // the assembler's undefined-symbol handling defer it to a relocation.
         if (slot->isExternal) continue;
-        int align = std::min(widthOfType(slot->type), 4);
+        int align = std::min(widthOfType(slot->type), 8);
         size_t padding = (align - (dataOffset % align)) % align;
         if (padding > 0) {
             std::string fill = "0";
@@ -593,10 +593,8 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
 // Local); otherwise `slot` is a plain pointer variable, so the base comes
 // from reading that variable's stored value first.
 //
-// A Global array's element addresses increase with the index; a Local
-// array's decrease (element i sits at frameOffset+i, and loadSlotAddr()
-// already points `x2` at the lowest-indexed, highest address), so
-// indexing a Local array subtracts the scaled index instead of adding it.
+// Both a Global and a Local array's element addresses increase with the
+// index; loadSlotAddr() points `x2` at element 0, the lowest address.
 //
 // Multiplying the index by a fixed element width uses `mul` against a
 // loaded constant rather than a shift, since this dialect has no
@@ -612,11 +610,7 @@ void Arm64Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
         // `x0`'s upper 32 bits are already zero (the `mul` above is a
         // 32-bit "W-form" op, an architectural guarantee), so `x0` is
         // already a valid 64-bit operand with no explicit extension.
-        if (slot->kind == ir::SlotKind::Global) {
-            code_ << "    add x2,x2,x0\n";
-        } else {
-            code_ << "    sub x2,x2,x0\n";
-        }
+        code_ << "    add x2,x2,x0\n";
     } else {
         loadSlotAddr("x1", slot);
         code_ << "    ldind x1,w1\n";  // w1 = the pointer variable's own stored value (x1 zero-extends too)
@@ -644,7 +638,8 @@ void Arm64Codegen::genLocalArrayInit(const ir::Slot *slot) {
         } else {
             loadImm32("x0", static_cast<uint32_t>(elem.value));
         }
-        code_ << "    mov x2,x29\n    sub x2,x2," << (slot->frameOffset + static_cast<int>(i) * w) << "\n";
+        code_ << "    mov x2,x29\n    sub x2,x2," << (ir::localLowOffset(*slot, typeWidths()) - static_cast<int>(i) * w)
+              << "\n";
         storeOperand("x2", slot->type);
     }
 }

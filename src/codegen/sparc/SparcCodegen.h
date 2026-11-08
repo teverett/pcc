@@ -175,10 +175,11 @@ class SparcCodegen : public Backend {
     // IR.h's Slot::frameOffset). Emits a plain `or g0,fp,reg` when the offset is 0.
     void loadSlotAddr(const std::string &reg, const ir::Slot *slot);
     // The byte offset from `fp` loadSlotAddr() computes for a Local or Param (never
-    // called for a Global).
-    static int slotFrameByteOffset(const ir::Slot *slot) {
+    // called for a Global). A Local array's is its element 0, its lowest address (see
+    // ir::localLowOffset()).
+    int slotFrameByteOffset(const ir::Slot *slot) const {
         if (slot->kind == ir::SlotKind::Param) return slot->frameOffset;
-        return -slot->frameOffset;
+        return -ir::localOffsetDescendingWide(*slot, typeWidths());
     }
 
     // Loads/stores `slot`'s scalar value from/into `t0` (or `t1:t0`) - a Global goes

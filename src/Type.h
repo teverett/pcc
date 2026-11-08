@@ -30,6 +30,7 @@ struct TypeWidths {
     int intUnits;
     int longUnits;
     int longLongUnits;
+    int unitBits = 8;  // bits in one storage unit
 };
 
 // Char=0 .. LongLong=4.

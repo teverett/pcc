@@ -157,16 +157,17 @@ class M16cCodegen : public Backend {
     // points at this call's saved old `FB`; the return address and the
     // caller's pushed arguments (argument 0 closest) sit above it, so a
     // Param's address is `FB+frameOffset`. Locals live below `FB`
-    // (`FB-frameOffset`), reserved by the prologue's `SUB.W N,SP`.
-    static std::string frameOperand(const ir::Slot *slot) {
+    // (`FB-frameOffset`), reserved by the prologue's `SUB.W N,SP`. A Local
+    // array's is its element 0, its lowest address (see ir::localLowOffset()).
+    std::string frameOperand(const ir::Slot *slot) const {
         if (slot->kind == ir::SlotKind::Param) {
             return "[fb+" + std::to_string(slot->frameOffset) + "]";
         }
-        return "[fb-" + std::to_string(slot->frameOffset) + "]";
+        return "[fb-" + std::to_string(ir::localOffsetDescendingWide(*slot, typeWidths())) + "]";
     }
 
     // Operand text for a plain read/write of `slot`'s value.
-    static std::string operandOf(const ir::Slot *slot) {
+    std::string operandOf(const ir::Slot *slot) const {
         return slot->kind == ir::SlotKind::Global ? label(slot) : frameOperand(slot);
     }
 

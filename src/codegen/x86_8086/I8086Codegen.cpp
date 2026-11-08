@@ -156,13 +156,69 @@ std::map<std::string, std::string> I8086Codegen::perFileAsm() const { return per
 void I8086Codegen::genFunction(const ir::FunctionBody &fn) {
     curFunctionLabel_ = label(fn.func);
     code_ << curFunctionLabel_ << ":\n";
-    code_ << "    push bp\n    mov bp, sp\n";
-    if (fn.func->frameSize > 0) code_ << "    sub sp, " << fn.func->frameSize << "\n";
-
+    // The body is generated first so the prologue can reserve one word below the Locals
+    // for each nesting level of wideScope().
+    curFrameSize_ = fn.func->frameSize;
+    wideScopeDepth_ = 0;
+    maxWideScopeDepth_ = 0;
+    std::ostringstream body;
+    std::swap(body, code_);
     genStmt(*fn.body);
+    std::swap(body, code_);
+    int frame = curFrameSize_ + 2 * maxWideScopeDepth_;
+    code_ << "    push bp\n    mov bp, sp\n";
+    if (frame > 0) code_ << "    sub sp, " << frame << "\n";
+    std::string bodyText = body.str();
+    const std::string placeholder = kFrameBottomPlaceholder;
+    for (size_t at = bodyText.find(placeholder); at != std::string::npos; at = bodyText.find(placeholder, at)) {
+        bodyText.replace(at, placeholder.size(), std::to_string(frame));
+    }
+    code_ << bodyText;
 
     code_ << "    mov sp, bp\n    pop bp\n";
     code_ << "    ret\n\n";
+}
+
+bool I8086Codegen::involvesWide(const ir::Expr &e) const {
+    if (isWide(e.type) || (e.slot && isWide(e.slot->type))) return true;
+    for (const ir::Expr *child : {e.lhs.get(), e.rhs.get(), e.elseExpr.get()}) {
+        if (child && involvesWide(*child)) return true;
+    }
+    for (const auto &arg : e.args) {
+        if (involvesWide(*arg)) return true;
+    }
+    return false;
+}
+
+void I8086Codegen::wideScope(const std::function<void()> &gen) {
+    int cell = curFrameSize_ + 2 * (wideScopeDepth_ + 1);
+    wideScopeDepth_++;
+    maxWideScopeDepth_ = std::max(maxWideScopeDepth_, wideScopeDepth_);
+    code_ << "    mov [bp-" << cell << "], sp\n";
+    gen();
+    code_ << "    mov sp, [bp-" << cell << "]\n";
+    wideScopeDepth_--;
+}
+
+void I8086Codegen::resetStackToFrame() {
+    code_ << "    lea sp, [bp-" << kFrameBottomPlaceholder << "]\n";
+}
+
+void I8086Codegen::genTruthValue(const ir::Expr &e, bool atStatement) {
+    if (!isWide(e.type)) {
+        genExpr(e);
+        return;
+    }
+    if (atStatement) {
+        genExpr(e);
+        genWideTruthify(e.type);
+        resetStackToFrame();
+        return;
+    }
+    wideScope([&] {
+        genExpr(e);
+        genWideTruthify(e.type);
+    });
 }
 
 void I8086Codegen::genStmt(const ir::Stmt &s) {
@@ -172,8 +228,7 @@ void I8086Codegen::genStmt(const ir::Stmt &s) {
             return;
         }
         case ir::StmtKind::If: {
-            genExpr(*s.cond);
-            if (isWide(s.cond->type)) genWideTruthify(s.cond->type);
+            genTruthValue(*s.cond, /*atStatement=*/true);
             std::string Lelse = newLabel();
             std::string Ldone = newLabel();
             code_ << "    cmp ax, 0\n    je " << (s.elseStmt ? Lelse : Ldone) << "\n";
@@ -193,8 +248,7 @@ void I8086Codegen::genStmt(const ir::Stmt &s) {
             // if there is one; otherwise it jumps straight back to the condition.
             std::string Lcont = s.postStmt ? newLabel() : Lstart;
             code_ << Lstart << ":\n";
-            genExpr(*s.cond);
-            if (isWide(s.cond->type)) genWideTruthify(s.cond->type);
+            genTruthValue(*s.cond, /*atStatement=*/true);
             code_ << "    cmp ax, 0\n    je " << Lend << "\n";
             loopLabels_.push_back({Lcont, Lend});
             genStmt(*s.loopBody);
@@ -251,6 +305,11 @@ void I8086Codegen::genStmt(const ir::Stmt &s) {
                         code_ << "    mov bx, di\n    mov ax, [bx+" << (2 * i) << "]\n";
                         code_ << "    mov bx, si\n    mov [bx+" << (2 * i) << "], ax\n";
                     }
+                    resetStackToFrame();
+                } else if (involvesWide(*s.initOrReturnOrExpr)) {
+                    genExpr(*s.initOrReturnOrExpr);
+                    resetStackToFrame();
+                    storeOperand(addr(s.declSlot), s.declSlot->type);
                 } else {
                     genExpr(*s.initOrReturnOrExpr);
                     storeOperand(addr(s.declSlot), s.declSlot->type);
@@ -260,7 +319,9 @@ void I8086Codegen::genStmt(const ir::Stmt &s) {
             return;
         }
         case ir::StmtKind::ExprStmt: {
+            // A wide value's temporaries stay on the stack until its scope ends.
             genExpr(*s.initOrReturnOrExpr);
+            if (involvesWide(*s.initOrReturnOrExpr)) resetStackToFrame();
             return;
         }
         case ir::StmtKind::Empty:
@@ -371,8 +432,7 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Ternary: {
-            genExpr(*e.lhs);
-            if (isWide(e.lhs->type)) genWideTruthify(e.lhs->type);
+            genTruthValue(*e.lhs);
             std::string Lelse = newLabel();
             std::string Ldone = newLabel();
             code_ << "    cmp ax, 0\n    je " << Lelse << "\n";
@@ -521,9 +581,7 @@ std::string I8086Codegen::computeElementAddr(const ir::Slot *slot, const ir::Exp
         if (slot->kind == ir::SlotKind::Global) {
             code_ << "    add bx, " << label(slot) << "\n";
         } else {
-            // A Local array's words sit at decreasing addresses as index increases
-            // (addr(slot) is the first word, closest to bp) - base-minus-scaled-index.
-            code_ << "    lea ax, " << addr(slot) << "\n    sub ax, bx\n    mov bx, ax\n";
+            code_ << "    lea ax, " << addr(slot) << "\n    add bx, ax\n";
         }
     } else {
         code_ << "    add bx, " << operandOf(slot) << "\n";
@@ -610,8 +668,7 @@ void I8086Codegen::genAddrOf(const ir::Expr &operand) {
             if (operand.slot->kind == ir::SlotKind::Global) {
                 code_ << "    add ax, " << label(operand.slot) << "\n";
             } else {
-                // A Local array's element address is base-minus-scaled-index.
-                code_ << "    mov bx, ax\n    lea ax, " << addr(operand.slot) << "\n    sub ax, bx\n";
+                code_ << "    mov bx, ax\n    lea ax, " << addr(operand.slot) << "\n    add ax, bx\n";
             }
         } else {
             code_ << "    add ax, " << operandOf(operand.slot) << "\n";
@@ -709,15 +766,20 @@ void I8086Codegen::genConvert(const ir::Expr &e) {
     Type to = e.type;
     bool fromWide = isWide(from);
     bool toWide = isWide(to);
+    if (fromWide && !toWide) {
+        wideScope([&] {
+            genExpr(*e.lhs);
+            code_ << "    mov bx, ax\n    mov ax, [bx]\n";  // least-significant word only
+        });
+        narrowAxTo(to);
+        return;
+    }
     genExpr(*e.lhs);  // ax, or an address if fromWide
     if (fromWide && toWide) {
         int fromN = widthOfType(from) / 2, toN = widthOfType(to) / 2;
         if (fromN == toN) return;  // same width - bit pattern unchanged
         code_ << "    mov bx, ax\n";
         copyWideBlock(fromN, toN, from.isUnsigned);
-    } else if (fromWide && !toWide) {
-        code_ << "    mov bx, ax\n    mov ax, [bx]\n";  // least-significant word only
-        narrowAxTo(to);
     } else if (!fromWide && toWide) {
         int toN = widthOfType(to) / 2;
         if (from.isUnsigned) {
@@ -1151,7 +1213,7 @@ void I8086Codegen::genBinary(const ir::Expr &e) {
 void I8086Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs) {
     bool isUnsigned = lhs.type.isUnsigned;
     if (isWide(lhs.type)) {
-        genWideCompare(op, lhs, rhs, isUnsigned);
+        wideScope([&] { genWideCompare(op, lhs, rhs, isUnsigned); });
         return;
     }
     if (op == "==") return emitCompare(lhs, rhs, "je", isUnsigned);
@@ -1179,12 +1241,10 @@ void I8086Codegen::emitCompare(const ir::Expr &lhs, const ir::Expr &rhs, const s
 }
 
 void I8086Codegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
-    genExpr(lhs);
-    if (isWide(lhs.type)) genWideTruthify(lhs.type);
+    genTruthValue(lhs);
     std::string Lfalse = newLabel(), Ltrue = newLabel(), Ldone = newLabel();
     code_ << "    cmp ax, 0\n    je " << Lfalse << "\n";
-    genExpr(rhs);
-    if (isWide(rhs.type)) genWideTruthify(rhs.type);
+    genTruthValue(rhs);
     code_ << "    cmp ax, 0\n    je " << Lfalse << "\n";
     code_ << "    jmp " << Ltrue << "\n";
     code_ << Lfalse << ":\n    mov ax, 0\n    jmp " << Ldone << "\n";
@@ -1193,12 +1253,10 @@ void I8086Codegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
 }
 
 void I8086Codegen::genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs) {
-    genExpr(lhs);
-    if (isWide(lhs.type)) genWideTruthify(lhs.type);
+    genTruthValue(lhs);
     std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
     code_ << "    cmp ax, 0\n    jne " << Ltrue << "\n";
-    genExpr(rhs);
-    if (isWide(rhs.type)) genWideTruthify(rhs.type);
+    genTruthValue(rhs);
     code_ << "    cmp ax, 0\n    jne " << Ltrue << "\n";
     code_ << "    jmp " << Lfalse << "\n";
     code_ << Ltrue << ":\n    mov ax, 1\n    jmp " << Ldone << "\n";
@@ -1207,8 +1265,7 @@ void I8086Codegen::genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs) {
 }
 
 void I8086Codegen::genLogicalNot(const ir::Expr &rhs) {
-    genExpr(rhs);
-    if (isWide(rhs.type)) genWideTruthify(rhs.type);
+    genTruthValue(rhs);
     std::string Ltrue = newLabel(), Ldone = newLabel();
     code_ << "    cmp ax, 0\n    je " << Ltrue << "\n";
     code_ << "    mov ax, 0\n    jmp " << Ldone << "\n";

@@ -177,7 +177,8 @@ class Arm64Codegen : public Backend {
     // the caller's pushed arguments. A Param's storage is the caller's
     // pushed argument, above those two saved words (`x29+32+4*
     // paramIndex`); a Local's is reserved by the prologue's
-    // `sub sp,sp,frameSize*4` below `x29` (`x29-4*frameOffset`). This
+    // `sub sp,sp,frameSize*4` below `x29`, at its lowest address (see
+    // ir::localLowOffset()). This
     // makes recursion safe: every activation gets its own `x29` and
     // frame. Loads the computed address into 64-bit register `reg`.
     void loadSlotAddr(const std::string &reg, const ir::Slot *slot);

@@ -340,7 +340,10 @@ go 10000
 e ac
 SIMH
 
-    run_with_timeout 10 bash -c "pdp7 <'$simfile' >'$outfile' 2>/dev/null"
+    # The script goes in as an argument, with stdin from /dev/null: a program that runs
+    # long enough would otherwise have the console's keyboard poll read the script's
+    # remaining lines as input. (The same applies to check_pdp11 below.)
+    run_with_timeout 10 bash -c "pdp7 '$simfile' </dev/null >'$outfile' 2>/dev/null"
 
     local ac_octal
     ac_octal="$(grep '^AC:' "$outfile" | awk '{print $2}')"
@@ -403,7 +406,7 @@ with open(simpath, "w") as f:
     f.write("\n".join(lines) + "\n")
 PY
 
-    run_with_timeout 10 bash -c "pdp11 <'$simfile' >'$outfile' 2>/dev/null"
+    run_with_timeout 10 bash -c "pdp11 '$simfile' </dev/null >'$outfile' 2>/dev/null"
 
     local r0_octal
     r0_octal="$(grep '^R0:' "$outfile" | awk '{print $2}')"
@@ -1764,6 +1767,16 @@ is_known_unsupported() {
         8088:many_returns.c) return 0 ;;
         8086:array_store_paths.c) return 0 ;;              # same - doesn't fit the 512-byte boot sector
         8088:array_store_paths.c) return 0 ;;
+        8086:local_char_array_layout.c) return 0 ;;        # same - doesn't fit the 512-byte boot sector
+        8088:local_char_array_layout.c) return 0 ;;
+        8086:convert_int_to_longlong.c) return 0 ;;        # same - doesn't fit the 512-byte boot sector
+        8088:convert_int_to_longlong.c) return 0 ;;
+        8086:literal_promotion_arith.c) return 0 ;;        # same - doesn't fit the 512-byte boot sector
+        8088:literal_promotion_arith.c) return 0 ;;
+        8086:longlong_add_carry_chain.c) return 0 ;;        # same - doesn't fit the 512-byte boot sector
+        8088:longlong_add_carry_chain.c) return 0 ;;
+        8086:longlong_sub_borrow_chain.c) return 0 ;;
+        8088:longlong_sub_borrow_chain.c) return 0 ;;
         8080:types_longlong_divmod.c) return 0 ;;          # no verified wide multiply/divide routine
         8080:types_longlong_divmod_repeated.c) return 0 ;; # same - no verified wide multiply/divide routine
         z80:types_longlong_divmod.c) return 0 ;;
@@ -1771,6 +1784,15 @@ is_known_unsupported() {
         8051:types_arrays.c) return 0 ;;                   # wide (long/long long) values unsupported at all
         8051:types_longlong_arith.c) return 0 ;;
         8051:test_long_arith.c) return 0 ;;
+        8051:local_mixed_width_layout.c) return 0 ;;
+        8051:local_wide_scalar_layout.c) return 0 ;;
+        8051:convert_int_to_longlong.c) return 0 ;;
+        8051:literal_promotes_to_long.c) return 0 ;;
+        8051:literal_promotion_arith.c) return 0 ;;
+        8051:wide_compare_in_expression.c) return 0 ;;
+        8051:wide_loop_stack.c) return 0 ;;
+        8051:longlong_add_carry_chain.c) return 0 ;;
+        8051:longlong_sub_borrow_chain.c) return 0 ;;
         8051:test_unsigned_long_arith.c) return 0 ;;
         8051:types_longlong_divmod.c) return 0 ;;
         8008:types_longlong_divmod.c) return 0 ;;          # exhaustive sign-combination coverage needs more RAM than the 8008's 16KB/14-bit address space has, even with every byte of pseudo-register reservation reclaimed

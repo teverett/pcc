@@ -75,6 +75,28 @@ struct Slot {
     int frameOffset = 0;
 };
 
+// How far below the frame pointer a Local's lowest address sits, in
+// frameOffset's units. assignFrameOffsets() gives each Local the range
+// [frameOffset, frameOffset + size) below one reserved native int, so its
+// storage is the `size` units ending where a native int at frameOffset
+// would end: an int-sized scalar sits exactly at fp - frameOffset, and an
+// array's elements (or a wide value's units) ascend from this address the
+// same way a Global's do.
+inline int localLowOffset(const Slot &slot, const TypeWidths &widths) {
+    int count = slot.arraySize > 0 ? slot.arraySize : 1;
+    return slot.frameOffset + count * widthOf(slot.type, widths) - widths.intUnits;
+}
+
+// For a backend that lays a scalar wider than an int out downward from
+// fp - frameOffset (its later words at frameOffset plus one int each),
+// which also stays within the slot: the frame offset of the address it
+// uses for `slot`, frameOffset for such a wide scalar and the lowest
+// address (localLowOffset()) for every other Local.
+inline int localOffsetDescendingWide(const Slot &slot, const TypeWidths &widths) {
+    if (slot.arraySize == 0 && widthOf(slot.type, widths) > widths.intUnits) return slot.frameOffset;
+    return localLowOffset(slot, widths);
+}
+
 struct Function {
     int id = 0;
     std::string sourceName;
@@ -96,6 +118,12 @@ struct Function {
     // from; 0 if no locals. Excludes params, which live in the caller's
     // pushed argument space.
     int frameSize = 0;
+
+    // An external function declared with `extern` and a parameter list:
+    // that list's types, which a call's arguments convert to as they
+    // would for a function defined here.
+    bool hasPrototype = false;
+    std::vector<Type> prototypeParams;
 };
 
 // --- Expressions --------------------------------------------------------

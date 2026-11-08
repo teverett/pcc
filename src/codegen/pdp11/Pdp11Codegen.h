@@ -150,6 +150,8 @@ class Pdp11Codegen : public Backend {
     std::string wideWordOperand(const ir::Slot *slot, int wordIndex) const;
 
     // Leaves slot[idxExpr]'s effective address in `R2`.
+    // How far below `r5` a Local array's lowest address (element 0) sits.
+    int localArrayBase(const ir::Slot *slot);
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
     // Encodes "if the branch condition holds, jump to `targetIfTaken`, else `targetIfNot`"
@@ -167,17 +169,18 @@ class Pdp11Codegen : public Backend {
     // genFunction()'s prologue, `r5` points at this call's saved old `r5`, with the return
     // address one word above it and the caller's pushed arguments above that (param 0
     // closest to the return address), so a Param's address is `r5+frameOffset`. Locals live
-    // below `r5`, so a Local's address is `r5-frameOffset`.
-    static std::string addr(const ir::Slot *slot) {
+    // below `r5`, at ir::localOffsetDescendingWide() (a wide value's later words further
+    // below, see wideWordOperand()).
+    std::string addr(const ir::Slot *slot) const {
         if (slot->kind == ir::SlotKind::Param) {
             return "[r5+" + std::to_string(slot->frameOffset) + "]";
         }
-        return "[r5-" + std::to_string(slot->frameOffset) + "]";
+        return "[r5-" + std::to_string(ir::localOffsetDescendingWide(*slot, typeWidths())) + "]";
     }
 
     // The operand text for a plain read/write of `slot`'s value - the bare label for a
     // Global, or addr(slot) ("[r5±N]") for a Local/Param.
-    static std::string operandOf(const ir::Slot *slot) {
+    std::string operandOf(const ir::Slot *slot) const {
         return slot->kind == ir::SlotKind::Global ? label(slot) : addr(slot);
     }
 

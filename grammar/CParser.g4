@@ -101,12 +101,11 @@ globalDecl
     | typeSpec IDENT ('=' sign='-'? val=NUMBER)? ('@' addr=NUMBER)? ';'              # globalScalarDecl
     ;
 
-// Elements are plain (non-negative) literals, or a bare function/
+// Elements are plain literals, optionally negated, or a bare function/
 // global name standing for that symbol's own address (the dispatch-
 // table idiom a jump table like unix v6/v7's s1.s .sysloc/locsw/locn
-// needs: an array of code/data addresses, not values) - no per-
-// element sign on the literal form; see ../README.md's "Scope and
-// limitations". Resolving a symbol element to its real linked address
+// needs: an array of code/data addresses, not values). Resolving a
+// symbol element to its real linked address
 // is BuildAst/IRBuilder/the linker's job, same as '&' elsewhere in
 // this grammar (condExpr's addrOfExpr) and functionDecl's/
 // globalDecl's own '@' addr - this rule only admits the syntax.
@@ -115,7 +114,7 @@ arrayInit
     ;
 
 arrayInitElem
-    : NUMBER   # numArrayElem
+    : sign='-'? NUMBER   # numArrayElem
     | IDENT    # symArrayElem
     ;
 

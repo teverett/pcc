@@ -403,7 +403,9 @@ public:
   public:
     NumArrayElemContext(ArrayInitElemContext *ctx);
 
+    antlr4::Token *sign = nullptr;
     antlr4::tree::TerminalNode *NUMBER();
+    antlr4::tree::TerminalNode *MINUS();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };

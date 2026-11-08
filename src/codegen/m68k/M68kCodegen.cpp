@@ -356,11 +356,9 @@ void M68kCodegen::genExpr(const ir::Expr &e) {
 }
 
 // A0 holds the computed address. For an array (slot->arraySize > 0), the base is a
-// compile-time-known address: a Global array's elements sit at increasing
-// addresses as the index increases, but a Local array's elements sit at
-// decreasing addresses (addr(slot) is the first word, closest to a6), so a Local
-// array indexes base-minus-scaled-index, not base-plus. Otherwise `slot` is a
-// plain pointer variable, so the base comes from reading its stored value.
+// compile-time-known address, and both a Global and a Local array's elements sit
+// at increasing addresses as the index increases. Otherwise `slot` is a plain
+// pointer variable, so the base comes from reading its stored value.
 void M68kCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // d0 = index
     // d0 *= element width, via repeated doubling.
@@ -371,7 +369,7 @@ void M68kCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
             code_ << "    adda d0,a0\n";
         } else {
             code_ << "    leal " << addr(slot) << ",a0\n";
-            code_ << "    suba d0,a0\n";
+            code_ << "    adda d0,a0\n";
         }
     } else {
         code_ << "    movel " << operandOf(slot) << ",a0\n";

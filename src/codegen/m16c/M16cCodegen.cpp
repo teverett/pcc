@@ -46,13 +46,13 @@ void M16cCodegen::declareArray(const std::string &lbl, const std::vector<ir::Arr
 
 // Stores arrayInit into `slot`'s frame slots; re-run on every call since a
 // Local's storage (unlike a Global's static trailer) isn't pre-set. An
-// element's address is `slot->frameOffset` plus `i` byte-widths below `fb`.
+// element's address is `i` strides above element 0's, the array's lowest.
 void M16cCodegen::genLocalArrayInit(const ir::Slot *slot) {
     int stride = widthOfType(slot->type) == 1 ? 1 : 2;
     bool isChar = stride == 1;
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
         code_ << "    mov.w " << arrayElemText(slot->arrayInit[i]) << ",r0\n";
-        int off = slot->frameOffset + stride * static_cast<int>(i);
+        int off = ir::localLowOffset(*slot, typeWidths()) - stride * static_cast<int>(i);
         code_ << "    " << (isChar ? "movb" : "mov.w") << " r0,[fb-" << off << "]\n";
     }
 }
@@ -422,23 +422,16 @@ void M16cCodegen::genExpr(const ir::Expr &e) {
 // means a compile-time-known base (loaded via `lea`); otherwise `slot` is a
 // plain pointer variable, so the base comes from reading its stored value.
 //
-// A Global array's elements sit at increasing addresses as the index
-// increases, but a Local array's elements sit at DECREASING addresses
-// (frameOperand()'s address is the array's first word, closest to `fb`;
-// later words are further below it) - so indexing is base-minus-scaled-index
-// for a Local, base-plus for a Global. Getting this backwards corrupts the
-// saved `fb`/return address as soon as anything indexes past element 0.
+// Both a Global and a Local array's elements sit at increasing addresses as
+// the index increases (frameOperand() gives a Local array's element 0, its
+// lowest address), so indexing is always base-plus-scaled-index.
 void M16cCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // r0 = index
     int shift = elemShift(slot->type);
     if (shift > 0) code_ << "    shl.w " << shift << ",r0\n";  // r0 *= widthOf(slot->type) (a power of two)
     if (slot->arraySize > 0) {
         code_ << "    lea " << operandOf(slot) << ",a0\n";
-        if (slot->kind == ir::SlotKind::Global) {
-            code_ << "    add.w r0,a0\n";
-        } else {
-            code_ << "    sub.w r0,a0\n";
-        }
+        code_ << "    add.w r0,a0\n";
     } else {
         code_ << "    mov.w " << operandOf(slot) << ",a0\n";
         code_ << "    add.w r0,a0\n";

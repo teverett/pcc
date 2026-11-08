@@ -80,13 +80,13 @@ void SparcCodegen::declareArray(const std::string &lbl, const std::vector<ir::Ar
 }
 
 // Stores a Local array's initializer into its freshly reserved frame slots, one element
-// per call. Element i's address is the array's base (`fp-frameOffset`) minus `w*i`,
-// matching genIndexAddr()'s base-minus-scaled-index addressing for a Local array.
+// per call. Element i's address is the array's base, its lowest address, plus `w*i`,
+// matching genIndexAddr()'s base-plus-scaled-index addressing.
 void SparcCodegen::genLocalArrayInit(const ir::Slot *slot) {
     int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
         const ir::ArrayInitElem &elem = slot->arrayInit[i];
-        int disp = slotFrameByteOffset(slot) - w * static_cast<int>(i);
+        int disp = slotFrameByteOffset(slot) + w * static_cast<int>(i);
         if (w == 8 && !elem.isSymbol) {
             auto v = static_cast<uint64_t>(elem.value);
             loadImmediate("t0", static_cast<int32_t>(static_cast<uint32_t>(v)));
@@ -480,12 +480,8 @@ void SparcCodegen::genExpr(const ir::Expr &e) {
 // that variable's own stored value first.
 //
 // `elemShift(slot->type)` scales the index by the element width (1/2/4/8 bytes). A
-// Global array's elements sit at increasing addresses as the index grows (`label+i*w`);
-// a Local array's elements sit at decreasing addresses from its first byte (`base-i*w`),
-// because `base` is already `fp-frameOffset` and later elements occupy larger
-// frameOffset values, which `fp-frameOffset` addressing turns into smaller addresses.
-// Adding the scaled index instead of subtracting it would read/write the wrong element
-// for any index past 0.
+// Global or Local array's elements sit at increasing addresses as the index grows
+// (`base+i*w`), a Local array's base being its lowest address, element 0.
 void SparcCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // t0 = index
     int shift = elemShift(slot->type);
@@ -497,7 +493,7 @@ void SparcCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
         } else {
             loadSlotAddr("t2", slot);
         }
-        code_ << "    " << (isGlobal ? "add" : "sub") << " t2,t0,t2\n";
+        code_ << "    add t2,t0,t2\n";
     } else {
         if (isGlobal) {
             loadAddress("t1", label(slot));

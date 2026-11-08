@@ -41,7 +41,7 @@ class Pdp7Codegen : public Backend {
    public:
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "pdp7"; }
-    TypeWidths typeWidths() const override { return {1, 1, 1, 2, 4}; }
+    TypeWidths typeWidths() const override { return {1, 1, 1, 2, 4, 18}; }
     std::string sourceExtension() const override { return ".s"; }
     std::vector<std::string> assembledFormats() const override { return {"a7out", "list", "ptr", "rim", "coff"}; }
     std::string defaultAssemblerPath() const override { return "../pdp-assembler/build/bin/pdp7as"; }
@@ -262,10 +262,9 @@ class Pdp7Codegen : public Backend {
     // `__fp` - a param's address is `__fp+frameOffset` (the width-aware
     // offset IRBuilder.cpp's assignFrameOffsets() computes). Locals
     // live below `__fp`, in the `frameSize` words emitPrologue()
-    // reserves in bulk; a Local's address is `__fp-frameOffset`, so a
-    // Local array's element i sits at `__fp-(frameOffset+i)` -
-    // decreasing address as i increases, opposite a Global array's
-    // layout (see emitLocalArrayInit()).
+    // reserves in bulk; a Local's address is `__fp-localBaseOffset()`,
+    // and a Local array's elements run upward from there, the same
+    // direction as a Global array's.
     //
     // Every Local is reserved up front in emitPrologue(), not when its
     // LocalDecl statement runs, since that statement may sit inside a
@@ -333,9 +332,10 @@ class Pdp7Codegen : public Backend {
     void emitSlotBaseAddress(const ir::Slot *slot);
     // Stores a Local array's `arrayInit` values into its reserved
     // frame words when its LocalDecl statement runs (a Local's frame
-    // slot is only reserved, not pre-filled, by the prologue). Element
-    // i's address is `__fp-(slot->frameOffset+i)`.
+    // slot is only reserved, not pre-filled, by the prologue).
     void emitLocalArrayInit(const ir::Slot *slot);
+    // How far below `__fp` a Local's address (its lowest word) sits.
+    long localBaseOffset(const ir::Slot *slot);
     // Precondition: the target address is on top of the stack and AC
     // holds the value to store. Pops that address and stores AC
     // through it (via `__addr`), leaving AC unchanged. Pushing the

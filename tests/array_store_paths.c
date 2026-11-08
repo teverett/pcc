@@ -1,7 +1,7 @@
-// EXPECT: 4
+// EXPECT: 5
 // Array elements reached with constant and computed indices, stored
 // to with and without a call in the stored value, in a global and a
-// local array.
+// local array, whose element addresses ascend like a global array's.
 int g[6];
 int calls;
 
@@ -29,5 +29,6 @@ int main() {
     l[i] |= 1;
     result = result + (g[2] == 16 && l[2] == 15);
     result = result + (calls == 1);
+    result = result + (&l[2] == &l[0] + 2);
     return result;
 }

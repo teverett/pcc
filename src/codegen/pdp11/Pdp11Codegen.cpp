@@ -520,14 +520,30 @@ void Pdp11Codegen::genWideStore(const ir::Slot *slot, int words) {
 // carry bit into one operand - there's no two-operand "add with carry-in" here), then does
 // its own ADD/SUB. Result is written over lhs's stack block; rhs's now-stale block is
 // discarded with one `add`, leaving lhs's block as the new top.
+// Word i of the result is lhs_i +/- rhs_i +/- the carry (borrow) out of word i-1, folded in
+// with ADC/SBC first. When that ADC/SBC itself carries, the word has just wrapped to 0 (or
+// 0xFFFF), so the ADD/SUB of rhs_i that follows can't carry too; the carry out is then set
+// again by hand (`cmp r1,r0` with r1=0, r0=1 borrows), since ADD/SUB would clear it.
 void Pdp11Codegen::genWideAdd(const ir::Expr &lhs, const ir::Expr &rhs, bool isAdd, int words) {
     genExpr(lhs);
     genExpr(rhs);
+    const char *op = isAdd ? "add" : "sub";
     for (int i = 0; i < words; i++) {
         std::string rhsOperand = "[sp+" + std::to_string(2 * i) + "]";
         std::string lhsOperand = "[sp+" + std::to_string(2 * words + 2 * i) + "]";
-        if (i > 0) code_ << "    " << (isAdd ? "adc" : "sbc") << " " << lhsOperand << "\n";
-        code_ << "    " << (isAdd ? "add" : "sub") << " " << rhsOperand << "," << lhsOperand << "\n";
+        if (i == 0) {
+            code_ << "    " << op << " " << rhsOperand << "," << lhsOperand << "\n";
+            continue;
+        }
+        std::string Lcarried = newLabel(), Ldone = newLabel();
+        code_ << "    " << (isAdd ? "adc" : "sbc") << " " << lhsOperand << "\n";
+        code_ << "    blo " << Lcarried << "\n";
+        code_ << "    " << op << " " << rhsOperand << "," << lhsOperand << "\n";
+        code_ << "    br " << Ldone << "\n";
+        code_ << Lcarried << ":\n";
+        code_ << "    " << op << " " << rhsOperand << "," << lhsOperand << "\n";
+        code_ << "    mov 1,r0\n    mov 0,r1\n    cmp r1,r0\n";
+        code_ << Ldone << ":\n";
     }
     code_ << "    add " << (2 * words) << ",sp\n";
 }
@@ -727,9 +743,10 @@ void Pdp11Codegen::narrowR0To(Type to) {
 // `R2` ends up holding the computed address via register-deferred `(Rn)` mode. An array's
 // base is a compile-time-known address (a Global label, or a Local's frame-relative
 // address); a plain pointer variable's base instead comes from reading its stored value.
-// A Local array's address decreases as the element index increases (storage grows down from
-// `r5`): element `i` is at `r5 - 2*(frameOffset+i)`, computed via two `sub`s since `idx` is
-// only known at runtime.
+// A Local array's elements ascend from its lowest address, `r5 - localArrayBase(slot)`, the
+// same direction as a Global array's, so pointer arithmetic over either works the same way.
+int Pdp11Codegen::localArrayBase(const ir::Slot *slot) { return ir::localLowOffset(*slot, typeWidths()); }
+
 void Pdp11Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // r0 = index
     int shift = elemShift(slot->type);
@@ -740,8 +757,8 @@ void Pdp11Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
             code_ << "    add r0,r2\n";
         } else {
             code_ << "    mov r5,r2\n";
-            code_ << "    sub " << slot->frameOffset << ",r2\n";
-            code_ << "    sub r0,r2\n";
+            code_ << "    sub " << localArrayBase(slot) << ",r2\n";
+            code_ << "    add r0,r2\n";
         }
         return;
     }
@@ -773,7 +790,9 @@ void Pdp11Codegen::genLocalArrayInit(const ir::Slot *slot) {
         } else {
             code_ << "    mov " << static_cast<int>(static_cast<uint16_t>(elem.value)) << ",r0\n";
         }
-        code_ << "    mov r0,[r5-" << (slot->frameOffset + 2 * static_cast<int>(i)) << "]\n";
+        int elemW = widthOfType(slot->type);
+        code_ << "    " << (elemW == 1 ? "movb" : "mov") << " r0,[r5-"
+              << (localArrayBase(slot) - elemW * static_cast<int>(i)) << "]\n";
     }
 }
 
@@ -790,7 +809,8 @@ void Pdp11Codegen::genAddrOf(const ir::Expr &operand) {
         if (operand.slot->kind == ir::SlotKind::Param) {
             code_ << "    add " << operand.slot->frameOffset << ",r0\n";
         } else {
-            code_ << "    sub " << operand.slot->frameOffset << ",r0\n";
+            int below = ir::localOffsetDescendingWide(*operand.slot, typeWidths());
+            code_ << "    sub " << below << ",r0\n";
         }
         return;
     }

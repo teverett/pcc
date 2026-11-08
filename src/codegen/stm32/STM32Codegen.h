@@ -25,8 +25,8 @@ namespace pcc {
 // Function::frameSize reserves Local storage (only the resulting sp displacement matters - this
 // dialect has no `sub sp,#imm`). emitEpilogue() reverses this. A Param's address is
 // `r7 + 8 + 4*paramIndex` (past the saved r7 and return address); a Local's is
-// `r7 - 4*frameOffset` (growing the opposite direction, so a Local array's element i sits at
-// address base-minus-4*i, not base-plus - see genIndexAddr()).
+// its lowest address (see ir::localLowOffset()), so an array's element i is at
+// base-plus-4*i - see genIndexAddr().
 //
 // Call arguments are pushed by the caller, last-declared one first, so the first argument ends
 // up closest to the return address (matching Param 0's r7+8). The caller pops them back off
@@ -143,7 +143,8 @@ class STM32Codegen : public Backend {
     // as `reg` itself.
     void loadFrameWordAddr(const std::string &reg, int byteOffsetFromFp);
     // Loads a Local or Param Slot's effective address into `reg`: a Param's is
-    // `r7 + 8 + 4*paramIndex`; a Local's is `r7 - 4*frameOffset`. Never called for a Global.
+    // `r7 + 8 + 4*paramIndex`; a Local's is its lowest address (see ir::localLowOffset()).
+    // Never called for a Global.
     void loadFrameAddr(const std::string &reg, const ir::Slot *slot);
     // Loads a Slot's effective address into `reg`: `lea` for Global, loadFrameAddr() otherwise.
     void loadSlotAddr(const std::string &reg, const ir::Slot *slot);

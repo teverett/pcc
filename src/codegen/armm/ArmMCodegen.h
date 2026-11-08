@@ -50,8 +50,8 @@ namespace pcc {
 // push per word of Function::frameSize to reserve Local storage (only the sp
 // displacement matters). emitEpilogue() undoes this in reverse. A Param's
 // address is r7+8+4*paramIndex (past saved r7 and return address); a Local's
-// is r7-4*frameOffset (grows the other direction, so element i of a Local
-// array sits at base-minus-4*i, not base-plus - see genIndexAddr()).
+// is its lowest address (see ir::localLowOffset()), so an array's element i
+// is at base-plus-4*i - see genIndexAddr().
 //
 // ARM has no absolute-addressing memory operand: every load/store needs a
 // base register plus displacement. A Global/array-literal access first loads

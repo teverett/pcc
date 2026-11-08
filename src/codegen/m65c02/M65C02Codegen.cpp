@@ -143,7 +143,7 @@ void M65C02Codegen::slotAddrToPtr(const ir::Slot *slot) {
         // the extra reservation is subtracted back off here.
         addConst16("ptr", "fp", slot->frameOffset - 2 * widthOfType(Type{BaseType::Int, false}) + 2);
     } else {
-        addConst16("ptr", "fp", -slot->frameOffset);
+        addConst16("ptr", "fp", -ir::localLowOffset(*slot, typeWidths()));
     }
 }
 
@@ -345,7 +345,7 @@ void M65C02Codegen::loadArrayElemToAc(const ir::ArrayInitElem &e) {
     if (!e.isSymbol) {
         uint16_t v16 = static_cast<uint16_t>(e.value);
         code_ << "    ldai " << (v16 & 0xFF) << "\n    sta ac\n";
-        code_ << "    ldai_hi " << ((v16 >> 8) & 0xFF) << "\n    sta ac+1\n";
+        code_ << "    ldai " << ((v16 >> 8) & 0xFF) << "\n    sta ac+1\n";
         return;
     }
     std::string lbl = e.slot ? label(e.slot) : label(e.func);
@@ -357,7 +357,7 @@ void M65C02Codegen::genLocalArrayInit(const ir::Slot *slot) {
     int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
         const ir::ArrayInitElem &elem = slot->arrayInit[i];
-        addConst16("ptr", "fp", -(slot->frameOffset + w * static_cast<int>(i)));
+        addConst16("ptr", "fp", -ir::localLowOffset(*slot, typeWidths()) + w * static_cast<int>(i));
         if (w <= 2) {
             loadArrayElemToAc(elem);
             if (w == 1) {
@@ -739,7 +739,7 @@ void M65C02Codegen::genExpr(const ir::Expr &e) {
 
 // slot->arraySize > 0 means the array's storage is indexed directly: a
 // Global's is base+idx*2 off a compile-time label, a Local's is
-// fp-relative at base-idx*2 (a Param array always decays to a pointer, so
+// fp-relative at base+idx*2 (a Param array always decays to a pointer, so
 // can't reach this branch). Otherwise slot is a plain pointer variable:
 // the base comes from reading its stored value, and idx*2 is always ADDED
 // to it regardless of where the pointer variable lives.
@@ -754,8 +754,8 @@ void M65C02Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) 
             code_ << "    lda ac\n    adci " << lbl << "\n    sta ptr\n";
             code_ << "    lda ac+1\n    adci_hi " << lbl << "\n    sta ptr+1\n";
         } else {
-            addConst16("ptr", "fp", -slot->frameOffset);  // ptr = element 0's own address
-            sub16("ptr", "ptr", "ac");                         // ptr -= idx*2
+            addConst16("ptr", "fp", -ir::localLowOffset(*slot, typeWidths()));  // ptr = element 0's own address
+            add16("ptr", "ptr", "ac");                                          // ptr += idx*2
         }
     } else if (slot->kind == ir::SlotKind::Global) {
         std::string lbl = label(slot);

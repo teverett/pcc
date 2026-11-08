@@ -39,7 +39,7 @@ struct Operand {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Equate, Org, Dw, Db, Dh, Instr } kind = None;
+    enum Kind { None, Equate, Org, Align, Dw, Db, Dh, Instr } kind = None;
     std::string equateName;
     std::vector<std::vector<Syllable>> exprList;  // Equate (1)/Org (1)/Dw (N)
     std::string mnemonic;                           // Instr
@@ -160,6 +160,12 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         line.exprList.push_back(exprToSyllables(instr->operand(0)->expr()));
         return line;
     }
+    if (mnemonic == "align") {
+        line.kind = Line::Align;
+        if (instr->operand().empty() || instr->operand(0)->LBRACKET()) fail("'align' needs a plain byte-count operand");
+        line.exprList.push_back(exprToSyllables(instr->operand(0)->expr()));
+        return line;
+    }
     if (mnemonic == "dw" || mnemonic == "db" || mnemonic == "dh") {
         line.kind = mnemonic == "dw" ? Line::Dw : mnemonic == "db" ? Line::Db : Line::Dh;
         for (auto *op : instr->operand()) {
@@ -241,6 +247,14 @@ class Assembler {
             case Line::Org:
                 orgBase_ = evalExpr(line.exprList.at(0));
                 return;
+            case Line::Align: {
+                // Zero bytes up to the next multiple of the operand, counted
+                // from address 0.
+                uint64_t n = evalExpr(line.exprList.at(0));
+                if (n == 0) fail("'align' operand must be nonzero");
+                while ((orgBase_ + offset_) % n != 0) emit8(0);
+                return;
+            }
             case Line::Dw:
                 for (const auto &e : line.exprList) emit32(static_cast<uint32_t>(evalExpr(e)));
                 return;

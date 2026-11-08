@@ -385,7 +385,13 @@ class Assembler {
         EA s = classifyEA(src);
         EA d = classifyEA(dst);
         emit16(static_cast<uint16_t>(base | (d.reg << 9) | (d.mode << 6) | (s.mode << 3) | s.reg));
-        emitEAExtension(src);
+        if (src.kind == Operand::Imm && base != 0x2000) {
+            // A byte or word immediate is one extension word (a byte in its low half).
+            uint32_t v = evalExpr(src.expr);
+            emit16(static_cast<uint16_t>(base == 0x1000 ? (v & 0xFF) : (v & 0xFFFF)));
+        } else {
+            emitEAExtension(src);
+        }
         emitEAExtension(dst);
     }
 

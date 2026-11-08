@@ -73,8 +73,15 @@ int assignFrameOffsets(ir::Stmt *s, int nextOffset, const TypeWidths &widths) {
             nextOffset = assignFrameOffsets(s->loopBody.get(), nextOffset, widths);
             return assignFrameOffsets(s->postStmt.get(), nextOffset, widths);
         case ir::StmtKind::LocalDecl: {
+            // A Local's lowest address is frameOffset + size - one int
+            // (see ir::localLowOffset()), so a type wider than an int is
+            // aligned by that address rather than by frameOffset itself.
             int elemWidth = widthOf(s->declSlot->type, widths);
-            nextOffset = alignUp(nextOffset, elemWidth);
+            if (elemWidth > widths.intUnits) {
+                nextOffset = alignUp(nextOffset - widths.intUnits, elemWidth) + widths.intUnits;
+            } else {
+                nextOffset = alignUp(nextOffset, elemWidth);
+            }
             s->declSlot->frameOffset = nextOffset;
             int count = s->declSlot->arraySize > 0 ? s->declSlot->arraySize : 1;
             return nextOffset + elemWidth * count;
@@ -173,6 +180,8 @@ class Builder {
             // array-init element referring to it is resolved.
             if (fn.isExternDecl) {
                 irFn->isExternal = true;
+                irFn->hasPrototype = true;
+                for (const auto &p : fn.params) irFn->prototypeParams.push_back(p.type);
                 funcByName_[fn.name] = irFn.get();
                 prog_.functions.push_back(std::move(irFn));
                 continue;
@@ -316,10 +325,11 @@ class Builder {
             err(line, "call to undefined function '" + name + "'");
         }
         ir::Function *fn = it->second;
-        // An external function has no parameter list to check against;
-        // the call site's argument count is trusted as-is.
-        if (!fn->isExternal && fn->params.size() != argc) {
-            err(line, "'" + name + "' expects " + std::to_string(fn->params.size()) + " argument(s), got " +
+        // An external function with no `extern` prototype has no parameter
+        // list to check against; the call site's argument count is trusted.
+        size_t expected = fn->isExternal ? fn->prototypeParams.size() : fn->params.size();
+        if ((!fn->isExternal || fn->hasPrototype) && expected != argc) {
+            err(line, "'" + name + "' expects " + std::to_string(expected) + " argument(s), got " +
                           std::to_string(argc));
         }
         return fn;
@@ -510,6 +520,20 @@ class Builder {
         return wrapConvert(buildExpr(rhsAst), targetType, line);
     }
 
+    // A decimal literal's type is the first of its suffix's type and the
+    // wider ones after it (int, long, long long, each unsigned when
+    // suffixed 'u') that can represent its value on this target.
+    Type literalType(long value, Type suffixType) {
+        Type t = suffixType;
+        while (t.base != BaseType::LongLong) {
+            int bits = widthOf(t, widths_) * widths_.unitBits;
+            int valueBits = t.isUnsigned ? bits : bits - 1;
+            if (valueBits >= 63 || static_cast<unsigned long>(value) < (1UL << valueBits)) break;
+            t.base = t.base == BaseType::Int ? BaseType::Long : BaseType::LongLong;
+        }
+        return t;
+    }
+
     ir::ExprPtr buildExpr(const Expr &e) {
         auto out = std::make_unique<ir::Expr>();
         out->line = e.line;
@@ -517,7 +541,7 @@ class Builder {
             case ExprKind::IntLit:
                 out->kind = ir::ExprKind::IntLit;
                 out->intValue = e.intValue;
-                out->type = e.type;
+                out->type = literalType(e.intValue, e.type);
                 return out;
             case ExprKind::Var: {
                 ir::Slot *slot = resolveVar(e.name, e.line);
@@ -761,14 +785,18 @@ class Builder {
                 out->func = resolveFunc(e.name, e.args.size(), e.line);
                 for (size_t i = 0; i < e.args.size(); i++) {
                     ir::ExprPtr arg = buildExpr(*e.args[i]);
-                    // An external function has no parameter list to
-                    // convert against; its argument type passes through.
+                    // An external function without an `extern` prototype has
+                    // no parameter list to convert against; its argument type
+                    // passes through.
                     if (!out->func->isExternal) {
                         arg = wrapConvert(std::move(arg), out->func->params[i]->type, e.line);
+                    } else if (out->func->hasPrototype) {
+                        arg = wrapConvert(std::move(arg), out->func->prototypeParams[i], e.line);
                     }
                     out->args.push_back(std::move(arg));
                 }
-                out->type = out->func->isExternal ? Type{BaseType::Int, false} : out->func->returnType;
+                out->type = out->func->isExternal && !out->func->hasPrototype ? Type{BaseType::Int, false}
+                                                                               : out->func->returnType;
                 return out;
             }
             case ExprKind::CallPtr:

@@ -8,10 +8,10 @@
 // repeated-subtraction division core only loops a handful of times.
 int main() {
     unsigned int u;
-    u = 60000;
+    u = 60000u;
     if (u / 19999 != 3) return 0;
     if (u % 19999 != 3) return 0;
-    u = 50000;
+    u = 50000u;
     if (u / 12500 != 4) return 0;
     if (u % 12500 != 0) return 0;
     return 1;

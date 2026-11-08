@@ -27,10 +27,10 @@ namespace pcc {
 // addressing (see genIndexAddr()/slotAddrToPtr()).
 //
 // Frame layout: fp points at this call's saved-old-fp word. Param i sits
-// above fp at fp + 2*(i+1) (placed there by the caller before jsr). Local
-// frameOffset k sits below fp at fp - 2*k, reserved by the callee's
-// prologue; a local array's element i is therefore at base - 2*i (mirroring
-// a global array's base + 2*i — see genIndexAddr()).
+// above fp at fp + 2*(i+1) (placed there by the caller before jsr). A Local
+// sits below fp at fp - ir::localLowOffset(), reserved by the callee's
+// prologue; a local array's element i is at base + 2*i, the same direction
+// as a global array's (see genIndexAddr()).
 //
 // Calling convention: the caller pushes arguments onto the software stack
 // in reverse order (so argument 0 ends up nearest fp), jsr's, then pops
@@ -172,7 +172,7 @@ class M65C02Codegen : public Backend {
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
     // Leaves a Local/Param slot's storage address in ptr: fp +
-    // 2*(paramIndex+1) for a Param, fp - 2*frameOffset for a Local. Never
+    // 2*(paramIndex+1) for a Param, fp - ir::localLowOffset() for a Local. Never
     // called with a Global slot (always a compile-time label).
     void slotAddrToPtr(const ir::Slot *slot);
     // Reads/writes a scalar slot's value into/from ac: a direct label copy

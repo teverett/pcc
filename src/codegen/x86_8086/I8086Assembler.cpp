@@ -1,3 +1,4 @@
+#include <set>
 #include "I8086Assembler.h"
 
 #include <algorithm>
@@ -268,9 +269,17 @@ class Assembler {
    public:
     explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
 
+    // Every conditional jump starts out short; a pass that finds one out of
+    // range marks it long, and passes repeat (sizes only ever grow, so this
+    // settles) before the final pass emits the bytes.
     void run(const std::vector<Line> &lines) {
         stage_ = 1;
         pass(lines);
+        do {
+            grew_ = false;
+            checkRange_ = true;
+            pass(lines);
+        } while (grew_);
         stage_ = 2;
         pass(lines);
     }
@@ -285,6 +294,7 @@ class Assembler {
         bytes_.clear();
         offset_ = 0;
         orgBase_ = 0;
+        jccIndex_ = 0;
         for (const auto &line : lines) processLine(line);
     }
 
@@ -447,16 +457,34 @@ class Assembler {
             emit16(static_cast<uint16_t>(rel));
         }
     }
+    // A conditional jump: `opcode rel8`, or, once marked long (see run()), the
+    // opposite condition (the opcode with its low bit flipped) skipping a near
+    // `jmp` to the target.
     void emitRel8(uint8_t opcode, const Operand &target) {
-        uint32_t endAddr = orgBase_ + offset_ + 2;
+        size_t index = jccIndex_++;
         std::string externalName;
         uint32_t targetAddr = evalExpr(target.expr, &externalName);
-        // A short jCC's target is always internal control flow, never cross-file.
+        // A conditional jump's target is always internal control flow, never cross-file.
         if (stage_ == 2 && !externalName.empty()) {
             fail("conditional jump target '" + externalName + "' is external - short jumps can't cross file boundaries");
         }
+        if (longJcc_.count(index)) {
+            emit8(static_cast<uint8_t>(opcode ^ 1));
+            emit8(3);
+            uint32_t endAddr = orgBase_ + offset_ + 3;
+            emit8(0xE9);
+            emit16(static_cast<uint16_t>(static_cast<int32_t>(targetAddr) - static_cast<int32_t>(endAddr)));
+            return;
+        }
+        uint32_t endAddr = orgBase_ + offset_ + 2;
         int32_t rel = static_cast<int32_t>(targetAddr) - static_cast<int32_t>(endAddr);
-        if (stage_ == 2 && (rel < -128 || rel > 127)) fail("conditional jump target out of short (rel8) range");
+        if (rel < -128 || rel > 127) {
+            if (stage_ == 2) fail("conditional jump target out of short (rel8) range");
+            if (checkRange_) {
+                longJcc_.insert(index);
+                grew_ = true;
+            }
+        }
         emit8(opcode);
         emit8(static_cast<uint8_t>(static_cast<int8_t>(rel)));
     }
@@ -661,6 +689,10 @@ class Assembler {
     uint32_t offset_ = 0;
     uint32_t orgBase_ = 0;
     int stage_ = 1;
+    bool checkRange_ = false;  // labels are known from a previous pass
+    bool grew_ = false;
+    size_t jccIndex_ = 0;
+    std::set<size_t> longJcc_;
 };
 
 // The one `.text` section is just `bytes()` as-is; each label's symbol value is its

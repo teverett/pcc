@@ -121,11 +121,16 @@ class MC68328Codegen : public Backend {
     // genFunction()) pushes the caller's a6, points this call's a6 at it, and reserves N bytes
     // of locals below it: a Param grows upward past the saved a6/return address, a Local grows
     // downward into the reserved locals. `Slot::frameOffset` already accounts for width/alignment.
+    // A Local array is addressed from its lowest address, element 0 (see ir::localLowOffset()),
+    // and `byteOffset` counts upward from there, the same direction as a Global array's elements.
     std::string addr(const ir::Slot *slot, int byteOffset = 0) const {
         if (slot->kind == ir::SlotKind::Param) {
             return "[a6+" + std::to_string(slot->frameOffset + paramBigEndianFixup(slot) + byteOffset) + "]";
         }
-        return "[a6-" + std::to_string(slot->frameOffset + byteOffset) + "]";
+        if (slot->arraySize > 0) {
+            return "[a6-" + std::to_string(ir::localLowOffset(*slot, typeWidths()) - byteOffset) + "]";
+        }
+        return "[a6-" + std::to_string(ir::localOffsetDescendingWide(*slot, typeWidths()) + byteOffset) + "]";
     }
 
     // Operand text for a plain read/write of `slot`, `byteOffset` bytes in: a Global uses its

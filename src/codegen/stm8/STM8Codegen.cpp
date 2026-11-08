@@ -597,7 +597,8 @@ void STM8Codegen::genSlotAddress(const ir::Slot *slot) {
         code_ << "    ldw x, fp\n    ldwi y, " << slot->frameOffset << "\n    addw x, y\n";
         return;
     }
-    code_ << "    ldw x, fp\n    ldwi y, " << slot->frameOffset << "\n    subw x, y\n";
+    int below = ir::localOffsetDescendingWide(*slot, typeWidths());
+    code_ << "    ldw x, fp\n    ldwi y, " << below << "\n    subw x, y\n";
 }
 
 void STM8Codegen::genStmt(const ir::Stmt &s) {
@@ -679,9 +680,9 @@ void STM8Codegen::genStmt(const ir::Stmt &s) {
                     }
                     genSlotAddress(s.declSlot);  // x = address of element 0
                     if (i > 0) {
-                        // Element i sits below element 0 (Local array
-                        // addresses decrease as the index increases).
-                        code_ << "    ldwi y, " << (i * stride) << "\n    subw x, y\n";
+                        // Element i sits above element 0, the array's
+                        // lowest address.
+                        code_ << "    ldwi y, " << (i * stride) << "\n    addw x, y\n";
                     }
                     storeOperand(s.declSlot->type);
                 }
@@ -929,14 +930,7 @@ void STM8Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     code_ << "    ldw ptr, x\n";
     genSlotAddress(slot);  // x = slot's own storage address (Global/Local/Param alike)
     if (slot->arraySize > 0) {
-        if (slot->kind == ir::SlotKind::Global) {
-            code_ << "    ldw y, ptr\n    addw x, y\n    ldw ptr, x\n";  // ptr = base + index*2
-        } else {
-            // A Local/Param array's words sit at decreasing addresses as
-            // its index increases (the mirror of a Global array), so this
-            // is base-minus-scaled-index, not base-plus.
-            code_ << "    ldw y, ptr\n    subw x, y\n    ldw ptr, x\n";  // ptr = base - index*2
-        }
+        code_ << "    ldw y, ptr\n    addw x, y\n    ldw ptr, x\n";  // ptr = base + index*2
         return;
     }
     // Ordinary pointer arithmetic: base-plus-scaled-index regardless of

@@ -890,10 +890,8 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
 // base is runtime-relative to `fp` (genFrameAddr()), and for a pointer variable means
 // dereferencing that frame address.
 //
-// A Global array's element i sits at base+2*i, but a Local array's element i sits at base-2*i
-// (frameByteOffset() is negative and genFrameAddr() gives the array's lowest-index word):
-// getting this backwards silently corrupts whatever's above the array in the frame, so the
-// combine step below subtracts instead of adds whenever the base came from a Local/Param array.
+// Both a Global and a Local array's element i sits at base+2*i; genFrameAddr() gives a Local
+// array's element 0, its lowest address.
 void I8080Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
     // HL = index * widthOfType(slot->type), via `dad h` (doubling) repeated elemShift() times.
@@ -919,17 +917,7 @@ void I8080Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
             code_ << "    mov e,m\n    inx h\n    mov d,m\n";
         }
     }
-    const bool subtractIdx = !isGlobal && slot->arraySize > 0;
-    if (subtractIdx) {
-        // ptr = base(DE) - index*2(currently in `ptr`); same DE-minus-HL borrow chain as
-        // genBinary()'s "-" operator.
-        code_ << "    lhld ptr\n";
-        code_ << "    mov a,e\n    sub l\n    mov e,a\n";
-        code_ << "    mov a,d\n    sbb h\n    mov d,a\n";
-        storePair("ptr", "d");
-    } else {
-        code_ << "    lhld ptr\n    dad d\n    shld ptr\n";  // ptr = index*2 + base
-    }
+    code_ << "    lhld ptr\n    dad d\n    shld ptr\n";  // ptr = index*2 + base
 }
 
 // `ptr` already holds the element's address (genIndexAddr()). Reads its `words` 16-bit words,

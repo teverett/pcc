@@ -82,7 +82,8 @@ void ArmMCodegen::loadFrameByteAddr(const std::string &reg, int bytesFromFp) {
 }
 
 void ArmMCodegen::loadFrameAddr(const std::string &reg, const ir::Slot *slot) {
-    int bytesFromFp = slot->kind == ir::SlotKind::Param ? slot->frameOffset : -slot->frameOffset;
+    int bytesFromFp =
+        slot->kind == ir::SlotKind::Param ? slot->frameOffset : -ir::localLowOffset(*slot, typeWidths());
     loadFrameByteAddr(reg, bytesFromFp);
 }
 
@@ -430,9 +431,7 @@ void ArmMCodegen::genExpr(const ir::Expr &e) {
 
 // arraySize > 0 means slot is the array itself (base = its first word);
 // otherwise slot is a pointer variable, so the base is read from its stored
-// value. A Local/Param array's element i sits below element 0 (addresses
-// decrease as the index increases), the opposite of a Global array, so this
-// is base-minus-scaled-index there, not base-plus.
+// value. Either array's element addresses increase with the index.
 void ArmMCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // r0 = index
     int shift = elemShift(slot->type);
@@ -443,7 +442,7 @@ void ArmMCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
             code_ << "    adds r2,r2,r0\n";
         } else {
             loadFrameAddr("r2", slot);
-            code_ << "    subs r2,r2,r0\n";
+            code_ << "    adds r2,r2,r0\n";
         }
         return;
     }
@@ -459,7 +458,7 @@ void ArmMCodegen::genIndex(const ir::Expr &e) {
 
 // Unlike a Global's static trailer, a Local's frame storage is fresh per
 // activation, so arrayInit must be re-stored on every call. Element i's
-// address is slot->frameOffset+i*widthOfType(slot->type) bytes below r7.
+// address is i*widthOfType(slot->type) bytes above element 0's.
 void ArmMCodegen::genLocalArrayInit(const ir::Slot *slot) {
     int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
@@ -469,7 +468,7 @@ void ArmMCodegen::genLocalArrayInit(const ir::Slot *slot) {
             auto v = static_cast<uint64_t>(elem.value);
             loadImm32("r1", static_cast<uint32_t>(v >> 32));
         }
-        loadFrameByteAddr("r2", -(slot->frameOffset + w * static_cast<int>(i)));
+        loadFrameByteAddr("r2", -ir::localLowOffset(*slot, typeWidths()) + w * static_cast<int>(i));
         storeOperand("r2", slot->type);
     }
 }
@@ -535,7 +534,7 @@ void ArmMCodegen::genConvert(const ir::Expr &e) {
         if (from.isUnsigned) {
             code_ << "    movs r1,0\n";
         } else {
-            code_ << "    movs r1,r0\n    movs r4,31\n    asr r1,r4\n";
+            code_ << "    mov r1,r0\n    movs r4,31\n    asr r1,r4\n";
         }
     } else if (!fromWide && !toWide) {
         narrowR0To(to);

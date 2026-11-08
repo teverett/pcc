@@ -161,13 +161,12 @@ class PowerPCCodegen : public Backend {
     // A Local or Param's signed byte displacement from `fp`. genFunction()'s
     // prologue leaves `fp` pointing at the saved-old-`fp` word, with the
     // return address above it and the caller's pushed arguments (param 0
-    // closest) above that - so a Param's displacement is `+frameOffset`, a
-    // Local's is `-frameOffset`. A Local array's element i therefore sits
-    // at a *decreasing* address as i increases, the mirror of a Global
-    // array's layout.
-    static int slotDisp(const ir::Slot *slot) {
+    // closest) above that - so a Param's displacement is `+frameOffset`, and
+    // a Local's is its lowest address (see ir::localLowOffset()), with an
+    // array's element i or a wide value's later words above it.
+    int slotDisp(const ir::Slot *slot) const {
         if (slot->kind == ir::SlotKind::Param) return slot->frameOffset;
-        return -slot->frameOffset;
+        return -ir::localLowOffset(*slot, typeWidths());
     }
 
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);

@@ -356,10 +356,7 @@ std::string I386Codegen::computeElementAddr(const ir::Slot *slot, const ir::Expr
         if (slot->kind == ir::SlotKind::Global) {
             code_ << "    add ebx," << label(slot) << "\n";
         } else {
-            // A Local array's words sit at decreasing addresses as its element index
-            // increases (addr(slot) is the first word, closest to ebp), so this is
-            // base-minus-scaled-index rather than base-plus.
-            code_ << "    lea eax," << addr(slot) << "\n    sub eax,ebx\n    mov ebx,eax\n";
+            code_ << "    lea eax," << localArrayAddr(slot) << "\n    add ebx,eax\n";
         }
     } else {
         code_ << "    add ebx," << operandOf(slot) << "\n";
@@ -681,18 +678,18 @@ void I386Codegen::genLocalArrayInit(const ir::Slot *slot) {
             // always a native-int-width address, handled by the general case below.
             auto v = static_cast<uint64_t>(elem.value);
             code_ << "    mov eax," << static_cast<uint32_t>(v) << "\n";
-            code_ << "    mov " << addr(slot, byteOffset) << ",eax\n";
+            code_ << "    mov " << localArrayAddr(slot, byteOffset) << ",eax\n";
             code_ << "    mov eax," << static_cast<uint32_t>(v >> 32) << "\n";
-            code_ << "    mov " << addr(slot, byteOffset + 4) << ",eax\n";
+            code_ << "    mov " << localArrayAddr(slot, byteOffset + 4) << ",eax\n";
             continue;
         }
         code_ << "    mov eax," << arrayElemText(elem) << "\n";
         if (w == 1) {
-            code_ << "    mov byte " << addr(slot, byteOffset) << ",al\n";
+            code_ << "    mov byte " << localArrayAddr(slot, byteOffset) << ",al\n";
         } else if (w == 2) {
-            code_ << "    mov word " << addr(slot, byteOffset) << ",ax\n";
+            code_ << "    mov word " << localArrayAddr(slot, byteOffset) << ",ax\n";
         } else {
-            code_ << "    mov " << addr(slot, byteOffset) << ",eax\n";
+            code_ << "    mov " << localArrayAddr(slot, byteOffset) << ",eax\n";
         }
     }
 }
@@ -707,6 +704,8 @@ void I386Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Var) {
         if (operand.slot->kind == ir::SlotKind::Global) {
             code_ << "    mov eax," << label(operand.slot) << "\n";
+        } else if (operand.slot->kind == ir::SlotKind::Local && operand.slot->arraySize > 0) {
+            code_ << "    lea eax," << localArrayAddr(operand.slot) << "\n";
         } else {
             code_ << "    lea eax," << addr(operand.slot) << "\n";
         }
@@ -717,9 +716,7 @@ void I386Codegen::genAddrOf(const ir::Expr &operand) {
         int shift = elemShift(operand.slot->type);
         if (shift > 0) code_ << "    shl eax," << shift << "\n";
         if (operand.slot->kind != ir::SlotKind::Global) {
-            // A Local array's element address is base-minus-scaled-index (see
-            // computeElementAddr()).
-            code_ << "    mov ebx,eax\n    lea eax," << addr(operand.slot) << "\n    sub eax,ebx\n";
+            code_ << "    mov ebx,eax\n    lea eax," << localArrayAddr(operand.slot) << "\n    add eax,ebx\n";
             return;
         }
         std::string lbl = label(operand.slot);

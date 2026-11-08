@@ -70,7 +70,8 @@ Deliberate simplifications, not bugs:
 - An array never implicitly decays to a pointer — indexing (`arr[i]`)
   or an explicit `&arr[0]`/`&arr` is required to get its address; a
   bare array name used anywhere else is a compile error.
-- An array's initializer is always a literal list (`{1, 2, 3}`), or a
+- An array's initializer is always a literal list (`{1, -2, 3}`; each
+  literal may be negated), or a
   bare symbol name standing for that symbol's own address — the
   dispatch-table idiom a jump table needs (`int t[] = {f, g};`) — never
   a general expression. Under real separate compilation, a bare name

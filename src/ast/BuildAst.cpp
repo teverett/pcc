@@ -175,6 +175,7 @@ std::vector<ArrayInitElem> buildArrayInit(CParser::ArrayInitContext *ctx) {
         ArrayInitElem e;
         if (auto *num = dynamic_cast<CParser::NumArrayElemContext *>(elem)) {
             e.value = parsePlainNumber(num->NUMBER()->getSymbol(), num, "an array initializer element");
+            if (num->sign) e.value = -e.value;
         } else if (auto *sym = dynamic_cast<CParser::SymArrayElemContext *>(elem)) {
             e.isSymbol = true;
             e.symbolName = sym->IDENT()->getText();

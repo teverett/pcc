@@ -28,9 +28,9 @@ namespace pcc {
 //
 // Every function gets a real stack frame with a software frame pointer `fp` (the 8080 has no
 // base+displacement addressing mode): `lhld fp`/`lxi d,<offset>`/`dad d` computes a frame-
-// relative address by hand. Param i is at `fp+4+2*i`; Local i is at `fp-2*(frameOffset+i)`, so a
-// Local array's elements sit at decreasing addresses as the index increases, the mirror of a
-// Global array's increasing-address layout.
+// relative address by hand. Param i is at `fp+4+2*i`; Local i is at `fp-2*(frameOffset+i)`. A
+// Local array's elements sit at increasing addresses from its lowest one, element 0 (see
+// ir::localLowOffset()), the same layout as a Global array's.
 //
 // Comparisons (`<`,`<=`,`>`,`>=`) use the sign-bit-flip bias trick (XOR 0x8000 on both operands'
 // high bytes) since the 8080's flags have no overflow bit; `==`/`!=` are a plain subtract-and-
@@ -167,10 +167,12 @@ class I8080Codegen : public Backend {
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
     // A Local/Param's byte offset from `fp`: `fp+frameOffset` for a Param, `fp-frameOffset` for
-    // a Local. Never called for a Global.
-    static long frameByteOffset(const ir::Slot *slot, long extraBytes = 0) {
+    // a Local, each `extraBytes` further from `fp`. A Local array's is its element 0's, with
+    // `extraBytes` counting upward from there instead. Never called for a Global.
+    long frameByteOffset(const ir::Slot *slot, long extraBytes = 0) const {
         if (slot->kind == ir::SlotKind::Param) return static_cast<long>(slot->frameOffset) + extraBytes;
-        return -(static_cast<long>(slot->frameOffset) + extraBytes);
+        if (slot->arraySize > 0) return -static_cast<long>(ir::localLowOffset(*slot, typeWidths())) + extraBytes;
+        return -(static_cast<long>(ir::localOffsetDescendingWide(*slot, typeWidths())) + extraBytes);
     }
 
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }

@@ -68,14 +68,15 @@ void MipsCodegen::loadImm32(const std::string &reg, int32_t v) {
 }
 
 // A Param lives at fp+frameOffset (caller's pushed argument space); a
-// Local lives at fp-frameOffset. No bracketed memory operand exists
+// Local's address is its lowest one (see ir::localLowOffset()), its later
+// bytes above it. No bracketed memory operand exists
 // in this dialect, so the address is computed with a single ADDIU.
 void MipsCodegen::loadSlotAddr(const std::string &reg, const ir::Slot *slot) {
     if (slot->kind == ir::SlotKind::Global) {
         loadAddress(reg, label(slot));
         return;
     }
-    int offset = (slot->kind == ir::SlotKind::Param) ? slot->frameOffset : -slot->frameOffset;
+    int offset = slot->kind == ir::SlotKind::Param ? slot->frameOffset : -ir::localLowOffset(*slot, typeWidths());
     code_ << "    addiu " << reg << ",fp," << offset << "\n";
 }
 
@@ -406,9 +407,8 @@ void MipsCodegen::genExpr(const ir::Expr &e) {
 // otherwise `slot` is a pointer variable, so the base is read from its
 // stored value first.
 //
-// A Global array's element addresses increase with the index
-// (base+4*i); a Local array's instead decrease (base-4*i), since
-// frameOffset only grows downward from fp as locals get declared.
+// Both a Global and a Local array's element addresses increase with
+// the index (base+4*i).
 void MipsCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // t0 = index
     int shift = elemShift(slot->type);
@@ -418,8 +418,8 @@ void MipsCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
             loadAddress("t2", label(slot));
             code_ << "    addu t2,t2,t0\n";
         } else {
-            code_ << "    addiu t2,fp," << (-slot->frameOffset) << "\n";
-            code_ << "    subu t2,t2,t0\n";
+            loadSlotAddr("t2", slot);
+            code_ << "    addu t2,t2,t0\n";
         }
     } else {
         loadSlotAddr("t1", slot);
@@ -435,12 +435,12 @@ void MipsCodegen::genIndex(const ir::Expr &e) {
 
 // Stores a Local array's compile-time initializer values into its
 // frame slots, re-run on every call since the storage is freshly
-// reserved each time. Element i (frameOffset K) lives at fp-4*(K+i).
+// reserved each time. Element i lives w*i bytes above element 0.
 void MipsCodegen::genLocalArrayInit(const ir::Slot *slot) {
     int w = widthOfType(slot->type);
     for (size_t i = 0; i < slot->arrayInit.size(); i++) {
         const ir::ArrayInitElem &elem = slot->arrayInit[i];
-        int offset = -(slot->frameOffset + w * static_cast<int>(i));
+        int offset = -ir::localLowOffset(*slot, typeWidths()) + w * static_cast<int>(i);
         if (w == 8 && !elem.isSymbol) {
             // A long long element is split across both words.
             auto v = static_cast<uint64_t>(elem.value);

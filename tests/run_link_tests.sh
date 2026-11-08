@@ -44,8 +44,8 @@ case "$TARGET" in
             echo "qemu-system-i386 not found on PATH - install it (e.g. 'brew install qemu')" >&2
             exit 1
         fi
-        if ! command -v nc >/dev/null 2>&1; then
-            echo "nc not found on PATH - needed to talk to qemu's monitor" >&2
+        if ! command -v python3 >/dev/null 2>&1; then
+            echo "python3 not found on PATH - needed to talk to qemu's monitor" >&2
             exit 1
         fi
         ;;
@@ -56,9 +56,13 @@ case "$TARGET" in
 esac
 
 fail=0
-qemu_port_counter=0
 tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
+# qemu monitor sockets live in their own short directory: a unix socket
+# path is limited to about 104 bytes, which `$tmpdir` plus a long case
+# name can exceed.
+sockdir="$(mktemp -d /tmp/pccq.XXXXXX)"
+qemu_count=0
+trap 'rm -rf "$tmpdir" "$sockdir"' EXIT
 
 to_signed() {
     local value="$1" bits="$2"
@@ -108,7 +112,7 @@ go 10000
 e ac
 SIMH
 
-    pdp7 <"$simfile" >"$outfile" 2>/dev/null
+    pdp7 "$simfile" </dev/null >"$outfile" 2>/dev/null
 
     local ac_octal
     ac_octal="$(grep '^AC:' "$outfile" | awk '{print $2}')"
@@ -136,40 +140,28 @@ check_x86() {
     local binfile="$tmpdir/$name.bin"
     link_case "$a" "$b" "$name" "$fmt" "$linkfmt" "$binfile" || return 1
 
-    pkill -f qemu-system-i386 2>/dev/null
-    sleep 1
-
-    qemu_port_counter=$((qemu_port_counter + 1))
-    local port=$((25000 + ($$ % 10000) + qemu_port_counter))
+    qemu_count=$((qemu_count + 1))
+    local monitor="$sockdir/$qemu_count"
     local outfile="$tmpdir/$name.out"
 
     if [ "$loadkernel" = "1" ]; then
-        qemu-system-i386 -kernel "$binfile" -monitor "tcp:127.0.0.1:$port,server,nowait" \
+        qemu-system-i386 -kernel "$binfile" -monitor "unix:$monitor,server,nowait" \
             -display none -no-reboot >/dev/null 2>&1 &
     else
-        qemu-system-i386 -fda "$binfile" -monitor "tcp:127.0.0.1:$port,server,nowait" \
+        qemu-system-i386 -fda "$binfile" -monitor "unix:$monitor,server,nowait" \
             -display none -no-reboot >/dev/null 2>&1 &
     fi
     local qemu_pid=$!
     ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
-    local waited=0 prev_eax="" cur_eax="" stable_eax=0
-    while [ "$waited" -lt 40 ]; do
-        echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
-        cur_eax="$(grep -oE 'EAX=[0-9a-fA-F]+' "$outfile" | head -1)"
-        if [ -n "$cur_eax" ] && [ "$cur_eax" = "$prev_eax" ]; then
-            stable_eax=$((stable_eax + 1))
-            if [ "$stable_eax" -ge 3 ]; then
-                break
-            fi
-        else
-            stable_eax=0
-        fi
-        prev_eax="$cur_eax"
-        sleep 1
-        waited=$((waited + 1))
-    done
+    # Returns once the program reaches its final spin loop (see qemu_wait.py);
+    # an 8086 boot image's program runs in code segment 0, not the BIOS's.
+    if [ "$loadkernel" = "1" ]; then
+        python3 -I "$SCRIPT_DIR/qemu_wait.py" "$monitor" 40 >"$outfile"
+    else
+        python3 -I "$SCRIPT_DIR/qemu_wait.py" "$monitor" 40 'CS =0000 ' >"$outfile"
+    fi
 
     kill "$qemu_pid" 2>/dev/null
     wait "$qemu_pid" 2>/dev/null

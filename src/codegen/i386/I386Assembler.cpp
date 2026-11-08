@@ -122,10 +122,12 @@ Operand buildOperand(PccAsmParser::OperandContext *ctx) {
             op.memHasEbp = true;
             op.memHasDisp = true;
             op.expr = {syls[1]};
-        } else if (syls.size() == 1 && !isEbx(syls[0])) {
+        } else if (std::none_of(syls.begin(), syls.end(),
+                                [&](const Syllable &sy) { return isEbx(sy) || isEbp(sy); })) {
+            // No register at all: an absolute address, e.g. `[label]` or `[label+4]`.
             op.memHasEbx = false;
             op.memHasDisp = true;
-            op.expr = {syls[0]};
+            op.expr = syls;
         } else {
             fail("unrecognized memory operand shape");
         }
