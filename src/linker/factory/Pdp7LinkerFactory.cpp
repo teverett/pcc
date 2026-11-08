@@ -5,6 +5,7 @@
 
 #include "linker/GenericLinker.h"
 #include "codegen/pdp7/Pdp7Assembler.h"
+#include "codegen/pdp7/Pdp7Codegen.h"
 
 namespace pcc {
 
@@ -82,43 +83,12 @@ std::unique_ptr<TargetLinker> makePdp7Linker() {
     config.baseAddress = kPdp7BaseAddress * 3;
     config.machineType = kPdp7CoffMachine;
     // Beyond the entry sequence, this is the single object that defines
-    // the shared runtime cells (__sp/__fp/__stmp/__stmp2/__addr/
-    // __retval/__retaddr) and the shared __divmod routine, since every
-    // user object leaves these as external references rather than
-    // defining its own copy. divmod is included unconditionally since
-    // this object has no visibility into what later input files need.
-    config.entryObject = assemblePdp7Object(
-        "jms FN_main\n"
-        "hlt\n"
-        "__one: 1\n"
-        "__zero: 0\n"
-        "__sp: 8191\n"
-        "__fp: 0\n"
-        "__stmp: 0\n"
-        "__stmp2: 0\n"
-        "__addr: 0\n"
-        "__retval: 0\n"
-        "__retaddr: 0\n"
-        "__dm_a: 0\n"
-        "__dm_b: 0\n"
-        "__dm_q: 0\n"
-        "__divmod: 0\n"
-        "   dzm __dm_q\n"
-        "J_dmloop:\n"
-        "   lac __dm_b\n"
-        "   cma\n"
-        "   tad __one\n"
-        "   tad __dm_a\n"
-        "   sma\n"
-        "   jmp J_dmbody\n"
-        "   jmp J_dmdone\n"
-        "J_dmbody:\n"
-        "   dac __dm_a\n"
-        "   isz __dm_q\n"
-        "   jmp J_dmloop\n"
-        "J_dmdone:\n"
-        "   lac __dm_q\n"
-        "   jmp i __divmod\n");
+    // the shared runtime (see pdp7RuntimeAsm()), since every user object
+    // leaves it as external references rather than defining its own
+    // copy. Every routine is included, since this object has no
+    // visibility into what the input files need.
+    config.entryObject = assemblePdp7Object("jms FN_main\nhlt\n" +
+                                            pdp7RuntimeAsm(/*pushPop=*/true, /*divMod=*/true, /*uDivMod=*/true));
     config.relocPatchers[kPdp7RelocOr] = patchPdp7Or;
     config.relocPatchers[kPdp7RelocAdd] = patchPdp7Add;
     config.relocPatchers[kPdp7RelocSub] = patchPdp7Sub;

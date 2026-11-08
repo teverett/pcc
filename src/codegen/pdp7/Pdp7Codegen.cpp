@@ -244,35 +244,7 @@ std::string Pdp7Codegen::generate(const ir::Program &prog, bool objectMode) {
     // the one shared definition.
     if (!objectMode) {
         size_t sharedStart = trailer_.size();
-        trailer_.push_back("__one: 1");
-        trailer_.push_back("__zero: 0");
-        // `__sp` starts at 8191 (017777 octal), the highest word the
-        // 13-bit direct-addressing field can reach, and grows
-        // downward toward where code/data grows up from
-        // `kPdp7BaseAddress` - the two regions only collide if
-        // combined code+data and worst-case call depth exceed the
-        // 8192-word window. `__fp`'s starting value is never read
-        // before the first call gives it a real one, so 0 is a
-        // placeholder. `__stmp`/`__addr`/`__retval`/`__retaddr` are
-        // shared scratch cells, safe under recursion since each use
-        // is a single short, call-free sequence.
-        trailer_.push_back("__sp: 8191");
-        trailer_.push_back("__fp: 0");
-        trailer_.push_back("__stmp: 0");
-        trailer_.push_back("__stmp2: 0");
-        trailer_.push_back("__addr: 0");
-        trailer_.push_back("__retval: 0");
-        trailer_.push_back("__retaddr: 0");
-        // A wide return value can't survive emitEpilogueAndReturn()'s
-        // "__sp = __fp" teardown the way a narrow one survives in
-        // `__retval`; these four cells (enough for `long long`'s
-        // 4-word width) are the wide equivalent, word i in
-        // `__retvalW<i>`.
-        trailer_.push_back("__retvalW0: 0");
-        trailer_.push_back("__retvalW1: 0");
-        trailer_.push_back("__retvalW2: 0");
-        trailer_.push_back("__retvalW3: 0");
-        ensureDivModRoutine();
+        ensureRuntimeRoutines();
         trailerRanges.push_back({homeFile, sharedStart, trailer_.size()});
     }
 
@@ -313,21 +285,13 @@ void Pdp7Codegen::genFunction(const ir::FunctionBody &fn) {
 }
 
 void Pdp7Codegen::pushAC() {
-    code_ << "   dac __stmp\n";
-    code_ << "   lac __sp\n";
-    code_ << "   tad " << literalLabel(-1) << "\n";
-    code_ << "   dac __sp\n";
-    code_ << "   lac __stmp\n";
-    code_ << "   dac __sp i\n";
+    needPushPop_ = true;
+    code_ << "   jms __push\n";
 }
 
 void Pdp7Codegen::popAC() {
-    code_ << "   lac __sp i\n";
-    code_ << "   dac __stmp\n";
-    code_ << "   lac __sp\n";
-    code_ << "   tad __one\n";
-    code_ << "   dac __sp\n";
-    code_ << "   lac __stmp\n";
+    needPushPop_ = true;
+    code_ << "   jms __pop\n";
 }
 
 void Pdp7Codegen::emitPrologue(const ir::Function *fn) {
@@ -1208,6 +1172,15 @@ void Pdp7Codegen::genExpr(const ir::Expr &e) {
         }
         case ir::ExprKind::Assign: {
             if (e.lhs) {  // slot[idx] = rhs
+                if (isCallFree(*e.rhs)) {
+                    computeElementAddressAC(e.slot, *e.lhs);
+                    std::string T = allocTemp();
+                    declareTemp(T);
+                    code_ << "   dac " << T << "\n";
+                    genExpr(*e.rhs);
+                    code_ << "   dac " << T << " i\n";
+                    return;
+                }
                 computeElementAddress(e.slot, *e.lhs);  // pushes the element's own address
                 genExpr(*e.rhs);                          // may itself call - the address is safe on the stack
                 storeThroughStackedAddress();              // dac leaves AC unchanged
@@ -1237,6 +1210,14 @@ void Pdp7Codegen::genExpr(const ir::Expr &e) {
         }
         case ir::ExprKind::DerefAssign: {
             genExpr(*e.lhs);  // AC = pointer value
+            if (isCallFree(*e.rhs)) {
+                std::string T = allocTemp();
+                declareTemp(T);
+                code_ << "   dac " << T << "\n";
+                genExpr(*e.rhs);
+                code_ << "   dac " << T << " i\n";
+                return;
+            }
             pushAC();          // protect it - evaluating rhs may itself call
             genExpr(*e.rhs);  // AC = value to store
             storeThroughStackedAddress();
@@ -1244,6 +1225,11 @@ void Pdp7Codegen::genExpr(const ir::Expr &e) {
         }
         case ir::ExprKind::CompoundAssign: {
             if (e.lhs) {  // slot[idx] <op>= rhs (including slot[idx]++/--)
+                if (isCallFree(*e.rhs)) {
+                    computeElementAddressAC(e.slot, *e.lhs);
+                    genCompoundThroughCell(e);
+                    return;
+                }
                 computeElementAddress(e.slot, *e.lhs);  // pushes the element's own address
                 genCompoundThroughStackedAddress(e);
                 return;
@@ -1267,6 +1253,10 @@ void Pdp7Codegen::genExpr(const ir::Expr &e) {
         }
         case ir::ExprKind::CompoundDerefAssign: {
             genExpr(*e.lhs);  // AC = pointer value
+            if (isCallFree(*e.rhs)) {
+                genCompoundThroughCell(e);
+                return;
+            }
             pushAC();          // protect it - evaluating rhs may itself call
             genCompoundThroughStackedAddress(e);
             return;
@@ -1350,40 +1340,117 @@ void Pdp7Codegen::genExpr(const ir::Expr &e) {
     }
 }
 
+std::optional<std::string> Pdp7Codegen::simpleCell(const ir::Expr &e) {
+    if (e.kind == ir::ExprKind::IntLit) return literalLabel(e.intValue);
+    if (e.kind != ir::ExprKind::Var || isWide(e.type)) return std::nullopt;
+    const ir::Slot *slot = e.slot;
+    if (!isPointer(slot->type) && slot->type.base == BaseType::Char) return std::nullopt;  // needs narrowAC()
+    if (slot->kind == ir::SlotKind::Global) return label(slot);
+    if (currentFunctionIsLeaf_) return leafLabel(slot);
+    return std::nullopt;
+}
+
+bool Pdp7Codegen::isCallFree(const ir::Expr &e) {
+    if (e.kind == ir::ExprKind::Call || e.kind == ir::ExprKind::CallPtr) return false;
+    for (const ir::Expr *child : {e.lhs.get(), e.rhs.get(), e.elseExpr.get()}) {
+        if (child && !isCallFree(*child)) return false;
+    }
+    for (const auto &arg : e.args) {
+        if (!isCallFree(*arg)) return false;
+    }
+    return true;
+}
+
+std::string Pdp7Codegen::genOperandPair(const ir::Expr &lhs, const ir::Expr &rhs, RhsXform xform,
+                                        const std::string &dest) {
+    if (dest.empty()) {
+        if (rhs.kind == ir::ExprKind::IntLit) {
+            long v = rhs.intValue;
+            if (xform == RhsXform::Negate) v = -v;
+            if (xform == RhsXform::Complement) v = ~v;
+            genExpr(lhs);
+            return literalLabel(v);
+        }
+        if (xform == RhsXform::None) {
+            if (auto cell = simpleCell(rhs)) {
+                genExpr(lhs);
+                return *cell;
+            }
+        }
+    }
+    std::string cell = dest.empty() ? "__stmp2" : dest;
+    auto finishRhs = [&]() {
+        if (xform == RhsXform::Negate) code_ << "   cma\n   tad __one\n";
+        if (xform == RhsXform::Complement) code_ << "   cma\n";
+        code_ << "   dac " << cell << "\n";
+    };
+    if (simpleCell(lhs)) {
+        genExpr(rhs);
+        finishRhs();
+        genExpr(lhs);
+        return cell;
+    }
+    genExpr(lhs);
+    if (isCallFree(rhs)) {
+        std::string T = allocTemp();
+        declareTemp(T);
+        code_ << "   dac " << T << "\n";
+        genExpr(rhs);
+        finishRhs();
+        code_ << "   lac " << T << "\n";
+        return cell;
+    }
+    pushAC();
+    genExpr(rhs);
+    finishRhs();
+    popAC();
+    return cell;
+}
+
 // &slot[idxExpr], pushed on the stack. slot is the array itself when
 // it's a declared array (slot->arraySize > 0); for a plain pointer
 // variable the base address to index from is its value (lac), not
 // its storage address (law) - indexing a pointer parameter needs this
 // distinction.
 void Pdp7Codegen::computeElementAddress(const ir::Slot *slot, const ir::Expr &idxExpr) {
-    // A Local array's elements sit at decreasing addresses as the
-    // index increases (opposite a Global array's layout), so the
-    // index is negated up front, making the final `tad` compute
-    // `base - index` for a Local array but `base + index` otherwise.
+    computeElementAddressAC(slot, idxExpr);
+    pushAC();
+}
+
+// A Local array's elements sit at decreasing addresses as the index
+// increases (opposite a Global array's layout), so its scaled index is
+// subtracted from the base rather than added. The base address never
+// calls or touches `__stmp2`, so the index waits there while it's
+// computed.
+void Pdp7Codegen::computeElementAddressAC(const ir::Slot *slot, const ir::Expr &idxExpr) {
     bool descending = slot->arraySize > 0 && slot->kind == ir::SlotKind::Local;
-    genExpr(idxExpr);     // AC = index (may itself call)
-    // Scale the index by the element width - unrolled as elemW-1
-    // self-adds rather than a real multiply, cheap for widths 1/2/4.
     int elemW = widthOfType(slot->type);
+    if (idxExpr.kind == ir::ExprKind::IntLit) {
+        long offset = idxExpr.intValue * elemW;
+        if (descending) offset = -offset;
+        emitSlotBaseAddress(slot);
+        if (offset != 0) code_ << "   tad " << literalLabel(offset) << "\n";
+        return;
+    }
+    genExpr(idxExpr);  // AC = index (may itself call)
+    // Scaled by the element width as elemW-1 self-adds rather than a
+    // real multiply, cheap for widths 1/2/4.
     if (elemW > 1) {
         std::string Tidx = allocTemp();
         declareTemp(Tidx);
         code_ << "   dac " << Tidx << "\n";
         for (int i = 1; i < elemW; i++) code_ << "   tad " << Tidx << "\n";
     }
-    if (descending) code_ << "   cma\n   tad __one\n";  // AC = -(scaled index)
-    pushAC();               // protect the (possibly negated) index across the base-address computation below
+    if (descending) code_ << "   cma\n   tad __one\n";
+    code_ << "   dac __stmp2\n";
     emitSlotBaseAddress(slot);
-    code_ << "   dac __addr\n";
-    popAC();                 // AC = index or -index
-    code_ << "   tad __addr\n";  // AC = base +/- index = the element's own address
-    pushAC();                     // leave it on the stack for the caller
+    code_ << "   tad __stmp2\n";
 }
 
 void Pdp7Codegen::genIndex(const ir::Expr &e) {
-    computeElementAddress(e.slot, *e.lhs);
-    std::string addr = popAddressIntoScratch();
-    code_ << "   lac " << addr << " i\n";
+    computeElementAddressAC(e.slot, *e.lhs);
+    code_ << "   dac __addr\n";
+    code_ << "   lac __addr i\n";
 }
 
 // &operand: a plain variable/array, an array element, or a bare
@@ -1395,8 +1462,7 @@ void Pdp7Codegen::genAddrOf(const ir::Expr &operand) {
         return;
     }
     if (operand.kind == ir::ExprKind::Index) {
-        computeElementAddress(operand.slot, *operand.lhs);
-        popAC();  // AC = the address itself - exactly what &slot[idx] wants
+        computeElementAddressAC(operand.slot, *operand.lhs);
         return;
     }
     if (operand.kind == ir::ExprKind::Func) {
@@ -1503,6 +1569,20 @@ void Pdp7Codegen::finishCompoundOp(const ir::Expr &e, const std::string &rhsCell
     err(e.line, "internal: unhandled compound-assignment operator '" + op + "'");
 }
 
+void Pdp7Codegen::genCompoundThroughCell(const ir::Expr &e) {
+    std::string T = allocTemp();
+    declareTemp(T);
+    code_ << "   dac " << T << "\n";
+    genExpr(*e.rhs);
+    std::string rhsCell = prepareCompoundRhs(e);
+    code_ << "   lac " << T << " i\n";  // AC = old
+    if (e.yieldOld) pushAC();
+    finishCompoundOp(e, rhsCell);
+    narrowAC(e.type);
+    code_ << "   dac " << T << " i\n";
+    if (e.yieldOld) popAC();
+}
+
 void Pdp7Codegen::genCompoundThroughStackedAddress(const ir::Expr &e) {
     genExpr(*e.rhs);  // may itself call - the address is safe on the stack
     std::string rhsCell = prepareCompoundRhs(e);
@@ -1518,13 +1598,8 @@ void Pdp7Codegen::genCompoundThroughStackedAddress(const ir::Expr &e) {
 void Pdp7Codegen::genBinary(const ir::Expr &e) {
     const std::string &op = e.op;
     if (op == "+" || op == "-") {
-        genExpr(*e.lhs);
-        pushAC();  // protect lhs - rhs's own evaluation may call (even back into this function)
-        genExpr(*e.rhs);
-        if (op == "-") code_ << "   cma\n   tad __one\n";
-        code_ << "   dac __stmp2\n";  // __stmp2, not __stmp - popAC() below uses __stmp internally
-        popAC();  // AC = lhs
-        code_ << "   tad __stmp2\n";
+        std::string rhsCell = genOperandPair(*e.lhs, *e.rhs, op == "-" ? RhsXform::Negate : RhsXform::None);
+        code_ << "   tad " << rhsCell << "\n";
         return;
     }
     if (op == "*") {
@@ -1583,13 +1658,9 @@ void Pdp7Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const i
 //   sza     - skip next instruction if AC == 0
 
 void Pdp7Codegen::emitEq(const ir::Expr &lhs, const ir::Expr &rhs, bool negate) {
-    genExpr(lhs);
-    pushAC();  // protect lhs - rhs's own evaluation may call
-    genExpr(rhs);
-    code_ << "   dac __stmp2\n";  // __stmp2, not __stmp - popAC() below uses __stmp internally
-    popAC();  // AC = lhs
+    std::string rhsCell = genOperandPair(lhs, rhs, RhsXform::None);
     std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
-    code_ << "   sad __stmp2\n   jmp " << Ltrue << "\n   jmp " << Lfalse << "\n";
+    code_ << "   sad " << rhsCell << "\n   jmp " << Ltrue << "\n   jmp " << Lfalse << "\n";
     code_ << Ltrue << ":\n   lac __one\n   jmp " << Ldone << "\n";
     code_ << Lfalse << ":\n   lac __zero\n";
     code_ << Ldone << ":\n";
@@ -1597,24 +1668,100 @@ void Pdp7Codegen::emitEq(const ir::Expr &lhs, const ir::Expr &rhs, bool negate) 
 }
 
 void Pdp7Codegen::emitSignedLtCells(const std::string &A, const std::string &B, const std::string &Ltrue,
-                                     const std::string &Lfalse) {
-    std::string LaNeg = newLabel(), LaPos = newLabel();
-    std::string LbNegWhenANeg = newLabel(), LbPosWhenANeg = newLabel();
-    std::string LbNegWhenAPos = newLabel(), LbPosWhenAPos = newLabel();
+                                     const std::string &Lfalse, int signA, int signB) {
     std::string Lsub = newLabel();
-    code_ << "   lac " << A << "\n   sma\n   jmp " << LaPos << "\n   jmp " << LaNeg << "\n";
-    code_ << LaNeg << ":\n   lac " << B << "\n   sma\n   jmp " << LbPosWhenANeg << "\n   jmp "
-          << LbNegWhenANeg << "\n";
-    code_ << LbPosWhenANeg << ":\n   jmp " << Ltrue << "\n";  // A<0<=B -> A<B
-    code_ << LbNegWhenANeg << ":\n   jmp " << Lsub << "\n";   // both negative -> safe subtract
-    code_ << LaPos << ":\n   lac " << B << "\n   sma\n   jmp " << LbPosWhenAPos << "\n   jmp "
-          << LbNegWhenAPos << "\n";
-    code_ << LbNegWhenAPos << ":\n   jmp " << Lfalse << "\n";  // A>=0, B<0 -> A>=B
-    code_ << LbPosWhenAPos << ":\n   jmp " << Lsub << "\n";    // both non-negative -> safe subtract
+    bool subUsed = false;
+    // Jumps to `ifNonNeg`/`ifNeg` on B's sign.
+    auto branchOnB = [&](const std::string &ifNonNeg, const std::string &ifNeg) {
+        if (ifNonNeg == Lsub || ifNeg == Lsub) subUsed = true;
+        if (signB == 0) {
+            code_ << "   jmp " << ifNonNeg << "\n";
+        } else if (signB == 1) {
+            code_ << "   jmp " << ifNeg << "\n";
+        } else {
+            code_ << "   lac " << B << "\n   sma\n   jmp " << ifNonNeg << "\n   jmp " << ifNeg << "\n";
+        }
+    };
+    // A<0<=B is true and A>=0>B false; same-sign operands subtract.
+    if (signA == 1) {
+        branchOnB(Ltrue, Lsub);
+    } else if (signA == 0) {
+        branchOnB(Lsub, Lfalse);
+    } else {
+        std::string LaNeg = newLabel(), LaPos = newLabel();
+        code_ << "   lac " << A << "\n   sma\n   jmp " << LaPos << "\n   jmp " << LaNeg << "\n";
+        code_ << LaNeg << ":\n";
+        branchOnB(Ltrue, Lsub);
+        code_ << LaPos << ":\n";
+        branchOnB(Lsub, Lfalse);
+    }
+    if (!subUsed) return;
     code_ << Lsub << ":\n";
     code_ << "   lac " << B << "\n   cma\n   tad __one\n   dac __stmp2\n";
     code_ << "   lac " << A << "\n   tad __stmp2\n";  // AC = A-B, safe: same sign, can't overflow
     code_ << "   sma\n   jmp " << Lfalse << "\n   jmp " << Ltrue << "\n";
+}
+
+void Pdp7Codegen::genCompareCells(const ir::Expr &a, const ir::Expr &b, bool unsignedCmp, std::string &A,
+                                  std::string &B, int &signA, int &signB) {
+    signA = signB = -1;
+    auto flip = [&]() {
+        if (unsignedCmp) code_ << "   xor " << literalLabel(0400000L) << "\n";
+    };
+    // A cell already holding the operand's comparison value: a
+    // constant (flipped at compile time) or, for a signed comparison,
+    // a plain variable.
+    auto ready = [&](const ir::Expr &e, int &sign) -> std::optional<std::string> {
+        if (e.kind == ir::ExprKind::IntLit) {
+            long w = pdp7Word(e.intValue);
+            if (unsignedCmp) w ^= 0400000L;
+            sign = (w & 0400000L) ? 1 : 0;
+            return literalLabel(w);
+        }
+        if (unsignedCmp) return std::nullopt;
+        return simpleCell(e);
+    };
+    auto toTemp = [&]() {
+        std::string T = allocTemp();
+        declareTemp(T);
+        code_ << "   dac " << T << "\n";
+        return T;
+    };
+    std::optional<std::string> ra = ready(a, signA), rb = ready(b, signB);
+    if (ra && rb) {
+        A = *ra;
+        B = *rb;
+        return;
+    }
+    if (rb) {
+        B = *rb;
+        genExpr(a);
+        flip();
+        A = toTemp();
+        return;
+    }
+    if (ra) {
+        A = *ra;
+        genExpr(b);
+        flip();
+        B = toTemp();
+        return;
+    }
+    genExpr(a);
+    flip();
+    if (isCallFree(b)) {
+        A = toTemp();
+        genExpr(b);
+        flip();
+        B = toTemp();
+        return;
+    }
+    pushAC();  // a call in `b` could re-enter this function and reuse a static temp
+    genExpr(b);
+    flip();
+    B = toTemp();
+    popAC();
+    A = toTemp();
 }
 
 void Pdp7Codegen::emitLt(const ir::Expr &lhs, const ir::Expr &rhs, bool negate) {
@@ -1623,19 +1770,11 @@ void Pdp7Codegen::emitLt(const ir::Expr &lhs, const ir::Expr &rhs, bool negate) 
     // signed order. Delegates to emitSignedLtCells() rather than a
     // plain subtract-and-test-sign, since the flip routinely produces
     // operands at opposite extremes, which a naive subtract overflows.
-    bool unsignedCmp = lhs.type.isUnsigned;
-    genExpr(lhs);
-    if (unsignedCmp) code_ << "   xor " << literalLabel(0400000L) << "\n";
-    std::string A = allocTemp();
-    declareTemp(A);
-    code_ << "   dac " << A << "\n";
-    genExpr(rhs);
-    if (unsignedCmp) code_ << "   xor " << literalLabel(0400000L) << "\n";
-    std::string B = allocTemp();
-    declareTemp(B);
-    code_ << "   dac " << B << "\n";
+    std::string A, B;
+    int signA, signB;
+    genCompareCells(lhs, rhs, lhs.type.isUnsigned, A, B, signA, signB);
     std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
-    emitSignedLtCells(A, B, Ltrue, Lfalse);
+    emitSignedLtCells(A, B, Ltrue, Lfalse, signA, signB);
     code_ << Ltrue << ":\n   lac __one\n   jmp " << Ldone << "\n";
     code_ << Lfalse << ":\n   lac __zero\n";
     code_ << Ldone << ":\n";
@@ -1671,40 +1810,28 @@ void Pdp7Codegen::genCondBranch(const ir::Expr &cond, const std::string &Lfalse)
             const ir::Expr *b = cond.rhs.get();
             bool negate = (op == ">=" || op == "<=");
             if (op == ">" || op == "<=") std::swap(a, b);
-            bool unsignedCmp = a->type.isUnsigned;
-            genExpr(*a);
-            if (unsignedCmp) code_ << "   xor " << literalLabel(0400000L) << "\n";
-            std::string A = allocTemp();
-            declareTemp(A);
-            code_ << "   dac " << A << "\n";
-            genExpr(*b);
-            if (unsignedCmp) code_ << "   xor " << literalLabel(0400000L) << "\n";
-            std::string B = allocTemp();
-            declareTemp(B);
-            code_ << "   dac " << B << "\n";
+            std::string A, B;
+            int signA, signB;
+            genCompareCells(*a, *b, a->type.isUnsigned, A, B, signA, signB);
             // emitSignedLtCells() tests A<B directly; negate just
             // picks which outcome continues to Lfalse.
             std::string Ltrue = newLabel();
             if (!negate) {
-                emitSignedLtCells(A, B, Ltrue, Lfalse);
+                emitSignedLtCells(A, B, Ltrue, Lfalse, signA, signB);
                 code_ << Ltrue << ":\n";
             } else {
-                emitSignedLtCells(A, B, Lfalse, Ltrue);
+                emitSignedLtCells(A, B, Lfalse, Ltrue, signA, signB);
                 code_ << Ltrue << ":\n";
             }
             return;
         }
         if (!wideCmp && (op == "==" || op == "!=")) {
-            genExpr(*cond.lhs);
-            pushAC();  // protect lhs - rhs's own evaluation may call
-            genExpr(*cond.rhs);
-            code_ << "   dac __stmp2\n";  // __stmp2, not __stmp - popAC() below uses __stmp internally
-            popAC();  // AC = lhs
+            std::string rhsCell = genOperandPair(*cond.lhs, *cond.rhs, RhsXform::None);
             if (op == "!=") {
-                code_ << "   sad __stmp2\n   jmp " << Lfalse << "\n";
+                code_ << "   sad " << rhsCell << "\n   jmp " << Lfalse << "\n";
             } else {
                 std::string Ltrue = newLabel();
-                code_ << "   sad __stmp2\n   jmp " << Ltrue << "\n   jmp " << Lfalse << "\n";
+                code_ << "   sad " << rhsCell << "\n   jmp " << Ltrue << "\n   jmp " << Lfalse << "\n";
                 code_ << Ltrue << ":\n";
             }
             return;
@@ -1753,124 +1880,19 @@ void Pdp7Codegen::genLogicalNot(const ir::Expr &rhs) {
 // low-order 18-bit half into AC. Only verified for non-negative
 // operands.
 void Pdp7Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
-    genExpr(lhs);
-    pushAC();  // protect lhs - rhs's own evaluation may call
-    genExpr(rhs);
     std::string Tr = allocTemp();  // not declareTemp(): doubles as mul's operand slot
-    code_ << "   dac " << Tr << "\n";
-    popAC();  // AC = lhs
+    genOperandPair(lhs, rhs, RhsXform::None, Tr);
     code_ << "   cll\n   mul\n" << Tr << ": 0\n   lacq\n";
 }
 
-// Division/modulo via shared routines. Signed (__divmod): repeated
-// subtraction on the operands' absolute values, with each result's
-// sign reapplied afterward. Matches C's truncating division: the
-// quotient's sign is the XOR of the operand signs, and the remainder's
-// sign always matches the dividend's. Unsigned (__udivmod): the EAE
-// `div` instruction, which treats all 18 bits as magnitude.
-void Pdp7Codegen::ensureDivModRoutine() {
-    if (!needDivMod_ && !needUDivMod_) return;
-    trailer_.push_back("__dm_a: 0");   // dividend; remainder on return
-    trailer_.push_back("__dm_b: 0");   // divisor
-    if (needUDivMod_) {
-        // Unsigned: the EAE `div` instruction divides AC:MQ (here 0 and
-        // the dividend) by the word that follows it, leaving the
-        // quotient in MQ and the remainder in AC.
-        trailer_.push_back("__udivmod: 0");
-        trailer_.push_back("   lac __dm_b");
-        trailer_.push_back("   dac J_udm_d");
-        trailer_.push_back("   lac __dm_a");
-        trailer_.push_back("   lmq");
-        trailer_.push_back("   cla");
-        trailer_.push_back("   cll");
-        trailer_.push_back("   div");
-        trailer_.push_back("J_udm_d: 0");
-        trailer_.push_back("   dac __dm_a");
-        trailer_.push_back("   lacq");
-        trailer_.push_back("   jmp i __udivmod");
-    }
-    if (!needDivMod_) return;
-    trailer_.push_back("__dm_q: 0");   // |quotient| -> signed quotient
-    trailer_.push_back("__dm_sa: 0");  // 1 if the dividend was negative, else 0
-    trailer_.push_back("__dm_sb: 0");  // 1 if the divisor was negative, else 0
-    trailer_.push_back("__divmod: 0");
-    trailer_.push_back("   dzm __dm_q");
-    trailer_.push_back("   dzm __dm_sa");
-    trailer_.push_back("   dzm __dm_sb");
-    // __dm_a = |dividend|, __dm_sa = 1 if it was negative.
-    trailer_.push_back("   lac __dm_a");
-    trailer_.push_back("   sma");
-    trailer_.push_back("   jmp J_dm_adone");
-    trailer_.push_back("   jmp J_dm_aneg");
-    trailer_.push_back("J_dm_aneg:");
-    trailer_.push_back("   isz __dm_sa");
-    trailer_.push_back("   lac __dm_a");
-    trailer_.push_back("   cma");
-    trailer_.push_back("   tad __one");
-    trailer_.push_back("   dac __dm_a");
-    trailer_.push_back("J_dm_adone:");
-    // __dm_b = |divisor|, __dm_sb = 1 if it was negative.
-    trailer_.push_back("   lac __dm_b");
-    trailer_.push_back("   sma");
-    trailer_.push_back("   jmp J_dm_bdone");
-    trailer_.push_back("   jmp J_dm_bneg");
-    trailer_.push_back("J_dm_bneg:");
-    trailer_.push_back("   isz __dm_sb");
-    trailer_.push_back("   lac __dm_b");
-    trailer_.push_back("   cma");
-    trailer_.push_back("   tad __one");
-    trailer_.push_back("   dac __dm_b");
-    trailer_.push_back("J_dm_bdone:");
-    // Unsigned repeated-subtraction division of the two magnitudes:
-    // __dm_a ends up holding |remainder|, __dm_q holding |quotient|.
-    trailer_.push_back("J_dmloop:");
-    trailer_.push_back("   lac __dm_b");
-    trailer_.push_back("   cma");
-    trailer_.push_back("   tad __one");
-    trailer_.push_back("   tad __dm_a");  // AC = remaining_a - b
-    trailer_.push_back("   sma");
-    trailer_.push_back("   jmp J_dmbody");
-    trailer_.push_back("   jmp J_dmdone");
-    trailer_.push_back("J_dmbody:");
-    trailer_.push_back("   dac __dm_a");  // remaining_a -= b
-    trailer_.push_back("   isz __dm_q");  // quotient += 1
-    trailer_.push_back("   jmp J_dmloop");
-    trailer_.push_back("J_dmdone:");
-    // Quotient is negative iff exactly one of the two signs was set.
-    trailer_.push_back("   lac __dm_sa");
-    trailer_.push_back("   cma");
-    trailer_.push_back("   tad __one");
-    trailer_.push_back("   tad __dm_sb");  // AC = __dm_sb - __dm_sa: 0 iff same sign
-    trailer_.push_back("   sza");
-    trailer_.push_back("   jmp J_dm_qflip");
-    trailer_.push_back("   jmp J_dm_qdone");
-    trailer_.push_back("J_dm_qflip:");
-    trailer_.push_back("   lac __dm_q");
-    trailer_.push_back("   cma");
-    trailer_.push_back("   tad __one");
-    trailer_.push_back("   dac __dm_q");
-    trailer_.push_back("J_dm_qdone:");
-    // Remainder's sign always matches the dividend's.
-    trailer_.push_back("   lac __dm_sa");
-    trailer_.push_back("   sza");
-    trailer_.push_back("   jmp J_dm_rflip");
-    trailer_.push_back("   jmp J_dm_rdone");
-    trailer_.push_back("J_dm_rflip:");
-    trailer_.push_back("   lac __dm_a");
-    trailer_.push_back("   cma");
-    trailer_.push_back("   tad __one");
-    trailer_.push_back("   dac __dm_a");
-    trailer_.push_back("J_dm_rdone:");
-    trailer_.push_back("   lac __dm_q");
-    trailer_.push_back("   jmp i __divmod");
+// Division/modulo via shared routines (see pdp7RuntimeAsm()).
+void Pdp7Codegen::ensureRuntimeRoutines() {
+    std::istringstream lines(pdp7RuntimeAsm(needPushPop_, needDivMod_, needUDivMod_));
+    for (std::string line; std::getline(lines, line);) trailer_.push_back(line);
 }
 
 void Pdp7Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder) {
-    genExpr(lhs);
-    pushAC();  // protect lhs - rhs's own evaluation may call, possibly into another division
-    genExpr(rhs);
-    code_ << "   dac __dm_b\n";
-    popAC();  // AC = lhs
+    genOperandPair(lhs, rhs, RhsXform::None, "__dm_b");
     code_ << "   dac __dm_a\n";
     callDivMod(lhs.type.isUnsigned);
     if (wantRemainder) code_ << "   lac __dm_a\n";
@@ -1891,38 +1913,43 @@ void Pdp7Codegen::callDivMod(bool isUnsigned) {
 // De Morgan: a|b = ~(~a & ~b).
 void Pdp7Codegen::genBitwise(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs) {
     if (op == "|") {
-        genExpr(lhs);
-        code_ << "   cma\n";
-        pushAC();  // protect ~lhs - rhs's own evaluation may call
-        genExpr(rhs);
-        code_ << "   cma\n";
-        code_ << "   dac __stmp2\n";  // __stmp2, not __stmp - popAC() below uses __stmp internally
-        popAC();  // AC = ~lhs
-        code_ << "   and __stmp2\n";
-        code_ << "   cma\n";
+        std::string rhsCell = genOperandPair(lhs, rhs, RhsXform::Complement);
+        code_ << "   cma\n   and " << rhsCell << "\n   cma\n";
         return;
     }
-    genExpr(lhs);
-    pushAC();  // protect lhs - rhs's own evaluation may call
-    genExpr(rhs);
-    code_ << "   dac __stmp2\n";  // __stmp2, not __stmp - popAC() below uses __stmp internally
-    popAC();  // AC = lhs
-    code_ << "   " << (op == "&" ? "and" : "xor") << " __stmp2\n";
+    std::string rhsCell = genOperandPair(lhs, rhs, RhsXform::None);
+    code_ << "   " << (op == "&" ? "and" : "xor") << " " << rhsCell << "\n";
+}
+
+// A shift by a constant count uses the EAE shifts, whose vacated bits
+// fill from the Link (`als`, `lrs`, cleared first) or, for `lrss`, the
+// sign bit.
+void Pdp7Codegen::emitConstantShift(const std::string &op, long count, bool isUnsigned) {
+    if (count == 0) return;
+    if (op == "<<") {
+        code_ << "   cll\n   als " << count << "\n";
+    } else if (isUnsigned) {
+        code_ << "   cll\n   lrs " << count << "\n";
+    } else {
+        code_ << "   lrss " << count << "\n";
+    }
 }
 
 // `<<`/`>>` have no variable-count hardware instruction (EAE
 // `als`/`lrs` bake their count into the instruction word at assemble
-// time). Implemented as a counted loop: `<<` is repeated `v+v`; `>>`
-// is a single-bit rotate (`cll` then `rar`), a logical shift with no
-// sign extension unless the link is seeded with the sign bit first.
+// time), so a constant count uses emitConstantShift() and any other is
+// a counted loop: `<<` is repeated `v+v`; `>>` is a single-bit rotate
+// (`cll` then `rar`), a logical shift with no sign extension unless the
+// link is seeded with the sign bit first.
 void Pdp7Codegen::genShift(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs) {
-    genExpr(lhs);
-    pushAC();  // protect the value being shifted - rhs's own evaluation (the shift count) may call
-    genExpr(rhs);
+    if (rhs.kind == ir::ExprKind::IntLit && rhs.intValue >= 0 && rhs.intValue < 18) {
+        genExpr(lhs);
+        emitConstantShift(op, rhs.intValue, lhs.type.isUnsigned);
+        return;
+    }
     std::string N = allocTemp();
     declareTemp(N);
-    code_ << "   dac " << N << "\n";
-    popAC();  // AC = the value being shifted
+    genOperandPair(lhs, rhs, RhsXform::None, N);  // AC = the value being shifted
     std::string V = allocTemp();
     declareTemp(V);
     code_ << "   dac " << V << "\n";
@@ -1972,6 +1999,63 @@ std::optional<std::string> Pdp7Codegen::assembleInProcess(const std::string &asm
     // symbol is deferred as a relocation for a future `--link` step.
     if (format == "coff") return assemblePdp7(asmText, Pdp7OutputFormat::Coff, /*allowExternal=*/true);
     return std::nullopt;
+}
+
+std::string pdp7RuntimeAsm(bool pushPop, bool divMod, bool uDivMod) {
+    std::ostringstream o;
+    // `__sp` starts at 8191 (017777 octal), the highest word the 13-bit
+    // direct-addressing field can reach, and grows downward toward
+    // code/data. `__fp`'s starting value is never read before the first
+    // call gives it one. `__stmp`/`__stmp2`/`__addr`/`__retval`/
+    // `__retaddr` are scratch cells, each only held across a short,
+    // call-free sequence. `__retvalW0-3` carry a wide return value past
+    // the epilogue's `__sp = __fp` teardown.
+    o << "__one: 1\n__zero: 0\n__mone: 0777777\n__sp: 8191\n__fp: 0\n"
+         "__stmp: 0\n__stmp2: 0\n__addr: 0\n__retval: 0\n__retaddr: 0\n"
+         "__retvalW0: 0\n__retvalW1: 0\n__retvalW2: 0\n__retvalW3: 0\n";
+    if (pushPop) {
+        // __push: pushes AC (leaving it unchanged). __pop: pops into AC.
+        o << "__push: 0\n"
+             "   dac __stmp\n   lac __sp\n   tad __mone\n   dac __sp\n"
+             "   lac __stmp\n   dac __sp i\n   jmp i __push\n"
+             "__pop: 0\n"
+             "   lac __sp i\n   dac __stmp\n   lac __sp\n   tad __one\n   dac __sp\n"
+             "   lac __stmp\n   jmp i __pop\n";
+    }
+    if (divMod || uDivMod) o << "__dm_a: 0\n__dm_b: 0\n";
+    if (divMod || uDivMod) {
+        // __udivmod: __dm_a / __dm_b, unsigned. The EAE `div`
+        // instruction divides AC:MQ (here 0 and the dividend) by the
+        // word that follows it, leaving the quotient in MQ and the
+        // remainder in AC. Returns the quotient in AC and the remainder
+        // in __dm_a.
+        o << "__udivmod: 0\n"
+             "   lac __dm_b\n   dac J_udm_d\n   lac __dm_a\n   lmq\n   cla\n   cll\n   div\n"
+             "J_udm_d: 0\n   dac __dm_a\n   lacq\n   jmp i __udivmod\n";
+    }
+    if (divMod) {
+        // __divmod: the signed version, C's truncating division. It
+        // divides the magnitudes with __udivmod, then negates the
+        // quotient when the operands' signs differ (the sign bit of
+        // their xor, kept in __dm_q) and the remainder when the
+        // dividend was negative (kept in __dm_s).
+        o << "__dm_q: 0\n__dm_s: 0\n"
+             "__divmod: 0\n"
+             "   lac __dm_a\n   dac __dm_s\n   xor __dm_b\n   dac __dm_q\n"
+             "   lac __dm_a\n   sma\n   jmp J_dm_a\n   cma\n   tad __one\n   dac __dm_a\n"
+             "J_dm_a:\n"
+             "   lac __dm_b\n   sma\n   jmp J_dm_b\n   cma\n   tad __one\n   dac __dm_b\n"
+             "J_dm_b:\n"
+             "   jms __udivmod\n   dac __dm_b\n"
+             "   lac __dm_q\n   sma\n   jmp J_dm_q\n"
+             "   lac __dm_b\n   cma\n   tad __one\n   dac __dm_b\n"
+             "J_dm_q:\n"
+             "   lac __dm_s\n   sma\n   jmp J_dm_r\n"
+             "   lac __dm_a\n   cma\n   tad __one\n   dac __dm_a\n"
+             "J_dm_r:\n"
+             "   lac __dm_b\n   jmp i __divmod\n";
+    }
+    return o.str();
 }
 
 }  // namespace pcc

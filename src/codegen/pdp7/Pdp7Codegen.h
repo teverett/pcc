@@ -66,8 +66,18 @@ class Pdp7Codegen : public Backend {
     // operands are far enough apart); same-sign operands fall through
     // to subtract-and-test-sign, safe since same-sign 18-bit values
     // can't differ by more than the representable range.
+    // `signA`/`signB` give an operand's sign when it's known at compile
+    // time (0 non-negative, 1 negative; -1 unknown), which removes
+    // that operand's sign test.
     void emitSignedLtCells(const std::string &A, const std::string &B, const std::string &Ltrue,
-                            const std::string &Lfalse);
+                            const std::string &Lfalse, int signA = -1, int signB = -1);
+    // Evaluates both sides of a relational comparison into cells for
+    // emitSignedLtCells() (sign bits flipped first for an unsigned
+    // comparison, mapping unsigned order onto signed order), setting
+    // `A`/`B` to the cells and `signA`/`signB` to any sign known at
+    // compile time.
+    void genCompareCells(const ir::Expr &a, const ir::Expr &b, bool unsignedCmp, std::string &A,
+                         std::string &B, int &signA, int &signB);
     void genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
@@ -147,9 +157,34 @@ class Pdp7Codegen : public Backend {
     // both take __dm_a/__dm_b and leave the quotient in AC and the
     // remainder in __dm_a.
     void callDivMod(bool isUnsigned);
-    void ensureDivModRoutine();
+    void ensureRuntimeRoutines();
     void genBitwise(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
     void genShift(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
+    // AC = AC shifted by `count` (0-17) via the EAE shift instructions.
+    void emitConstantShift(const std::string &op, long count, bool isUnsigned);
+    // How genOperandPair() transforms the right operand before
+    // storing it: as is, negated (for `-`), or complemented (for `|`).
+    enum class RhsXform { None, Negate, Complement };
+    // Leaves `lhs` in AC and returns the name of a memory cell holding
+    // `rhs` (after `xform`), with the fewest instructions available: a
+    // constant or plain variable is used in place; a plain-variable
+    // `lhs` is read after `rhs`; a call-free `rhs` keeps `lhs` in a
+    // static temp; only an `rhs` that calls puts `lhs` on the stack.
+    // C leaves the two operands' evaluation order unspecified, so
+    // evaluating `rhs` first is allowed. With `dest` set, `rhs` always
+    // ends up in that cell.
+    std::string genOperandPair(const ir::Expr &lhs, const ir::Expr &rhs, RhsXform xform,
+                               const std::string &dest = "");
+    // The memory cell that already holds `e`'s value, if any: a
+    // constant's literal cell, or a global or leaf-function scalar that
+    // needs no narrowing on load. Emits nothing but the literal.
+    std::optional<std::string> simpleCell(const ir::Expr &e);
+    // True when evaluating `e` can't call a function, so a static temp
+    // held across it can't be overwritten by a nested activation.
+    static bool isCallFree(const ir::Expr &e);
+    // AC = &slot[idxExpr], without touching the stack unless idxExpr
+    // itself calls.
+    void computeElementAddressAC(const ir::Slot *slot, const ir::Expr &idxExpr);
     void genIndex(const ir::Expr &e);       // slot[idx] read
     void genAddrOf(const ir::Expr &operand);  // &slot or &slot[idx]
     void genConvert(const ir::Expr &e);
@@ -182,6 +217,9 @@ class Pdp7Codegen : public Backend {
     // finishCompoundOp(), stores the new value back through the same
     // address, leaving AC holding old or new per e.yieldOld.
     void genCompoundThroughStackedAddress(const ir::Expr &e);
+    // The same, for a call-free e.rhs: the target address is in AC on
+    // entry and is kept in a static temp instead.
+    void genCompoundThroughCell(const ir::Expr &e);
 
     // A Global/Function gets a name-based label (never `id`), since
     // separate compilation gives caller and definer independent `id`
@@ -208,13 +246,13 @@ class Pdp7Codegen : public Backend {
     // combined code+data and worst-case call depth exceed the 13-bit
     // direct-addressing window.
     //
-    // pushAC()/popAC() emulate push/pop via "dac/lac __sp i" (through
-    // whatever address `__sp` holds), decrementing/incrementing `__sp`
-    // around it. `__stmp` is their own momentary scratch - safe to
-    // share since a push/pop is a single short, call-free sequence.
-    // Any caller needing a second value live across a call to one of
-    // these must use `__stmp2`, never `__stmp`.
-    void pushAC();  // pushes AC's current value; AC is left unspecified
+    // pushAC()/popAC() each emit one `jms` to the runtime's `__push`/
+    // `__pop` (see pdp7RuntimeAsm()), which move AC through whatever
+    // address `__sp` holds, decrementing/incrementing `__sp` around it.
+    // `__stmp` is their own momentary scratch, so any caller needing a
+    // second value live across one of these must use `__stmp2`, never
+    // `__stmp`.
+    void pushAC();  // pushes AC's current value, leaving AC unchanged
     void popAC();   // pops the top of stack into AC
 
     // Once emitPrologue() has run: `__fp` points at the word holding
@@ -329,9 +367,17 @@ class Pdp7Codegen : public Backend {
     std::string curFunctionLabel_;
     bool needDivMod_ = false;
     bool needUDivMod_ = false;
+    bool needPushPop_ = false;
 
     // (continueLabel, breakLabel) for the innermost active loop.
     std::vector<std::pair<std::string, std::string>> loopLabels_;
 };
+
+// The pdp7 runtime every program shares: the scratch and stack cells,
+// and whichever of the stack push/pop and signed/unsigned divide
+// routines are asked for. A whole program gets it in its trailer; under
+// separate compilation the linker's entry object supplies one copy
+// with everything.
+std::string pdp7RuntimeAsm(bool pushPop, bool divMod, bool uDivMod);
 
 }  // namespace pcc

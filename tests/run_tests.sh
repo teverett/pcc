@@ -1762,6 +1762,8 @@ is_known_unsupported() {
         8088:compound_assign_inc_dec_ternary.c) return 0 ;;
         8086:many_returns.c) return 0 ;;                    # same - doesn't fit the 512-byte boot sector
         8088:many_returns.c) return 0 ;;
+        8086:array_store_paths.c) return 0 ;;              # same - doesn't fit the 512-byte boot sector
+        8088:array_store_paths.c) return 0 ;;
         8080:types_longlong_divmod.c) return 0 ;;          # no verified wide multiply/divide routine
         8080:types_longlong_divmod_repeated.c) return 0 ;; # same - no verified wide multiply/divide routine
         z80:types_longlong_divmod.c) return 0 ;;
