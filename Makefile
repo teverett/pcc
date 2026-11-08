@@ -248,6 +248,7 @@ $(BIN_DIR)/preprocessor_test: tests/preprocessor_test.cpp $(PREPROCESSOR_DIR)/Pr
 test: all $(BIN_DIR)/preprocessor_test
 	$(BIN_DIR)/preprocessor_test
 	python3 tests/qemu_wait_test.py
+	python3 tests/hosted_windows_startup_test.py $(TARGET)
 	./tests/run_tests.sh $(TARGET) --target=pdp7
 	./tests/run_tests.sh $(TARGET) --target=8086
 	./tests/run_tests.sh $(TARGET) --target=6502

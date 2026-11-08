@@ -82,6 +82,9 @@ jobs:
       - name: Build
         run: make
 
+      - name: Test hosted Windows startup
+        run: python3 tests/hosted_windows_startup_test.py build/bin/pcc
+
       - name: Build and run macOS hello example
         run: |
           make -C example macos
@@ -90,12 +93,6 @@ jobs:
           output = subprocess.check_output(["example/build/hello-macos"])
           assert output == b"hello pcc\n", repr(output)
           PY
-
-      - name: Test
-        run: make test
-
-      - name: Test hosted macOS arm64 linking
-        run: bash tests/run_hosted_macos_link_tests.sh build/bin/pcc
 
       # `pcc` is dynamically linked against Homebrew's own
       # libantlr4-runtime.dylib, at that formula's own absolute
@@ -189,6 +186,10 @@ jobs:
       - name: Test hosted Windows .lib linking
         shell: bash -el {0}
         run: bash tests/run_hosted_windows_link_tests.sh build/bin/pcc
+
+      - name: Test hosted Windows startup
+        shell: bash -el {0}
+        run: python3 tests/hosted_windows_startup_test.py build/bin/pcc
 
       # Full simulator-backed suites run in the macOS job; monitor
       # protocol tests use an independent fake monitor on every OS.

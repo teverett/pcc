@@ -44,7 +44,7 @@ with `--hosted` so external symbols and calls use the i386 C ABI:
 ```sh
 pcc --target=i386 --hosted --format=elf --out=main.o main.c
 pcc --link --target=i386 --hosted --format=elf --out=app \
-    main.o -L/usr/lib/i386-linux-gnu -lm
+    main.o -L/usr/lib/i386-linux-gnu -lm -lc
 ```
 
 In hosted link mode, positional `.a` and `.so` paths are passed to the
@@ -54,7 +54,12 @@ chooses a shared object when available, otherwise a static archive.
 `--linker=<path>` selects the GNU-compatible ELF linker (default:
 `ld`). Omitting `--out` writes `a.out`. Hosted mode is limited to
 ELF/i386 Linux and requires compatible 32-bit libraries and a matching
-runtime loader. It is separate from pcc's own linker for bare-metal
+runtime loader. Include `-lc` explicitly when using libc, including when
+another shared library uses it: this selects libc startup and normal exit
+processing. Without an explicit libc input, a minimal startup calls `main`
+and exits directly through a Linux syscall. Explicit `-l c`, `-l:libc.so`,
+`-l:libc.a`, and paths named `libc.so`, `libc.so.*`, or `libc.a` also select
+libc startup. This mode is separate from pcc's own linker for bare-metal
 and retro targets.
 
 For 32-bit Windows PE executables and COFF `.lib` libraries, use

@@ -133,8 +133,55 @@ void usage(const char *argv0) {
                  "--format=macho; this uses the system linker and libSystem.\n";
 }
 
-std::string writeHostedStartupObject() {
-    const std::string assembly =
+bool usesHostedLibc(const std::vector<std::string> &inputs) {
+    auto isLibcFile = [](const std::string &name) {
+        return name == "libc.a" || name == "libc.so" || name.compare(0, 8, "libc.so.") == 0;
+    };
+    for (size_t i = 0; i < inputs.size(); ++i) {
+        const std::string &input = inputs[i];
+        if (input == "-L") {
+            if (i + 1 < inputs.size()) ++i;
+        } else if (input == "-l") {
+            if (i + 1 < inputs.size()) {
+                const std::string &name = inputs[++i];
+                if (name == "c" || (name.size() > 1 && name[0] == ':' && isLibcFile(name.substr(1)))) {
+                    return true;
+                }
+            }
+        } else if (input.compare(0, 2, "-l") == 0) {
+            std::string name = input.substr(2);
+            if (name == "c" || (name.size() > 1 && name[0] == ':' && isLibcFile(name.substr(1)))) {
+                return true;
+            }
+        } else if (input.compare(0, 2, "-L") != 0 &&
+                   isLibcFile(std::filesystem::path(input).filename().string())) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string writeHostedStartupObject(bool useLibc) {
+    const std::string libcAssembly =
+        "org 0\n"
+        "_start:\n"
+        "    mov ebp,0\n"
+        "    pop esi\n"
+        "    mov ecx,esp\n"
+        "    and esp,-16\n"
+        "    mov eax,0\n"
+        "    push eax\n"
+        "    push esp\n"
+        "    push edx\n"
+        "    push eax\n"
+        "    push eax\n"
+        "    push ecx\n"
+        "    push esi\n"
+        "    mov eax,main\n"
+        "    push eax\n"
+        "    call __libc_start_main\n"
+        "    hlt\n";
+    const std::string minimalAssembly =
         "org 0\n"
         "_start:\n"
         "    pop eax\n"
@@ -147,7 +194,7 @@ std::string writeHostedStartupObject() {
         "    mov ebx,eax\n"
         "    mov eax,1\n"
         "    db 205,128\n";
-    pcc::ObjectFile object = pcc::assembleI386Object(assembly);
+    pcc::ObjectFile object = pcc::assembleI386Object(useLibc ? libcAssembly : minimalAssembly);
     auto writer = pcc::makeFileFormatWriter(pcc::FileFormatKind::Elf);
     std::string bytes = writer->write(object);
 
@@ -175,8 +222,9 @@ std::string writeHostedWindowsStartupObject() {
     const std::string assembly =
         "org 0\n"
         "_start:\n"
-        "    push 0\n"
-        "    push 0\n"
+        "    mov eax,0\n"
+        "    push eax\n"
+        "    push eax\n"
         "    call _main\n"
         "    add esp,8\n"
         "    push eax\n"
@@ -250,7 +298,7 @@ int runHostedLinker(const std::vector<std::string> &inputs, const std::string &l
     (void)outPath;
     throw std::runtime_error("hosted ELF/i386 linking requires a POSIX ELF linker");
 #else
-    std::string startup = writeHostedStartupObject();
+    std::string startup = writeHostedStartupObject(usesHostedLibc(inputs));
     std::filesystem::path destination(outPath);
     std::filesystem::path parent = destination.parent_path();
     if (parent.empty()) parent = ".";

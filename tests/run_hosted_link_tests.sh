@@ -16,6 +16,8 @@ for tool in ld ar readelf; do
     fi
 done
 
+python3 "$SCRIPT_DIR/hosted_elf_startup_test.py" "$PCC"
+
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
@@ -29,6 +31,14 @@ ar rcs "$tmpdir/libhosted_test.a" "$tmpdir/library.o"
     "$tmpdir/main.o" "$tmpdir/libhosted_test.a"
 readelf -h "$tmpdir/static-app" | grep -Eq 'Type:.*EXEC'
 readelf -s "$tmpdir/static-app" | grep -Eq 'GLOBAL.*library_value$'
+python3 - "$tmpdir/static-app" <<'PY'
+import subprocess
+import sys
+
+result = subprocess.run([sys.argv[1]], capture_output=True)
+assert result.returncode == 42, result
+assert result.stdout == b"", result.stdout
+PY
 echo "PASS hosted static archive"
 
 ld -m elf_i386 -shared -soname libhosted_test.so -o "$tmpdir/libhosted_test.so" "$tmpdir/library.o"
@@ -37,3 +47,27 @@ ld -m elf_i386 -shared -soname libhosted_test.so -o "$tmpdir/libhosted_test.so" 
 readelf -h "$tmpdir/dynamic-app" | grep -Eq 'Type:.*EXEC'
 readelf -d "$tmpdir/dynamic-app" | grep -q 'Shared library: \[libhosted_test.so\]'
 echo "PASS hosted shared library"
+
+for name in output status; do
+    "$PCC" --target=i386 --hosted --format=elf --out="$tmpdir/$name.o" \
+        "$SCRIPT_DIR/hosted_libc_$name.c"
+done
+
+"$PCC" --link --target=i386 --hosted --format=elf --out="$tmpdir/output-app" \
+    "$tmpdir/output.o" -lc
+"$PCC" --link --target=i386 --hosted --format=elf --out="$tmpdir/status-app" \
+    "$tmpdir/status.o" -l c
+
+python3 - "$tmpdir/output-app" "$tmpdir/status-app" <<'PY'
+import subprocess
+import sys
+
+result = subprocess.run([sys.argv[1]], capture_output=True)
+assert result.returncode == 0, result
+assert result.stdout == b"hello pcc\n", result.stdout
+
+result = subprocess.run([sys.argv[2]], capture_output=True)
+assert result.returncode == 37, result
+assert result.stdout == b"returning status\n", result.stdout
+PY
+echo "PASS hosted libc startup"
