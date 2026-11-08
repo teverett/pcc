@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "codegen/arm64/Arm64Assembler.h"
+
 namespace pcc {
 
 namespace {
@@ -20,6 +22,10 @@ void put32(std::string &out, uint32_t v) {
     out.push_back(static_cast<char>((v >> 8) & 0xFF));
     out.push_back(static_cast<char>((v >> 16) & 0xFF));
     out.push_back(static_cast<char>((v >> 24) & 0xFF));
+}
+void put64(std::string &out, uint64_t v) {
+    put32(out, static_cast<uint32_t>(v));
+    put32(out, static_cast<uint32_t>(v >> 32));
 }
 void putName16(std::string &out, const char *name) {
     char buf[16] = {0};
@@ -40,9 +46,141 @@ constexpr size_t kSymtabCmdSize = 24;
 constexpr size_t kNlistSize = 12;
 constexpr size_t kRelocSize = 8;
 
+bool isArm64DarwinLocalSymbol(const std::string &name) {
+    return name.rfind("L", 0) == 0 || name.rfind("___strlit", 0) == 0;
+}
+
+std::string writeArm64DarwinObject(const ObjectFile &obj) {
+    constexpr uint32_t kMhMagic64 = 0xFEEDFACF;
+    constexpr uint32_t kCpuTypeArm64 = 0x0100000C;
+    constexpr uint32_t kLcSegment64 = 0x19;
+    constexpr uint32_t kLcBuildVersion = 0x32;
+    constexpr uint32_t kSegment64Size = 72;
+    constexpr uint32_t kSection64Size = 80;
+    constexpr uint32_t kMachHeader64Size = 32;
+    constexpr uint32_t kRelocBranch26 = 2;
+    constexpr uint32_t kRelocPage21 = 3;
+    constexpr uint32_t kRelocPageoff12 = 4;
+
+    std::unordered_map<std::string, uint32_t> symIndex;
+    for (size_t i = 0; i < obj.symbols.size(); i++) {
+        symIndex[obj.symbols[i].name] = static_cast<uint32_t>(i);
+    }
+
+    std::string strtab(1, '\0');
+    std::vector<uint32_t> nameOffsets(obj.symbols.size());
+    for (size_t i = 0; i < obj.symbols.size(); i++) {
+        nameOffsets[i] = static_cast<uint32_t>(strtab.size());
+        strtab += obj.symbols[i].name;
+        strtab.push_back('\0');
+    }
+
+    std::string text = obj.textBytes.empty()
+                           ? std::string()
+                           : std::string(reinterpret_cast<const char *>(obj.textBytes.data()), obj.textBytes.size());
+    std::string relocations;
+    for (const auto &reloc : obj.relocations) {
+        auto it = symIndex.find(reloc.symbolName);
+        if (it == symIndex.end()) fail("relocation references unknown symbol '" + reloc.symbolName + "'");
+        uint32_t type;
+        bool pcrel;
+        if (reloc.type == kArm64DarwinRelocBranch26) {
+            type = kRelocBranch26;
+            pcrel = true;
+        } else if (reloc.type == kArm64DarwinRelocPage21) {
+            type = kRelocPage21;
+            pcrel = true;
+        } else if (reloc.type == kArm64DarwinRelocPageoff12) {
+            type = kRelocPageoff12;
+            pcrel = false;
+        } else {
+            fail("unsupported arm64 macOS relocation " + std::to_string(reloc.type));
+        }
+
+        put32(relocations, reloc.offset);
+        uint32_t word = (it->second & 0xFFFFFFu) | (static_cast<uint32_t>(pcrel) << 24) | (2u << 25) |
+                        (1u << 27) | ((type & 0xFu) << 28);
+        put32(relocations, word);
+    }
+
+    std::string symtab;
+    for (size_t i = 0; i < obj.symbols.size(); i++) {
+        const ObjSymbol &symbol = obj.symbols[i];
+        bool local = symbol.isDefined && isArm64DarwinLocalSymbol(symbol.name);
+        put32(symtab, nameOffsets[i]);
+        symtab.push_back(static_cast<char>(symbol.isDefined ? (local ? 0x0E : 0x0F) : 0x01));
+        symtab.push_back(static_cast<char>(symbol.isDefined ? 1 : 0));
+        put16(symtab, 0);
+        put64(symtab, symbol.isDefined ? symbol.value : 0);
+    }
+
+    const uint32_t segmentSize = kSegment64Size + kSection64Size;
+    constexpr uint32_t buildVersionSize = 24;
+    uint32_t textOff = kMachHeader64Size + segmentSize + buildVersionSize + kSymtabCmdSize;
+    uint32_t relOff = textOff + static_cast<uint32_t>(text.size());
+    uint32_t symOff = relOff + static_cast<uint32_t>(relocations.size());
+    uint32_t strOff = symOff + static_cast<uint32_t>(symtab.size());
+    std::string out;
+
+    put32(out, kMhMagic64);
+    put32(out, kCpuTypeArm64);
+    put32(out, 0);
+    put32(out, kMhObject);
+    put32(out, 3);
+    put32(out, segmentSize + buildVersionSize + kSymtabCmdSize);
+    put32(out, 0);
+    put32(out, 0);
+
+    put32(out, kLcSegment64);
+    put32(out, segmentSize);
+    putName16(out, "__TEXT");
+    put64(out, 0);
+    put64(out, text.size());
+    put64(out, textOff);
+    put64(out, text.size());
+    put32(out, 7);
+    put32(out, 7);
+    put32(out, 1);
+    put32(out, 0);
+
+    putName16(out, "__text");
+    putName16(out, "__TEXT");
+    put64(out, 0);
+    put64(out, text.size());
+    put32(out, textOff);
+    put32(out, 2);
+    put32(out, relocations.empty() ? 0 : relOff);
+    put32(out, static_cast<uint32_t>(obj.relocations.size()));
+    put32(out, 0);
+    put32(out, 0);
+    put32(out, 0);
+    put32(out, 0);
+
+    put32(out, kLcBuildVersion);
+    put32(out, buildVersionSize);
+    put32(out, 1);
+    put32(out, 0x000B0000);
+    put32(out, 0x000F0000);
+    put32(out, 0);
+
+    put32(out, kLcSymtab);
+    put32(out, static_cast<uint32_t>(kSymtabCmdSize));
+    put32(out, symOff);
+    put32(out, static_cast<uint32_t>(obj.symbols.size()));
+    put32(out, strOff);
+    put32(out, static_cast<uint32_t>(strtab.size()));
+
+    out += text;
+    out += relocations;
+    out += symtab;
+    out += strtab;
+    return out;
+}
+
 }  // namespace
 
 std::string MachOFormatWriter::write(const ObjectFile &obj) const {
+    if (obj.machineType == kArm64DarwinMachine) return writeArm64DarwinObject(obj);
     for (const auto &r : obj.relocations) {
         if (r.type > 0xF) fail("relocation type " + std::to_string(r.type) + " doesn't fit in Mach-O's 4-bit r_type");
     }
@@ -153,11 +291,6 @@ std::string MachOFormatWriter::write(const ObjectFile &obj) const {
 namespace {
 void need(const std::string &bytes, size_t offset, size_t len) {
     if (offset + len > bytes.size()) fail("truncated object file");
-}
-uint16_t get16(const std::string &bytes, size_t offset) {
-    need(bytes, offset, 2);
-    return static_cast<uint16_t>(static_cast<uint8_t>(bytes[offset]) |
-                                  (static_cast<uint8_t>(bytes[offset + 1]) << 8));
 }
 uint32_t get32(const std::string &bytes, size_t offset) {
     need(bytes, offset, 4);

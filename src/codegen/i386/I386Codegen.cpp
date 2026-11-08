@@ -117,9 +117,11 @@ void I386Codegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
     code_ << "    push ebp\n    mov ebp,esp\n";
     if (fn.func->frameSize > 0) code_ << "    sub esp," << fn.func->frameSize << "\n";
+    if (hostedAbi_) code_ << "    push ebx\n    push esi\n    push edi\n";
 
     genStmt(*fn.body);
 
+    if (hostedAbi_) code_ << "    pop edi\n    pop esi\n    pop ebx\n";
     code_ << "    mov esp,ebp\n    pop ebp\n";
     code_ << "    ret\n\n";
 }
@@ -174,6 +176,7 @@ void I386Codegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::Return: {
             if (s.initOrReturnOrExpr) genExpr(*s.initOrReturnOrExpr);
+            if (hostedAbi_) code_ << "    pop edi\n    pop esi\n    pop ebx\n";
             code_ << "    mov esp,ebp\n    pop ebp\n";
             code_ << "    ret\n";
             return;
@@ -309,25 +312,35 @@ void I386Codegen::genExpr(const ir::Expr &e) {
             // caller cleans up with `add esp,N`. A wide argument pushes its high dword
             // first so its low dword ends up at the lower address.
             int totalBytes = 0;
+            for (const auto &arg : e.args) totalBytes += isWide(arg->type) ? 8 : 4;
+            if (hostedAbi_) {
+                code_ << "    push esi\n    mov esi,esp\n    and esp,-16\n";
+                int padding = (16 - totalBytes % 16) % 16;
+                if (padding > 0) code_ << "    sub esp," << padding << "\n";
+            }
             for (size_t i = e.args.size(); i-- > 0;) {
                 genExpr(*e.args[i]);
                 if (isWide(e.args[i]->type)) {
                     code_ << "    push edx\n    push eax\n";
-                    totalBytes += 8;
                 } else {
                     code_ << "    push eax\n";
-                    totalBytes += 4;
                 }
             }
             code_ << "    call " << label(e.func) << "\n";
-            if (totalBytes > 0) code_ << "    add esp," << totalBytes << "\n";
+            if (hostedAbi_) {
+                code_ << "    mov esp,esi\n    pop esi\n";
+            } else if (totalBytes > 0) {
+                code_ << "    add esp," << totalBytes << "\n";
+            }
             return;
         }
         case ir::ExprKind::CallPtr: {
             // e.args is always empty here: IRBuilder rejects any argument on this kind
             // before it reaches a backend, since the callee is never known at compile time.
             genExpr(*e.lhs);  // eax = the callee's entry address
+            if (hostedAbi_) code_ << "    push esi\n    mov esi,esp\n    and esp,-16\n";
             code_ << "    call eax\n";
+            if (hostedAbi_) code_ << "    mov esp,esi\n    pop esi\n";
             return;
         }
         case ir::ExprKind::Binary: {
@@ -919,6 +932,7 @@ std::optional<std::string> I386Codegen::assembleInProcess(const std::string &asm
     // format's FileFormatWriter to serialize it.
     if (auto kind = fileFormatKindFromName(format)) {
         ObjectFile obj = assembleI386Object(asmText);
+        if (windowsAbi_) obj.machineType = 0x014C;
         return makeFileFormatWriter(*kind)->write(obj);
     }
     return std::nullopt;

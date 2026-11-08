@@ -22,6 +22,10 @@ constexpr uint64_t kArm64BaseAddress = 0x40080000ull;
 constexpr uint16_t kArm64RelocRel26 = 1;
 constexpr uint16_t kArm64RelocMovZLo = 2;
 constexpr uint16_t kArm64RelocMovKHi = 3;
+constexpr uint16_t kArm64DarwinMachine = 0xAA65;
+constexpr uint16_t kArm64DarwinRelocBranch26 = 4;
+constexpr uint16_t kArm64DarwinRelocPage21 = 5;
+constexpr uint16_t kArm64DarwinRelocPageoff12 = 6;
 
 // An in-process two-pass assembler for the narrow AArch64 ("A64") dialect
 // Arm64Codegen.cpp emits, not a general-purpose A64 assembler. Parses via
@@ -60,6 +64,6 @@ std::string assembleArm64(const std::string &asmText);
 // relocation against the reserved pseudo-symbol ".." (this text's labels
 // resolve to "offset from org 0" until that base is added). Returns the
 // format-neutral ObjectFile a codegen backend builds once per compile.
-ObjectFile assembleArm64Object(const std::string &asmText);
+ObjectFile assembleArm64Object(const std::string &asmText, bool darwinHosted = false);
 
 }  // namespace pcc

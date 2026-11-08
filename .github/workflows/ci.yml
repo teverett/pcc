@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
 
 env:
@@ -83,8 +82,20 @@ jobs:
       - name: Build
         run: make
 
+      - name: Build and run macOS hello example
+        run: |
+          make -C example macos
+          python3 - <<'PY'
+          import subprocess
+          output = subprocess.check_output(["example/build/hello-macos"])
+          assert output == b"hello pcc\n", repr(output)
+          PY
+
       - name: Test
         run: make test
+
+      - name: Test hosted macOS arm64 linking
+        run: bash tests/run_hosted_macos_link_tests.sh build/bin/pcc
 
       # `pcc` is dynamically linked against Homebrew's own
       # libantlr4-runtime.dylib, at that formula's own absolute
@@ -141,7 +152,12 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential patchelf
+          sudo apt-get install -y --no-install-recommends \
+            build-essential patchelf binutils-mingw-w64-i686 gcc-mingw-w64-i686 lld \
+            libc6-dev-i386
+
+      - name: Test QEMU monitor harness
+        run: python3 tests/qemu_wait_test.py
 
       - name: Install ANTLR C++ runtime (conda-forge, prebuilt, exact version)
         uses: mamba-org/setup-micromamba@v3
@@ -155,15 +171,27 @@ jobs:
         shell: bash -el {0}
         run: make ANTLR4_RUNTIME_PREFIX="$CONDA_PREFIX"
 
-      # No Test step here (same as the windows job, and for the same
-      # reason): tests/run_tests.sh needs the real pdp7 (SIMH) and
-      # qemu-system-i386 hardware simulators, and SIMH's console
-      # hung indefinitely on this runner in practice (confirmed by a
-      # real run getting killed mid-`make test`, before any test's
-      # PASS/FAIL even printed) - almost certainly SIMH wanting a
-      # real TTY that a CI runner doesn't have. Simulator-backed
-      # testing stays a local/manual check (`make test` still works
-      # fine there); this job only verifies pcc itself builds.
+      - name: Build and run Linux hello example
+        shell: bash -el {0}
+        run: |
+          export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+          make -C example linux
+          python3 - <<'PY'
+          import subprocess
+          output = subprocess.check_output(["example/build/hello-linux"])
+          assert output == b"hello pcc\n", repr(output)
+          PY
+
+      - name: Test hosted ELF library linking
+        shell: bash -el {0}
+        run: bash tests/run_hosted_link_tests.sh build/bin/pcc
+
+      - name: Test hosted Windows .lib linking
+        shell: bash -el {0}
+        run: bash tests/run_hosted_windows_link_tests.sh build/bin/pcc
+
+      # Full simulator-backed suites run in the macOS job; monitor
+      # protocol tests use an independent fake monitor on every OS.
 
       # `pcc` is dynamically linked against conda-forge's own
       # libantlr4-runtime.so, inside this job's own micromamba env -
@@ -242,9 +270,14 @@ jobs:
           msystem: UCRT64
           update: true
           install: >-
+            python
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-make
             mingw-w64-ucrt-x86_64-antlr4-runtime-cpp
+            mingw-w64-cross-mingw32-gcc
+
+      - name: Test QEMU monitor harness
+        run: python3 tests/qemu_wait_test.py
 
       # MSYS2's UCRT64 packages install under /ucrt64. The mingw-w64
       # `make` package's binary is named mingw32-make.exe (not
@@ -253,9 +286,17 @@ jobs:
       - name: Build
         run: mingw32-make CXX=g++ ANTLR4_RUNTIME_PREFIX=/ucrt64
 
-      # tests/run_tests.sh needs the pdp7 (open-simh) and qemu-system-i386
-      # hardware simulators, which aren't readily available on Windows
-      # CI runners - so this job only verifies that pcc itself builds.
+      - name: Build and run Windows hello example
+        run: |
+          export PATH="/opt/bin:$PATH"
+          mingw32-make -C example windows PCC=../build/bin/pcc.exe
+          python3 - <<'PY'
+          import subprocess
+          output = subprocess.check_output(["example/build/hello-windows.exe"])
+          assert output in (b"hello pcc\n", b"hello pcc\r\n"), repr(output)
+          PY
+
+      # Full simulator-backed suites run in the macOS job.
 
       # pcc.exe is dynamically linked against several UCRT64 DLLs
       # (libgcc_s_seh-1.dll, libwinpthread-1.dll, libstdc++-6.dll,

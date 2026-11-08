@@ -35,7 +35,7 @@ optionally initialized), a bare expression statement, and
 `asm { ... }` (see "Inline asm" below).
 
 Not in this subset: `struct`/`union`/`enum`/`typedef`, floating point,
-variadic functions, function-like macros with parameters, `switch`/
+variadic functions, `switch`/
 `goto`, the ternary operator, compound-assignment operators (`+=` and
 friends), `++`/`--`, and designated initializers.
 
@@ -131,8 +131,8 @@ accumulator in a sane state around it — pcc doesn't track what an
 A small, from-scratch text-level preprocessor runs line-by-line over
 the raw source, entirely before the ANTLR lexer/parser ever see it:
 `#include "file"` / `#include <file>`, `#define NAME` / `#define NAME
-value` (object-like only — no function-like macros with parameters,
-no token-pasting/stringizing), `#undef`, `#ifdef`/`#ifndef`/`#if`/
+value` (object-like and function-like, including variadic macros,
+`#` stringizing, and `##` token pasting), `#undef`, `#ifdef`/`#ifndef`/`#if`/
 `#elif`/`#else`/`#endif` (`#if`/`#elif` evaluate a small integer-
 constant-expression language: `defined`, integer literals, `! - + * /
 % == != < <= > >= && ||`, parens, real C precedence — an undefined
@@ -143,11 +143,10 @@ whichever backend is active (`__PDP7__`, `__8086__`, etc. — see
 literal; `__FILE__`/`__DATE__`/`__TIME__` substitute as a real string
 literal, valid anywhere one is (`int p; p = __FILE__;`).
 
-See `src/preprocessor/Preprocessor.cpp`'s own header comment for the
-exact deliberate limitations this implementation accepts (a 32-round
-cap on self-referential macro rescanning, `#if`/`#ifdef` nesting that
-must balance within a single included file, and approximate downstream
-line numbers after an `#include`).
+Macro names are expanded only in preprocessing tokens, not inside
+string/character literals or comments. `#if`/`#ifdef` nesting must
+balance within a single included file, and downstream line numbers after
+an `#include` are approximate.
 
 ## COFF object files
 

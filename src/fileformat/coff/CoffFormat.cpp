@@ -9,6 +9,17 @@ namespace {
 
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("CoffFormat: " + msg); }
 
+constexpr uint16_t kI386WindowsMachine = 0x014C;
+constexpr uint16_t kPccI386Machine = 0x3386;
+constexpr uint16_t kI386RelocAbs32 = 1;
+constexpr uint16_t kI386RelocRel32 = 2;
+constexpr uint16_t kImageRelI386Dir32 = 0x0006;
+constexpr uint16_t kImageRelI386Rel32 = 0x0014;
+
+bool isPccLocalSymbol(const std::string &name) {
+    return name.compare(0, 12, "__pcc_local_") == 0 || name.compare(0, 10, "__pcc_tmp_") == 0;
+}
+
 void put16(std::string &out, uint16_t v) {
     out.push_back(static_cast<char>(v & 0xFF));
     out.push_back(static_cast<char>((v >> 8) & 0xFF));
@@ -69,19 +80,25 @@ std::string getSymbolName(const std::string &bytes, size_t nameFieldOffset, cons
 }  // namespace
 
 std::string CoffFormatWriter::write(const ObjectFile &obj) const {
+    const bool windowsI386 = obj.machineType == kI386WindowsMachine;
     // Built first so each long name's string-table offset is known before the symbol table is
     // written. Offset 0 is reserved ("no name"); the leading 4-byte length field occupies it.
     std::string stringTable;
     put32(stringTable, 0);  // placeholder; patched below
     std::vector<uint32_t> nameOffsets(obj.symbols.size(), 0);
     std::unordered_map<std::string, uint32_t> symbolIndex;  // name -> index, for relocations below
+    uint32_t numSymbols = 0;
     for (size_t i = 0; i < obj.symbols.size(); i++) {
-        symbolIndex[obj.symbols[i].name] = static_cast<uint32_t>(i);
-        if (obj.symbols[i].name.size() > 8) {
+        const std::string &name = obj.symbols[i].name;
+        symbolIndex[name] = numSymbols;
+        if (windowsI386 && name == "..") symbolIndex[".text"] = numSymbols;
+        const std::string &serializedName = windowsI386 && name == ".." ? ".text" : name;
+        if (serializedName.size() > 8) {
             nameOffsets[i] = static_cast<uint32_t>(stringTable.size());
-            stringTable += obj.symbols[i].name;
+            stringTable += serializedName;
             stringTable.push_back('\0');
         }
+        numSymbols += 1 + (windowsI386 && name == ".." ? 1 : 0);
     }
     uint32_t stringTableLen = static_cast<uint32_t>(stringTable.size());
     stringTable[0] = static_cast<char>(stringTableLen & 0xFF);
@@ -98,7 +115,6 @@ std::string CoffFormatWriter::write(const ObjectFile &obj) const {
     uint32_t relocOffset = textOffset + static_cast<uint32_t>(obj.textBytes.size());
     uint32_t numRelocs = static_cast<uint32_t>(obj.relocations.size());
     uint32_t symTableOffset = relocOffset + numRelocs * kRelocationSize;
-    uint32_t numSymbols = static_cast<uint32_t>(obj.symbols.size());
 
     std::string out;
 
@@ -145,17 +161,40 @@ std::string CoffFormatWriter::write(const ObjectFile &obj) const {
         if (it == symbolIndex.end()) fail("relocation references unknown symbol '" + r.symbolName + "'");
         put32(out, r.offset);
         put32(out, it->second);
-        put16(out, r.type);
+        uint16_t type = r.type;
+        if (windowsI386) {
+            if (r.type == kI386RelocAbs32) {
+                type = kImageRelI386Dir32;
+            } else if (r.type == kI386RelocRel32) {
+                type = kImageRelI386Rel32;
+            } else {
+                fail("unsupported hosted Windows i386 relocation " + std::to_string(r.type));
+            }
+        }
+        put16(out, type);
     }
 
     for (size_t i = 0; i < obj.symbols.size(); i++) {
-        putSymbolName(out, obj.symbols[i].name, nameOffsets[i]);
-        put32(out, obj.symbols[i].value);  // Value
+        const ObjSymbol &sym = obj.symbols[i];
+        const bool sectionSymbol = windowsI386 && sym.name == "..";
+        std::string serializedName = sectionSymbol ? ".text" : sym.name;
+        putSymbolName(out, serializedName, nameOffsets[i]);
+        put32(out, sectionSymbol ? 0 : sym.value);  // Value
         // SectionNumber: 0 (undefined), 1 (.text), or 2 (.bss).
-        put16(out, !obj.symbols[i].isDefined ? 0 : (obj.symbols[i].isData ? 2 : 1));
+        put16(out, sectionSymbol ? 1 : (!sym.isDefined ? 0 : (sym.isData ? 2 : 1)));
         put16(out, 0);                                        // Type
-        out.push_back(static_cast<char>(2));  // StorageClass = C_EXT (external/global)
-        out.push_back(static_cast<char>(0));   // NumberOfAuxSymbols
+        const bool local = windowsI386 && (sectionSymbol || isPccLocalSymbol(sym.name));
+        out.push_back(static_cast<char>(local ? 3 : 2));  // C_STAT or C_EXT
+        out.push_back(static_cast<char>(sectionSymbol ? 1 : 0));  // NumberOfAuxSymbols
+        if (sectionSymbol) {
+            put32(out, static_cast<uint32_t>(obj.textBytes.size()));
+            put16(out, static_cast<uint16_t>(numRelocs));
+            put16(out, 0);  // NumberOfLinenumbers
+            put32(out, 0);  // Checksum
+            put16(out, 1);  // Number
+            out.push_back(0);  // Selection
+            putBytes(out, std::string(3, '\0').data(), 3);
+        }
     }
 
     out += stringTable;
@@ -171,7 +210,8 @@ ObjectFile CoffFormatReader::read(const std::string &bytes) const {
 
     need(bytes, 0, kFileHeaderSize);
     ObjectFile obj;
-    obj.machineType = get16(bytes, 0);
+    const bool windowsI386 = get16(bytes, 0) == kI386WindowsMachine;
+    obj.machineType = windowsI386 ? kPccI386Machine : get16(bytes, 0);
     uint16_t numSections = get16(bytes, 2);
     if (numSections != 2) {
         fail("expected exactly two sections (.text, .bss), got " + std::to_string(numSections));
@@ -204,13 +244,23 @@ ObjectFile CoffFormatReader::read(const std::string &bytes) const {
     std::string stringTable = bytes.substr(stringTableOffset, stringTableLen);
 
     obj.symbols.reserve(numSymbols);
-    for (uint32_t i = 0; i < numSymbols; i++) {
+    std::vector<uint32_t> symbolIndices(numSymbols, UINT32_MAX);
+    for (uint32_t i = 0; i < numSymbols;) {
         size_t symOffset = symTableOffset + static_cast<size_t>(i) * kSymbolSize;
         need(bytes, symOffset, kSymbolSize);
         std::string name = getSymbolName(bytes, symOffset, stringTable);
         uint32_t value = get32(bytes, symOffset + 8);
         uint16_t sectionNumber = get16(bytes, symOffset + 12);
+        uint8_t storageClass = static_cast<uint8_t>(bytes[symOffset + 16]);
+        uint8_t auxiliaryCount = static_cast<uint8_t>(bytes[symOffset + 17]);
+        if (auxiliaryCount > numSymbols - i - 1) fail("symbol auxiliary count exceeds symbol table");
+        if (windowsI386 && name == ".text" && sectionNumber == 1 && storageClass == 3) {
+            name = "..";
+            value = 0;
+        }
+        symbolIndices[i] = static_cast<uint32_t>(obj.symbols.size());
         obj.symbols.push_back({name, value, /*isDefined=*/sectionNumber != 0, /*isData=*/sectionNumber == 2});
+        i += static_cast<uint32_t>(auxiliaryCount) + 1;
     }
 
     obj.relocations.reserve(numRelocations);
@@ -220,8 +270,14 @@ ObjectFile CoffFormatReader::read(const std::string &bytes) const {
         uint32_t fieldOffset = get32(bytes, relOffset);
         uint32_t symbolIndex = get32(bytes, relOffset + 4);
         uint16_t type = get16(bytes, relOffset + 8);
-        if (symbolIndex >= obj.symbols.size()) fail("relocation references symbol index out of range");
-        obj.relocations.push_back({fieldOffset, obj.symbols[symbolIndex].name, type});
+        if (symbolIndex >= symbolIndices.size() || symbolIndices[symbolIndex] == UINT32_MAX) {
+            fail("relocation references symbol index out of range");
+        }
+        if (windowsI386) {
+            if (type == kImageRelI386Dir32) type = kI386RelocAbs32;
+            else if (type == kImageRelI386Rel32) type = kI386RelocRel32;
+        }
+        obj.relocations.push_back({fieldOffset, obj.symbols[symbolIndices[symbolIndex]].name, type});
     }
 
     return obj;

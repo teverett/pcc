@@ -75,9 +75,10 @@ namespace pcc {
 // A64 branches/calls have no delay slot.
 class Arm64Codegen : public Backend {
    public:
+    void setHostedAbi(bool enabled) { darwinHosted_ = enabled; }
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "armv8a"; }
-    TypeWidths typeWidths() const override { return {1, 2, 4, 4, 8}; }
+    TypeWidths typeWidths() const override { return {1, 2, 4, 4, 8, 8, darwinHosted_ ? 8 : 0}; }
     std::string sourceExtension() const override { return ".s64"; }
     std::vector<std::string> assembledFormats() const override {
         return {"raw", "coff", "elf", "macho", "aout", "objraw"};
@@ -183,11 +184,14 @@ class Arm64Codegen : public Backend {
     // frame. Loads the computed address into 64-bit register `reg`.
     void loadSlotAddr(const std::string &reg, const ir::Slot *slot);
 
-    static std::string label(const ir::Slot *slot) {
-        if (slot->kind == ir::SlotKind::Global) return "g_" + slot->sourceName;
+    std::string label(const ir::Slot *slot) const {
+        if (slot->kind == ir::SlotKind::Global) return darwinHosted_ ? "_" + slot->sourceName
+                                                                     : "g_" + slot->sourceName;
         return slot->sourceName + "_" + std::to_string(slot->id);
     }
-    static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
+    std::string label(const ir::Function *fn) const {
+        return darwinHosted_ ? "_" + fn->sourceName : "fn_" + fn->sourceName;
+    }
 
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     std::string arrayElemText(const ir::ArrayInitElem &e);
@@ -198,6 +202,8 @@ class Arm64Codegen : public Backend {
     std::map<std::string, std::string> perFileAsm_;
 
     int labelCounter_ = 0;
+    bool darwinHosted_ = false;
+    int currentParamBase_ = 0;
     // The frameSize of the function genStmt() is currently generating
     // code for, needed by a `return` statement's inline epilogue.
     int currentFrameSize_ = 0;

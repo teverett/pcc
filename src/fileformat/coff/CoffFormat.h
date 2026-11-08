@@ -8,10 +8,8 @@ namespace pcc {
 // `.bss` section (pure size reservation, empty for von-Neumann targets), a symbol table
 // (defined-vs-external, `.text`-vs-`.bss`-resident), and a relocation table (empty once linked).
 //
-// Every object uses a custom, non-registered Machine value (`ObjectFile::machineType`); real COFF
-// readers (e.g. objdump) reject this field as invalid even though every other field is laid out
-// correctly, so structural correctness is verified with an ad-hoc field-offset script and a round
-// trip through this project's own linker instead.
+// The pcc i386 COFF dialect retains its custom machine ID. Hosted Windows i386 objects use the
+// standard IMAGE_FILE_MACHINE_I386 value and standard COFF relocation and local-symbol records.
 class CoffFormatWriter : public FileFormatWriter {
    public:
     std::string write(const ObjectFile &obj) const override;

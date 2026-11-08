@@ -120,7 +120,7 @@ FileFormatKind detectFileFormat(const std::string &bytes) {
         uint32_t magic = static_cast<uint8_t>(bytes[0]) | (static_cast<uint8_t>(bytes[1]) << 8) |
                           (static_cast<uint8_t>(bytes[2]) << 16) |
                           (static_cast<uint32_t>(static_cast<uint8_t>(bytes[3])) << 24);
-        if (magic == 0xFEEDFACE) return FileFormatKind::MachO;
+        if (magic == 0xFEEDFACE || magic == 0xFEEDFACF) return FileFormatKind::MachO;
     }
     if (bytes.size() >= 4) {
         uint32_t magic = static_cast<uint8_t>(bytes[0]) | (static_cast<uint8_t>(bytes[1]) << 8) |

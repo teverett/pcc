@@ -19,7 +19,7 @@ int rank(BaseType base) {
 }
 
 int widthOf(Type t, const TypeWidths &widths) {
-    if (t.ptrDepth > 0) return widths.intUnits;
+    if (t.ptrDepth > 0) return widths.pointerUnits > 0 ? widths.pointerUnits : widths.intUnits;
     switch (t.base) {
         case BaseType::Char:
             return widths.charUnits;

@@ -32,9 +32,17 @@ constexpr uint16_t kEtRel = 1;
 
 constexpr uint32_t kShtNull = 0, kShtProgbits = 1, kShtSymtab = 2, kShtStrtab = 3, kShtRel = 9, kShtNobits = 8;
 constexpr uint32_t kShfAlloc = 0x2, kShfExecinstr = 0x4, kShfWrite = 0x1;
+constexpr uint8_t kSttSection = 3;
+constexpr uint16_t kEm386 = 3;
+constexpr uint8_t kR386Pc32 = 2;
+constexpr uint16_t kPccI386Machine = 0x3386;
+
+bool isPccLocalSymbol(const std::string &name) {
+    return name.compare(0, 12, "__pcc_local_") == 0 || name.compare(0, 10, "__pcc_tmp_") == 0;
+}
 
 // Fixed section order this writer always produces.
-constexpr uint32_t kSecNull = 0, kSecText = 1, kSecBss = 2, kSecSymtab = 3, kSecStrtab = 4, kSecRel = 5,
+constexpr uint32_t kSecText = 1, kSecBss = 2, kSecSymtab = 3, kSecStrtab = 4, kSecRel = 5,
                     kSecShstrtab = 6;
 constexpr uint32_t kNumSections = 7;
 
@@ -45,26 +53,62 @@ std::string ElfFormatWriter::write(const ObjectFile &obj) const {
         if (r.type > 0xFF) fail("relocation type " + std::to_string(r.type) + " doesn't fit in ELF32_Rel's 8 bits");
     }
 
-    // Elf32_Sym index 0 is the mandatory null symbol; ObjSymbol i -> index i+1.
+    std::string textBytes(obj.textBytes.begin(), obj.textBytes.end());
+    if (obj.machineType == kEm386 || obj.machineType == kPccI386Machine) {
+        for (const auto &r : obj.relocations) {
+            if (r.type != kR386Pc32) continue;
+            if (static_cast<size_t>(r.offset) + 4 > textBytes.size()) fail("relocation offset outside .text");
+            uint32_t addend = static_cast<uint32_t>(static_cast<uint8_t>(textBytes[r.offset])) |
+                              (static_cast<uint32_t>(static_cast<uint8_t>(textBytes[r.offset + 1])) << 8) |
+                              (static_cast<uint32_t>(static_cast<uint8_t>(textBytes[r.offset + 2])) << 16) |
+                              (static_cast<uint32_t>(static_cast<uint8_t>(textBytes[r.offset + 3])) << 24);
+            addend -= 4;
+            for (int i = 0; i < 4; ++i) textBytes[r.offset + i] = static_cast<char>(addend >> (i * 8));
+        }
+    }
+
     std::string strtab;
     strtab.push_back('\0');
     std::vector<uint32_t> nameOffsets(obj.symbols.size());
-    for (size_t i = 0; i < obj.symbols.size(); i++) {
-        nameOffsets[i] = static_cast<uint32_t>(strtab.size());
-        strtab += obj.symbols[i].name;
-        strtab.push_back('\0');
+    std::unordered_map<std::string, uint32_t> symIndex;
+    symIndex[".."] = 1;  // the ELF .text section symbol carries pcc's object-base relocations
+    std::vector<size_t> symbolOrder;
+    std::vector<size_t> globalSymbols;
+    for (size_t i = 0; i < obj.symbols.size(); ++i) {
+        const auto &sym = obj.symbols[i];
+        if (sym.name == "..") continue;
+        if (obj.machineType == kPccI386Machine && isPccLocalSymbol(sym.name)) {
+            symbolOrder.push_back(i);
+        } else {
+            globalSymbols.push_back(i);
+        }
     }
-    std::unordered_map<std::string, uint32_t> symIndex;  // name -> Elf32_Sym index, for relocations below
-    for (size_t i = 0; i < obj.symbols.size(); i++) symIndex[obj.symbols[i].name] = static_cast<uint32_t>(i + 1);
+    size_t localSymbolCount = symbolOrder.size();
+    symbolOrder.insert(symbolOrder.end(), globalSymbols.begin(), globalSymbols.end());
+    uint32_t nextSymIndex = 2;
+    for (size_t i : symbolOrder) {
+        const ObjSymbol &sym = obj.symbols[i];
+        nameOffsets[i] = static_cast<uint32_t>(strtab.size());
+        strtab += sym.name;
+        strtab.push_back('\0');
+        symIndex[sym.name] = nextSymIndex++;
+    }
 
     std::string symtab;
     putBytes(symtab, std::string(kSymSize, '\0').data(), kSymSize);  // null entry
-    for (size_t i = 0; i < obj.symbols.size(); i++) {
+    put32(symtab, 0);  // .text section symbol
+    put32(symtab, 0);
+    put32(symtab, 0);
+    symtab.push_back(static_cast<char>(kSttSection));
+    symtab.push_back(0);
+    put16(symtab, static_cast<uint16_t>(kSecText));
+    for (size_t i : symbolOrder) {
         const ObjSymbol &sym = obj.symbols[i];
         put32(symtab, nameOffsets[i]);                                      // st_name
         put32(symtab, sym.value);                                           // st_value
         put32(symtab, 0);                                                   // st_size
-        symtab.push_back(static_cast<char>((1 << 4) | 0));                  // st_info: STB_GLOBAL<<4 | STT_NOTYPE
+        bool isLocal = obj.machineType == kPccI386Machine && isPccLocalSymbol(sym.name);
+        symtab.push_back(static_cast<char>((isLocal ? 0 : 1) << 4));        // STB_LOCAL/GLOBAL, STT_NOTYPE
         symtab.push_back(static_cast<char>(0));                             // st_other
         // st_shndx: .text or .bss, whichever address space the symbol lives in, or SHN_UNDEF.
         uint16_t shndx = !sym.isDefined ? 0 : static_cast<uint16_t>(sym.isData ? kSecBss : kSecText);
@@ -106,7 +150,7 @@ std::string ElfFormatWriter::write(const ObjectFile &obj) const {
     const uint8_t ident[16] = {0x7F, 'E', 'L', 'F', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     putBytes(out, ident, 16);
     put16(out, kEtRel);
-    put16(out, obj.machineType);
+    put16(out, obj.machineType == kPccI386Machine ? kEm386 : obj.machineType);
     put32(out, 1);        // e_version
     put32(out, 0);        // e_entry
     put32(out, 0);        // e_phoff
@@ -119,7 +163,7 @@ std::string ElfFormatWriter::write(const ObjectFile &obj) const {
     put16(out, static_cast<uint16_t>(kNumSections));
     put16(out, static_cast<uint16_t>(kSecShstrtab));  // e_shstrndx
 
-    if (!obj.textBytes.empty()) putBytes(out, obj.textBytes.data(), obj.textBytes.size());
+    if (!textBytes.empty()) putBytes(out, textBytes.data(), textBytes.size());
     out += reltab;
     out += symtab;
     out += strtab;
@@ -145,7 +189,7 @@ std::string ElfFormatWriter::write(const ObjectFile &obj) const {
     putShdr(secNameOffset[kSecBss], kShtNobits, kShfAlloc | kShfWrite, textOff + static_cast<uint32_t>(obj.textBytes.size()),
             obj.dataSize, 0, 0, 1, 0);
     putShdr(secNameOffset[kSecSymtab], kShtSymtab, 0, symOff, static_cast<uint32_t>(symtab.size()), kSecStrtab,
-            1 /*sh_info: index of first non-local symbol*/, 4, static_cast<uint32_t>(kSymSize));
+            static_cast<uint32_t>(2 + localSymbolCount), 4, static_cast<uint32_t>(kSymSize));
     putShdr(secNameOffset[kSecStrtab], kShtStrtab, 0, strOff, static_cast<uint32_t>(strtab.size()), 0, 0, 1, 0);
     putShdr(secNameOffset[kSecRel], kShtRel, 0, relOff, static_cast<uint32_t>(reltab.size()), kSecSymtab,
             kSecText /*sh_info: section this relocation table applies to*/, 4, static_cast<uint32_t>(kRelSize));
@@ -190,6 +234,7 @@ ObjectFile ElfFormatReader::read(const std::string &bytes) const {
 
     // Found by section type, not fixed index, so any valid ET_REL object can be read.
     uint32_t textOff = 0, textSize = 0;
+    uint16_t textShndx = 0xFFFF;
     uint32_t dataSize = 0;
     uint32_t symOff = 0, symSize = 0, symLink = 0;
     uint32_t relOff = 0, relSize = 0;
@@ -205,6 +250,7 @@ ObjectFile ElfFormatReader::read(const std::string &bytes) const {
         if (type == kShtProgbits && textSize == 0) {
             textOff = offset;
             textSize = size;
+            textShndx = i;
         } else if (type == kShtNobits) {
             dataSize = size;
             bssShndx = i;
@@ -230,6 +276,7 @@ ObjectFile ElfFormatReader::read(const std::string &bytes) const {
 
     ObjectFile obj;
     obj.machineType = get16(bytes, 18);
+    if (obj.machineType == kEm386) obj.machineType = kPccI386Machine;
     obj.dataSize = dataSize;
     need(bytes, textOff, textSize);
     obj.textBytes.assign(bytes.begin() + textOff, bytes.begin() + textOff + textSize);
@@ -243,8 +290,13 @@ ObjectFile ElfFormatReader::read(const std::string &bytes) const {
         uint32_t nameOff = get32(bytes, base);
         uint32_t value = get32(bytes, base + 4);
         uint16_t shndx = get16(bytes, base + 14);
+        uint8_t info = static_cast<uint8_t>(bytes[base + 12]);
         symNames[i] = getCString(strtab, nameOff);
         if (i == 0) continue;  // the mandatory null entry
+        if (shndx == textShndx && (info & 0x0F) == kSttSection) {
+            symNames[i] = "..";
+            continue;
+        }
         obj.symbols.push_back({symNames[i], value, /*isDefined=*/shndx != 0, /*isData=*/shndx == bssShndx});
     }
 

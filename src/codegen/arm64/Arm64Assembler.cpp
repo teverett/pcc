@@ -213,7 +213,8 @@ struct Relocation {
 // --- Two-pass assembly ----------------------------------------------------
 class Assembler {
    public:
-    explicit Assembler(bool allowExternal) : allowExternal_(allowExternal) {}
+    explicit Assembler(bool allowExternal, bool darwinHosted = false)
+        : allowExternal_(allowExternal), darwinHosted_(darwinHosted) {}
 
     void run(const std::vector<Line> &lines) {
         stage_ = 1;
@@ -478,6 +479,37 @@ class Assembler {
             emitMovWide(mnemonic == "movz" ? 0b10u : 0b11u, sf, rd, imm16, hi ? 1u : 0u);
             return;
         }
+        if (mnemonic == "adrp") {
+            uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            const Operand &target = requireOperand(ops, 1, mnemonic);
+            if (target.kind != Operand::Mem || target.expr.size() != 1 ||
+                target.expr[0].kind != SylKind::Symbol || target.expr[0].sign != 0) {
+                fail("'adrp' target must be a single symbol");
+            }
+            if (stage_ == 2 && allowExternal_) {
+                if (!darwinHosted_) fail("'adrp' is only available for hosted macOS objects");
+                relocations_.push_back({static_cast<uint32_t>(offset_), target.expr[0].text,
+                                        kArm64DarwinRelocPage21});
+            }
+            emit32(0x90000000u | rd);
+            return;
+        }
+        if (mnemonic == "addlo") {
+            uint8_t rd = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            uint8_t rn = requireReg(requireOperand(ops, 1, mnemonic), mnemonic);
+            const Operand &target = requireOperand(ops, 2, mnemonic);
+            if (target.kind != Operand::Mem || target.expr.size() != 1 ||
+                target.expr[0].kind != SylKind::Symbol || target.expr[0].sign != 0) {
+                fail("'addlo' target must be a single symbol");
+            }
+            if (stage_ == 2 && allowExternal_) {
+                if (!darwinHosted_) fail("'addlo' is only available for hosted macOS objects");
+                relocations_.push_back({static_cast<uint32_t>(offset_), target.expr[0].text,
+                                        kArm64DarwinRelocPageoff12});
+            }
+            emit32(0x91000000u | (static_cast<uint32_t>(rn) << 5) | rd);
+            return;
+        }
         if (mnemonic == "movk2" || mnemonic == "movk3") {
             // `movk2`/`movk3 xd,<imm16>` - the bits32-47/bits48-63 chunks
             // of a 64-bit immediate (hw=2/3; `movz`/`movk` above only
@@ -643,7 +675,8 @@ class Assembler {
             // relocation. Only a cross-object target (still undefined
             // here) does.
             if (stage_ == 2 && allowExternal_ && !externalName.empty()) {
-                relocations_.push_back({static_cast<uint32_t>(offset_), externalName, kArm64RelocRel26});
+                relocations_.push_back({static_cast<uint32_t>(offset_), externalName,
+                                        darwinHosted_ ? kArm64DarwinRelocBranch26 : kArm64RelocRel26});
                 emitBranchImm(opc, 0);
                 return;
             }
@@ -678,13 +711,14 @@ class Assembler {
     uint64_t orgBase_ = 0;
     int stage_ = 1;
     bool allowExternal_;
+    bool darwinHosted_;
 };
 
 // Builds the format-neutral ObjectFile from a completed object-mode
 // Assembler.
-ObjectFile buildObjectFile(const Assembler &a) {
+ObjectFile buildObjectFile(const Assembler &a, bool darwinHosted) {
     ObjectFile obj;
-    obj.machineType = kArm64CoffMachine;
+    obj.machineType = darwinHosted ? kArm64DarwinMachine : kArm64CoffMachine;
     const auto &bytesVec = a.bytes();
     obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
 
@@ -716,11 +750,11 @@ std::string assembleArm64(const std::string &asmText) {
     return std::string(bytes.begin(), bytes.end());
 }
 
-ObjectFile assembleArm64Object(const std::string &asmText) {
+ObjectFile assembleArm64Object(const std::string &asmText, bool darwinHosted) {
     std::vector<Line> lines = parseProgram(asmText);
-    Assembler assembler(/*allowExternal=*/true);
+    Assembler assembler(/*allowExternal=*/true, darwinHosted);
     assembler.run(lines);
-    return buildObjectFile(assembler);
+    return buildObjectFile(assembler, darwinHosted);
 }
 
 }  // namespace pcc

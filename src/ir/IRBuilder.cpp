@@ -853,7 +853,7 @@ class Builder {
 
                 out->kind = ir::ExprKind::Unary;
                 out->op = "&";
-                out->type = Type{BaseType::Int, false};
+                out->type = pointerTo(slot->type);
                 out->rhs = std::move(arrVar);
                 return out;
             }

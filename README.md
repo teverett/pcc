@@ -22,8 +22,8 @@ and dereference), arrays, casts, and `sizeof`. String literals
 anonymous, NUL-terminated `char` array holding its decoded bytes, the
 same as a hand-declared `char` array would. A text-level preprocessor
 handles `#include`, object-like `#define`/`#undef`, and `#ifdef`/
-`#ifndef`/`#if`/`#else`/`#elif`/`#endif` (no function-like macros with
-parameters, no token-pasting/stringizing). No structs, no floats.
+`#ifndef`/`#if`/`#else`/`#elif`/`#endif`, function-like and variadic
+macros, stringizing, and token pasting. No structs, no floats.
 
 ## Documentation
 

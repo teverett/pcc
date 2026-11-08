@@ -557,6 +557,14 @@ class Assembler {
             emitAbs32(requireOperand(ops, 1, mnemonic).expr);
             return;
         }
+        if (mnemonic == "and" && requireOperand(ops, 0, mnemonic).kind == Operand::Reg &&
+            requireOperand(ops, 1, mnemonic).kind == Operand::Imm) {
+            uint8_t dst = requireReg(requireOperand(ops, 0, mnemonic), mnemonic);
+            emit8(0x81);
+            emit8(static_cast<uint8_t>(0xC0 | (4 << 3) | dst));
+            emitAbs32(requireOperand(ops, 1, mnemonic).expr);
+            return;
+        }
         if (mnemonic == "add" && requireOperand(ops, 0, mnemonic).kind == Operand::Reg &&
             requireOperand(ops, 1, mnemonic).kind == Operand::Mem) {
             // 03 /r: register+memory add form.

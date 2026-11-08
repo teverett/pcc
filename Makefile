@@ -232,7 +232,8 @@ $(TARGET): $(OBJS)
 clean:
 	rm -rf build
 
-# Runs every backend's test suite in turn - see tests/run_tests.sh's
+# Runs the shared preprocessor unit tests and every backend's test suite in
+# turn - see tests/run_tests.sh's
 # --target. A backend whose own target tool isn't installed (pdp7's
 # simulator, 8086/68000's qemu, 6502/65c02's py65) fails loudly rather than
 # being skipped silently; install it or run `tests/run_tests.sh
@@ -240,7 +241,12 @@ clean:
 # isn't run here too - see src/main.cpp's own makeBackend() comment
 # for why that would just be re-running the --target=8086 suite
 # against provably byte-identical output.
-test: all
+$(BIN_DIR)/preprocessor_test: tests/preprocessor_test.cpp $(PREPROCESSOR_DIR)/Preprocessor.cpp $(PREPROCESSOR_DIR)/Preprocessor.h
+	@mkdir -p $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) tests/preprocessor_test.cpp $(PREPROCESSOR_DIR)/Preprocessor.cpp -o $@
+
+test: all $(BIN_DIR)/preprocessor_test
+	$(BIN_DIR)/preprocessor_test
 	python3 tests/qemu_wait_test.py
 	./tests/run_tests.sh $(TARGET) --target=pdp7
 	./tests/run_tests.sh $(TARGET) --target=8086

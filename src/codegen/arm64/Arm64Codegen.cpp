@@ -17,6 +17,7 @@ namespace {
 // Rounds `n` up to the next multiple of 8, on top of IRBuilder's
 // `frameSize`, which only guarantees a 4-byte-aligned result.
 int alignUp8(int n) { return (n + 7) & ~7; }
+int alignUp16(int n) { return (n + 15) & ~15; }
 
 // Where the whole program is loaded and starts executing: qemu's
 // `-kernel` raw-image convention for the `virt` machine's AArch64 boot
@@ -181,6 +182,11 @@ void Arm64Codegen::loadSlotAddr(const std::string &reg, const ir::Slot *slot) {
         return;
     }
     code_ << "    mov " << reg << ",x29\n";
+    if (darwinHosted_ && slot->kind == ir::SlotKind::Param) {
+        code_ << "    sub " << reg << "," << reg << "," << (currentParamBase_ + (slot->paramIndex + 1) * 8)
+              << "\n";
+        return;
+    }
     // `frameOffset` is a byte offset from IRBuilder, which reserves a
     // flat two-native-`int`-widths (8 bytes) below a Param's
     // frameOffset=0 point. This prologue actually reserves 32 bytes
@@ -232,6 +238,11 @@ void Arm64Codegen::declareArray(const std::string &lbl, const std::vector<ir::Ar
 }
 
 void Arm64Codegen::loadAddress(const std::string &reg, const std::string &lbl) {
+    if (darwinHosted_) {
+        code_ << "    adrp " << reg << "," << lbl << "\n";
+        code_ << "    addlo " << reg << "," << reg << "," << lbl << "\n";
+        return;
+    }
     code_ << "    movz " << reg << "," << lbl << "\n";
     code_ << "    movk " << reg << "," << lbl << "\n";
 }
@@ -328,6 +339,30 @@ std::map<std::string, std::string> Arm64Codegen::perFileAsm() const { return per
 // all of this in the opposite order.
 void Arm64Codegen::genFunction(const ir::FunctionBody &fn) {
     code_ << label(fn.func) << ":\n";
+    if (darwinHosted_) {
+        code_ << "    sub sp,sp,16\n    stind sp,x29\n";
+        code_ << "    add x9,sp,8\n    stind x9,x30\n";
+        code_ << "    add x29,sp,0\n";
+        currentParamBase_ = alignUp8(fn.func->frameSize);
+        currentFrameSize_ = alignUp16(currentParamBase_ + static_cast<int>(fn.func->params.size()) * 8);
+        if (currentFrameSize_ > 0) code_ << "    sub sp,sp," << currentFrameSize_ << "\n";
+        for (size_t i = 0; i < fn.func->params.size(); i++) {
+            const ir::Slot *param = fn.func->params[i];
+            std::string valueReg = (isWide(param->type) ? "x" : "w") + std::to_string(i < 8 ? i : 0);
+            if (i >= 8) {
+                code_ << "    add x9,x29," << (16 + (i - 8) * 8) << "\n";
+                code_ << "    ldind x9," << valueReg << "\n";
+            }
+            int offset = currentParamBase_ + static_cast<int>(i + 1) * 8;
+            code_ << "    sub x10,x29," << offset << "\n";
+            code_ << "    stind x10," << valueReg << "\n";
+        }
+        genStmt(*fn.body);
+        if (currentFrameSize_ > 0) code_ << "    add sp,sp," << currentFrameSize_ << "\n";
+        code_ << "    ldind sp,x29\n    add x9,sp,8\n    ldind x9,x30\n    add sp,sp,16\n";
+        code_ << "    ret\n\n";
+        return;
+    }
     code_ << "    sub sp,sp,16\n    stind sp,w30\n";
     code_ << "    sub sp,sp,16\n    stind sp,w29\n";
     // `add x29,sp,0`, not `mov x29,sp`: this dialect's `mov` alias is
@@ -405,8 +440,12 @@ void Arm64Codegen::genStmt(const ir::Stmt &s) {
             // epilogue, so it needs this same teardown inline, in the
             // opposite order from the prologue.
             if (currentFrameSize_ > 0) code_ << "    add sp,sp," << currentFrameSize_ << "\n";
-            code_ << "    ldind sp,w29\n    add sp,sp,16\n";
-            code_ << "    ldind sp,w30\n    add sp,sp,16\n";
+            if (darwinHosted_) {
+                code_ << "    ldind sp,x29\n    add x9,sp,8\n    ldind x9,x30\n    add sp,sp,16\n";
+            } else {
+                code_ << "    ldind sp,w29\n    add sp,sp,16\n";
+                code_ << "    ldind sp,w30\n    add sp,sp,16\n";
+            }
             code_ << "    ret\n";
             return;
         }
@@ -529,6 +568,25 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
             return;
         }
         case ir::ExprKind::Call: {
+            if (darwinHosted_) {
+                size_t registerArgs = std::min<size_t>(8, e.args.size());
+                size_t stackArgs = e.args.size() > 8 ? (e.args.size() - 8) * 8 : 0;
+                int callFrameSize = alignUp16(static_cast<int>(stackArgs + registerArgs * 8));
+                if (callFrameSize > 0) code_ << "    sub sp,sp," << callFrameSize << "\n";
+                for (size_t i = e.args.size(); i-- > 0;) {
+                    genExpr(*e.args[i]);
+                    size_t offset = i < 8 ? stackArgs + i * 8 : (i - 8) * 8;
+                    code_ << "    add x2,sp," << offset << "\n";
+                    code_ << "    stind x2," << (isWide(e.args[i]->type) ? "x0" : "w0") << "\n";
+                }
+                for (size_t i = 0; i < registerArgs; i++) {
+                    code_ << "    add x9,sp," << (stackArgs + i * 8) << "\n";
+                    code_ << "    ldind x9," << (isWide(e.args[i]->type) ? "x" : "w") << i << "\n";
+                }
+                code_ << "    bl " << label(e.func) << "\n";
+                if (callFrameSize > 0) code_ << "    add sp,sp," << callFrameSize << "\n";
+                return;
+            }
             // Pushes each argument right-to-left so arg 0 ends up closest
             // to the top of the pushed-argument space. The caller cleans
             // the pushed words up once `bl` returns. Every argument
@@ -871,7 +929,7 @@ std::optional<std::string> Arm64Codegen::assembleInProcess(const std::string &as
     // one format-neutral ObjectFile, and the requested format just picks
     // that format's own FileFormatWriter to serialize it.
     if (auto kind = fileFormatKindFromName(format)) {
-        ObjectFile obj = assembleArm64Object(asmText);
+        ObjectFile obj = assembleArm64Object(asmText, darwinHosted_ && format == "macho");
         return makeFileFormatWriter(*kind)->write(obj);
     }
     return std::nullopt;

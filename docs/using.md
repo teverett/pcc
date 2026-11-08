@@ -38,6 +38,63 @@ files, each compiled completely independently, one `build/<name>.o`
 per file), then combine every `.o` with `--link` into the final
 program.
 
+For an i386 Linux program that calls system-library functions, compile
+with `--hosted` so external symbols and calls use the i386 C ABI:
+
+```sh
+pcc --target=i386 --hosted --format=elf --out=main.o main.c
+pcc --link --target=i386 --hosted --format=elf --out=app \
+    main.o -L/usr/lib/i386-linux-gnu -lm
+```
+
+In hosted link mode, positional `.a` and `.so` paths are passed to the
+ELF linker directly. `-L<dir>` adds a library search directory and
+`-l<name>` searches for the corresponding library; the system linker
+chooses a shared object when available, otherwise a static archive.
+`--linker=<path>` selects the GNU-compatible ELF linker (default:
+`ld`). Omitting `--out` writes `a.out`. Hosted mode is limited to
+ELF/i386 Linux and requires compatible 32-bit libraries and a matching
+runtime loader. It is separate from pcc's own linker for bare-metal
+and retro targets.
+
+For 32-bit Windows PE executables and COFF `.lib` libraries, use
+`--hosted=windows` when compiling and linking:
+
+```sh
+pcc --target=i386 --hosted=windows --format=coff --out=main.obj main.c
+pcc --link --target=i386 --hosted=windows --format=coff --out=app.exe \
+    main.obj -Lpath/to/libs -lfoo
+```
+
+Windows hosted mode uses the i386 Windows C calling convention and emits
+standard i386 COFF objects. It links static `.lib` archives and DLL import
+libraries. By default pcc uses the MinGW cross-linker
+`i686-w64-mingw32-gcc`; `--windows-linker=msvc --linker=link.exe` selects
+the MSVC linker. This mode supports 32-bit Windows only; it does not
+support x64 `.lib` files. Its minimal startup calls `main` with
+`argc == 0` and `argv == NULL`, then exits through `ExitProcess`; it
+does not initialize the C runtime.
+
+For Apple Silicon macOS arm64 executables, use `--hosted=macos`:
+
+```sh
+pcc --target=armv8a --hosted=macos --format=macho --out=main.o main.c
+pcc --link --target=armv8a --hosted=macos --format=macho --out=app \
+    main.o
+```
+
+This mode emits 64-bit arm64 Mach-O objects, follows the macOS arm64
+calling convention, and links through Apple's system linker with
+`libSystem`. It also accepts `-L`/`-l` options and direct library paths.
+The startup calls `main` without command-line arguments and exits through
+`_exit`; hosted macOS mode currently targets Apple Silicon only.
+
+The `example/` directory contains `hello.c` and a Makefile with native
+`macos`, `linux`, and `windows` build targets. `make -C example` builds
+the target matching the host OS; use `make -C example macos`, `linux`,
+or `windows` explicitly when the required platform linker and libraries
+are available.
+
 ## Link mode
 
 ```

@@ -1,2 +1,5 @@
 /build
 /.idea
+**/*.o
+/example/build/hello-macos
+*.o

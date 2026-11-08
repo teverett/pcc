@@ -21,8 +21,12 @@ namespace pcc {
 // masks both 8259 PICs and calls `main`. Real separate compilation (objectMode) builds a
 // format-neutral ObjectFile instead of a self-contained Multiboot image; I386LinkerFactory
 // synthesizes the one real entry object once every user object is merged.
+// Linux hosted mode uses ELF/i386 symbols; Windows hosted mode uses COFF symbols and the i386
+// Windows C calling convention.
 class I386Codegen : public Backend {
    public:
+    void setHostedAbi(bool enabled) { hostedAbi_ = enabled; }
+     void setWindowsAbi(bool enabled) { windowsAbi_ = enabled; }
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
     std::string name() const override { return "i386"; }
     TypeWidths typeWidths() const override { return {1, 2, 4, 4, 8}; }
@@ -101,8 +105,12 @@ class I386Codegen : public Backend {
 
     // Global slots and Functions get a name-based label; a Local or Param is addressed
     // relative to `ebp` instead (see addr()).
-    static std::string label(const ir::Slot *slot) { return "g_" + slot->sourceName; }
-    static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
+    std::string label(const ir::Slot *slot) const {
+        return (windowsAbi_ ? "_" : hostedAbi_ ? "" : "g_") + slot->sourceName;
+    }
+    std::string label(const ir::Function *fn) const {
+        return (windowsAbi_ ? "_" : hostedAbi_ ? "" : "fn_") + fn->sourceName;
+    }
 
     // A Local or Param's effective-address operand text, e.g. "[ebp-8]"/"[ebp+12]",
     // optionally offset `byteOffset` more bytes in (a wide value's high dword). `ebp` points
@@ -130,10 +138,14 @@ class I386Codegen : public Backend {
         return byteOffset == 0 ? ("[" + lbl + "]") : ("[" + lbl + "+" + std::to_string(byteOffset) + "]");
     }
 
-    std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
+    std::string allocTemp() {
+        return (hostedAbi_ ? "__pcc_tmp_" : "t") + std::to_string(tempCounter_++);
+    }
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     std::string arrayElemText(const ir::ArrayInitElem &e);
-    std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
+    std::string newLabel() {
+        return (hostedAbi_ ? "__pcc_local_" : "L") + std::to_string(labelCounter_++);
+    }
 
     std::ostringstream code_;
     std::vector<std::string> trailer_;  // "label: dd v0, v1, ..." data lines, emitted once at the end
@@ -141,6 +153,8 @@ class I386Codegen : public Backend {
 
     int tempCounter_ = 0;
     int labelCounter_ = 0;
+    bool hostedAbi_ = false;
+    bool windowsAbi_ = false;
     // {continue label, break label} per currently-open loop (innermost last).
     std::vector<std::pair<std::string, std::string>> loopLabels_;
 };
