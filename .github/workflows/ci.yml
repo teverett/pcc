@@ -53,7 +53,7 @@ jobs:
           done
 
       - name: Upload documentation PDFs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pcc-docs
           path: build/docs-pdf/*.pdf
@@ -113,7 +113,7 @@ jobs:
           done
 
       - name: Upload pcc binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pcc-macos
           path: |
@@ -215,7 +215,7 @@ jobs:
           fi
 
       - name: Upload pcc binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pcc-linux
           path: |
@@ -284,7 +284,7 @@ jobs:
       # name without hardcoding which. This now also picks up every
       # DLL the previous step just copied alongside it.
       - name: Upload pcc binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pcc-windows
           path: |
