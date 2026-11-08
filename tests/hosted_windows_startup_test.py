@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import struct
@@ -23,8 +24,9 @@ class HostedWindowsStartupTest(unittest.TestCase):
             linker = root / "capture-linker"
             linker.write_text(
                 "#!" + sys.executable + "\n"
-                "import pathlib, shutil, sys\n"
+                "import json, pathlib, shutil, sys\n"
                 "args = sys.argv[1:]\n"
+                "pathlib.Path(__file__).with_name('args.json').write_text(json.dumps(args))\n"
                 "if '-o' in args:\n"
                 "    i = args.index('-o')\n"
                 "    output, startup = args[i + 1:i + 3]\n"
@@ -77,12 +79,21 @@ class HostedWindowsStartupTest(unittest.TestCase):
                     name = data[start:data.index(b"\0", start)]
                 names.append(name.rstrip(b"\0"))
             self.assertEqual(names, [b"_main", b"_ExitProcess@4"])
+            return json.loads((root / "args.json").read_text())
 
     def test_mingw_startup_arguments_and_exit_code(self):
         self.check_startup("mingw")
 
     def test_msvc_startup_arguments_and_exit_code(self):
         self.check_startup("msvc")
+
+    def test_msvc_disables_safeseh_for_pcc_objects(self):
+        args = self.check_startup("msvc")
+        self.assertEqual([arg.lower() for arg in args].count("/safeseh:no"), 1)
+
+    def test_mingw_does_not_receive_msvc_safeseh_option(self):
+        args = self.check_startup("mingw")
+        self.assertNotIn("/safeseh:no", [arg.lower() for arg in args])
 
 
 if __name__ == "__main__":

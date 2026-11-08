@@ -447,7 +447,7 @@ int runHostedWindowsLinker(const std::vector<std::string> &inputs, const std::st
 
     std::vector<std::string> args;
     if (linkerKind == "msvc") {
-        args = {linker, "/nologo", "/machine:x86", "/subsystem:console", "/entry:start",
+        args = {linker, "/nologo", "/machine:x86", "/subsystem:console", "/entry:start", "/safeseh:no",
                 "/out:" + temporaryOutput, startup};
         for (size_t i = 0; i < inputs.size(); ++i) {
             const std::string &input = inputs[i];

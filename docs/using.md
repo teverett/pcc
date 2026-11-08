@@ -75,7 +75,9 @@ Windows hosted mode uses the i386 Windows C calling convention and emits
 standard i386 COFF objects. It links static `.lib` archives and DLL import
 libraries. By default pcc uses the MinGW cross-linker
 `i686-w64-mingw32-gcc`; `--windows-linker=msvc --linker=link.exe` selects
-the MSVC linker. This mode supports 32-bit Windows only; it does not
+the MSVC linker and passes `/SAFESEH:NO` because pcc's COFF objects do not
+contain SafeSEH metadata. The resulting executable does not have SafeSEH
+protection. This mode supports 32-bit Windows only; it does not
 support x64 `.lib` files. Its minimal startup calls `main` with
 `argc == 0` and `argv == NULL`, then exits through `ExitProcess`; it
 does not initialize the C runtime.
