@@ -16,8 +16,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WAIT = os.path.join(HERE, "qemu_wait.py")
 
 
-def serve(path, dump_for):
-    """Answers each `info registers` with dump_for(n), n counting from 0."""
+def serve(path, dump_for, commands=None):
+    """Answers each `info registers` with dump_for(n), n counting from 0,
+    and any other command with just the prompt, recording every command
+    in `commands` if given."""
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(path)
     server.listen(1)
@@ -34,9 +36,14 @@ def serve(path, dump_for):
                     break
                 buf += chunk
                 while b"\n" in buf:
-                    _, buf = buf.split(b"\n", 1)
-                    conn.sendall(dump_for(n).encode() + b"\r\n(qemu) ")
-                    n += 1
+                    cmd, buf = buf.split(b"\n", 1)
+                    if commands is not None:
+                        commands.append(cmd.decode())
+                    if cmd == b"info registers":
+                        conn.sendall(dump_for(n).encode() + b"\r\n(qemu) ")
+                        n += 1
+                    else:
+                        conn.sendall(b"(qemu) ")
         except OSError:
             pass
         conn.close()
@@ -79,6 +86,19 @@ class QemuWaitTest(unittest.TestCase):
         out, elapsed = run_wait(self.path, 2)
         self.assertIn("R00=00000003", out)
         self.assertGreaterEqual(elapsed, 2)
+
+    def test_stops_the_cpu_around_each_read(self):
+        commands = []
+        serve(self.path, lambda n: "R00=00000001 PC=0100", commands)
+        run_wait(self.path, 10)
+        self.assertGreaterEqual(len(commands), 6)
+        for i in range(0, len(commands) - 2, 3):
+            self.assertEqual(commands[i:i + 3], ["stop", "info registers", "cont"])
+
+    def test_a_settled_state_must_last_the_whole_window(self):
+        serve(self.path, lambda n: "R00=00000001 PC=0100")
+        _, elapsed = run_wait(self.path, 10)
+        self.assertGreaterEqual(elapsed, 1.0)
 
     def test_ignores_settled_states_that_miss_the_required_pattern(self):
         serve(self.path, lambda n: "CS =f000 PC=0010" if n < 30 else "CS =0000 PC=7c11")

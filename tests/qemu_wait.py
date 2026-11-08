@@ -7,16 +7,18 @@ MONITOR_SOCKET is the unix socket qemu was started with
 (`-monitor unix:PATH,server,nowait`). Every test program ends by
 spinning in place (a branch-to-self, or `hlt` plus a jump back to it),
 so the machine is finished once the register dump stops changing,
-apart from flipping between the few states of that loop. Each sample
-is one `info registers` round trip over a single connection, so
-sampling every SAMPLE_INTERVAL costs almost nothing.
+apart from flipping between the few states of that loop.
 
-A program still computing changes its program counter on almost
-every sample, so WINDOW consecutive samples with at most MAX_STATES
-distinct dumps marks it done. The window spans several timer-interrupt
-periods, so firmware idling in `hlt` while waiting for an interrupt
-(the 8086 BIOS) is seen changing state rather than mistaken for the
-end. REQUIRED_PATTERN, a regular expression, must also match the
+Each sample stops the CPU (`stop`), reads `info registers` and resumes
+it (`cont`): without the stop, software emulation can report register
+state last saved before a long stretch of chained translated code, so a
+running program could look frozen. A program still computing changes
+its program counter on almost every sample, so samples spanning
+WINDOW_SECONDS with at most MAX_STATES distinct dumps mark it done. The
+window is long enough to ride out the CPU not being scheduled for a
+moment on a busy machine, and spans many timer-interrupt periods, so
+firmware idling in `hlt` while waiting for an interrupt (the 8086
+BIOS) is seen changing state rather than mistaken for the end. REQUIRED_PATTERN, a regular expression, must also match the
 dump before it counts as settled; the 8086 uses it to tell its program
 (code segment 0) from BIOS code that can idle long enough to look
 settled. On timeout the last dump is printed anyway, and the caller's
@@ -29,7 +31,7 @@ import sys
 import time
 
 SAMPLE_INTERVAL = 0.05
-WINDOW = 12
+WINDOW_SECONDS = 1.0
 MAX_STATES = 3
 PROMPT = b"(qemu) "
 
@@ -66,13 +68,21 @@ def main():
     try:
         sock = connect(path, deadline)
         read_until_prompt(sock, deadline)  # banner
-        recent = []
+        recent = []  # (time, dump), oldest first
         while time.monotonic() < deadline:
+            sock.sendall(b"stop\n")
+            read_until_prompt(sock, deadline)
             sock.sendall(b"info registers\n")
             last = read_until_prompt(sock, deadline)
-            recent = (recent + [last])[-WINDOW:]
-            if (len(recent) == WINDOW and len(set(recent)) <= MAX_STATES
-                    and (required is None or all(required.search(d) for d in recent))):
+            sock.sendall(b"cont\n")
+            read_until_prompt(sock, deadline)
+            now = time.monotonic()
+            recent.append((now, last))
+            while len(recent) > 1 and now - recent[1][0] >= WINDOW_SECONDS:
+                recent.pop(0)
+            dumps = [d for _, d in recent]
+            if (now - recent[0][0] >= WINDOW_SECONDS and len(set(dumps)) <= MAX_STATES
+                    and (required is None or all(required.search(d) for d in dumps))):
                 break
             time.sleep(SAMPLE_INTERVAL)
     except (OSError, ConnectionError):
