@@ -1436,7 +1436,6 @@ std::string Pdp7Codegen::prepareCompoundRhs(const ir::Expr &e) {
         return Tr;
     }
     if (op == "/" || op == "%") {
-        needDivMod_ = true;
         code_ << "   dac __dm_b\n";
         return "__dm_b";
     }
@@ -1471,7 +1470,7 @@ void Pdp7Codegen::finishCompoundOp(const ir::Expr &e, const std::string &rhsCell
     }
     if (op == "/" || op == "%") {
         code_ << "   dac __dm_a\n";
-        code_ << "   jms __divmod\n";
+        callDivMod(e.type.isUnsigned);
         if (op == "%") code_ << "   lac __dm_a\n";
         return;
     }
@@ -1763,15 +1762,34 @@ void Pdp7Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << "   cll\n   mul\n" << Tr << ": 0\n   lacq\n";
 }
 
-// Division/modulo via a shared software routine: repeated subtraction
-// on the operands' absolute values, with each result's sign reapplied
-// afterward, rather than the EAE "idiv" instruction. Matches C's
-// truncating division: the quotient's sign is the XOR of the operand
-// signs, and the remainder's sign always matches the dividend's.
+// Division/modulo via shared routines. Signed (__divmod): repeated
+// subtraction on the operands' absolute values, with each result's
+// sign reapplied afterward. Matches C's truncating division: the
+// quotient's sign is the XOR of the operand signs, and the remainder's
+// sign always matches the dividend's. Unsigned (__udivmod): the EAE
+// `div` instruction, which treats all 18 bits as magnitude.
 void Pdp7Codegen::ensureDivModRoutine() {
+    if (!needDivMod_ && !needUDivMod_) return;
+    trailer_.push_back("__dm_a: 0");   // dividend; remainder on return
+    trailer_.push_back("__dm_b: 0");   // divisor
+    if (needUDivMod_) {
+        // Unsigned: the EAE `div` instruction divides AC:MQ (here 0 and
+        // the dividend) by the word that follows it, leaving the
+        // quotient in MQ and the remainder in AC.
+        trailer_.push_back("__udivmod: 0");
+        trailer_.push_back("   lac __dm_b");
+        trailer_.push_back("   dac J_udm_d");
+        trailer_.push_back("   lac __dm_a");
+        trailer_.push_back("   lmq");
+        trailer_.push_back("   cla");
+        trailer_.push_back("   cll");
+        trailer_.push_back("   div");
+        trailer_.push_back("J_udm_d: 0");
+        trailer_.push_back("   dac __dm_a");
+        trailer_.push_back("   lacq");
+        trailer_.push_back("   jmp i __udivmod");
+    }
     if (!needDivMod_) return;
-    trailer_.push_back("__dm_a: 0");   // dividend -> |dividend| -> |remainder| -> signed remainder
-    trailer_.push_back("__dm_b: 0");   // divisor -> |divisor|
     trailer_.push_back("__dm_q: 0");   // |quotient| -> signed quotient
     trailer_.push_back("__dm_sa: 0");  // 1 if the dividend was negative, else 0
     trailer_.push_back("__dm_sb: 0");  // 1 if the divisor was negative, else 0
@@ -1848,15 +1866,24 @@ void Pdp7Codegen::ensureDivModRoutine() {
 }
 
 void Pdp7Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder) {
-    needDivMod_ = true;
     genExpr(lhs);
     pushAC();  // protect lhs - rhs's own evaluation may call, possibly into another division
     genExpr(rhs);
     code_ << "   dac __dm_b\n";
     popAC();  // AC = lhs
     code_ << "   dac __dm_a\n";
-    code_ << "   jms __divmod\n";
+    callDivMod(lhs.type.isUnsigned);
     if (wantRemainder) code_ << "   lac __dm_a\n";
+}
+
+void Pdp7Codegen::callDivMod(bool isUnsigned) {
+    if (isUnsigned) {
+        needUDivMod_ = true;
+        code_ << "   jms __udivmod\n";
+    } else {
+        needDivMod_ = true;
+        code_ << "   jms __divmod\n";
+    }
 }
 
 // "&"/"^" are real pdp7 memory-reference instructions (AC = AC <op>

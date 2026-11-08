@@ -393,11 +393,10 @@ void M68kCodegen::genCompoundOp(const std::string &op, Type type) {
         code_ << "    " << (op == "<<" ? "lsll" : (isUnsigned ? "lsrl" : "asrl")) << " d1,d0\n";
         return;
     }
-    // "/" or "%" - DIVS.W/DIVU.W <ea>,Dn: d1 the divisor, d0 the
-    // dividend/destination (quotient low word, remainder high word).
-    code_ << "    " << (isUnsigned ? "divuw" : "divsw") << " d1,d0\n";
-    if (op == "%") code_ << "    swapl d0\n";
-    code_ << "    " << (isUnsigned ? "andl 65535,d0\n" : "extl d0\n");
+    // "/" or "%": d0 = old value (dividend), d1 = divisor.
+    code_ << "    movel d1,d5\n    movel d0,d1\n    movel d5,d0\n";
+    emitDivMod32(isUnsigned);
+    code_ << "    movel " << (op == "%" ? "d2" : "d3") << ",d0\n";
 }
 
 // A0 must hold the resolved address on entry; it's stashed on the stack across
@@ -890,19 +889,68 @@ void M68kCodegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << "    " << (isUnsigned ? "muluw" : "mulsw") << " d1,d0\n";  // d0 = d0 * d1 = rhs * lhs
 }
 
-// DIVS.W/DIVU.W packs a 16-bit quotient and remainder into one register; SWAP
-// pulls the needed half low, then EXT.L (signed) or a mask (unsigned) widens it.
+// `int`/`long` are 32 bits here, wider than DIVS.W/DIVU.W's 32/16
+// divide with a 16-bit quotient, so division is a bit-serial loop
+// (emitDivMod32()).
 void M68kCodegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    pushl d0\n";
     genExpr(rhs);
     code_ << "    popl d1\n";  // d1 = lhs (dividend), d0 = rhs (divisor)
-    code_ << "    " << (isUnsigned ? "divuw" : "divsw") << " d0,d1\n";  // d1 = quotient (low word) : remainder (high)
-    if (wantRemainder) {
-        code_ << "    swapl d1\n";  // remainder now in the low word
+    emitDivMod32(isUnsigned);
+    code_ << "    movel " << (wantRemainder ? "d2" : "d3") << ",d0\n";
+}
+
+// Restoring shift-subtract division, one quotient bit per iteration.
+// The remainder's own top bit is checked before each shift: if set,
+// the shifted value exceeds 32 bits and so exceeds the divisor, and
+// the subtraction's modular result is still exact. Signed operands
+// are divided as magnitudes; the quotient is negated when the signs
+// differ and the remainder takes the dividend's sign.
+void M68kCodegen::emitDivMod32(bool isUnsigned) {
+    code_ << "    pushl a0\n";  // a compound assignment's target address
+    code_ << "    movel 1,d6\n    movel 31,d7\n";
+    std::string LskipN = newLabel(), LskipD = newLabel();
+    if (!isUnsigned) {
+        code_ << "    movel d1,d5\n    lsrl d7,d5\n    pushl d5\n";  // dividend sign
+        code_ << "    movel d0,d5\n    lsrl d7,d5\n    pushl d5\n";  // divisor sign
+        code_ << "    movel a7,a0\n";                                  // [a0+0] divisor sign, [a0+4] dividend sign
+        code_ << "    movel [a0+4],d5\n    cmpl 0,d5\n    beq " << LskipN << "\n";
+        code_ << "    notl d1\n    addl 1,d1\n";
+        code_ << LskipN << ":\n";
+        code_ << "    movel [a0+0],d5\n    cmpl 0,d5\n    beq " << LskipD << "\n";
+        code_ << "    notl d0\n    addl 1,d0\n";
+        code_ << LskipD << ":\n";
     }
-    code_ << "    movel d1,d0\n";
-    code_ << "    " << (isUnsigned ? "andl 65535,d0\n" : "extl d0\n");
+    std::string Lloop = newLabel(), Ldone = newLabel(), Lsub = newLabel(), Lnext = newLabel();
+    code_ << "    movel 0,d2\n    movel 0,d3\n    movel 32,d4\n";
+    code_ << Lloop << ":\n";
+    code_ << "    cmpl 0,d4\n    beq " << Ldone << "\n";
+    code_ << "    subl 1,d4\n";
+    code_ << "    movel d1,d5\n    lsrl d7,d5\n    lsll d6,d1\n";     // d5 = dividend's outgoing bit
+    code_ << "    movel d2,a0\n";                                      // a0 = remainder before shifting
+    code_ << "    lsll d6,d2\n    orl d5,d2\n    lsll d6,d3\n";
+    code_ << "    movel a0,d5\n    lsrl d7,d5\n    cmpl 0,d5\n    bne " << Lsub << "\n";
+    code_ << "    cmpl d0,d2\n    bcc " << Lsub << "\n";
+    code_ << "    bra " << Lnext << "\n";
+    code_ << Lsub << ":\n";
+    code_ << "    subl d0,d2\n    orl d6,d3\n";
+    code_ << Lnext << ":\n";
+    code_ << "    bra " << Lloop << "\n";
+    code_ << Ldone << ":\n";
+    if (!isUnsigned) {
+        std::string LskipQ = newLabel(), LskipR = newLabel();
+        code_ << "    movel a7,a0\n";
+        code_ << "    movel [a0+0],d5\n    movel [a0+4],d4\n    eorl d4,d5\n";
+        code_ << "    cmpl 0,d5\n    beq " << LskipQ << "\n";
+        code_ << "    notl d3\n    addl 1,d3\n";
+        code_ << LskipQ << ":\n";
+        code_ << "    cmpl 0,d4\n    beq " << LskipR << "\n";
+        code_ << "    notl d2\n    addl 1,d2\n";
+        code_ << LskipR << ":\n";
+        code_ << "    adda 8,a7\n";
+    }
+    code_ << "    popl a0\n";
 }
 
 void M68kCodegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs) {

@@ -74,6 +74,9 @@ class Pdp11Codegen : public Backend {
     // wide value (left as `words` words on the stack), ORs them all into r0 first.
     void testTruthy(const ir::Expr &e);
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
+    // Unsigned 16-bit divide: r1 = dividend, r2 = divisor on entry;
+    // r0 = quotient, r1 = remainder on exit. Clobbers only r0-r2.
+    void emitUnsignedDiv();
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned);
     void genShift(const ir::Expr &lhs, const ir::Expr &rhs, bool isLeft, bool isUnsigned);
     void genIndex(const ir::Expr &e);         // slot[idx] read

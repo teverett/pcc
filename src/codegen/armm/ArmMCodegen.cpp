@@ -897,9 +897,8 @@ void ArmMCodegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     code_ << "    muls r0,r1\n";
 }
 
-// Signed division works on absolute values, then reapplies the sign C's
-// truncating-toward-zero rule needs: the quotient is negative iff the
-// operands' signs differ, and the remainder takes the dividend's sign.
+// Division is restoring shift-subtract, one quotient bit per
+// iteration (genDivModCore()), so its cost is fixed at 32 steps.
 void ArmMCodegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);
     code_ << "    push r0\n";
@@ -908,71 +907,45 @@ void ArmMCodegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantR
     genDivModCore(wantRemainder, isUnsigned);
 }
 
-// Entry: r1=dividend, r0=divisor; result in r0.
+// Entry: r1=dividend, r0=divisor; result in r0. Clobbers r1-r5.
+// Signed operands are divided as magnitudes; the quotient is negated
+// when the signs differ and the remainder takes the dividend's sign.
+// Each step doubles the remainder with the dividend's outgoing bit
+// carried in (`adds`/`adc`); a carry out of the remainder means it
+// already exceeds any 32-bit divisor.
 void ArmMCodegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
-    std::string Lloop = newLabel();
-    std::string LloopDone = newLabel();
-
-    if (isUnsigned) {
-        // r1 = remainder (starts as dividend), r2 = quotient (starts 0),
-        // r0 = divisor. Repeated subtraction while remainder >= divisor.
-        code_ << "    movs r2,0\n";
-        code_ << Lloop << ":\n";
-        code_ << "    cmp r1,r0\n    blo " << LloopDone << "\n";
-        code_ << "    subs r1,r1,r0\n";
-        code_ << "    adds r2,r2,1\n";
-        code_ << "    b " << Lloop << "\n";
-        code_ << LloopDone << ":\n";
-        code_ << "    mov r0," << (wantRemainder ? "r1" : "r2") << "\n";
-        return;
+    if (!isUnsigned) {
+        std::string LnPos = newLabel(), LdPos = newLabel();
+        code_ << "    movs r5,0\n";  // 1 if the result needs negating
+        code_ << "    cmp r1,0\n    bge " << LnPos << "\n";
+        code_ << "    movs r5,1\n    neg r1,r1\n";
+        code_ << LnPos << ":\n";
+        code_ << "    cmp r0,0\n    bge " << LdPos << "\n";
+        code_ << "    neg r0,r0\n";
+        if (!wantRemainder) code_ << "    movs r4,1\n    eor r5,r4\n";
+        code_ << LdPos << ":\n";
     }
 
-    std::string LlhsAbsDone = newLabel();
-    std::string LrhsAbsDone = newLabel();
-    std::string LnegateDone = newLabel();
-
-    // r3 = 1 if the result needs negating, computed from the original signs
-    // before either operand is overwritten by its absolute value.
-    if (wantRemainder) {
-        code_ << "    movs r3,0\n";
-        code_ << "    cmp r1,0\n    bge " << LlhsAbsDone << "\n";
-        code_ << "    movs r3,1\n";
-        code_ << LlhsAbsDone << ":\n";
-    } else {
-        // r3 = (lhs<0) XOR (rhs<0), via two independent sign tests.
-        code_ << "    movs r3,0\n";
-        code_ << "    cmp r1,0\n    bge " << LlhsAbsDone << "\n";
-        code_ << "    movs r3,1\n";
-        code_ << LlhsAbsDone << ":\n";
-        code_ << "    cmp r0,0\n    bge " << LrhsAbsDone << "\n";
-        code_ << "    movs r2,1\n";
-        code_ << "    eor r3,r2\n";
-        code_ << LrhsAbsDone << ":\n";
-    }
-
-    std::string LabsLhsDone = newLabel();
-    code_ << "    cmp r1,0\n    bge " << LabsLhsDone << "\n";
-    code_ << "    neg r1,r1\n";
-    code_ << LabsLhsDone << ":\n";
-
-    std::string LabsRhsDone = newLabel();
-    code_ << "    cmp r0,0\n    bge " << LabsRhsDone << "\n";
-    code_ << "    neg r0,r0\n";
-    code_ << LabsRhsDone << ":\n";
-
-    // r1 = |remainder| (starts as |lhs|), r2 = quotient, r0 = |divisor|.
-    code_ << "    movs r2,0\n";
+    std::string Lloop = newLabel(), Lsub = newLabel(), Lnext = newLabel();
+    code_ << "    movs r2,0\n    movs r3,0\n    movs r4,0\n";  // r2 = quotient, r3 = remainder, r4 = step
     code_ << Lloop << ":\n";
-    code_ << "    cmp r1,r0\n    blt " << LloopDone << "\n";
-    code_ << "    subs r1,r1,r0\n";
-    code_ << "    adds r2,r2,1\n";
-    code_ << "    b " << Lloop << "\n";
-    code_ << LloopDone << ":\n";
+    code_ << "    adds r2,r2,r2\n";
+    code_ << "    adds r1,r1,r1\n";  // carry = dividend's outgoing bit
+    code_ << "    adc r3,r3\n";       // carry = remainder's outgoing bit
+    code_ << "    bhs " << Lsub << "\n";
+    code_ << "    cmp r3,r0\n    blo " << Lnext << "\n";
+    code_ << Lsub << ":\n";
+    code_ << "    subs r3,r3,r0\n    adds r2,r2,1\n";
+    code_ << Lnext << ":\n";
+    code_ << "    adds r4,r4,1\n    cmp r4,32\n    bne " << Lloop << "\n";
+    code_ << "    mov r0," << (wantRemainder ? "r3" : "r2") << "\n";
 
-    code_ << "    mov r0," << (wantRemainder ? "r1" : "r2") << "\n";
-    code_ << "    cmp r3,0\n    beq " << LnegateDone << "\n";
-    code_ << "    neg r0,r0\n";
-    code_ << LnegateDone << ":\n";
+    if (!isUnsigned) {
+        std::string Ldone = newLabel();
+        code_ << "    cmp r5,0\n    beq " << Ldone << "\n";
+        code_ << "    neg r0,r0\n";
+        code_ << Ldone << ":\n";
+    }
 }
 
 // CMP sets condition codes for Rn-Rm in hardware; isUnsigned picks the

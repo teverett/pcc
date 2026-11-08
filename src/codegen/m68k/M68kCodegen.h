@@ -90,6 +90,9 @@ class M68kCodegen : public Backend {
     void genWideCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned);
     // Negates the 64-bit value already in D0(lo):D1(hi), in place.
     void genNegate64();
+    // 32-bit division: d1 = dividend, d0 = divisor on entry; d3 =
+    // quotient, d2 = remainder on exit. Clobbers d0-d7; preserves a0.
+    void emitDivMod32(bool isUnsigned);
 
     // Leaves slot[idxExpr]'s own effective address in `A0`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);

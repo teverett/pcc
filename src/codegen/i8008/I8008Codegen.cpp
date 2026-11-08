@@ -1645,11 +1645,13 @@ void I8008Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
     genMulCore();
 }
 
-// Repeated subtraction (no hardware divide): `dx` is the running
-// remainder (starts as the dividend), `bc` the fixed divisor, `ac`
-// the quotient, counting how many times `bc` was subtracted out of
-// `dx` before it would've gone negative. Only verified against
-// non-negative operands.
+// Restoring shift-subtract (no hardware divide), 16 steps: `dx`
+// holds the dividend and fills with quotient bits from the bottom as
+// the dividend shifts out of the top into the remainder `cx`; `bc` is
+// the divisor. A carry out of the remainder's shift means it exceeds
+// any 16-bit divisor, so the subtraction is forced. Signed operands
+// are divided as magnitudes; the quotient is negated when the signs
+// differ and the remainder takes the dividend's sign.
 void I8008Codegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
     auto negate16 = [&](const std::string &cell) {
         pointAt(cell);
@@ -1690,34 +1692,42 @@ void I8008Codegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
         negateIf("ptr", "dx");
         negateIf("ptr+1", "bc");
     }
-    storeImmediate16("ac", "0");
-    std::string Lloop = newLabel(), Ldone = newLabel();
-    code_ << Lloop << ":\n";
-    // Tentative dx - bc; carry (borrow) set afterward means dx < bc,
-    // so this round's subtraction can't happen - stop.
+    storeImmediate16("cx", "0");
+    code_ << "    mvi d, 16\n";
+    std::string Lloop = newLabel(), Ldone = newLabel(), Lforce = newLabel();
+    std::string Lcommit = newLabel(), Lnext = newLabel();
+    auto trialSubtract = [&]() {  // e = low, a = high byte of cx - bc; CY = borrow
+        pointAt("cx");
+        code_ << "    mov a, m\n";
+        pointAt("bc");
+        code_ << "    sub m\n    mov e, a\n";
+        pointAt("cx+1");
+        code_ << "    mov a, m\n";
+        pointAt("bc+1");
+        code_ << "    sbb m\n";
+    };
+    code_ << Lloop << ":\n    mov a, d\n    and a\n";
+    code_ << "    jtz " << Ldone << "\n";
     pointAt("dx");
-    code_ << "    mov a, m\n";
-    pointAt("bc");
-    code_ << "    sub m\n";
-    code_ << "    mov e, a\n";  // e = tentative low result
-    pointAt("dx+1");
-    code_ << "    mov a, m\n";
-    pointAt("bc+1");
-    code_ << "    sbb m\n";  // a = tentative high result; CY = final borrow
-    code_ << "    jtc " << Ldone << "\n";
-    // Commit: dx -= bc (the tentative result just computed).
-    code_ << "    mov d, a\n";
-    pointAt("dx");
+    code_ << "    mov a, m\n    and a\n    ral\n    mov m, a\n";
+    for (const char *cell : {"dx+1", "cx", "cx+1"}) {
+        pointAt(cell);
+        code_ << "    mov a, m\n    ral\n    mov m, a\n";
+    }
+    code_ << "    jtc " << Lforce << "\n";
+    trialSubtract();
+    code_ << "    jtc " << Lnext << "\n";
+    code_ << "    jmp " << Lcommit << "\n";
+    code_ << Lforce << ":\n";
+    trialSubtract();
+    code_ << Lcommit << ":\n    mov c, a\n";
+    pointAt("cx");
     code_ << "    mov a, e\n    mov m, a\n";
-    pointAt("dx+1");
-    code_ << "    mov a, d\n    mov m, a\n";
-    // Quotient += 1 - a 16-bit increment of the `ac` memory cell via
-    // a carry-chained ADI/ACI (not incHL() - that's only for the
-    // real HL register pair, see this file's own header comment).
-    pointAt("ac");
-    code_ << "    mov a, m\n    adi 1\n    mov m, a\n";
-    pointAt("ac+1");
-    code_ << "    mov a, m\n    aci 0\n    mov m, a\n";
+    pointAt("cx+1");
+    code_ << "    mov a, c\n    mov m, a\n";
+    pointAt("dx");
+    code_ << "    mov a, m\n    ori 1\n    mov m, a\n";
+    code_ << Lnext << ":\n    dcr d\n";
     code_ << "    jmp " << Lloop << "\n";
     code_ << Ldone << ":\n";
     if (!isUnsigned) {
@@ -1727,18 +1737,18 @@ void I8008Codegen::genDivModCore(bool wantRemainder, bool isUnsigned) {
         code_ << "    xor m\n";
         std::string Lskip = newLabel();
         code_ << "    jtz " << Lskip << "\n";
-        negate16("ac");
+        negate16("dx");
         code_ << Lskip << ":\n";
-        negateIf("ptr", "dx");
+        negateIf("ptr", "cx");
     }
-    if (wantRemainder) copy16("ac", "dx");
+    copy16("ac", wantRemainder ? "cx" : "dx");
 }
 
 void I8008Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder, bool isUnsigned) {
     genExpr(lhs);  // ac = dividend
     pushAc();
     genExpr(rhs);
-    popInto("dx");        // dx = dividend (running remainder, restored only now)
+    popInto("dx");        // dx = dividend (restored only now)
     copy16("bc", "ac");     // bc = divisor
     genDivModCore(wantRemainder, isUnsigned);
 }

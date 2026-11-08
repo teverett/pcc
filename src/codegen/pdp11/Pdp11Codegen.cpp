@@ -838,8 +838,12 @@ void Pdp11Codegen::genCompoundOp(const std::string &op, Type type) {
     // "/" or "%"
     code_ << "    mov r1,r2\n";  // r2 = divisor
     code_ << "    mov r0,r1\n";  // r1 = dividend
-    code_ << "    tst r1\n    sxt r0\n";  // r0 = sign extension of the dividend (high word)
-    code_ << "    div r2,r0\n";           // r0 = quotient, r1 = remainder
+    if (isUnsigned) {
+        emitUnsignedDiv();
+    } else {
+        code_ << "    tst r1\n    sxt r0\n";  // r0 = sign extension of the dividend (high word)
+        code_ << "    div r2,r0\n";           // r0 = quotient, r1 = remainder
+    }
     if (op == "%") code_ << "    mov r1,r0\n";
 }
 
@@ -996,15 +1000,40 @@ void Pdp11Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool want
     genExpr(rhs);
     code_ << "    mov r0,r2\n";  // r2 = divisor
     code_ << "    pop r1\n";     // r1 = dividend (low word)
-    // Zero-extend (R0 = 0) for unsigned, sign-extend (TST+SXT) for signed - using SXT
-    // regardless would corrupt an unsigned dividend with its top bit set.
     if (isUnsigned) {
-        code_ << "    mov 0,r0\n";
+        emitUnsignedDiv();
     } else {
         code_ << "    tst r1\n    sxt r0\n";  // r0 = sign extension of the dividend (high word)
+        code_ << "    div r2,r0\n";           // r0 = quotient, r1 = remainder
     }
-    code_ << "    div r2,r0\n";           // r0 = quotient, r1 = remainder
     if (wantRemainder) code_ << "    mov r1,r0\n";
+}
+
+// EIS `DIV` is signed: the divisor is a signed 16-bit value and the
+// quotient must fit in 15 bits. With the dividend zero-extended into
+// R0:R1 it is exact for divisors 2..0x7FFF. A divisor of 1 would give
+// a quotient up to 0xFFFF, so it is handled directly; a divisor with
+// its top bit set divides an unsigned 16-bit dividend at most once.
+void Pdp11Codegen::emitUnsignedDiv() {
+    std::string Lbig = newLabel(), Lsmall = newLabel(), Lone = newLabel(), Lnorm = newLabel(),
+                Lge = newLabel(), Llt = newLabel(), Ldone = newLabel();
+    code_ << "    tst r2\n";  // clears V, so blt branches exactly when N is set
+    safeBranch("blt", Lbig, Lsmall);
+    code_ << Lsmall << ":\n";
+    code_ << "    mov r2,r0\n    sub 1,r0\n";
+    safeBranch("beq", Lone, Lnorm);
+    code_ << Lnorm << ":\n";
+    code_ << "    mov 0,r0\n    div r2,r0\n    jmp " << Ldone << "\n";
+    code_ << Lone << ":\n";
+    code_ << "    mov r1,r0\n    mov 0,r1\n    jmp " << Ldone << "\n";
+    code_ << Lbig << ":\n";
+    code_ << "    cmp r1,r2\n";  // flags = dividend - divisor
+    safeBranch("bhis", Lge, Llt);
+    code_ << Llt << ":\n";
+    code_ << "    mov 0,r0\n    jmp " << Ldone << "\n";
+    code_ << Lge << ":\n";
+    code_ << "    sub r2,r1\n    mov 1,r0\n";
+    code_ << Ldone << ":\n";
 }
 
 void Pdp11Codegen::genCompare(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs, bool isUnsigned) {

@@ -143,6 +143,10 @@ class Pdp7Codegen : public Backend {
     void genCondBranch(const ir::Expr &cond, const std::string &Lfalse);
     void genMul(const ir::Expr &lhs, const ir::Expr &rhs);
     void genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantRemainder);
+    // Emits the call to __divmod or, for unsigned operands, __udivmod;
+    // both take __dm_a/__dm_b and leave the quotient in AC and the
+    // remainder in __dm_a.
+    void callDivMod(bool isUnsigned);
     void ensureDivModRoutine();
     void genBitwise(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
     void genShift(const std::string &op, const ir::Expr &lhs, const ir::Expr &rhs);
@@ -324,6 +328,7 @@ class Pdp7Codegen : public Backend {
     int labelCounter_ = 0;
     std::string curFunctionLabel_;
     bool needDivMod_ = false;
+    bool needUDivMod_ = false;
 
     // (continueLabel, breakLabel) for the innermost active loop.
     std::vector<std::pair<std::string, std::string>> loopLabels_;

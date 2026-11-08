@@ -55,8 +55,8 @@ case "$TARGET" in
             echo "qemu-system-mips not found on PATH - install it (e.g. 'brew install qemu')" >&2
             exit 1
         fi
-        if ! command -v nc >/dev/null 2>&1; then
-            echo "nc not found on PATH - needed to talk to qemu's monitor" >&2
+        if ! command -v python3 >/dev/null 2>&1; then
+            echo "python3 not found on PATH - needed to talk to qemu's monitor" >&2
             exit 1
         fi
         ;;
@@ -65,8 +65,8 @@ case "$TARGET" in
             echo "qemu-system-ppc not found on PATH - install it (e.g. 'brew install qemu')" >&2
             exit 1
         fi
-        if ! command -v nc >/dev/null 2>&1; then
-            echo "nc not found on PATH - needed to talk to qemu's monitor" >&2
+        if ! command -v python3 >/dev/null 2>&1; then
+            echo "python3 not found on PATH - needed to talk to qemu's monitor" >&2
             exit 1
         fi
         ;;
@@ -75,8 +75,8 @@ case "$TARGET" in
             echo "qemu-system-arm not found on PATH - install it (e.g. 'brew install qemu')" >&2
             exit 1
         fi
-        if ! command -v nc >/dev/null 2>&1; then
-            echo "nc not found on PATH - needed to talk to qemu's monitor" >&2
+        if ! command -v python3 >/dev/null 2>&1; then
+            echo "python3 not found on PATH - needed to talk to qemu's monitor" >&2
             exit 1
         fi
         if ! command -v python3 >/dev/null 2>&1; then
@@ -89,8 +89,8 @@ case "$TARGET" in
             echo "qemu-system-i386 not found on PATH - install it (e.g. 'brew install qemu')" >&2
             exit 1
         fi
-        if ! command -v nc >/dev/null 2>&1; then
-            echo "nc not found on PATH - needed to talk to qemu's monitor" >&2
+        if ! command -v python3 >/dev/null 2>&1; then
+            echo "python3 not found on PATH - needed to talk to qemu's monitor" >&2
             exit 1
         fi
         ;;
@@ -129,8 +129,8 @@ case "$TARGET" in
             echo "qemu-system-m68k not found on PATH - install it (e.g. 'brew install qemu')" >&2
             exit 1
         fi
-        if ! command -v nc >/dev/null 2>&1; then
-            echo "nc not found on PATH - needed to talk to qemu's monitor" >&2
+        if ! command -v python3 >/dev/null 2>&1; then
+            echo "python3 not found on PATH - needed to talk to qemu's monitor" >&2
             exit 1
         fi
         ;;
@@ -148,8 +148,8 @@ case "$TARGET" in
             echo "qemu-system-m68k not found on PATH - install it (e.g. 'brew install qemu')" >&2
             exit 1
         fi
-        if ! command -v nc >/dev/null 2>&1; then
-            echo "nc not found on PATH - needed to talk to qemu's monitor" >&2
+        if ! command -v python3 >/dev/null 2>&1; then
+            echo "python3 not found on PATH - needed to talk to qemu's monitor" >&2
             exit 1
         fi
         ;;
@@ -211,8 +211,8 @@ case "$TARGET" in
             echo "qemu-system-arm not found on PATH - install it (e.g. 'brew install qemu')" >&2
             exit 1
         fi
-        if ! command -v nc >/dev/null 2>&1; then
-            echo "nc not found on PATH - needed to talk to qemu's monitor" >&2
+        if ! command -v python3 >/dev/null 2>&1; then
+            echo "python3 not found on PATH - needed to talk to qemu's monitor" >&2
             exit 1
         fi
         ;;
@@ -231,8 +231,8 @@ case "$TARGET" in
             echo "qemu-system-i386 not found on PATH - install it (e.g. 'brew install qemu')" >&2
             exit 1
         fi
-        if ! command -v nc >/dev/null 2>&1; then
-            echo "nc not found on PATH - needed to talk to qemu's monitor" >&2
+        if ! command -v python3 >/dev/null 2>&1; then
+            echo "python3 not found on PATH - needed to talk to qemu's monitor" >&2
             exit 1
         fi
         ;;
@@ -246,8 +246,8 @@ case "$TARGET" in
             echo "qemu-system-arm not found on PATH - install it (e.g. 'brew install qemu')" >&2
             exit 1
         fi
-        if ! command -v nc >/dev/null 2>&1; then
-            echo "nc not found on PATH - needed to talk to qemu's monitor" >&2
+        if ! command -v python3 >/dev/null 2>&1; then
+            echo "python3 not found on PATH - needed to talk to qemu's monitor" >&2
             exit 1
         fi
         ;;
@@ -258,8 +258,8 @@ case "$TARGET" in
             echo "qemu-system-aarch64 not found on PATH - install it (e.g. 'brew install qemu')" >&2
             exit 1
         fi
-        if ! command -v nc >/dev/null 2>&1; then
-            echo "nc not found on PATH - needed to talk to qemu's monitor" >&2
+        if ! command -v python3 >/dev/null 2>&1; then
+            echo "python3 not found on PATH - needed to talk to qemu's monitor" >&2
             exit 1
         fi
         ;;
@@ -270,9 +270,13 @@ case "$TARGET" in
 esac
 
 fail=0
-qemu_port_counter=0
 tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
+# qemu monitor sockets live in their own short directory: a unix socket
+# path is limited to about 104 bytes, which `$tmpdir` plus a long test
+# name can exceed.
+sockdir="$(mktemp -d /tmp/pccq.XXXXXX)"
+qemu_count=0
+trap 'rm -rf "$tmpdir" "$sockdir"' EXIT
 
 # Runs "$@" with a portable bash-only timeout: `timeout`/`gtimeout`
 # aren't guaranteed to exist (notably, GitHub's macOS runners have
@@ -426,11 +430,6 @@ check_8086() {
     local target="$1" src="$2" name="$3"
     local binfile="$tmpdir/$name.bin"
 
-    # Clean slate: an earlier test's qemu instance lingering (even
-    # briefly) has caused cross-test TCP mixups here before.
-    pkill -f qemu-system-i386 2>/dev/null
-    sleep 1
-
     if ! "$PCC" --target="$target" --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
@@ -438,69 +437,18 @@ check_8086() {
         return 1
     fi
 
-    # A fresh port per test: reusing one risks talking to a still-
-    # lingering previous qemu instance (TCP teardown isn't instant).
-    qemu_port_counter=$((qemu_port_counter + 1))
-    local port=$((20000 + ($$ % 10000) + qemu_port_counter))
+    qemu_count=$((qemu_count + 1))
+    local monitor="$sockdir/$qemu_count"
     local outfile="$tmpdir/$name.out"
 
-    qemu-system-i386 -fda "$binfile" -monitor "tcp:127.0.0.1:$port,server,nowait" \
+    qemu-system-i386 -fda "$binfile" -monitor "unix:$monitor,server,nowait" \
         -display none -no-reboot >/dev/null 2>&1 &
     local qemu_pid=$!
     ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
-    # Poll for HLT=1 instead of a single fixed sleep: a flat delay
-    # tuned on a fast dev machine isn't enough on a slower/unaccelerated
-    # CI runner (qemu-system-i386 there has no HVF/KVM, so BIOS POST +
-    # program runtime both take much longer wall-clock time) - seen in
-    # practice as mix.c/neg.c reading back EAX=0 (the CPU's power-on
-    # value, i.e. the query raced ahead of the machine actually
-    # halting) on GitHub's macOS runners while the same tests pass
-    # locally. Up to ~40s total before giving up and taking whatever
-    # the last query returned (the existing "no EAX" / wrong-value
-    # checks below still catch a genuine failure).
-    # Only "info registers" here, deliberately no "quit" - "quit" is
-    # an HMP command that shuts the whole qemu process down, not just
-    # the nc connection, so sending it on every poll iteration would
-    # kill qemu after the very first one and strand every later
-    # iteration with nothing to connect to. The explicit kill below,
-    # once polling is done, is what actually ends this qemu instance.
-    #
-    # Poll until EAX reads the same value three times in a row, rather
-    # than waiting for HLT=1: a background timer interrupt wakes the
-    # CPU back out of `hlt` into the `jmp _hang` spin loop within a
-    # couple of seconds (see ../docs/pdp-c-compiler.md's "The 8086
-    # backend"), so HLT can easily have already flipped back to 0 by
-    # the time of the very first poll - waiting for it can spin for
-    # the entire timeout for no reason. EAX stops changing either way
-    # once main has returned - but on a sufficiently slow/unaccelerated
-    # CI runner, a single loop iteration inside the program itself
-    # (not yet finished) can easily take longer than one poll interval,
-    # so EAX can read the same value on two consecutive polls purely
-    # by chance, mid-computation, well before the program actually
-    # finishes (confirmed directly: mix.c reading back a wrong,
-    # clearly-mid-computation value - not EAX's power-on 0 - on a slow
-    # CI runner). Three consecutive stable reads (a good ~2 extra
-    # seconds, not just 1) cuts that false-positive window down
-    # sharply without meaningfully slowing down the common case, where
-    # EAX really has already stopped changing for good.
-    local waited=0 prev_eax="" cur_eax="" stable_eax=0
-    while [ "$waited" -lt 40 ]; do
-        echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
-        cur_eax="$(grep -oE 'EAX=[0-9a-fA-F]+' "$outfile" | head -1)"
-        if [ -n "$cur_eax" ] && [ "$cur_eax" = "$prev_eax" ]; then
-            stable_eax=$((stable_eax + 1))
-            if [ "$stable_eax" -ge 3 ]; then
-                break
-            fi
-        else
-            stable_eax=0
-        fi
-        prev_eax="$cur_eax"
-        sleep 1
-        waited=$((waited + 1))
-    done
+    # Returns once the program reaches its final spin loop (see qemu_wait.py).
+    python3 -I "$SCRIPT_DIR/qemu_wait.py" "$monitor" 40 'CS =0000 ' >"$outfile"
 
     kill "$qemu_pid" 2>/dev/null
     wait "$qemu_pid" 2>/dev/null
@@ -528,9 +476,6 @@ check_i386() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    pkill -f qemu-system-i386 2>/dev/null
-    sleep 1
-
     if ! "$PCC" --target=i386 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
@@ -538,8 +483,8 @@ check_i386() {
         return 1
     fi
 
-    qemu_port_counter=$((qemu_port_counter + 1))
-    local port=$((23000 + ($$ % 10000) + qemu_port_counter))
+    qemu_count=$((qemu_count + 1))
+    local monitor="$sockdir/$qemu_count"
     local outfile="$tmpdir/$name.out"
 
     # `-kernel "$binfile"`, no floppy/BIOS boot at all: this backend's
@@ -549,32 +494,13 @@ check_i386() {
     # program running in real 32-bit protected mode directly, the same
     # way a real GRUB would - no boot sector/disk I/O/mode-switch code
     # of this program's own involved at all.
-    qemu-system-i386 -kernel "$binfile" -monitor "tcp:127.0.0.1:$port,server,nowait" \
+    qemu-system-i386 -kernel "$binfile" -monitor "unix:$monitor,server,nowait" \
         -display none -no-reboot >/dev/null 2>&1 &
     local qemu_pid=$!
     ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
-    # Same EAX-stabilizes-twice-in-a-row convention as check_8086()'s
-    # own poll, for the same reason (a background timer interrupt
-    # wakes the CPU back out of `hlt` into this backend's own `jmp
-    # halt` spin loop - see I386Codegen.cpp's own `generate()`).
-    local waited=0 prev_eax="" cur_eax="" stable_eax=0
-    while [ "$waited" -lt 40 ]; do
-        echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
-        cur_eax="$(grep -oE 'EAX=[0-9a-fA-F]+' "$outfile" | head -1)"
-        if [ -n "$cur_eax" ] && [ "$cur_eax" = "$prev_eax" ]; then
-            stable_eax=$((stable_eax + 1))
-            if [ "$stable_eax" -ge 3 ]; then
-                break
-            fi
-        else
-            stable_eax=0
-        fi
-        prev_eax="$cur_eax"
-        sleep 1
-        waited=$((waited + 1))
-    done
+    python3 -I "$SCRIPT_DIR/qemu_wait.py" "$monitor" 40 >"$outfile"
 
     kill "$qemu_pid" 2>/dev/null
     wait "$qemu_pid" 2>/dev/null
@@ -602,9 +528,6 @@ check_armv7a() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    pkill -f qemu-system-arm 2>/dev/null
-    sleep 1
-
     if ! "$PCC" --target=armv7a --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
@@ -612,8 +535,8 @@ check_armv7a() {
         return 1
     fi
 
-    qemu_port_counter=$((qemu_port_counter + 1))
-    local port=$((21000 + ($$ % 10000) + qemu_port_counter))
+    qemu_count=$((qemu_count + 1))
+    local monitor="$sockdir/$qemu_count"
     local outfile="$tmpdir/$name.out"
 
     # `-M none -cpu cortex-a15`: a bare A-profile CPU, no boot ROM/
@@ -627,31 +550,12 @@ check_armv7a() {
     qemu-system-arm -M none -cpu cortex-a15 -m 16M \
         -device "loader,file=$binfile,addr=0x1000,cpu-num=0" \
         -device "loader,addr=0x1000,cpu-num=0" \
-        -monitor "tcp:127.0.0.1:$port,server,nowait" -display none -no-reboot >/dev/null 2>&1 &
+        -monitor "unix:$monitor,server,nowait" -display none -no-reboot >/dev/null 2>&1 &
     local qemu_pid=$!
     ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
-    # Poll R00 until it reads the same value three times in a row - same
-    # convention as check_68000's own D0 poll (the program's own
-    # result sits in R00 the instant it reaches its `halt: b halt`
-    # spin loop, see ../src/codegen/arm/ArmCodegen.h's own comment).
-    local waited=0 prev_r0="" cur_r0="" stable_r0=0
-    while [ "$waited" -lt 40 ]; do
-        echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
-        cur_r0="$(grep -oE 'R00=[0-9a-fA-F]+' "$outfile" | head -1)"
-        if [ -n "$cur_r0" ] && [ "$cur_r0" = "$prev_r0" ]; then
-            stable_r0=$((stable_r0 + 1))
-            if [ "$stable_r0" -ge 3 ]; then
-                break
-            fi
-        else
-            stable_r0=0
-        fi
-        prev_r0="$cur_r0"
-        sleep 1
-        waited=$((waited + 1))
-    done
+    python3 -I "$SCRIPT_DIR/qemu_wait.py" "$monitor" 40 >"$outfile"
 
     kill "$qemu_pid" 2>/dev/null
     wait "$qemu_pid" 2>/dev/null
@@ -685,9 +589,6 @@ check_armv8a() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    pkill -f qemu-system-aarch64 2>/dev/null
-    sleep 1
-
     if ! "$PCC" --target=armv8a --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
@@ -695,37 +596,18 @@ check_armv8a() {
         return 1
     fi
 
-    qemu_port_counter=$((qemu_port_counter + 1))
-    local port=$((21000 + ($$ % 10000) + qemu_port_counter))
+    qemu_count=$((qemu_count + 1))
+    local monitor="$sockdir/$qemu_count"
     local outfile="$tmpdir/$name.out"
 
     qemu-system-aarch64 -M virt -cpu cortex-a53 -m 256M \
         -kernel "$binfile" -nographic \
-        -monitor "tcp:127.0.0.1:$port,server,nowait" -serial none -display none -no-reboot >/dev/null 2>&1 &
+        -monitor "unix:$monitor,server,nowait" -serial none -display none -no-reboot >/dev/null 2>&1 &
     local qemu_pid=$!
     ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
-    # Same X00-stabilizes-twice-in-a-row convention as check_68000()'s
-    # own D0 poll - the program's own result sits in X00/W00 the
-    # instant it reaches its `halt: b halt` spin loop (see
-    # ../src/codegen/arm64/Arm64Codegen.h's own comment).
-    local waited=0 prev_x0="" cur_x0="" stable_x0=0
-    while [ "$waited" -lt 40 ]; do
-        echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
-        cur_x0="$(grep -oE 'X00=[0-9a-fA-F]+' "$outfile" | head -1)"
-        if [ -n "$cur_x0" ] && [ "$cur_x0" = "$prev_x0" ]; then
-            stable_x0=$((stable_x0 + 1))
-            if [ "$stable_x0" -ge 3 ]; then
-                break
-            fi
-        else
-            stable_x0=0
-        fi
-        prev_x0="$cur_x0"
-        sleep 1
-        waited=$((waited + 1))
-    done
+    python3 -I "$SCRIPT_DIR/qemu_wait.py" "$monitor" 40 >"$outfile"
 
     kill "$qemu_pid" 2>/dev/null
     wait "$qemu_pid" 2>/dev/null
@@ -767,9 +649,6 @@ check_r10000() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    pkill -f qemu-system-mips 2>/dev/null
-    sleep 1
-
     if ! "$PCC" --target=r10000 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
@@ -777,37 +656,20 @@ check_r10000() {
         return 1
     fi
 
-    qemu_port_counter=$((qemu_port_counter + 1))
-    local port=$((26000 + ($$ % 10000) + qemu_port_counter))
+    qemu_count=$((qemu_count + 1))
+    local monitor="$sockdir/$qemu_count"
     local outfile="$tmpdir/$name.out"
 
     qemu-system-mips -M malta -cpu 4Kc -m 16M \
         -device "loader,file=$binfile,addr=0x80010000,cpu-num=0" \
         -device "loader,addr=0x80010000,cpu-num=0" \
-        -monitor "tcp:127.0.0.1:$port,server,nowait" -nographic -serial none -display none -no-reboot \
+        -monitor "unix:$monitor,server,nowait" -nographic -serial none -display none -no-reboot \
         >/dev/null 2>&1 &
     local qemu_pid=$!
     ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
-    # Same stabilizes-three-times-in-a-row convention as every other
-    # qemu-driven check_* above.
-    local waited=0 prev_t0="" cur_t0="" stable_t0=0
-    while [ "$waited" -lt 40 ]; do
-        echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
-        cur_t0="$(grep -oE 't0 [0-9a-fA-F]+' "$outfile" | head -1)"
-        if [ -n "$cur_t0" ] && [ "$cur_t0" = "$prev_t0" ]; then
-            stable_t0=$((stable_t0 + 1))
-            if [ "$stable_t0" -ge 3 ]; then
-                break
-            fi
-        else
-            stable_t0=0
-        fi
-        prev_t0="$cur_t0"
-        sleep 1
-        waited=$((waited + 1))
-    done
+    python3 -I "$SCRIPT_DIR/qemu_wait.py" "$monitor" 40 >"$outfile"
 
     kill "$qemu_pid" 2>/dev/null
     wait "$qemu_pid" 2>/dev/null
@@ -842,9 +704,6 @@ check_powerpc() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    pkill -f qemu-system-ppc 2>/dev/null
-    sleep 1
-
     if ! "$PCC" --target=powerpc --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
@@ -852,35 +711,20 @@ check_powerpc() {
         return 1
     fi
 
-    qemu_port_counter=$((qemu_port_counter + 1))
-    local port=$((27000 + ($$ % 10000) + qemu_port_counter))
+    qemu_count=$((qemu_count + 1))
+    local monitor="$sockdir/$qemu_count"
     local outfile="$tmpdir/$name.out"
 
     qemu-system-ppc -M none -cpu G3 -m 16M \
         -device "loader,file=$binfile,addr=0x00100000,cpu-num=0" \
         -device "loader,addr=0x00100000,cpu-num=0" \
-        -monitor "tcp:127.0.0.1:$port,server,nowait" -nographic -serial none -display none -no-reboot \
+        -monitor "unix:$monitor,server,nowait" -nographic -serial none -display none -no-reboot \
         >/dev/null 2>&1 &
     local qemu_pid=$!
     ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
-    local waited=0 prev_r3="" cur_r3="" stable_r3=0
-    while [ "$waited" -lt 40 ]; do
-        echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
-        cur_r3="$(grep '^GPR00' "$outfile" | tr -d '\r' | awk '{print $5}')"
-        if [ -n "$cur_r3" ] && [ "$cur_r3" = "$prev_r3" ]; then
-            stable_r3=$((stable_r3 + 1))
-            if [ "$stable_r3" -ge 3 ]; then
-                break
-            fi
-        else
-            stable_r3=0
-        fi
-        prev_r3="$cur_r3"
-        sleep 1
-        waited=$((waited + 1))
-    done
+    python3 -I "$SCRIPT_DIR/qemu_wait.py" "$monitor" 40 >"$outfile"
 
     kill "$qemu_pid" 2>/dev/null
     wait "$qemu_pid" 2>/dev/null
@@ -940,9 +784,6 @@ check_cortex_m3() {
         return 1
     fi
 
-    pkill -f qemu-system-arm 2>/dev/null
-    sleep 1
-
     local vecfile="$tmpdir/$name.vec.bin"
     python3 -I - "$vecfile" <<'PY'
 import struct
@@ -953,35 +794,20 @@ with open(sys.argv[1], "wb") as f:
     f.write(struct.pack("<II", sp, pc))
 PY
 
-    qemu_port_counter=$((qemu_port_counter + 1))
-    local port=$((28000 + ($$ % 10000) + qemu_port_counter))
+    qemu_count=$((qemu_count + 1))
+    local monitor="$sockdir/$qemu_count"
     local outfile="$tmpdir/$name.out"
 
     qemu-system-arm -M mps2-an385 \
         -device "loader,file=$vecfile,addr=0x0" \
         -device "loader,file=$binfile,addr=0x1000" \
-        -monitor "tcp:127.0.0.1:$port,server,nowait" -nographic -serial none -display none -no-reboot \
+        -monitor "unix:$monitor,server,nowait" -nographic -serial none -display none -no-reboot \
         >/dev/null 2>&1 &
     local qemu_pid=$!
     ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
-    local waited=0 prev_r0="" cur_r0="" stable_r0=0
-    while [ "$waited" -lt 40 ]; do
-        echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
-        cur_r0="$(grep -oE 'R00=[0-9a-fA-F]+' "$outfile" | head -1)"
-        if [ -n "$cur_r0" ] && [ "$cur_r0" = "$prev_r0" ]; then
-            stable_r0=$((stable_r0 + 1))
-            if [ "$stable_r0" -ge 3 ]; then
-                break
-            fi
-        else
-            stable_r0=0
-        fi
-        prev_r0="$cur_r0"
-        sleep 1
-        waited=$((waited + 1))
-    done
+    python3 -I "$SCRIPT_DIR/qemu_wait.py" "$monitor" 40 >"$outfile"
 
     kill "$qemu_pid" 2>/dev/null
     wait "$qemu_pid" 2>/dev/null
@@ -1009,9 +835,6 @@ check_68000() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    pkill -f qemu-system-m68k 2>/dev/null
-    sleep 1
-
     if ! "$PCC" --target=68000 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
@@ -1019,8 +842,8 @@ check_68000() {
         return 1
     fi
 
-    qemu_port_counter=$((qemu_port_counter + 1))
-    local port=$((21000 + ($$ % 10000) + qemu_port_counter))
+    qemu_count=$((qemu_count + 1))
+    local monitor="$sockdir/$qemu_count"
     local outfile="$tmpdir/$name.out"
 
     # `-M none -cpu m68000`: a bare CPU, no boot ROM/vector table at
@@ -1032,31 +855,12 @@ check_68000() {
     qemu-system-m68k -M none -cpu m68000 -m 16M \
         -device "loader,file=$binfile,addr=0x1000,cpu-num=0" \
         -device "loader,addr=0x1000,cpu-num=0" \
-        -monitor "tcp:127.0.0.1:$port,server,nowait" -display none -no-reboot >/dev/null 2>&1 &
+        -monitor "unix:$monitor,server,nowait" -display none -no-reboot >/dev/null 2>&1 &
     local qemu_pid=$!
     ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
-    # Poll D0 until it reads the same value three times in a row (same
-    # convention, and the same reason, as check_8086's own EAX poll -
-    # the program's own result sits in D0 the instant it reaches its
-    # `halt: bra halt` spin loop, see M68kCodegen.h's own comment).
-    local waited=0 prev_d0="" cur_d0="" stable_d0=0
-    while [ "$waited" -lt 40 ]; do
-        echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
-        cur_d0="$(grep -oE 'D0 = [0-9a-fA-F]+' "$outfile" | head -1)"
-        if [ -n "$cur_d0" ] && [ "$cur_d0" = "$prev_d0" ]; then
-            stable_d0=$((stable_d0 + 1))
-            if [ "$stable_d0" -ge 3 ]; then
-                break
-            fi
-        else
-            stable_d0=0
-        fi
-        prev_d0="$cur_d0"
-        sleep 1
-        waited=$((waited + 1))
-    done
+    python3 -I "$SCRIPT_DIR/qemu_wait.py" "$monitor" 40 >"$outfile"
 
     kill "$qemu_pid" 2>/dev/null
     wait "$qemu_pid" 2>/dev/null
@@ -1093,9 +897,6 @@ check_mc68328() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    pkill -f qemu-system-m68k 2>/dev/null
-    sleep 1
-
     if ! "$PCC" --target=mc68328 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
@@ -1103,35 +904,18 @@ check_mc68328() {
         return 1
     fi
 
-    qemu_port_counter=$((qemu_port_counter + 1))
-    local port=$((21000 + ($$ % 10000) + qemu_port_counter))
+    qemu_count=$((qemu_count + 1))
+    local monitor="$sockdir/$qemu_count"
     local outfile="$tmpdir/$name.out"
 
     qemu-system-m68k -M none -cpu m68000 -m 16M \
         -device "loader,file=$binfile,addr=0x0,cpu-num=0" \
-        -monitor "tcp:127.0.0.1:$port,server,nowait" -display none -no-reboot >/dev/null 2>&1 &
+        -monitor "unix:$monitor,server,nowait" -display none -no-reboot >/dev/null 2>&1 &
     local qemu_pid=$!
     ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
-    # Same D0-stabilizes-twice-in-a-row convention as check_68000()'s
-    # own poll.
-    local waited=0 prev_d0="" cur_d0="" stable_d0=0
-    while [ "$waited" -lt 40 ]; do
-        echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
-        cur_d0="$(grep -oE 'D0 = [0-9a-fA-F]+' "$outfile" | head -1)"
-        if [ -n "$cur_d0" ] && [ "$cur_d0" = "$prev_d0" ]; then
-            stable_d0=$((stable_d0 + 1))
-            if [ "$stable_d0" -ge 3 ]; then
-                break
-            fi
-        else
-            stable_d0=0
-        fi
-        prev_d0="$cur_d0"
-        sleep 1
-        waited=$((waited + 1))
-    done
+    python3 -I "$SCRIPT_DIR/qemu_wait.py" "$monitor" 40 >"$outfile"
 
     kill "$qemu_pid" 2>/dev/null
     wait "$qemu_pid" 2>/dev/null
@@ -1909,9 +1693,6 @@ check_stm32() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    pkill -f qemu-system-arm 2>/dev/null
-    sleep 1
-
     if ! "$PCC" --target=stm32 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
@@ -1919,8 +1700,8 @@ check_stm32() {
         return 1
     fi
 
-    qemu_port_counter=$((qemu_port_counter + 1))
-    local port=$((22000 + ($$ % 10000) + qemu_port_counter))
+    qemu_count=$((qemu_count + 1))
+    local monitor="$sockdir/$qemu_count"
     local outfile="$tmpdir/$name.out"
 
     # `-kernel`, not a PC-forcing `loader` device: `$binfile` already
@@ -1931,29 +1712,12 @@ check_stm32() {
     # directly during development - see
     # ../src/codegen/stm32/STM32Codegen.h's own header comment).
     qemu-system-arm -M stm32vldiscovery -kernel "$binfile" \
-        -monitor "tcp:127.0.0.1:$port,server,nowait" -display none -no-reboot -serial none >/dev/null 2>&1 &
+        -monitor "unix:$monitor,server,nowait" -display none -no-reboot -serial none >/dev/null 2>&1 &
     local qemu_pid=$!
     ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
     local watcher=$!
 
-    # Same R00-stabilizes-twice-in-a-row convention as check_68000()'s
-    # own D0 poll.
-    local waited=0 prev_r0="" cur_r0="" stable_r0=0
-    while [ "$waited" -lt 40 ]; do
-        echo "info registers" | nc -w 2 127.0.0.1 "$port" >"$outfile" 2>/dev/null
-        cur_r0="$(grep -oE 'R00=[0-9a-fA-F]+' "$outfile" | head -1)"
-        if [ -n "$cur_r0" ] && [ "$cur_r0" = "$prev_r0" ]; then
-            stable_r0=$((stable_r0 + 1))
-            if [ "$stable_r0" -ge 3 ]; then
-                break
-            fi
-        else
-            stable_r0=0
-        fi
-        prev_r0="$cur_r0"
-        sleep 1
-        waited=$((waited + 1))
-    done
+    python3 -I "$SCRIPT_DIR/qemu_wait.py" "$monitor" 40 >"$outfile"
 
     kill "$qemu_pid" 2>/dev/null
     wait "$qemu_pid" 2>/dev/null

@@ -241,6 +241,7 @@ clean:
 # for why that would just be re-running the --target=8086 suite
 # against provably byte-identical output.
 test: all
+	python3 tests/qemu_wait_test.py
 	./tests/run_tests.sh $(TARGET) --target=pdp7
 	./tests/run_tests.sh $(TARGET) --target=8086
 	./tests/run_tests.sh $(TARGET) --target=6502
