@@ -22,13 +22,13 @@ mkdir -p "$BUILD_DIR"
 python3 "$SCRIPT_DIR/hosted_internal_linker_test.py" "$PCC"
 python3 "$SCRIPT_DIR/hosted_linux_linker_test.py" "$PCC"
 
-"$PCC" --target=i386 --hosted --format=elf --out="$BUILD_DIR/library.o" \
+"$PCC" --target=i386-linux --format=elf --out="$BUILD_DIR/library.o" \
     "$SCRIPT_DIR/hosted_library_impl.c"
-"$PCC" --target=i386 --hosted --format=elf --out="$BUILD_DIR/main.o" \
+"$PCC" --target=i386-linux --format=elf --out="$BUILD_DIR/main.o" \
     "$SCRIPT_DIR/hosted_library_main.c"
 rm -f "$BUILD_DIR/libhosted_test.a"
 "$TEST_AR" rcs "$BUILD_DIR/libhosted_test.a" "$BUILD_DIR/library.o"
-"$PCC" --link --target=i386 --hosted --format=elf --out="$BUILD_DIR/static-app" \
+"$PCC" --link --target=i386-linux --format=elf --out="$BUILD_DIR/static-app" \
     "$BUILD_DIR/main.o" "$BUILD_DIR/libhosted_test.a"
 if [ "$PREPARE_ONLY" != "1" ]; then
 python3 - "$BUILD_DIR/static-app" <<'PY'
@@ -44,12 +44,12 @@ echo "PASS hosted internal static archive"
 
 "$TEST_LD" -m elf_i386 -shared -soname libhosted_test.so -o "$BUILD_DIR/libhosted_test.so" \
     "$BUILD_DIR/library.o"
-"$PCC" --link --target=i386 --hosted --format=elf --out="$BUILD_DIR/dynamic-app" \
+"$PCC" --link --target=i386-linux --format=elf --out="$BUILD_DIR/dynamic-app" \
     "$BUILD_DIR/main.o" -L"$BUILD_DIR" -lhosted_test
 cp "$BUILD_DIR/libhosted_test.so" "$BUILD_DIR/libhosted_test.so.1"
-"$PCC" --link --target=i386 --hosted --format=elf --out="$BUILD_DIR/versioned-library-app" \
+"$PCC" --link --target=i386-linux --format=elf --out="$BUILD_DIR/versioned-library-app" \
     "$BUILD_DIR/main.o" -L"$BUILD_DIR" -l:libhosted_test.so.1
-"$PCC" --link --target=i386 --hosted --format=elf --out="$BUILD_DIR/versioned-library-path-app" \
+"$PCC" --link --target=i386-linux --format=elf --out="$BUILD_DIR/versioned-library-path-app" \
     "$BUILD_DIR/main.o" "$BUILD_DIR/libhosted_test.so.1"
 python3 - "$BUILD_DIR/dynamic-app" "$BUILD_DIR/libhosted_test.so" <<'PY'
 import os
@@ -107,7 +107,7 @@ PY
 echo "PASS hosted versioned shared-library inputs"
 
 for name in output status; do
-    "$PCC" --target=i386 --hosted --format=elf --out="$BUILD_DIR/$name.o" \
+    "$PCC" --target=i386-linux --format=elf --out="$BUILD_DIR/$name.o" \
         "$SCRIPT_DIR/hosted_libc_$name.c"
 done
 LIBRARY_ARGS=()
@@ -117,9 +117,9 @@ if [ -n "${PCC_LINUX_LIBRARY_PATHS:-}" ]; then
         LIBRARY_ARGS+=("-L$directory")
     done
 fi
-"$PCC" --link --target=i386 --hosted --format=elf --out="$BUILD_DIR/output-app" \
+"$PCC" --link --target=i386-linux --format=elf --out="$BUILD_DIR/output-app" \
     "$BUILD_DIR/output.o" "${LIBRARY_ARGS[@]}" -lc
-"$PCC" --link --target=i386 --hosted --format=elf --out="$BUILD_DIR/status-app" \
+"$PCC" --link --target=i386-linux --format=elf --out="$BUILD_DIR/status-app" \
     "$BUILD_DIR/status.o" "${LIBRARY_ARGS[@]}" -l c
 python3 - "$BUILD_DIR/output-app" "$BUILD_DIR/status-app" <<'PY'
 import os
@@ -199,17 +199,17 @@ cat > "$BUILD_DIR/lifecycle-main.c" <<'C'
 int lifecycle_value();
 int main() { return lifecycle_value(); }
 C
-"$PCC" --target=i386 --hosted --format=elf --out="$BUILD_DIR/lifecycle-main.o" \
+"$PCC" --target=i386-linux --format=elf --out="$BUILD_DIR/lifecycle-main.o" \
     "$BUILD_DIR/lifecycle-main.c"
 cat > "$BUILD_DIR/lifecycle-status.c" <<'C'
 int lifecycle_value();
 int main() { return lifecycle_value() - 5; }
 C
-"$PCC" --target=i386 --hosted --format=elf --out="$BUILD_DIR/lifecycle-status.o" \
+"$PCC" --target=i386-linux --format=elf --out="$BUILD_DIR/lifecycle-status.o" \
     "$BUILD_DIR/lifecycle-status.c"
-"$PCC" --link --target=i386 --hosted --format=elf --out="$BUILD_DIR/finalizer-app" \
+"$PCC" --link --target=i386-linux --format=elf --out="$BUILD_DIR/finalizer-app" \
     "$BUILD_DIR/lifecycle-main.o" -L"$BUILD_DIR" -llifecycle "${LIBRARY_ARGS[@]}" -lc
-"$PCC" --link --target=i386 --hosted --format=elf --out="$BUILD_DIR/finalizer-status-app" \
+"$PCC" --link --target=i386-linux --format=elf --out="$BUILD_DIR/finalizer-status-app" \
     "$BUILD_DIR/lifecycle-status.o" -L"$BUILD_DIR" -llifecycle "${LIBRARY_ARGS[@]}" -lc
 if [ "$PREPARE_ONLY" != "1" ]; then
 python3 - "$BUILD_DIR/finalizer-app" "$BUILD_DIR/finalizer-status-app" <<'PY'

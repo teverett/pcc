@@ -20,20 +20,18 @@ class HostedInternalLinkerTest(unittest.TestCase):
         source_path = BUILD / f"{stem}.c"
         object_path = BUILD / f"{stem}.o"
         source_path.write_text(source)
+        host = "windows" if hosted == "--hosted=windows" else "macos" if hosted == "--hosted=macos" else "linux"
         result = subprocess.run(
-            [str(PCC), f"--target={target}", hosted, "--format=" +
-             ("coff" if hosted == "--hosted=windows" else "macho" if hosted == "--hosted=macos" else "elf"),
-             f"--out={object_path}", str(source_path)],
+            [str(PCC), f"--target={target}-{host}", f"--out={object_path}", str(source_path)],
             capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         return object_path
 
     def link(self, target, hosted, object_path, output_path, *extra):
-        fmt = "coff" if hosted == "--hosted=windows" else "macho" if hosted == "--hosted=macos" else "elf"
+        host = "windows" if hosted == "--hosted=windows" else "macos" if hosted == "--hosted=macos" else "linux"
         result = subprocess.run(
-            [str(PCC), "--link", f"--target={target}", hosted, f"--format={fmt}",
-             f"--out={output_path}", str(object_path), *extra],
+            [str(PCC), "--link", f"--target={target}-{host}", f"--out={output_path}", str(object_path), *extra],
             capture_output=True, text=True,
         )
         return result
@@ -141,7 +139,7 @@ class HostedInternalLinkerTest(unittest.TestCase):
         output = BUILD / "preserved-output"
         output.write_bytes(b"keep this file")
         result = subprocess.run(
-            [str(PCC), "--link", "--target=i386", "--hosted", "--format=elf",
+            [str(PCC), "--link", "--target=i386-linux",
              f"--linker={BUILD / 'must-not-run'}", f"--out={output}", str(obj)],
             capture_output=True, text=True,
         )
@@ -558,7 +556,7 @@ class HostedInternalLinkerTest(unittest.TestCase):
         output = BUILD / "preserved-pe-output"
         output.write_bytes(b"keep this PE file")
         result = subprocess.run(
-            [str(PCC), "--link", "--target=i386", "--hosted=windows", "--format=coff",
+            [str(PCC), "--link", "--target=i386-windows",
              "--windows-linker=mingw", f"--out={output}", str(obj)],
             capture_output=True, text=True,
         )

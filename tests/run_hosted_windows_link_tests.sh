@@ -27,12 +27,12 @@ fi
 
 python3 "$SCRIPT_DIR/hosted_internal_linker_test.py" "$PCC"
 
-"$PCC" --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/library.obj" \
+"$PCC" --target=i386-windows --format=coff --out="$BUILD_DIR/library.obj" \
     "$SCRIPT_DIR/hosted_library_impl.c"
-"$PCC" --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/main.obj" \
+"$PCC" --target=i386-windows --format=coff --out="$BUILD_DIR/main.obj" \
     "$SCRIPT_DIR/hosted_library_main.c"
 "$AR" rcs "$BUILD_DIR/hosted_static.lib" "$BUILD_DIR/library.obj"
-"$PCC" --link --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/static-app.exe" \
+"$PCC" --link --target=i386-windows --format=coff --out="$BUILD_DIR/static-app.exe" \
     "$BUILD_DIR/main.obj" -L"$BUILD_DIR" -lhosted_static
 python3 - "$BUILD_DIR/static-app.exe" <<'PY'
 import os
@@ -68,9 +68,9 @@ if [ -n "$COFF_CC" ]; then
         "$COFF_CC" -fno-asynchronous-unwind-tables -c \
             "$SCRIPT_DIR/hosted_windows_sections.c" -o "$BUILD_DIR/sections.obj"
     fi
-    "$PCC" --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/sections-main.obj" \
+    "$PCC" --target=i386-windows --format=coff --out="$BUILD_DIR/sections-main.obj" \
         "$SCRIPT_DIR/hosted_windows_sections_main.c"
-    "$PCC" --link --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/sections.exe" \
+    "$PCC" --link --target=i386-windows --format=coff --out="$BUILD_DIR/sections.exe" \
         "$BUILD_DIR/sections-main.obj" "$BUILD_DIR/sections.obj"
     python3 - "$BUILD_DIR/sections.exe" <<'PY'
 import os
@@ -88,9 +88,9 @@ PY
     if [ "$COFF_CC" = i686-w64-mingw32-gcc ]; then
         "$COFF_CC" -shared -o "$BUILD_DIR/sample.dll" "$BUILD_DIR/sections.obj" \
             -Wl,--out-implib,"$BUILD_DIR/libsample.dll.a"
-        "$PCC" --link --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/import-library.exe" \
+        "$PCC" --link --target=i386-windows --format=coff --out="$BUILD_DIR/import-library.exe" \
             "$BUILD_DIR/sections-main.obj" "$BUILD_DIR/libsample.dll.a"
-        "$PCC" --link --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/import-dll.exe" \
+        "$PCC" --link --target=i386-windows --format=coff --out="$BUILD_DIR/import-dll.exe" \
             "$BUILD_DIR/sections-main.obj" -L"$BUILD_DIR" -lsample
         python3 - "$BUILD_DIR" <<'PY'
 import os
@@ -112,9 +112,9 @@ fi
 
 if [ "${OS:-}" = "Windows_NT" ]; then
     for fixture in hosted_libc_output hosted_libc_status; do
-        "$PCC" --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/$fixture.obj" \
+        "$PCC" --target=i386-windows --format=coff --out="$BUILD_DIR/$fixture.obj" \
             "$SCRIPT_DIR/$fixture.c"
-        "$PCC" --link --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/$fixture.exe" \
+        "$PCC" --link --target=i386-windows --format=coff --out="$BUILD_DIR/$fixture.exe" \
             "$BUILD_DIR/$fixture.obj" -lmsvcrt
     done
     python3 - "$BUILD_DIR" <<'PY'

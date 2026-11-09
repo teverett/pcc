@@ -14,9 +14,9 @@ fi
 mkdir -p "$BUILD_DIR"
 python3 "$SCRIPT_DIR/hosted_internal_linker_test.py" "$PCC"
 
-"$PCC" --target=armv8a --hosted=macos --format=macho \
+"$PCC" --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/hello.o" "$ROOT_DIR/example/hello.c"
-"$PCC" --link --target=armv8a --hosted=macos --format=macho \
+"$PCC" --link --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/hello" "$BUILD_DIR/hello.o" -lSystem
 codesign --verify "$BUILD_DIR/hello"
 dyld_info -validate_only "$BUILD_DIR/hello"
@@ -31,9 +31,9 @@ assert result.returncode == 0, result
 assert result.stdout == b"hello pcc\n", result.stdout
 PY
 
-"$PCC" --target=armv8a --hosted=macos --format=macho \
+"$PCC" --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/abi.o" "$SCRIPT_DIR/hosted_macos_abi.c"
-"$PCC" --link --target=armv8a --hosted=macos --format=macho \
+"$PCC" --link --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/abi" "$BUILD_DIR/abi.o" -lSystem
 python3 - "$BUILD_DIR/abi" <<'PY'
 import subprocess
@@ -45,9 +45,9 @@ assert result.stdout == b"hosted macOS ABI ok\n", result.stdout
 PY
 
 for case in global zero_global; do
-    "$PCC" --target=armv8a --hosted=macos --format=macho \
+    "$PCC" --target=armv8a-macos --format=macho \
         --out="$BUILD_DIR/$case.o" "$SCRIPT_DIR/hosted_macos_$case.c"
-    "$PCC" --link --target=armv8a --hosted=macos --format=macho \
+    "$PCC" --link --target=armv8a-macos --format=macho \
         --out="$BUILD_DIR/$case" "$BUILD_DIR/$case.o" -lSystem
     codesign --verify "$BUILD_DIR/$case"
     dyld_info -validate_only "$BUILD_DIR/$case"
@@ -65,9 +65,9 @@ PY
 "${CC:-clang}" -arch arm64 -dynamiclib -fno-stack-protector \
     -Wl,-install_name,@rpath/libpccfixture.dylib \
     "$SCRIPT_DIR/hosted_macos_dylib_fixture.c" -o "$BUILD_DIR/libpccfixture.dylib"
-"$PCC" --target=armv8a --hosted=macos --format=macho \
+"$PCC" --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/dylib-output.o" "$SCRIPT_DIR/hosted_macos_dylib.c"
-"$PCC" --link --target=armv8a --hosted=macos --format=macho \
+"$PCC" --link --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/dylib-output" "$BUILD_DIR/dylib-output.o" \
     -L "$BUILD_DIR" -lpccfixture -lSystem
 codesign --verify "$BUILD_DIR/dylib-output"
@@ -81,9 +81,9 @@ assert result.returncode == 0, result
 assert result.stdout == b"custom dylib import ok\n", result.stdout
 PY
 
-"$PCC" --target=armv8a --hosted=macos --format=macho \
+"$PCC" --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/dylib-exit.o" "$SCRIPT_DIR/hosted_macos_dylib_exit.c"
-"$PCC" --link --target=armv8a --hosted=macos --format=macho \
+"$PCC" --link --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/dylib-exit" "$BUILD_DIR/dylib-exit.o" \
     -L "$BUILD_DIR" -lpccfixture -lSystem
 python3 - "$BUILD_DIR/dylib-exit" <<'PY'
@@ -100,9 +100,9 @@ PY
 "${CC:-clang}" -arch arm64 -c "$SCRIPT_DIR/hosted_macos_archive_unused.s" -o "$BUILD_DIR/archive-unused.o"
 ar rcs "$BUILD_DIR/libhostedarchive.a" "$BUILD_DIR/archive-root.o" \
     "$BUILD_DIR/archive-leaf.o" "$BUILD_DIR/archive-unused.o"
-"$PCC" --target=armv8a --hosted=macos --format=macho \
+"$PCC" --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/archive.o" "$SCRIPT_DIR/hosted_macos_archive.c"
-"$PCC" --link --target=armv8a --hosted=macos --format=macho \
+"$PCC" --link --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/archive" "$BUILD_DIR/archive.o" -L "$BUILD_DIR" \
     -lhostedarchive -lSystem
 python3 - "$BUILD_DIR/archive" <<'PY'
@@ -114,9 +114,9 @@ assert result.returncode == 0, result
 assert result.stdout == b"", result.stdout
 PY
 
-"$PCC" --target=armv8a --hosted=macos --format=macho \
+"$PCC" --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/archive-leaf-main.o" "$SCRIPT_DIR/hosted_macos_archive_leaf.c"
-"$PCC" --link --target=armv8a --hosted=macos --format=macho \
+"$PCC" --link --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/archive-leaf-main" "$BUILD_DIR/archive-leaf-main.o" \
     -L "$BUILD_DIR" -lhostedarchive -lSystem
 python3 - "$BUILD_DIR/archive-leaf-main" <<'PY'
@@ -128,10 +128,10 @@ assert result.returncode == 0, result
 assert result.stdout == b"", result.stdout
 PY
 
-"$PCC" --target=armv8a --hosted=macos --format=macho \
+"$PCC" --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/unresolved.o" "$SCRIPT_DIR/hosted_macos_unresolved.c"
 printf 'preserve destination on failed link\n' > "$BUILD_DIR/atomic-output"
-if "$PCC" --link --target=armv8a --hosted=macos --format=macho \
+if "$PCC" --link --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/atomic-output" "$BUILD_DIR/unresolved.o" -lSystem \
     2>"$BUILD_DIR/unresolved-link.log"; then
     echo "expected unresolved macOS symbol failure" >&2
@@ -143,7 +143,7 @@ grep -q "preserve destination on failed link" "$BUILD_DIR/atomic-output"
 "${CC:-clang}" -arch x86_64 -c "$SCRIPT_DIR/hosted_macos_wrong_arch.c" \
     -o "$BUILD_DIR/wrong-arch.o"
 printf 'preserve destination on invalid input\n' > "$BUILD_DIR/atomic-output"
-if "$PCC" --link --target=armv8a --hosted=macos --format=macho \
+if "$PCC" --link --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/atomic-output" "$BUILD_DIR/wrong-arch.o" \
     2>"$BUILD_DIR/wrong-arch-link.log"; then
     echo "expected non-arm64 object failure" >&2
@@ -153,7 +153,7 @@ grep -q "not arm64" "$BUILD_DIR/wrong-arch-link.log"
 grep -q "preserve destination on invalid input" "$BUILD_DIR/atomic-output"
 
 "${CC:-clang}" -arch arm64 -c "$SCRIPT_DIR/hosted_macos_bss.s" -o "$BUILD_DIR/bss.o"
-"$PCC" --link --target=armv8a --hosted=macos --format=macho \
+"$PCC" --link --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/bss" "$BUILD_DIR/bss.o"
 otool -l "$BUILD_DIR/bss" | grep -q 'segname __DATA'
 python3 - "$BUILD_DIR/bss" <<'PY'
@@ -164,9 +164,9 @@ result = subprocess.run([sys.argv[1]], capture_output=True)
 assert result.returncode == 0, result
 PY
 
-"$PCC" --target=armv8a --hosted=macos --format=macho \
+"$PCC" --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/constant.o" "$SCRIPT_DIR/hosted_macos_constant.c"
-"$PCC" --link --target=armv8a --hosted=macos --format=macho \
+"$PCC" --link --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/constant" "$BUILD_DIR/constant.o"
 codesign --verify "$BUILD_DIR/constant"
 dyld_info -validate_only "$BUILD_DIR/constant"

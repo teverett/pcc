@@ -116,10 +116,16 @@ class CountingErrorListener : public antlr4::BaseErrorListener {
 
 void usage(const char *argv0) {
     std::cerr << "Usage: " << argv0
-              << " [--target=pdp7|8086] [--hosted] [--format=asm|<target-specific>] [--out file] [--assembler path]\n"
+              << " [--target=<target>[-<host>]] [--format=asm|<target-specific>] [--out file] [--assembler path]\n"
                  "       [--optimize] [--dump-ir] [--dump-asm] file.c [file2.c ...]\n"
                  "   or: " << argv0
-              << " --link [--target=pdp7|8086] [--hosted] --format=<target-native> [--out file] file1.o [file2.o ...]\n"
+              << " --link [--target=<target>[-<host>]] --format=<target-native> [--out file] file1.o [file2.o ...]\n"
+                 "\n"
+                 "<target> is a backend name (e.g. pdp7, i386, armv8a) and <host> is the real OS\n"
+                 "the produced executable runs on - 'none' (the default, meaning freestanding/\n"
+                 "bare metal), 'linux', 'windows', or 'macos', wherever that target has one; see\n"
+                 "--list-triples for every target-host combination actually supported. A plain\n"
+                 "--target=<target> is shorthand for '-none'.\n"
                  "\n"
                  "A non-coff --format takes exactly one .c file - real separate compilation\n"
                  "is now the only way to combine more than one: compile each file on its own\n"
@@ -159,6 +165,60 @@ void writeToBuildDir(const std::string &name, const std::string &content, bool b
         return;
     }
     out << content;
+}
+
+// Every name makeBackend()/makeLinker() accept as --target (aliases sharing
+// a backend, like 8088->8086, are listed separately since each is
+// independently valid on the command line). Used both for "unknown
+// --target" error messages and for --list-triples.
+const std::vector<std::string> kTargetNames = {
+    "pdp7", "8086", "8088", "6502", "65c02", "68000", "mc68328", "pdp11", "8080", "z80", "8008",
+    "stm8", "stm32", "i386", "m16c", "pic16", "pic18", "r10000", "r4000", "cortex-m3", "cortex-m4",
+    "cortex-m7", "8051", "8052", "8031", "8032", "armv7a", "armv8a", "powerpc", "sparc",
+};
+
+std::string knownTargetsList() {
+    std::string result;
+    for (size_t i = 0; i < kTargetNames.size(); ++i) result += (i ? ", " : "") + kTargetNames[i];
+    return result;
+}
+
+// The host component of a <target>-<host> triple: which real OS (if any) a
+// target's backend can produce a hosted executable for, via
+// linker/HostedLinker.h (i386) or linker/NativeMacOSLinker.h (armv8a).
+// "none" (freestanding/bare metal) is the only host every target supports.
+std::vector<std::string> hostsFor(const std::string &target) {
+    if (target == "i386") return {"none", "linux", "windows"};
+    if (target == "armv8a") return {"none", "macos"};
+    return {"none"};
+}
+
+// Parses a --target value shaped like a GNU-style <target>-<host> triple:
+// pcc's own backend name is already the "target" component (the ISA pcc
+// generates code for); "host" here is the real OS the produced executable
+// will run on. A target name containing its own dash (e.g. cortex-m3) is
+// unaffected, since the suffix after the last dash is only treated as a
+// host when it actually names one.
+struct ParsedTarget {
+    std::string target;
+    std::string host = "none";
+};
+ParsedTarget parseTargetTriple(const std::string &value) {
+    static const std::vector<std::string> hostNames = {"none", "linux", "windows", "macos"};
+    size_t dash = value.find_last_of('-');
+    if (dash != std::string::npos) {
+        std::string suffix = value.substr(dash + 1);
+        if (std::find(hostNames.begin(), hostNames.end(), suffix) != hostNames.end()) {
+            return {value.substr(0, dash), suffix};
+        }
+    }
+    return {value, "none"};
+}
+
+void listTriples() {
+    for (const auto &name : kTargetNames) {
+        for (const auto &host : hostsFor(name)) std::cout << name << "-" << host << "\n";
+    }
 }
 
 // Several --target names below are deliberate, software-identical aliases
@@ -398,6 +458,7 @@ int main(int argc, char **argv) {
     bool systemLinkerSet = false;
     std::vector<std::string> srcPaths;
     std::vector<std::string> systemLinkInputs;
+    bool formatSet = false;
     bool hosted = false;
     bool windowsHosted = false;
     bool macosHosted = false;
@@ -420,6 +481,7 @@ int main(int argc, char **argv) {
             target = v;
         } else if (!(v = takeValue("--format=")).empty()) {
             format = v;
+            formatSet = true;
         } else if (!(v = takeValue("--out=")).empty()) {
             outPath = v;
         } else if (!(v = takeValue("--assembler=")).empty()) {
@@ -431,14 +493,9 @@ int main(int argc, char **argv) {
         } else if (!(v = takeValue("--windows-linker=")).empty()) {
             windowsLinkerKind = v;
             windowsLinkerKindSet = true;
-        } else if (arg == "--hosted") {
-            hosted = true;
-        } else if (arg == "--hosted=windows") {
-            hosted = true;
-            windowsHosted = true;
-        } else if (arg == "--hosted=macos") {
-            hosted = true;
-            macosHosted = true;
+        } else if (arg == "--list-triples") {
+            listTriples();
+            return 0;
         } else if (arg == "-L" || arg == "-l") {
             if (i + 1 >= argc) {
                 std::cerr << arg << " requires a value\n";
@@ -476,24 +533,42 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (hosted && !windowsHosted && !macosHosted && (target != "i386" || format != "elf")) {
-        std::cerr << "--hosted requires --target=i386 and --format=elf\n";
-        return 1;
+    // Normalizes --target=<target>-<host> into plain `target` plus the
+    // hosted/windowsHosted/macosHosted bools the rest of this function
+    // branches on, and derives --format from the host when the caller
+    // didn't give one explicitly (each non-"none" host has exactly one
+    // format).
+    {
+        ParsedTarget parsed = parseTargetTriple(target);
+        target = parsed.target;
+        hosted = parsed.host != "none";
+        windowsHosted = parsed.host == "windows";
+        macosHosted = parsed.host == "macos";
+        std::vector<std::string> validHosts = hostsFor(target);
+        if (std::find(validHosts.begin(), validHosts.end(), parsed.host) == validHosts.end()) {
+            std::cerr << "'" << target << "-" << parsed.host << "' is not a supported triple; " << target
+                       << " supports:";
+            for (const auto &host : validHosts) std::cerr << " " << target << "-" << host;
+            std::cerr << "\n";
+            return 1;
+        }
+        if (hosted) {
+            std::string derivedFormat = parsed.host == "linux" ? "elf" : parsed.host == "windows" ? "coff" : "macho";
+            if (formatSet && format != derivedFormat) {
+                std::cerr << "--format=" << format << " doesn't match '" << target << "-" << parsed.host
+                           << "' (expected --format=" << derivedFormat << ")\n";
+                return 1;
+            }
+            format = derivedFormat;
+        }
     }
-    if (macosHosted && (target != "armv8a" || format != "macho")) {
-        std::cerr << "--hosted=macos requires --target=armv8a and --format=macho\n";
-        return 1;
-    }
-    if (windowsHosted && (target != "i386" || format != "coff")) {
-        std::cerr << "--hosted=windows requires --target=i386 and --format=coff\n";
-        return 1;
-    }
+
     if (windowsLinkerKind != "msvc" && windowsLinkerKind != "mingw") {
         std::cerr << "--windows-linker must be 'msvc' or 'mingw'\n";
         return 1;
     }
     if (windowsLinkerKindSet && !windowsHosted) {
-        std::cerr << "--windows-linker is only valid with --hosted=windows\n";
+        std::cerr << "--windows-linker is only valid with --target=i386-windows\n";
         return 1;
     }
     if (windowsLinkerKindSet && !link) {
@@ -502,16 +577,16 @@ int main(int argc, char **argv) {
     }
     if (!link && (hosted || systemLinkerSet || librarySearchOptions)) {
         if (librarySearchOptions) {
-            std::cerr << "-L/-l are only valid with --link --hosted\n";
+            std::cerr << "-L/-l are only valid with --link and a hosted --target (e.g. --target=i386-linux)\n";
             return 1;
         }
         if (systemLinkerSet) {
-            std::cerr << "--linker is only valid with --link --hosted\n";
+            std::cerr << "--linker is only valid with --link and a hosted --target (e.g. --target=i386-linux)\n";
             return 1;
         }
     }
     if (link && (librarySearchOptions || systemLinkerSet) && !hosted) {
-        std::cerr << "-L/-l/--linker require --link --hosted\n";
+        std::cerr << "-L/-l/--linker require --link and a hosted --target (e.g. --target=i386-linux)\n";
         return 1;
     }
 
@@ -521,7 +596,7 @@ int main(int argc, char **argv) {
     if (link) {
         if (hosted) {
             if (srcPaths.empty()) {
-                std::cerr << "--link --hosted requires at least one object or library input\n";
+                std::cerr << "--link with a hosted --target requires at least one object or library input\n";
                 return 1;
             }
             try {
@@ -541,7 +616,7 @@ int main(int argc, char **argv) {
         }
         std::unique_ptr<pcc::TargetLinker> linker = makeLinker(target);
         if (!linker) {
-            std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502, 65c02, 68000, mc68328, pdp11, 8080, z80, 8008, stm8, stm32, i386, m16c, pic16, pic18, r10000, r4000, cortex-m3, cortex-m4, cortex-m7, 8051, 8052, 8031, 8032, armv7a, armv8a, powerpc, sparc)\n";
+            std::cerr << "unknown --target '" << target << "' (known targets: " << knownTargetsList() << ")\n";
             return 1;
         }
         std::vector<std::string> linkFormats = linker->outputFormats();
@@ -582,7 +657,7 @@ int main(int argc, char **argv) {
     // --- ordinary compile mode. ---
     std::unique_ptr<pcc::Backend> backend = makeBackend(target);
     if (!backend) {
-        std::cerr << "unknown --target '" << target << "' (known targets: pdp7, 8086, 8088, 6502, 65c02, 68000, mc68328, pdp11, 8080, z80, 8008, stm8, stm32, i386, m16c, pic16, pic18, r10000, r4000, cortex-m3, cortex-m4, cortex-m7, 8051, 8052, 8031, 8032, armv7a, armv8a, powerpc, sparc)\n";
+        std::cerr << "unknown --target '" << target << "' (known targets: " << knownTargetsList() << ")\n";
         return 1;
     }
     if (hosted) {

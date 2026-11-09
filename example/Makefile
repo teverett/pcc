@@ -1,7 +1,7 @@
 EXAMPLE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 ROOT := $(abspath $(EXAMPLE_DIR)/..)
 PCC ?= $(ROOT)/build/bin/pcc
-BUILD_DIR ?= $(EXAMPLE_DIR)/build
+BUILD_DIR ?= $(EXAMPLE_DIR)build
 
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
@@ -28,22 +28,22 @@ $(BUILD_DIR):
 	mkdir -p "$@"
 
 $(BUILD_DIR)/hello-macos.o: hello.c | $(BUILD_DIR)
-	$(PCC) --target=armv8a --hosted=macos --format=macho --out="$@" "$<"
+	$(PCC) --target=armv8a-macos --out="$@" "$<"
 
 $(BUILD_DIR)/hello-macos: $(BUILD_DIR)/hello-macos.o
-	$(PCC) --link --target=armv8a --hosted=macos --format=macho --out="$@" "$<" -lSystem
+	$(PCC) --link --target=armv8a-macos --out="$@" "$<" -lSystem
 
 $(BUILD_DIR)/hello-linux.o: hello.c | $(BUILD_DIR)
-	$(PCC) --target=i386 --hosted --format=elf --out="$@" "$<"
+	$(PCC) --target=i386-linux --out="$@" "$<"
 
 $(BUILD_DIR)/hello-linux: $(BUILD_DIR)/hello-linux.o
-	$(PCC) --link --target=i386 --hosted --format=elf --out="$@" "$<" -lc
+	$(PCC) --link --target=i386-linux --out="$@" "$<" -lc
 
 $(BUILD_DIR)/hello-windows.obj: hello.c | $(BUILD_DIR)
-	$(PCC) --target=i386 --hosted=windows --format=coff --out="$@" "$<"
+	$(PCC) --target=i386-windows --out="$@" "$<"
 
 $(BUILD_DIR)/hello-windows.exe: $(BUILD_DIR)/hello-windows.obj
-	$(PCC) --link --target=i386 --hosted=windows --format=coff --out="$@" "$<" -lmsvcrt
+	$(PCC) --link --target=i386-windows --out="$@" "$<" -lmsvcrt
 
 clean:
 	rm -rf "$(BUILD_DIR)"

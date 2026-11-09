@@ -81,7 +81,7 @@ class LinuxHostedLinkerTest(unittest.TestCase):
     def compile(self, stem, source):
         src, obj = BUILD / (stem + ".c"), BUILD / (stem + ".o")
         src.write_text(source)
-        result = subprocess.run([str(PCC), "--target=i386", "--hosted", "--format=elf",
+        result = subprocess.run([str(PCC), "--target=i386-linux",
                                  f"--out={obj}", str(src)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return obj
@@ -89,8 +89,8 @@ class LinuxHostedLinkerTest(unittest.TestCase):
     def link(self, stem, obj, *args):
         output = BUILD / stem
         output.write_bytes(b"preserved output")
-        result = subprocess.run([str(PCC), "--link", "--target=i386", "--hosted",
-                                 "--format=elf", f"--out={output}", str(obj), *map(str, args)],
+        result = subprocess.run([str(PCC), "--link", "--target=i386-linux",
+                                 f"--out={output}", str(obj), *map(str, args)],
                                 capture_output=True, text=True)
         return result, output
 
