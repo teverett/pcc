@@ -595,6 +595,13 @@ void PIC16Codegen::genExpr(const ir::Expr &e) {
             code_ << "    call " << label(e.func) << "\n";
             return;
         }
+        case ir::ExprKind::CallPtr: {
+            // No indirect CALL/GOTO exists on this core (see genAddrOf's
+            // ir::ExprKind::Func case) - a function pointer can be stored,
+            // compared, or passed around, but never called through.
+            err(e.line, "calling through a function pointer isn't supported on this target - "
+                        "no indirect CALL/GOTO exists on this core");
+        }
         case ir::ExprKind::Binary: {
             genBinary(e);
             return;

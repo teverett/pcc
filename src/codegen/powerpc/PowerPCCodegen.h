@@ -64,7 +64,7 @@ class PowerPCCodegen : public Backend {
     }
     // `raw` is this backend's own whole-program flat binary; the other five
     // mean a real relocatable object file for separate compilation.
-    bool isObjectFormat(const std::string &format) const override { return format != "raw"; }
+    bool isObjectFormat(const std::string &format) const override { return format != "raw" && format != "asm"; }
     std::string defaultAssemblerPath() const override { return ""; }
     std::string buildAssembleCommand(const std::string &assemblerPath, const std::string &format,
                                       const std::string &srcPath, const std::string &outPath) const override;

@@ -108,7 +108,7 @@ class PIC16Codegen : public Backend {
     }
     // `hex` is the whole-program Intel-HEX image; the other formats are
     // relocatable ObjectFiles for separate compilation.
-    bool isObjectFormat(const std::string &format) const override { return format != "hex"; }
+    bool isObjectFormat(const std::string &format) const override { return format != "hex" && format != "asm"; }
     std::string defaultAssemblerPath() const override { return ""; }
     std::string buildAssembleCommand(const std::string &assemblerPath, const std::string &format,
                                       const std::string &srcPath, const std::string &outPath) const override;

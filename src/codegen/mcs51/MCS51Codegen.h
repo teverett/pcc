@@ -64,7 +64,7 @@ class MCS51Codegen : public Backend {
     }
     // `raw` is a whole-program flat binary; the other formats produce
     // a relocatable ObjectFile for separate compilation.
-    bool isObjectFormat(const std::string &format) const override { return format != "raw"; }
+    bool isObjectFormat(const std::string &format) const override { return format != "raw" && format != "asm"; }
     std::string defaultAssemblerPath() const override { return ""; }
     std::string buildAssembleCommand(const std::string &assemblerPath, const std::string &format,
                                       const std::string &srcPath, const std::string &outPath) const override;
