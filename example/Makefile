@@ -31,7 +31,7 @@ $(BUILD_DIR)/hello-macos.o: hello.c | $(BUILD_DIR)
 	$(PCC) --target=armv8a --hosted=macos --format=macho --out="$@" "$<"
 
 $(BUILD_DIR)/hello-macos: $(BUILD_DIR)/hello-macos.o
-	$(PCC) --link --target=armv8a --hosted=macos --format=macho --out="$@" "$<"
+	$(PCC) --link --target=armv8a --hosted=macos --format=macho --out="$@" "$<" -lSystem
 
 $(BUILD_DIR)/hello-linux.o: hello.c | $(BUILD_DIR)
 	$(PCC) --target=i386 --hosted --format=elf --out="$@" "$<"
@@ -43,8 +43,7 @@ $(BUILD_DIR)/hello-windows.obj: hello.c | $(BUILD_DIR)
 	$(PCC) --target=i386 --hosted=windows --format=coff --out="$@" "$<"
 
 $(BUILD_DIR)/hello-windows.exe: $(BUILD_DIR)/hello-windows.obj
-	$(PCC) --link --target=i386 --hosted=windows --format=coff \
-		--windows-linker=mingw --out="$@" "$<" -lmsvcrt
+	$(PCC) --link --target=i386 --hosted=windows --format=coff --out="$@" "$<" -lmsvcrt
 
 clean:
 	rm -rf "$(BUILD_DIR)"

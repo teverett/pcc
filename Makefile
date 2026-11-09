@@ -92,7 +92,7 @@ OPTIMIZERS_DIRS   := $(OPTIMIZERS_DIR)/constant_folding $(OPTIMIZERS_DIR)/consta
 # header comment - instead of being split across src/coff/, src/elf/,
 # src/objectformat/ and src/linker/format/ the way it used to be.
 FILEFORMAT_DIR  := $(SRC_DIR)/fileformat
-FILEFORMAT_DIRS := $(FILEFORMAT_DIR) $(FILEFORMAT_DIR)/coff $(FILEFORMAT_DIR)/elf $(FILEFORMAT_DIR)/macho $(FILEFORMAT_DIR)/aout $(FILEFORMAT_DIR)/flat $(FILEFORMAT_DIR)/raw $(FILEFORMAT_DIR)/rim $(FILEFORMAT_DIR)/ptr $(FILEFORMAT_DIR)/a7out $(FILEFORMAT_DIR)/list
+FILEFORMAT_DIRS := $(FILEFORMAT_DIR) $(FILEFORMAT_DIR)/archive $(FILEFORMAT_DIR)/coff $(FILEFORMAT_DIR)/elf $(FILEFORMAT_DIR)/macho $(FILEFORMAT_DIR)/aout $(FILEFORMAT_DIR)/flat $(FILEFORMAT_DIR)/raw $(FILEFORMAT_DIR)/rim $(FILEFORMAT_DIR)/ptr $(FILEFORMAT_DIR)/a7out $(FILEFORMAT_DIR)/list
 
 HAND_SRCS := \
     $(SRC_DIR)/main.cpp \
@@ -109,6 +109,17 @@ HAND_SRCS := \
     $(FILEFORMAT_DIR)/ptr/PtrFormat.cpp \
     $(FILEFORMAT_DIR)/a7out/A7outFormat.cpp \
     $(FILEFORMAT_DIR)/list/ListFormat.cpp \
+    $(FILEFORMAT_DIR)/archive/ArchiveReader.cpp \
+    $(FILEFORMAT_DIR)/coff/PeExportReader.cpp \
+    $(FILEFORMAT_DIR)/coff/HostedCoffReader.cpp \
+    $(FILEFORMAT_DIR)/coff/HostedPeReader.cpp \
+    $(FILEFORMAT_DIR)/coff/HostedPeExecutableWriter.cpp \
+    $(FILEFORMAT_DIR)/elf/HostedElfReader.cpp \
+    $(FILEFORMAT_DIR)/elf/HostedElfExecutableWriter.cpp \
+    $(FILEFORMAT_DIR)/macho/MachOHostedReader.cpp \
+    $(FILEFORMAT_DIR)/macho/MachOExecutableWriter.cpp \
+    $(LINKER_DIR)/NativeMacOSLinker.cpp \
+    $(LINKER_DIR)/HostedLinker.cpp \
     $(LINKER_DIR)/GenericLinker.cpp \
     $(FACTORY_DIR)/Z80LinkerFactory.cpp \
     $(FACTORY_DIR)/M6502LinkerFactory.cpp \
@@ -198,7 +209,7 @@ OBJS     := $(patsubst %,$(OBJ_DIR)/%.o,$(notdir $(ALL_SRCS)))
 
 vpath %.cpp $(GEN_DIR):$(SRC_DIR):$(AST_DIR):$(IR_DIR):$(LINKER_DIR):$(FACTORY_DIR):$(PREPROCESSOR_DIR):$(subst $(SPACE),:,$(OPTIMIZERS_DIRS)):$(subst $(SPACE),:,$(BACKEND_DIRS)):$(subst $(SPACE),:,$(FILEFORMAT_DIRS))
 
-.PHONY: all clean generate build test
+.PHONY: all clean generate build test test-hosted-internal
 
 all: build
 
@@ -245,10 +256,27 @@ $(BIN_DIR)/preprocessor_test: tests/preprocessor_test.cpp $(PREPROCESSOR_DIR)/Pr
 	@mkdir -p $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) tests/preprocessor_test.cpp $(PREPROCESSOR_DIR)/Preprocessor.cpp -o $@
 
-test: all $(BIN_DIR)/preprocessor_test
+$(BIN_DIR)/archive_reader_test: tests/archive_reader_test.cpp $(FILEFORMAT_DIR)/archive/ArchiveReader.cpp $(FILEFORMAT_DIR)/archive/ArchiveReader.h
+	@mkdir -p $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) tests/archive_reader_test.cpp $(FILEFORMAT_DIR)/archive/ArchiveReader.cpp -o $@
+
+$(BIN_DIR)/macho_data_test: tests/macho_data_test.cpp $(SRC_DIR)/fileformat/macho/MachOFormat.cpp $(SRC_DIR)/fileformat/macho/MachOFormat.h $(SRC_DIR)/fileformat/ObjectFile.h
+	@mkdir -p $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) tests/macho_data_test.cpp $(SRC_DIR)/fileformat/macho/MachOFormat.cpp -o $@
+
+test-hosted-internal: all $(BIN_DIR)/archive_reader_test $(BIN_DIR)/macho_data_test
+	$(BIN_DIR)/archive_reader_test
+	$(BIN_DIR)/macho_data_test
+	python3 tests/hosted_internal_linker_test.py $(TARGET)
+	python3 tests/hosted_linux_linker_test.py $(TARGET)
+
+test: all $(BIN_DIR)/preprocessor_test $(BIN_DIR)/archive_reader_test $(BIN_DIR)/macho_data_test
 	$(BIN_DIR)/preprocessor_test
+	$(BIN_DIR)/archive_reader_test
+	$(BIN_DIR)/macho_data_test
 	python3 tests/qemu_wait_test.py
-	python3 tests/hosted_windows_startup_test.py $(TARGET)
+	python3 tests/hosted_internal_linker_test.py $(TARGET)
+	python3 tests/hosted_linux_linker_test.py $(TARGET)
 	./tests/run_tests.sh $(TARGET) --target=pdp7
 	./tests/run_tests.sh $(TARGET) --target=8086
 	./tests/run_tests.sh $(TARGET) --target=6502

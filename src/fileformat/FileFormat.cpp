@@ -131,6 +131,7 @@ FileFormatKind detectFileFormat(const std::string &bytes) {
     // COFF has no magic number, only a Machine ID; every target's k<Target>CoffMachine must be
     // listed here or its --format=coff objects fall through to the Flat fallback below.
     static const std::unordered_set<uint16_t> kKnownCoffMachines = {
+        0x014C,  // standard Windows i386 COFF
         0x1987,  // pdp7
         0x0086,  // 8086/8088
         0x5A38,  // z80

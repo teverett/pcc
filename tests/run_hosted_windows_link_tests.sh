@@ -1,59 +1,135 @@
 #!/usr/bin/env bash
-set -eu
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PCC="${1:-$SCRIPT_DIR/../build/bin/pcc}"
-CC="${MINGW_CC:-i686-w64-mingw32-gcc}"
-AR="${MINGW_AR:-i686-w64-mingw32-ar}"
-OBJDUMP="${MINGW_OBJDUMP:-i686-w64-mingw32-objdump}"
-MSVC_LINK="${MSVC_LINK:-lld-link}"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PCC="${1:-$ROOT_DIR/build/bin/pcc}"
+AR="${MINGW_AR:-}"
+BUILD_DIR="$ROOT_DIR/build/hosted-windows-tests"
 
-for tool in "$CC" "$AR" "$OBJDUMP" "$MSVC_LINK"; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-        echo "$tool not found on PATH" >&2
-        exit 1
+if [ -z "$AR" ]; then
+    if command -v i686-w64-mingw32-ar >/dev/null 2>&1; then
+        AR=i686-w64-mingw32-ar
+    elif command -v i686-elf-ar >/dev/null 2>&1; then
+        AR=i686-elf-ar
+    else
+        AR=ar
     fi
-done
+fi
+if ! command -v "$AR" >/dev/null 2>&1; then
+    echo "$AR not found on PATH" >&2
+    exit 1
+fi
+mkdir -p "$BUILD_DIR"
+if [ -d /opt/bin ]; then
+    export PATH="/opt/bin:$PATH"
+fi
 
-tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
+python3 "$SCRIPT_DIR/hosted_internal_linker_test.py" "$PCC"
 
-"$PCC" --target=i386 --hosted=windows --format=coff --out="$tmpdir/library.obj" \
+"$PCC" --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/library.obj" \
     "$SCRIPT_DIR/hosted_library_impl.c"
-"$PCC" --target=i386 --hosted=windows --format=coff --out="$tmpdir/main.obj" \
+"$PCC" --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/main.obj" \
     "$SCRIPT_DIR/hosted_library_main.c"
-
-python3 - "$tmpdir/main.obj" "$tmpdir/library.obj" <<'PY'
+"$AR" rcs "$BUILD_DIR/hosted_static.lib" "$BUILD_DIR/library.obj"
+"$PCC" --link --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/static-app.exe" \
+    "$BUILD_DIR/main.obj" -L"$BUILD_DIR" -lhosted_static
+python3 - "$BUILD_DIR/static-app.exe" <<'PY'
+import os
+from pathlib import Path
 import struct
+import subprocess
 import sys
 
-for path in sys.argv[1:]:
-    data = open(path, "rb").read()
-    text = struct.unpack_from("<8sIIIIIIHHI", data, 20)
-    code = data[text[4]:text[4] + text[3]]
-    assert b"\x53\x56\x57" in code, f"{path}: missing EBX/ESI/EDI saves"
-    assert b"\x5f\x5e\x5b" in code, f"{path}: missing EBX/ESI/EDI restores"
-    print(f"PASS hosted Windows callee-saved registers: {path}")
+path = Path(sys.argv[1])
+data = path.read_bytes()
+pe = struct.unpack_from("<I", data, 0x3c)[0]
+assert data[:2] == b"MZ" and data[pe:pe + 4] == b"PE\0\0"
+assert struct.unpack_from("<H", data, pe + 4)[0] == 0x14c
+if os.name == "nt" or os.environ.get("OS") == "Windows_NT":
+    result = subprocess.run([str(path)])
+    assert result.returncode == 42, result.returncode
 PY
+echo "PASS hosted internal static .lib and PE output"
 
-"$AR" rcs "$tmpdir/hosted_static.lib" "$tmpdir/library.obj"
-"$PCC" --link --target=i386 --hosted=windows --format=coff --windows-linker=mingw \
-    --linker="$CC" --out="$tmpdir/static-app.exe" "$tmpdir/main.obj" -L"$tmpdir" -lhosted_static
-"$OBJDUMP" -f "$tmpdir/static-app.exe" | grep -Eq 'file format pei-i386'
-echo "PASS hosted Windows static .lib"
+if command -v i686-w64-mingw32-gcc >/dev/null 2>&1; then
+    COFF_CC=i686-w64-mingw32-gcc
+elif command -v clang >/dev/null 2>&1; then
+    COFF_CC=clang
+else
+    echo "No COFF fixture compiler available; skipping external COFF section interoperability"
+    COFF_CC=""
+fi
+if [ -n "$COFF_CC" ]; then
+    if [ "$COFF_CC" = clang ]; then
+        "$COFF_CC" --target=i686-pc-windows-msvc -fno-addrsig -c \
+            "$SCRIPT_DIR/hosted_windows_sections.c" -o "$BUILD_DIR/sections.obj"
+    else
+        "$COFF_CC" -fno-asynchronous-unwind-tables -c \
+            "$SCRIPT_DIR/hosted_windows_sections.c" -o "$BUILD_DIR/sections.obj"
+    fi
+    "$PCC" --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/sections-main.obj" \
+        "$SCRIPT_DIR/hosted_windows_sections_main.c"
+    "$PCC" --link --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/sections.exe" \
+        "$BUILD_DIR/sections-main.obj" "$BUILD_DIR/sections.obj"
+    python3 - "$BUILD_DIR/sections.exe" <<'PY'
+import os
+from pathlib import Path
+import subprocess
+import sys
 
-"$CC" -c -o "$tmpdir/kernel_stub.obj" "$SCRIPT_DIR/hosted_windows_kernel_stub.c"
-"$AR" rcs "$tmpdir/kernel32.lib" "$tmpdir/kernel_stub.obj"
-"$PCC" --link --target=i386 --hosted=windows --format=coff --windows-linker=msvc \
-    --linker="$MSVC_LINK" --out="$tmpdir/msvc-style-app.exe" "$tmpdir/main.obj" \
-    -L"$tmpdir" -lhosted_static
-"$OBJDUMP" -f "$tmpdir/msvc-style-app.exe" | grep -Eq 'file format pei-i386'
-echo "PASS hosted Windows MSVC-style .lib linking"
+path = Path(sys.argv[1])
+assert path.read_bytes()[:2] == b"MZ"
+if os.name == "nt" or os.environ.get("OS") == "Windows_NT":
+    result = subprocess.run([str(path)], capture_output=True)
+    assert result.returncode == 17, (result.returncode, result.stderr)
+PY
+    echo "PASS hosted Windows external COFF initialized data and BSS"
+    if [ "$COFF_CC" = i686-w64-mingw32-gcc ]; then
+        "$COFF_CC" -shared -o "$BUILD_DIR/sample.dll" "$BUILD_DIR/sections.obj" \
+            -Wl,--out-implib,"$BUILD_DIR/libsample.dll.a"
+        "$PCC" --link --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/import-library.exe" \
+            "$BUILD_DIR/sections-main.obj" "$BUILD_DIR/libsample.dll.a"
+        "$PCC" --link --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/import-dll.exe" \
+            "$BUILD_DIR/sections-main.obj" -L"$BUILD_DIR" -lsample
+        python3 - "$BUILD_DIR" <<'PY'
+import os
+from pathlib import Path
+import subprocess
+import sys
 
-"$CC" -shared -Wl,--export-all-symbols -Wl,--out-implib,"$tmpdir/hosted_import.lib" \
-    -o "$tmpdir/hosted_test.dll" "$tmpdir/library.obj"
-"$PCC" --link --target=i386 --hosted=windows --format=coff --windows-linker=mingw \
-    --linker="$CC" --out="$tmpdir/dynamic-app.exe" "$tmpdir/main.obj" "$tmpdir/hosted_import.lib"
-"$OBJDUMP" -f "$tmpdir/dynamic-app.exe" | grep -Eq 'file format pei-i386'
-"$OBJDUMP" -p "$tmpdir/dynamic-app.exe" | grep -q 'hosted_test.dll'
-echo "PASS hosted Windows DLL import .lib"
+directory = Path(sys.argv[1])
+for name in ("import-library.exe", "import-dll.exe"):
+    path = directory / name
+    assert b"sample.dll\0" in path.read_bytes()
+    if os.name == "nt" or os.environ.get("OS") == "Windows_NT":
+        result = subprocess.run([str(path)], capture_output=True)
+        assert result.returncode == 17, (name, result.returncode, result.stderr)
+print("PASS hosted Windows GNU import library and direct DLL export resolution")
+PY
+    fi
+fi
+
+if [ "${OS:-}" = "Windows_NT" ]; then
+    for fixture in hosted_libc_output hosted_libc_status; do
+        "$PCC" --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/$fixture.obj" \
+            "$SCRIPT_DIR/$fixture.c"
+        "$PCC" --link --target=i386 --hosted=windows --format=coff --out="$BUILD_DIR/$fixture.exe" \
+            "$BUILD_DIR/$fixture.obj" -lmsvcrt
+    done
+    python3 - "$BUILD_DIR" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+
+directory = Path(sys.argv[1])
+for name, expected, status in [
+    ("hosted_libc_output", b"hello pcc\r\n", 0),
+    ("hosted_libc_status", b"returning status\r\n", 37),
+]:
+    result = subprocess.run([str(directory / (name + ".exe"))], capture_output=True)
+    assert result.stdout == expected, (name, result.stdout, result.stderr)
+    assert result.returncode == status, (name, result.returncode, result.stderr)
+print("PASS hosted Windows real CRT captured stdout and main return status")
+PY
+fi

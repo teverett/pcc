@@ -82,16 +82,20 @@ jobs:
       - name: Build
         run: make
 
-      - name: Test hosted Windows startup
-        run: python3 tests/hosted_windows_startup_test.py build/bin/pcc
+      - name: Test archive and Mach-O object readers/writers
+        run: make build/bin/archive_reader_test build/bin/macho_data_test && build/bin/archive_reader_test && build/bin/macho_data_test
+
+      - name: Test internal hosted linkers and macOS runtime
+        run: bash tests/run_hosted_macos_link_tests.sh build/bin/pcc
 
       - name: Build and run macOS hello example
         run: |
           make -C example macos
           python3 - <<'PY'
           import subprocess
-          output = subprocess.check_output(["example/build/hello-macos"])
-          assert output == b"hello pcc\n", repr(output)
+          result = subprocess.run(["example/build/hello-macos"], capture_output=True)
+          assert result.stdout == b"hello pcc\n", (result.stdout, result.stderr)
+          assert result.returncode == 0, result.returncode
           PY
 
       # `pcc` is dynamically linked against Homebrew's own
@@ -150,8 +154,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential patchelf binutils-mingw-w64-i686 gcc-mingw-w64-i686 lld \
-            libc6-dev-i386
+            build-essential patchelf libc6-dev-i386
 
       - name: Test QEMU monitor harness
         run: python3 tests/qemu_wait_test.py
@@ -175,6 +178,10 @@ jobs:
         shell: bash -el {0}
         run: make ANTLR4_RUNTIME_PREFIX="$CONDA_PREFIX"
 
+      - name: Test archive and Mach-O object readers/writers
+        shell: bash -el {0}
+        run: make build/bin/archive_reader_test build/bin/macho_data_test && build/bin/archive_reader_test && build/bin/macho_data_test
+
       - name: Build and run Linux hello example
         shell: bash -el {0}
         run: |
@@ -192,10 +199,6 @@ jobs:
       - name: Test hosted Windows .lib linking
         shell: bash -el {0}
         run: bash tests/run_hosted_windows_link_tests.sh build/bin/pcc
-
-      - name: Test hosted Windows startup
-        shell: bash -el {0}
-        run: python3 tests/hosted_windows_startup_test.py build/bin/pcc
 
       # Full simulator-backed suites run in the macOS job; monitor
       # protocol tests use an independent fake monitor on every OS.
@@ -258,6 +261,12 @@ jobs:
       # convention), confirmed by a real `make: command not found`.
       - name: Build
         run: mingw32-make CXX=g++ ANTLR4_RUNTIME_PREFIX=/ucrt64
+
+      - name: Test archive and Mach-O object readers/writers
+        run: mingw32-make CXX=g++ build/bin/archive_reader_test build/bin/macho_data_test && build/bin/archive_reader_test.exe && build/bin/macho_data_test.exe
+
+      - name: Test internal hosted linkers and Windows runtime
+        run: bash tests/run_hosted_windows_link_tests.sh build/bin/pcc.exe
 
       - name: Build and run Windows hello example
         run: |

@@ -315,6 +315,7 @@ std::string Arm64Codegen::generate(const ir::Program &prog, bool objectMode) {
 
     std::ostringstream out;
     out << code_.str();
+    if (objectMode) out << "__pcc_macho_data_start:\n";
     for (const auto &line : trailer_) out << line << "\n";
     return out.str();
 }

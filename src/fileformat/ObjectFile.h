@@ -10,15 +10,16 @@ namespace pcc {
 // except when `isData` is set. `isDefined=false` is a forward reference a linker must resolve
 // (COFF SectionNumber=0 convention).
 //
-// `isData` marks a Harvard-architecture backend's variable (MCS-51 XDATA, PIC16/PIC18
-// file-register space) living in a separate data address space, not `.text`. Its `value` is a
-// byte offset into that data-space reservation (`ObjectFile::dataSize`) pre-link, and the final
-// absolute data-space address once linked (no `base` added). Always `false` for von-Neumann targets.
+// `isData` marks a symbol outside `.text`. Before linking, Harvard targets use a byte offset into
+// the data-space reservation (`ObjectFile::dataSize`); Mach-O uses an offset into `dataBytes`, or
+// into `dataSize` when `isBss` is set. `isBss` distinguishes zero-fill storage from initialized
+// bytes. Once linked, Harvard data-symbol values are already absolute.
 struct ObjSymbol {
     std::string name;
     uint32_t value = 0;
     bool isDefined = true;
     bool isData = false;
+    bool isBss = false;
 };
 
 // A place in `.text` needing a patch once `symbolName`'s address is known. `type` is a
@@ -35,11 +36,9 @@ struct ObjRelocation {
 // instead of touching a real COFF/ELF/Mach-O/etc. layout directly. Linked is distinguished by
 // having no relocations left and every symbol `isDefined`.
 //
-// `.text` is the only section with real bytes; von-Neumann targets interleave code and data into
-// it. `dataSize` is the Harvard-architecture counterpart: bytes to reserve in a separate data
-// address space (0 for von-Neumann, and 0 once linked since data addresses are then resolved).
-// It's a pure reservation, never a byte blob — Harvard data memory is RAM with no initial
-// contents.
+// `textBytes` and `dataBytes` hold the code and initialized data section contents where the
+// object format keeps them separate. `dataSize` reserves zero-fill data space; `dataBytes`
+// contains initialized data and is empty when the format has no separate data section.
 //
 // `unitBits`/`base` are meaningless pre-link (`.text` is always byte-addressed from `org 0`
 // regardless of target). Once linked, `unitBits` is the real hardware addressable-unit width
@@ -49,11 +48,13 @@ struct ObjRelocation {
 struct ObjectFile {
     uint16_t machineType = 0;
     std::vector<uint8_t> textBytes;
+    std::vector<uint8_t> dataBytes;
     uint32_t dataSize = 0;
     std::vector<ObjSymbol> symbols;
     std::vector<ObjRelocation> relocations;
     uint32_t unitBits = 8;
     uint32_t base = 0;
+    uint32_t textAlignment = 1;
 };
 
 }  // namespace pcc

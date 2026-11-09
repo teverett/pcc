@@ -103,21 +103,35 @@ std::string writeArm64DarwinObject(const ObjectFile &obj) {
         put32(relocations, word);
     }
 
+    uint64_t dataAddress = (text.size() + 7u) & ~7ULL;
+    uint64_t bssAddress = dataAddress + obj.dataBytes.size();
     std::string symtab;
     for (size_t i = 0; i < obj.symbols.size(); i++) {
         const ObjSymbol &symbol = obj.symbols[i];
         bool local = symbol.isDefined && isArm64DarwinLocalSymbol(symbol.name);
         put32(symtab, nameOffsets[i]);
         symtab.push_back(static_cast<char>(symbol.isDefined ? (local ? 0x0E : 0x0F) : 0x01));
-        symtab.push_back(static_cast<char>(symbol.isDefined ? 1 : 0));
+        uint8_t section = symbol.isBss ? static_cast<uint8_t>(2 + !obj.dataBytes.empty()) :
+                          symbol.isData ? 2 : 1;
+        symtab.push_back(static_cast<char>(symbol.isDefined ? section : 0));
         put16(symtab, 0);
-        put64(symtab, symbol.isDefined ? symbol.value : 0);
+        uint64_t value = symbol.value;
+        if (symbol.isDefined && symbol.isData) {
+            value += symbol.isBss ? bssAddress : dataAddress;
+        }
+        put64(symtab, symbol.isDefined ? value : 0);
     }
 
-    const uint32_t segmentSize = kSegment64Size + kSection64Size;
+    const uint32_t textSegmentSize = kSegment64Size + kSection64Size;
+    const uint32_t dataSectionCount = static_cast<uint32_t>(!obj.dataBytes.empty()) +
+                                      static_cast<uint32_t>(obj.dataSize != 0);
+    const uint32_t dataSegmentSize = dataSectionCount == 0 ? 0 :
+                                     kSegment64Size + dataSectionCount * kSection64Size;
     constexpr uint32_t buildVersionSize = 24;
-    uint32_t textOff = kMachHeader64Size + segmentSize + buildVersionSize + kSymtabCmdSize;
-    uint32_t relOff = textOff + static_cast<uint32_t>(text.size());
+    uint32_t commandBytes = textSegmentSize + dataSegmentSize + buildVersionSize + kSymtabCmdSize;
+    uint32_t textOff = kMachHeader64Size + commandBytes;
+    uint32_t dataOff = (textOff + static_cast<uint32_t>(text.size()) + 7u) & ~7u;
+    uint32_t relOff = dataOff + static_cast<uint32_t>(obj.dataBytes.size());
     uint32_t symOff = relOff + static_cast<uint32_t>(relocations.size());
     uint32_t strOff = symOff + static_cast<uint32_t>(symtab.size());
     std::string out;
@@ -126,13 +140,13 @@ std::string writeArm64DarwinObject(const ObjectFile &obj) {
     put32(out, kCpuTypeArm64);
     put32(out, 0);
     put32(out, kMhObject);
-    put32(out, 3);
-    put32(out, segmentSize + buildVersionSize + kSymtabCmdSize);
+    put32(out, 3 + static_cast<uint32_t>(dataSegmentSize != 0));
+    put32(out, commandBytes);
     put32(out, 0);
     put32(out, 0);
 
     put32(out, kLcSegment64);
-    put32(out, segmentSize);
+    put32(out, textSegmentSize);
     putName16(out, "__TEXT");
     put64(out, 0);
     put64(out, text.size());
@@ -156,6 +170,48 @@ std::string writeArm64DarwinObject(const ObjectFile &obj) {
     put32(out, 0);
     put32(out, 0);
 
+    if (dataSegmentSize != 0) {
+        put32(out, kLcSegment64);
+        put32(out, dataSegmentSize);
+        putName16(out, "__DATA");
+        put64(out, dataAddress);
+        put64(out, obj.dataBytes.size() + obj.dataSize);
+        put64(out, dataOff);
+        put64(out, obj.dataBytes.size());
+        put32(out, 3);
+        put32(out, 3);
+        put32(out, dataSectionCount);
+        put32(out, 0);
+        if (!obj.dataBytes.empty()) {
+            putName16(out, "__data");
+            putName16(out, "__DATA");
+            put64(out, dataAddress);
+            put64(out, obj.dataBytes.size());
+            put32(out, dataOff);
+            put32(out, 3);
+            put32(out, 0);
+            put32(out, 0);
+            put32(out, 0);
+            put32(out, 0);
+            put32(out, 0);
+            put32(out, 0);
+        }
+        if (obj.dataSize != 0) {
+            putName16(out, "__bss");
+            putName16(out, "__DATA");
+            put64(out, bssAddress);
+            put64(out, obj.dataSize);
+            put32(out, 0);
+            put32(out, 3);
+            put32(out, 0);
+            put32(out, 0);
+            put32(out, 1);
+            put32(out, 0);
+            put32(out, 0);
+            put32(out, 0);
+        }
+    }
+
     put32(out, kLcBuildVersion);
     put32(out, buildVersionSize);
     put32(out, 1);
@@ -171,6 +227,10 @@ std::string writeArm64DarwinObject(const ObjectFile &obj) {
     put32(out, static_cast<uint32_t>(strtab.size()));
 
     out += text;
+    out.append(dataOff - (textOff + text.size()), '\0');
+    if (!obj.dataBytes.empty()) {
+        out.append(reinterpret_cast<const char *>(obj.dataBytes.data()), obj.dataBytes.size());
+    }
     out += relocations;
     out += symtab;
     out += strtab;

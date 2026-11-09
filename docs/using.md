@@ -38,8 +38,8 @@ files, each compiled completely independently, one `build/<name>.o`
 per file), then combine every `.o` with `--link` into the final
 program.
 
-For an i386 Linux program that calls system-library functions, compile
-with `--hosted` so external symbols and calls use the i386 C ABI:
+For an i386 Linux executable, compile with `--hosted` so external
+symbols and calls use the i386 C ABI:
 
 ```sh
 pcc --target=i386 --hosted --format=elf --out=main.o main.c
@@ -47,20 +47,24 @@ pcc --link --target=i386 --hosted --format=elf --out=app \
     main.o -L/usr/lib/i386-linux-gnu -lm -lc
 ```
 
-In hosted link mode, positional `.a` and `.so` paths are passed to the
-ELF linker directly. `-L<dir>` adds a library search directory and
-`-l<name>` searches for the corresponding library; the system linker
-chooses a shared object when available, otherwise a static archive.
-`--linker=<path>` selects the GNU-compatible ELF linker (default:
-`ld`). Omitting `--out` writes `a.out`. Hosted mode is limited to
-ELF/i386 Linux and requires compatible 32-bit libraries and a matching
-runtime loader. Include `-lc` explicitly when using libc, including when
-another shared library uses it: this selects libc startup and normal exit
-processing. Without an explicit libc input, a minimal startup calls `main`
-and exits directly through a Linux syscall. Explicit `-l c`, `-l:libc.so`,
-`-l:libc.a`, and paths named `libc.so`, `libc.so.*`, or `libc.a` also select
-libc startup. This mode is separate from pcc's own linker for bare-metal
-and retro targets.
+Hosted links use pcc's internal i386 ELF writer and never invoke an
+external linker. It supports static executable images, ordinary static
+archives and i386 ELF shared libraries. Shared-library imports use ELF dynamic symbols and
+PLT/GOT relocations; dynamic executables name `/lib/ld-linux.so.2` as
+their interpreter. `-lc` links the real target libc and selects
+`__libc_start_main` startup so libc initialization and termination run
+normally, including buffered output flushing. Libc-free executables call
+`main` directly and exit through the Linux i386 syscall ABI.
+`-L<dir>` adds a library search directory and `-l<name>` prefers
+`lib<name>.so`, then falls back to `lib<name>.a`. `-l:<filename>` selects
+an exact filename, including versioned shared-library filenames such as
+`libfoo.so.1`; positional `.so` and archive paths are also accepted.
+Bounded GNU `INPUT`, `GROUP`, `AS_NEEDED`, and `OUTPUT_FORMAT` scripts and
+versioned dynamic function imports are supported. See
+[`hosted-linux.md`](hosted-linux.md) for input formats and limits.
+Unresolved imports are rejected. `--linker=<path>` is unsupported and fails rather than falling
+back. Omitting `--out` writes
+`a.out`.
 
 For 32-bit Windows PE executables and COFF `.lib` libraries, use
 `--hosted=windows` when compiling and linking:
@@ -71,36 +75,58 @@ pcc --link --target=i386 --hosted=windows --format=coff --out=app.exe \
     main.obj -Lpath/to/libs -lfoo
 ```
 
-Windows hosted mode uses the i386 Windows C calling convention and emits
-standard i386 COFF objects. It links static `.lib` archives and DLL import
-libraries. By default pcc uses the MinGW cross-linker
-`i686-w64-mingw32-gcc`; `--windows-linker=msvc --linker=link.exe` selects
-the MSVC linker and passes `/SAFESEH:NO` because pcc's COFF objects do not
-contain SafeSEH metadata. The resulting executable does not have SafeSEH
-protection. This mode supports 32-bit Windows only; it does not
-support x64 `.lib` files. Its minimal startup calls `main` with
-`argc == 0` and `argv == NULL`, then exits through `ExitProcess`; it
-does not initialize the C runtime.
+Hosted links use pcc's internal PE32 writer. Ordinary static COFF
+archives (`.lib` or `.a`) are selected lazily. Microsoft short import
+objects and GNU import archives (`.dll.a`) supply named or ordinal DLL
+imports, including `__imp_` data pointers. A positional i386 DLL or
+`-l<name>` can also resolve exports directly from a real DLL.
+`-L<dir>` adds a search directory; library lookup tries `<name>.dll`,
+`<name>.lib`, `lib<name>.dll.a`, and `lib<name>.a`. On Windows, the
+system's `SysWOW64` and `System32` directories supply target runtime DLLs.
+Use `-lmsvcrt` for C runtime functions such as `puts`; termination then
+calls the CRT's `exit`, flushing buffered output. Libc-free programs
+terminate through `kernel32.dll`'s `ExitProcess`.
+
+PE output contains loader import metadata and HIGHLOW base relocations
+for absolute pointers, enabling rebasing and ASLR. Initialized data and
+BSS from ordinary COFF sections are supported. The current object model
+combines code and writable data in a read/write/execute image section;
+the relocation section is read-only. Startup calls `main` with
+`argc == 0` and `argv == NULL`. TLS, static constructors, COMDAT, weak
+externals, linker directives, and general MSVC linker-option compatibility
+are not supported and produce explicit errors. This mode supports i386
+only. `--linker=<path>`
+and `--windows-linker=<kind>` are rejected; there is no external fallback.
 
 For Apple Silicon macOS arm64 executables, use `--hosted=macos`:
 
 ```sh
 pcc --target=armv8a --hosted=macos --format=macho --out=main.o main.c
 pcc --link --target=armv8a --hosted=macos --format=macho --out=app \
-    main.o
+    main.o -lSystem
 ```
 
-This mode emits 64-bit arm64 Mach-O objects, follows the macOS arm64
-calling convention, and links through Apple's system linker with
-`libSystem`. It also accepts `-L`/`-l` options and direct library paths.
-The startup calls `main` without command-line arguments and exits through
-`_exit`; hosted macOS mode currently targets Apple Silicon only.
+This mode emits 64-bit arm64 Mach-O objects and internally links
+executable images with dyld import/binding metadata and an ad-hoc code signature.
+`-lSystem` resolves real system functions such as `puts` through the SDK's
+text-based stubs; the resulting executable uses libc's `exit` for termination.
+Custom arm64 dylibs and ordinary static archives are supported, including
+transitive archive dependencies, imported functions, initialized data, and BSS.
+Objects accept `__text`, writable `__data`, and zero-fill `__bss`; other
+nonempty sections, TLS, constructor processing, relocations stored in initialized
+data, and weak/coalesced-definition selection are unsupported.
+Library lookup accepts `-L<dir>`, `-l<name>`, and explicit dylib/archive paths.
+Startup calls `main` without command-line arguments. Libc-free programs
+use direct syscall termination. Unsupported relocations, linker scripts,
+and unresolved symbols fail explicitly.
+`--linker=<path>` is unsupported; hosted macOS mode targets Apple Silicon
+only.
 
 The `example/` directory contains `hello.c` and a Makefile with native
 `macos`, `linux`, and `windows` build targets. `make -C example` builds
 the target matching the host OS; use `make -C example macos`, `linux`,
-or `windows` explicitly when the required platform linker and libraries
-are available.
+or `windows` explicitly. Hosted links use pcc's internal linker and do not
+require an external system linker.
 
 ## Link mode
 

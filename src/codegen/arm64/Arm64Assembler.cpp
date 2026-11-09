@@ -458,6 +458,12 @@ class Assembler {
             emit32(0xD503201Fu);
             return;
         }
+        if (mnemonic == "svc") {
+            uint64_t immediate = evalExpr(requireOperand(ops, 0, mnemonic).expr);
+            if (immediate > 0xFFFF) fail("'svc' immediate is out of range");
+            emit32(0xD4000001u | (static_cast<uint32_t>(immediate) << 5));
+            return;
+        }
         if (mnemonic == "ret") {
             if (!ops.empty()) fail("'ret' takes no operand");
             emit32(0xD65F03C0u);  // fixed encoding - always returns via x30
@@ -720,10 +726,26 @@ ObjectFile buildObjectFile(const Assembler &a, bool darwinHosted) {
     ObjectFile obj;
     obj.machineType = darwinHosted ? kArm64DarwinMachine : kArm64CoffMachine;
     const auto &bytesVec = a.bytes();
-    obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
+    const std::string dataStartLabel = "__pcc_macho_data_start";
+    uint32_t dataStart = static_cast<uint32_t>(bytesVec.size());
+    auto marker = a.labels().find(dataStartLabel);
+    if (marker != a.labels().end()) {
+        dataStart = static_cast<uint32_t>(marker->second - a.orgBase());
+    }
+    if (dataStart > bytesVec.size()) fail("data section marker exceeds object text");
+    if (darwinHosted) {
+        obj.textBytes.assign(bytesVec.begin(), bytesVec.begin() + dataStart);
+        obj.dataBytes.assign(bytesVec.begin() + dataStart, bytesVec.end());
+    } else {
+        obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
+    }
 
     for (const auto &kv : a.labels()) {
-        obj.symbols.push_back({kv.first, static_cast<uint32_t>(kv.second - a.orgBase()), /*isDefined=*/true});
+        if (kv.first == dataStartLabel) continue;
+        uint32_t offset = static_cast<uint32_t>(kv.second - a.orgBase());
+        bool isData = darwinHosted && offset >= dataStart;
+        obj.symbols.push_back({kv.first, isData ? offset - dataStart : offset,
+                               /*isDefined=*/true, /*isData=*/isData});
     }
     std::sort(obj.symbols.begin(), obj.symbols.end(),
               [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });
@@ -731,6 +753,9 @@ ObjectFile buildObjectFile(const Assembler &a, bool darwinHosted) {
     std::unordered_map<std::string, bool> known;
     for (const auto &s : obj.symbols) known[s.name] = true;
     for (const auto &r : a.relocations()) {
+        if (darwinHosted && r.offset >= dataStart) {
+            fail("relocations in initialized Mach-O data are not supported");
+        }
         if (!known.count(r.symbolName)) {
             obj.symbols.push_back({r.symbolName, 0, /*isDefined=*/false});
             known[r.symbolName] = true;
