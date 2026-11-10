@@ -51,6 +51,8 @@ void collectAddressTaken(const ir::Stmt *s, std::unordered_set<ir::Slot *> &addr
         case ir::StmtKind::Continue:
         case ir::StmtKind::Empty:
         case ir::StmtKind::Asm:
+        case ir::StmtKind::Label:
+        case ir::StmtKind::Goto:
             return;
     }
 }
@@ -116,6 +118,8 @@ void collectWrittenSlots(const ir::Stmt *s, std::unordered_set<ir::Slot *> &writ
         case ir::StmtKind::Continue:
         case ir::StmtKind::Empty:
         case ir::StmtKind::Asm:
+        case ir::StmtKind::Label:
+        case ir::StmtKind::Goto:
             return;
     }
 }
@@ -264,6 +268,19 @@ void propagateStmt(ir::Stmt *s, KnownMap &known, const std::unordered_set<ir::Sl
         case ir::StmtKind::Break:
         case ir::StmtKind::Continue:
         case ir::StmtKind::Empty:
+            return;
+        // Only `switch` ever produces these (see IR.h); a Label is reached
+        // both by falling through from whatever precedes it here AND by a
+        // jump from one of the switch's own comparisons (which runs with
+        // `known` exactly as it stood on switch entry, since none of the
+        // comparisons it jumps from mutate anything) - so, same as an If's
+        // two branches, `known` can't just carry through unconditionally.
+        // Clearing is the conservative sound choice; a Goto needs no
+        // handling of its own; it's always immediately followed by a Label.
+        case ir::StmtKind::Label:
+            known.clear();
+            return;
+        case ir::StmtKind::Goto:
             return;
     }
 }

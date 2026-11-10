@@ -156,6 +156,16 @@ std::string canonStmt(const ir::Stmt *s, CanonCtx &ctx) {
             return "empty";
         case ir::StmtKind::Asm:
             return "asm[" + s->asmText + "]";
+        // Only `switch` produces these (see IR.h). labelId is a global
+        // counter, not reset per function, so two structurally-identical
+        // switches in different functions will always carry different ids
+        // here - this conservatively stops them from folding rather than
+        // risking a false match; it never folds two bodies that aren't
+        // truly identical.
+        case ir::StmtKind::Label:
+            return "label" + std::to_string(s->labelId);
+        case ir::StmtKind::Goto:
+            return "goto" + std::to_string(s->labelId);
     }
     return "?";
 }

@@ -69,11 +69,17 @@ public:
 
     virtual std::any visitForStmt(CParser::ForStmtContext *context) = 0;
 
+    virtual std::any visitSwitchStmt(CParser::SwitchStmtContext *context) = 0;
+
     virtual std::any visitReturnStmt(CParser::ReturnStmtContext *context) = 0;
 
     virtual std::any visitBreakStmt(CParser::BreakStmtContext *context) = 0;
 
     virtual std::any visitContinueStmt(CParser::ContinueStmtContext *context) = 0;
+
+    virtual std::any visitGotoStmt(CParser::GotoStmtContext *context) = 0;
+
+    virtual std::any visitLabelStmt(CParser::LabelStmtContext *context) = 0;
 
     virtual std::any visitAsmStmt(CParser::AsmStmtContext *context) = 0;
 
@@ -86,6 +92,10 @@ public:
     virtual std::any visitLocalDecl(CParser::LocalDeclContext *context) = 0;
 
     virtual std::any visitExprStmt(CParser::ExprStmtContext *context) = 0;
+
+    virtual std::any visitCaseLabel(CParser::CaseLabelContext *context) = 0;
+
+    virtual std::any visitDefaultLabel(CParser::DefaultLabelContext *context) = 0;
 
     virtual std::any visitAssignOp(CParser::AssignOpContext *context) = 0;
 

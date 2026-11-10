@@ -47,6 +47,8 @@ void collectLiveGlobals(const ir::Stmt *s, std::unordered_set<ir::Slot *> &live,
         case ir::StmtKind::Continue:
         case ir::StmtKind::Empty:
         case ir::StmtKind::Asm:
+        case ir::StmtKind::Label:
+        case ir::StmtKind::Goto:
             return;  // asm{} blind spot; see UnusedGlobalElimination.h
     }
 }

@@ -187,7 +187,12 @@ using ExprPtr = std::unique_ptr<Expr>;
 
 // --- Statements -----------------------------------------------------------
 
-enum class StmtKind { Block, If, While, Return, Break, Continue, LocalDecl, ExprStmt, Empty, Asm };
+// `Label`/`Goto` exist only to desugar `switch` (see IRBuilder.cpp's own
+// buildStmt): a `switch` never reaches a backend as such, it's expanded
+// into a Block of comparisons-and-Gotos dispatching into a sequence of
+// Label-marked case bodies, falling through from one into the next exactly
+// like the source's own fallthrough. There's no surface-level C `goto`.
+enum class StmtKind { Block, If, While, Return, Break, Continue, LocalDecl, ExprStmt, Empty, Asm, Label, Goto };
 
 struct Stmt {
     StmtKind kind;
@@ -203,6 +208,12 @@ struct Stmt {
     Slot *declSlot = nullptr;                     // LocalDecl
     ExprPtr initOrReturnOrExpr;                    // LocalDecl init / Return value / ExprStmt expr
     std::string asmText;                           // Asm: raw target text, carried through unchanged
+    // Program-wide unique id (IRBuilder's own counter - no relation to
+    // Slot/Function ids): Label's own id, or the id of the Label a Goto
+    // jumps to. A backend maps this to its own generated label text the
+    // first time it sees either a Label defining it or a Goto referencing
+    // it, same as it already invents its own label text for If/While.
+    int labelId = 0;  // Label / Goto
 };
 
 using StmtPtr = std::unique_ptr<Stmt>;

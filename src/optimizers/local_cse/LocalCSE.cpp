@@ -264,6 +264,19 @@ void cseBlock(std::vector<ir::StmtPtr> &body, ir::Program &prog, int &tempCounte
             case ir::StmtKind::Empty:
             case ir::StmtKind::Asm:
                 break;
+            // Only `switch` produces these (see IR.h). A Label is reachable
+            // both by falling through from whatever precedes it here and by
+            // a jump from one of the switch's own comparisons (which runs
+            // with `avail` exactly as it stood on switch entry) - same
+            // reasoning as ConstantPropagation.cpp's own Label case, so
+            // every recorded candidate is given up rather than risk reusing
+            // one some other path into this label never actually computed.
+            // Goto needs nothing of its own.
+            case ir::StmtKind::Label:
+                avail.clear();
+                break;
+            case ir::StmtKind::Goto:
+                break;
         }
     }
 }

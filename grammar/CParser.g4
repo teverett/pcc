@@ -127,9 +127,18 @@ statement
     | 'if' '(' expr ')' thenS=statement ('else' elseS=statement)? # ifStmt
     | 'while' '(' expr ')' statement                              # whileStmt
     | 'for' '(' init=simpleStmt? ';' cond=expr? ';' post=simpleStmt? ')' statement # forStmt
+    | 'switch' '(' expr ')' LBRACE switchCase* RBRACE             # switchStmt
     | 'return' expr? ';'                                          # returnStmt
     | 'break' ';'                                                 # breakStmt
     | 'continue' ';'                                              # continueStmt
+    | 'goto' IDENT ';'                                            # gotoStmt
+    // A label attaches to exactly the one statement that follows its
+    // ':' (real C's own rule - the label isn't a block of its own),
+    // so this recurses back into `statement`, letting `a: b: stmt;`
+    // chain naturally. No ambiguity with assignExpr/exprStmt (also
+    // IDENT-first): the very next token (':' vs '='/';'/etc) tells
+    // them apart.
+    | IDENT ':' statement                                         # labelStmt
     | ASM_BEGIN text=ASM_TEXT? ASM_END                             # asmStmt
     | simpleStmt ';'                                              # simpleStmtWrapper
     | ';'                                                         # emptyStmt
@@ -139,6 +148,19 @@ simpleStmt
     : typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)?    # localArrayDecl
     | typeSpec IDENT ('=' expr)?                              # localDecl
     | expr                                                  # exprStmt
+    ;
+
+// A case label's value is a plain (optionally negated) integer literal,
+// not a general constant-expression - the same deliberately-minimal
+// idiom arrayInitElem already uses for its own element literals (see
+// arrayInitElem above). `statement*` (not a required `block`) is what
+// gives case/default bodies real C fallthrough: nothing here stops
+// control reaching the next switchCase's label, same as the labels
+// themselves impose no scope of their own (BuildAst/IRBuilder treat the
+// whole switch body as a single scope, like block's own statement*).
+switchCase
+    : 'case' sign='-'? val=NUMBER ':' statement*   # caseLabel
+    | 'default' ':' statement*                     # defaultLabel
     ;
 
 // op defaults to plain '=' (an ordinary assignment); any of the ten

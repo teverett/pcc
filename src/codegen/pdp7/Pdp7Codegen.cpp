@@ -1140,6 +1140,14 @@ void Pdp7Codegen::genStmt(const ir::Stmt &s) {
             if (!s.asmText.empty() && s.asmText.back() != '\n') code_ << "\n";
             return;
         }
+        case ir::StmtKind::Label: {
+            code_ << irLabel(s.labelId) << ":\n";
+            return;
+        }
+        case ir::StmtKind::Goto: {
+            code_ << "   jmp " << irLabel(s.labelId) << "\n";
+            return;
+        }
     }
 }
 

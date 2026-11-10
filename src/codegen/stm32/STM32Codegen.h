@@ -173,6 +173,16 @@ class STM32Codegen : public Backend {
     // Only used for a Global array's static initializer; see genLocalArrayInit() for Locals.
     void genArrayElemInit(const std::string &lbl, size_t offset, Type elemType, const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
+    // Maps an ir::Stmt::labelId (switch's own Label/Goto - see IR.h) to this
+    // backend's own label text, generated the first time either a Label
+    // defining it or a Goto referencing it is seen.
+    std::string irLabel(int id) {
+        auto it = irLabels_.find(id);
+        if (it != irLabels_.end()) return it->second;
+        std::string name = newLabel();
+        irLabels_[id] = name;
+        return name;
+    }
 
     std::ostringstream code_;       // flash: vector table + _start + every function body
     std::ostringstream initCode_;   // flash: global-init copies, spliced into _start before `bl main`
@@ -185,6 +195,7 @@ class STM32Codegen : public Backend {
     int frameSize_ = 0;
     // One entry per open loop (innermost last): {continue label, break label}.
     std::vector<std::pair<std::string, std::string>> loopLabels_;
+    std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
 }  // namespace pcc

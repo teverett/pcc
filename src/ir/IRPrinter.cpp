@@ -210,6 +210,12 @@ void printStmt(const ir::Stmt &s, std::ostream &out, int indent) {
         case ir::StmtKind::Empty:
             out << pad << ";\n";
             return;
+        case ir::StmtKind::Label:
+            out << pad << "L" << s.labelId << ":\n";
+            return;
+        case ir::StmtKind::Goto:
+            out << pad << "goto L" << s.labelId << ";\n";
+            return;
     }
 }
 

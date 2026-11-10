@@ -50,6 +50,8 @@ void collectAddressTaken(const ir::Stmt *s, std::unordered_set<ir::Slot *> &addr
         case ir::StmtKind::Continue:
         case ir::StmtKind::Empty:
         case ir::StmtKind::Asm:
+        case ir::StmtKind::Label:
+        case ir::StmtKind::Goto:
             return;
     }
 }
@@ -176,6 +178,17 @@ void scanStmt(ir::Stmt *s, Pending &pending, const std::unordered_set<ir::Slot *
         case ir::StmtKind::Asm:
             pending.clear();  // raw text, not parsed for symbol references
             return;
+        // Only `switch` produces these (see IR.h). A Label is reachable
+        // both by falling through from whatever precedes it here and by a
+        // jump from one of the switch's own comparisons (which runs with
+        // `pending` exactly as it stood on switch entry) - same reasoning
+        // as ConstantPropagation.cpp's own Label case, so clearing is the
+        // only sound choice. Goto needs nothing of its own.
+        case ir::StmtKind::Label:
+            pending.clear();
+            return;
+        case ir::StmtKind::Goto:
+            return;
     }
 }
 
@@ -224,6 +237,8 @@ void collectReadSlots(const ir::Stmt *s, std::unordered_set<ir::Slot *> &read) {
         case ir::StmtKind::Continue:
         case ir::StmtKind::Empty:
         case ir::StmtKind::Asm:
+        case ir::StmtKind::Label:
+        case ir::StmtKind::Goto:
             return;
     }
 }
@@ -268,6 +283,8 @@ void collectWrittenSlots(const ir::Stmt *s, std::unordered_set<ir::Slot *> &writ
         case ir::StmtKind::Continue:
         case ir::StmtKind::Empty:
         case ir::StmtKind::Asm:
+        case ir::StmtKind::Label:
+        case ir::StmtKind::Goto:
             return;
     }
 }
@@ -313,6 +330,8 @@ void removeWriteOnlyStores(ir::Stmt *s, const std::unordered_set<ir::Slot *> &wr
         case ir::StmtKind::Continue:
         case ir::StmtKind::Empty:
         case ir::StmtKind::Asm:
+        case ir::StmtKind::Label:
+        case ir::StmtKind::Goto:
             return;
     }
 }

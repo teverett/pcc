@@ -14,16 +14,16 @@ public:
   enum {
     GLOBALS_HEADER = 1, FUNCTIONS_HEADER = 2, INT_KW = 3, CHAR_KW = 4, SHORT_KW = 5, 
     LONG_KW = 6, UNSIGNED_KW = 7, LOCAL_KW = 8, IF_KW = 9, ELSE_KW = 10, 
-    WHILE_KW = 11, RETURN_KW = 12, BREAK_KW = 13, CONTINUE_KW = 14, POST_KW = 15, 
-    OLDVAL_KW = 16, LPAREN = 17, RPAREN = 18, LBRACK = 19, RBRACK = 20, 
-    LBRACE = 21, RBRACE = 22, SEMI = 23, COMMA = 24, ASSIGN = 25, HASH = 26, 
-    STAR = 27, AMP = 28, MINUS = 29, BANG = 30, TILDE = 31, SLASH = 32, 
-    PERCENT = 33, PLUS = 34, SHL = 35, SHR = 36, LE = 37, GE = 38, LT = 39, 
-    GT = 40, EQ = 41, NE = 42, CARET = 43, PIPE = 44, ANDAND = 45, OROR = 46, 
-    PLUSEQ = 47, MINUSEQ = 48, STAREQ = 49, SLASHEQ = 50, PERCENTEQ = 51, 
-    AMPEQ = 52, CARETEQ = 53, PIPEEQ = 54, SHLEQ = 55, SHREQ = 56, QUESTION = 57, 
-    COLON = 58, IDENT = 59, NUMBER = 60, WS = 61, ASM_BEGIN = 62, ASM_TEXT = 63, 
-    ASM_END = 64
+    WHILE_KW = 11, RETURN_KW = 12, BREAK_KW = 13, CONTINUE_KW = 14, GOTO_KW = 15, 
+    POST_KW = 16, OLDVAL_KW = 17, LPAREN = 18, RPAREN = 19, LBRACK = 20, 
+    RBRACK = 21, LBRACE = 22, RBRACE = 23, SEMI = 24, COMMA = 25, ASSIGN = 26, 
+    HASH = 27, STAR = 28, AMP = 29, MINUS = 30, BANG = 31, TILDE = 32, SLASH = 33, 
+    PERCENT = 34, PLUS = 35, SHL = 36, SHR = 37, LE = 38, GE = 39, LT = 40, 
+    GT = 41, EQ = 42, NE = 43, CARET = 44, PIPE = 45, ANDAND = 46, OROR = 47, 
+    PLUSEQ = 48, MINUSEQ = 49, STAREQ = 50, SLASHEQ = 51, PERCENTEQ = 52, 
+    AMPEQ = 53, CARETEQ = 54, PIPEEQ = 55, SHLEQ = 56, SHREQ = 57, QUESTION = 58, 
+    COLON = 59, IDENT = 60, NUMBER = 61, WS = 62, ASM_BEGIN = 63, ASM_TEXT = 64, 
+    ASM_END = 65
   };
 
   enum {
@@ -327,6 +327,27 @@ public:
     EmptyStmtContext(StmtContext *ctx);
 
     antlr4::tree::TerminalNode *SEMI();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  GotoStmtContext : public StmtContext {
+  public:
+    GotoStmtContext(StmtContext *ctx);
+
+    antlr4::tree::TerminalNode *GOTO_KW();
+    antlr4::tree::TerminalNode *IDENT();
+    antlr4::tree::TerminalNode *SEMI();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  LabelStmtContext : public StmtContext {
+  public:
+    LabelStmtContext(StmtContext *ctx);
+
+    antlr4::tree::TerminalNode *IDENT();
+    antlr4::tree::TerminalNode *COLON();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };

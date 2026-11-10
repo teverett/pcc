@@ -149,6 +149,16 @@ class I8086Codegen : public Backend {
     void declareArray(const std::string &label, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel();
+    // Maps an ir::Stmt::labelId (switch's own Label/Goto - see IR.h) to this
+    // backend's own label text, generated the first time either a Label
+    // defining it or a Goto referencing it is seen.
+    std::string irLabel(int id) {
+        auto it = irLabels_.find(id);
+        if (it != irLabels_.end()) return it->second;
+        std::string name = newLabel();
+        irLabels_[id] = name;
+        return name;
+    }
 
     // Wide values are built in stack temporaries that nothing pops; wideScope() runs `gen`
     // with `sp` saved in a frame cell below the Locals (one per nesting level) and restores
@@ -178,6 +188,7 @@ class I8086Codegen : public Backend {
     std::string curFunctionLabel_;
     // {continue label, break label} per currently-open loop, innermost last.
     std::vector<std::pair<std::string, std::string>> loopLabels_;
+    std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
 }  // namespace pcc

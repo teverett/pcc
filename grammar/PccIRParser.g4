@@ -88,6 +88,12 @@ stmt
     | LOCAL_KW typeSpec ref (LBRACK NUMBER RBRACK (ASSIGN initList)? | (ASSIGN expr)?) SEMI  # localDeclStmt
     | ASM_BEGIN ASM_TEXT ASM_END                                                    # asmStmt
     | SEMI                                                                          # emptyStmt
+    // `switch`'s own desugaring (see IR.h's StmtKind::Label/Goto comment) -
+    // printStmt()'s own "L<id>:" / "goto L<id>;" shape; the label itself is
+    // just an IDENT (always of that "L<number>" form in practice, but the
+    // grammar doesn't need to know that).
+    | IDENT COLON                                                                   # labelStmt
+    | GOTO_KW IDENT SEMI                                                            # gotoStmt
     | expr SEMI                                                                     # exprStmt
     ;
 

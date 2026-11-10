@@ -115,6 +115,10 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitSwitchStmt(CParser::SwitchStmtContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitReturnStmt(CParser::ReturnStmtContext *ctx) override {
     return visitChildren(ctx);
   }
@@ -124,6 +128,14 @@ public:
   }
 
   virtual std::any visitContinueStmt(CParser::ContinueStmtContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitGotoStmt(CParser::GotoStmtContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitLabelStmt(CParser::LabelStmtContext *ctx) override {
     return visitChildren(ctx);
   }
 
@@ -148,6 +160,14 @@ public:
   }
 
   virtual std::any visitExprStmt(CParser::ExprStmtContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitCaseLabel(CParser::CaseLabelContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitDefaultLabel(CParser::DefaultLabelContext *ctx) override {
     return visitChildren(ctx);
   }
 

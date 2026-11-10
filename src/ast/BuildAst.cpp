@@ -1,5 +1,6 @@
 #include "BuildAst.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 #include "ANTLRInputStream.h"
@@ -551,6 +552,37 @@ StmtPtr buildStmt(CParser::StatementContext *ctx) {
         return outer;
     }
 
+    if (auto *c = dynamic_cast<CParser::SwitchStmtContext *>(ctx)) {
+        auto s = std::make_unique<Stmt>();
+        s->kind = StmtKind::Switch;
+        s->line = c->getStart()->getLine();
+        s->cond = buildExpr(c->expr());
+
+        bool sawDefault = false;
+        std::vector<long> seenValues;
+        for (auto *sc : c->switchCase()) {
+            SwitchCase sw;
+            if (auto *caseLabel = dynamic_cast<CParser::CaseLabelContext *>(sc)) {
+                sw.value = parsePlainNumber(caseLabel->val, caseLabel, "a case label");
+                if (caseLabel->sign) sw.value = -sw.value;
+                if (std::find(seenValues.begin(), seenValues.end(), sw.value) != seenValues.end()) {
+                    err(caseLabel, "duplicate case value " + std::to_string(sw.value));
+                }
+                seenValues.push_back(sw.value);
+                for (auto *st : caseLabel->statement()) sw.body.push_back(buildStmt(st));
+            } else if (auto *defaultLabel = dynamic_cast<CParser::DefaultLabelContext *>(sc)) {
+                if (sawDefault) err(defaultLabel, "switch statement has more than one 'default' label");
+                sawDefault = true;
+                sw.isDefault = true;
+                for (auto *st : defaultLabel->statement()) sw.body.push_back(buildStmt(st));
+            } else {
+                err(sc, "internal: unhandled switchCase alternative");
+            }
+            s->cases.push_back(std::move(sw));
+        }
+        return s;
+    }
+
     if (auto *c = dynamic_cast<CParser::ReturnStmtContext *>(ctx)) {
         auto s = std::make_unique<Stmt>();
         s->kind = StmtKind::Return;
@@ -570,6 +602,23 @@ StmtPtr buildStmt(CParser::StatementContext *ctx) {
         auto s = std::make_unique<Stmt>();
         s->kind = StmtKind::Continue;
         s->line = c->getStart()->getLine();
+        return s;
+    }
+
+    if (auto *c = dynamic_cast<CParser::GotoStmtContext *>(ctx)) {
+        auto s = std::make_unique<Stmt>();
+        s->kind = StmtKind::Goto;
+        s->line = c->getStart()->getLine();
+        s->declName = c->IDENT()->getText();
+        return s;
+    }
+
+    if (auto *c = dynamic_cast<CParser::LabelStmtContext *>(ctx)) {
+        auto s = std::make_unique<Stmt>();
+        s->kind = StmtKind::Label;
+        s->line = c->getStart()->getLine();
+        s->declName = c->IDENT()->getText();
+        s->thenStmt = buildStmt(c->statement());
         return s;
     }
 

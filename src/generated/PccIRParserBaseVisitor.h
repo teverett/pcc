@@ -87,6 +87,14 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitLabelStmt(PccIRParser::LabelStmtContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitGotoStmt(PccIRParser::GotoStmtContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitExprStmt(PccIRParser::ExprStmtContext *ctx) override {
     return visitChildren(ctx);
   }

@@ -32,12 +32,22 @@ form does and doesn't support.
 Statements: `{ }` blocks, `if`/`else`, `while`, `for` (desugared into
 a block containing a `while`, with the post-statement kept separate so
 `continue` still runs it — see `IR.h`'s own `Stmt::postStmt`),
-`return`, `break`, `continue`, a local declaration (scalar or array,
+`return`, `break`, `continue`, `switch`/`case`/`default` (real C
+fallthrough; desugared entirely in `IRBuilder.cpp` into a `Block` of
+comparisons dispatching into a sequence of `StmtKind::Label`-marked
+case bodies joined by `StmtKind::Goto` — see `IR.h`'s own comment on
+why those two exist at the IR level, and IRBuilder's `buildSwitch`),
+`goto`/labels (`name: stmt` attaches to exactly that one statement,
+same as real C — a label opens no scope of its own, so a declaration
+right after one stays visible to whatever follows in the enclosing
+block; labels have function scope, resolved against a table collected
+before the function body is built, so a forward `goto` works — see
+IRBuilder's `collectLabels`), a local declaration (scalar or array,
 optionally initialized), a bare expression statement, and
 `asm { ... }` (see "Inline asm" below).
 
 Not in this subset: `struct`/`union`/`enum`/`typedef`, floating point,
-variadic functions, `switch`/`goto`, and designated initializers.
+variadic functions, and designated initializers.
 
 ## Scope and limitations
 

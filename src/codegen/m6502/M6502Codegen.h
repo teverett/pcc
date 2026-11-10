@@ -229,6 +229,16 @@ class M6502Codegen : public Backend {
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
+    // Maps an ir::Stmt::labelId (switch's own Label/Goto - see IR.h) to this
+    // backend's own label text, generated the first time either a Label
+    // defining it or a Goto referencing it is seen.
+    std::string irLabel(int id) {
+        auto it = irLabels_.find(id);
+        if (it != irLabels_.end()) return it->second;
+        std::string name = newLabel();
+        irLabels_[id] = name;
+        return name;
+    }
 
     std::ostringstream code_;
     std::vector<std::string> trailer_;  // "label: dblo e" / "dbhi e" data lines, emitted once at the end
@@ -240,6 +250,7 @@ class M6502Codegen : public Backend {
     const ir::Function *curFunction_ = nullptr;  // function being generated; used by frameByteOffset()
     // {continue label, break label} per open loop (innermost last).
     std::vector<std::pair<std::string, std::string>> loopLabels_;
+    std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
 }  // namespace pcc

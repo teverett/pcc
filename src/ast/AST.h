@@ -66,6 +66,7 @@ enum class StmtKind {
     Block,
     If,
     While,
+    Switch,
     Return,
     Break,
     Continue,
@@ -73,6 +74,21 @@ enum class StmtKind {
     ExprStmt,
     Empty,
     Asm,  // raw target text, emitted verbatim
+    Label,  // `name: thenStmt` - see Stmt::declName/thenStmt
+    Goto,   // `goto name;` - see Stmt::declName
+};
+
+struct Stmt;
+
+// One `case N:`/`default:` label and the statements that follow it, up to
+// (not including) the next label - see Stmt::cases. Real C fallthrough:
+// nothing here marks where a case's statements end, so control simply
+// keeps going into the next label's statements unless a `break` (or
+// `return`) stops it first, same as the source order IRBuilder sees them in.
+struct SwitchCase {
+    bool isDefault = false;
+    long value = 0;  // case constant, meaningful when !isDefault
+    std::vector<std::unique_ptr<Stmt>> body;
 };
 
 struct Stmt {
@@ -80,14 +96,15 @@ struct Stmt {
     int line = 0;
 
     std::vector<std::unique_ptr<Stmt>> body;   // Block
-    ExprPtr cond;                                // If / While
-    std::unique_ptr<Stmt> thenStmt, elseStmt;    // If
+    ExprPtr cond;                                // If / While / Switch (the switched-on expression)
+    std::unique_ptr<Stmt> thenStmt, elseStmt;    // If; thenStmt also doubles as Label's wrapped statement
     std::unique_ptr<Stmt> loopBody;              // While
     // `for(init;cond;post)` desugars to `{ init; while(cond) ... }` with
     // `post` kept separate from loopBody so `continue` still runs it before
     // retesting cond. Null for a real `while`.
     std::unique_ptr<Stmt> postStmt;              // While (for-loop desugaring only)
-    std::string declName;                        // LocalDecl
+    std::vector<SwitchCase> cases;                // Switch: case/default labels, in source order
+    std::string declName;                        // LocalDecl name; Label's own name; Goto's target name
     Type type;                                     // LocalDecl: declared type (scalar, or array element type)
     ExprPtr initOrReturnOrExpr;                   // LocalDecl init / Return value / ExprStmt expr
     int arraySize = 0;                            // LocalDecl: >0 means an array of this many words

@@ -103,6 +103,8 @@ void foldStmt(ir::Stmt *s, bool &changed, const std::string &sourceFile) {
         case ir::StmtKind::Continue:
         case ir::StmtKind::Empty:
         case ir::StmtKind::Asm:
+        case ir::StmtKind::Label:
+        case ir::StmtKind::Goto:
             return;
     }
 }

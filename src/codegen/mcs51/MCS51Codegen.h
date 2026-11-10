@@ -225,6 +225,16 @@ class MCS51Codegen : public Backend {
                              const std::vector<ir::ArrayInitElem> &values);
     void genArrayElementInit(const std::string &elemExpr, int elemWidth, const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
+    // Maps an ir::Stmt::labelId (switch's own Label/Goto - see IR.h) to this
+    // backend's own label text, generated the first time either a Label
+    // defining it or a Goto referencing it is seen.
+    std::string irLabel(int id) {
+        auto it = irLabels_.find(id);
+        if (it != irLabels_.end()) return it->second;
+        std::string name = newLabel();
+        irLabels_[id] = name;
+        return name;
+    }
 
     std::ostringstream code_;
     std::ostringstream initCode_;  // globals' initial-value MOVX writes
@@ -239,6 +249,7 @@ class MCS51Codegen : public Backend {
     // One entry per currently-open loop (innermost last): {continue
     // label, break label}.
     std::vector<std::pair<std::string, std::string>> loopLabels_;
+    std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
 }  // namespace pcc

@@ -13,25 +13,26 @@ class  CParser : public antlr4::Parser {
 public:
   enum {
     INT_KW = 1, CHAR_KW = 2, SHORT_KW = 3, LONG_KW = 4, SIGNED_KW = 5, UNSIGNED_KW = 6, 
-    SIZEOF_KW = 7, IF_KW = 8, ELSE_KW = 9, WHILE_KW = 10, FOR_KW = 11, RETURN_KW = 12, 
-    BREAK_KW = 13, CONTINUE_KW = 14, EXTERN_KW = 15, LPAREN = 16, RPAREN = 17, 
-    LBRACK = 18, RBRACK = 19, LBRACE = 20, RBRACE = 21, AT = 22, SEMI = 23, 
-    COMMA = 24, ASSIGN = 25, STAR = 26, AMP = 27, MINUS = 28, BANG = 29, 
-    TILDE = 30, SLASH = 31, PERCENT = 32, PLUS = 33, SHL = 34, SHR = 35, 
-    LE = 36, GE = 37, LT = 38, GT = 39, EQ = 40, NE = 41, CARET = 42, PIPE = 43, 
-    ANDAND = 44, OROR = 45, PLUSEQ = 46, MINUSEQ = 47, STAREQ = 48, SLASHEQ = 49, 
-    PERCENTEQ = 50, AMPEQ = 51, CARETEQ = 52, PIPEEQ = 53, SHLEQ = 54, SHREQ = 55, 
-    INC = 56, DEC = 57, QUESTION = 58, COLON = 59, IDENT = 60, NUMBER = 61, 
-    CHARLIT = 62, STRINGLIT = 63, LINE_COMMENT = 64, BLOCK_COMMENT = 65, 
-    WS = 66, ASM_BEGIN = 67, ASM_TEXT = 68, ASM_END = 69
+    SIZEOF_KW = 7, IF_KW = 8, ELSE_KW = 9, WHILE_KW = 10, FOR_KW = 11, SWITCH_KW = 12, 
+    CASE_KW = 13, DEFAULT_KW = 14, RETURN_KW = 15, BREAK_KW = 16, CONTINUE_KW = 17, 
+    GOTO_KW = 18, EXTERN_KW = 19, LPAREN = 20, RPAREN = 21, LBRACK = 22, 
+    RBRACK = 23, LBRACE = 24, RBRACE = 25, AT = 26, SEMI = 27, COMMA = 28, 
+    ASSIGN = 29, STAR = 30, AMP = 31, MINUS = 32, BANG = 33, TILDE = 34, 
+    SLASH = 35, PERCENT = 36, PLUS = 37, SHL = 38, SHR = 39, LE = 40, GE = 41, 
+    LT = 42, GT = 43, EQ = 44, NE = 45, CARET = 46, PIPE = 47, ANDAND = 48, 
+    OROR = 49, PLUSEQ = 50, MINUSEQ = 51, STAREQ = 52, SLASHEQ = 53, PERCENTEQ = 54, 
+    AMPEQ = 55, CARETEQ = 56, PIPEEQ = 57, SHLEQ = 58, SHREQ = 59, INC = 60, 
+    DEC = 61, QUESTION = 62, COLON = 63, IDENT = 64, NUMBER = 65, CHARLIT = 66, 
+    STRINGLIT = 67, LINE_COMMENT = 68, BLOCK_COMMENT = 69, WS = 70, ASM_BEGIN = 71, 
+    ASM_TEXT = 72, ASM_END = 73
   };
 
   enum {
     RuleProgram = 0, RuleTypeSpec = 1, RuleBaseTypeSpec = 2, RuleTopLevelDecl = 3, 
     RuleFunctionDecl = 4, RuleParamList = 5, RuleParam = 6, RuleGlobalDecl = 7, 
     RuleArrayInit = 8, RuleArrayInitElem = 9, RuleBlock = 10, RuleStatement = 11, 
-    RuleSimpleStmt = 12, RuleAssignOp = 13, RuleExpr = 14, RuleCondExpr = 15, 
-    RuleArgList = 16
+    RuleSimpleStmt = 12, RuleSwitchCase = 13, RuleAssignOp = 14, RuleExpr = 15, 
+    RuleCondExpr = 16, RuleArgList = 17
   };
 
   explicit CParser(antlr4::TokenStream *input);
@@ -64,6 +65,7 @@ public:
   class BlockContext;
   class StatementContext;
   class SimpleStmtContext;
+  class SwitchCaseContext;
   class AssignOpContext;
   class ExprContext;
   class CondExprContext;
@@ -486,6 +488,63 @@ public:
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
 
+  class  SimpleStmtWrapperContext : public StatementContext {
+  public:
+    SimpleStmtWrapperContext(StatementContext *ctx);
+
+    SimpleStmtContext *simpleStmt();
+    antlr4::tree::TerminalNode *SEMI();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  GotoStmtContext : public StatementContext {
+  public:
+    GotoStmtContext(StatementContext *ctx);
+
+    antlr4::tree::TerminalNode *GOTO_KW();
+    antlr4::tree::TerminalNode *IDENT();
+    antlr4::tree::TerminalNode *SEMI();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  EmptyStmtContext : public StatementContext {
+  public:
+    EmptyStmtContext(StatementContext *ctx);
+
+    antlr4::tree::TerminalNode *SEMI();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  ReturnStmtContext : public StatementContext {
+  public:
+    ReturnStmtContext(StatementContext *ctx);
+
+    antlr4::tree::TerminalNode *RETURN_KW();
+    antlr4::tree::TerminalNode *SEMI();
+    ExprContext *expr();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  SwitchStmtContext : public StatementContext {
+  public:
+    SwitchStmtContext(StatementContext *ctx);
+
+    antlr4::tree::TerminalNode *SWITCH_KW();
+    antlr4::tree::TerminalNode *LPAREN();
+    ExprContext *expr();
+    antlr4::tree::TerminalNode *RPAREN();
+    antlr4::tree::TerminalNode *LBRACE();
+    antlr4::tree::TerminalNode *RBRACE();
+    std::vector<SwitchCaseContext *> switchCase();
+    SwitchCaseContext* switchCase(size_t i);
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
   class  IfStmtContext : public StatementContext {
   public:
     IfStmtContext(StatementContext *ctx);
@@ -512,16 +571,6 @@ public:
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
 
-  class  SimpleStmtWrapperContext : public StatementContext {
-  public:
-    SimpleStmtWrapperContext(StatementContext *ctx);
-
-    SimpleStmtContext *simpleStmt();
-    antlr4::tree::TerminalNode *SEMI();
-
-    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
-  };
-
   class  BreakStmtContext : public StatementContext {
   public:
     BreakStmtContext(StatementContext *ctx);
@@ -532,22 +581,13 @@ public:
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
 
-  class  EmptyStmtContext : public StatementContext {
+  class  LabelStmtContext : public StatementContext {
   public:
-    EmptyStmtContext(StatementContext *ctx);
+    LabelStmtContext(StatementContext *ctx);
 
-    antlr4::tree::TerminalNode *SEMI();
-
-    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
-  };
-
-  class  ReturnStmtContext : public StatementContext {
-  public:
-    ReturnStmtContext(StatementContext *ctx);
-
-    antlr4::tree::TerminalNode *RETURN_KW();
-    antlr4::tree::TerminalNode *SEMI();
-    ExprContext *expr();
+    antlr4::tree::TerminalNode *IDENT();
+    antlr4::tree::TerminalNode *COLON();
+    StatementContext *statement();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
@@ -615,6 +655,49 @@ public:
   };
 
   SimpleStmtContext* simpleStmt();
+
+  class  SwitchCaseContext : public antlr4::ParserRuleContext {
+  public:
+    SwitchCaseContext(antlr4::ParserRuleContext *parent, size_t invokingState);
+   
+    SwitchCaseContext() = default;
+    void copyFrom(SwitchCaseContext *context);
+    using antlr4::ParserRuleContext::copyFrom;
+
+    virtual size_t getRuleIndex() const override;
+
+   
+  };
+
+  class  DefaultLabelContext : public SwitchCaseContext {
+  public:
+    DefaultLabelContext(SwitchCaseContext *ctx);
+
+    antlr4::tree::TerminalNode *DEFAULT_KW();
+    antlr4::tree::TerminalNode *COLON();
+    std::vector<StatementContext *> statement();
+    StatementContext* statement(size_t i);
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  class  CaseLabelContext : public SwitchCaseContext {
+  public:
+    CaseLabelContext(SwitchCaseContext *ctx);
+
+    antlr4::Token *sign = nullptr;
+    antlr4::Token *val = nullptr;
+    antlr4::tree::TerminalNode *CASE_KW();
+    antlr4::tree::TerminalNode *COLON();
+    antlr4::tree::TerminalNode *NUMBER();
+    std::vector<StatementContext *> statement();
+    StatementContext* statement(size_t i);
+    antlr4::tree::TerminalNode *MINUS();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
+  SwitchCaseContext* switchCase();
 
   class  AssignOpContext : public antlr4::ParserRuleContext {
   public:

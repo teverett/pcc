@@ -254,6 +254,13 @@ class PIC18Codegen : public Backend {
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }
+    std::string irLabel(int id) {
+        auto it = irLabels_.find(id);
+        if (it != irLabels_.end()) return it->second;
+        std::string name = newLabel();
+        irLabels_[id] = name;
+        return name;
+    }
 
     void declareRam(const std::string &lbl, int count, bool zeroAtStart = true);
 
@@ -272,6 +279,7 @@ class PIC18Codegen : public Backend {
     // One entry per currently-open loop (innermost last): {continue
     // label, break label}.
     std::vector<std::pair<std::string, std::string>> loopLabels_;
+    std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
 }  // namespace pcc

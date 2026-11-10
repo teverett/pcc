@@ -46,6 +46,7 @@ WHILE_KW  : 'while' ;
 RETURN_KW : 'return' ;
 BREAK_KW  : 'break' ;
 CONTINUE_KW : 'continue' ;
+GOTO_KW   : 'goto' ;
 POST_KW   : 'post' ;
 // Printed immediately before a CompoundAssign/CompoundDerefAssign
 // whose `yieldOld` is true (a postfix '++'/'--' - see IRPrinter.cpp's

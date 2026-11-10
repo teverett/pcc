@@ -55,6 +55,10 @@ public:
 
     virtual std::any visitEmptyStmt(PccIRParser::EmptyStmtContext *context) = 0;
 
+    virtual std::any visitLabelStmt(PccIRParser::LabelStmtContext *context) = 0;
+
+    virtual std::any visitGotoStmt(PccIRParser::GotoStmtContext *context) = 0;
+
     virtual std::any visitExprStmt(PccIRParser::ExprStmtContext *context) = 0;
 
     virtual std::any visitRef(PccIRParser::RefContext *context) = 0;

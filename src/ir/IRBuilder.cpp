@@ -92,6 +92,8 @@ int assignFrameOffsets(ir::Stmt *s, int nextOffset, const TypeWidths &widths) {
         case ir::StmtKind::ExprStmt:
         case ir::StmtKind::Empty:
         case ir::StmtKind::Asm:
+        case ir::StmtKind::Label:
+        case ir::StmtKind::Goto:
             return nextOffset;
     }
     return nextOffset;
@@ -129,6 +131,8 @@ class Builder {
             for (ir::Slot *p : irFn->params) declareLocal(p->sourceName, p, fn.line);
             currentReturnType_ = irFn->returnType;
             currentSourceFile_ = fn.sourceFile;
+            currentFunctionLabels_.clear();
+            collectLabels(fn.body.get());
             ir::StmtPtr body = buildStmt(*fn.body);
             popScope();
             int reserved = widthOf(Type{BaseType::Int, false}, widths_);
@@ -861,6 +865,49 @@ class Builder {
         err(e.line, "internal: unhandled expr kind");
     }
 
+    // Pre-pass over a function body, run before buildStmt(), so every
+    // `goto` (forward or backward) resolves against a complete label table
+    // regardless of build order. Labels have function scope in real C (not
+    // block scope), so this recurses into every nested statement, not just
+    // the top-level block.
+    void collectLabels(const Stmt *s) {
+        if (!s) return;
+        switch (s->kind) {
+            case StmtKind::Block:
+                for (const auto &child : s->body) collectLabels(child.get());
+                return;
+            case StmtKind::If:
+                collectLabels(s->thenStmt.get());
+                collectLabels(s->elseStmt.get());
+                return;
+            case StmtKind::While:
+                collectLabels(s->loopBody.get());
+                collectLabels(s->postStmt.get());
+                return;
+            case StmtKind::Switch:
+                for (const auto &c : s->cases) {
+                    for (const auto &child : c.body) collectLabels(child.get());
+                }
+                return;
+            case StmtKind::Label:
+                if (currentFunctionLabels_.count(s->declName)) {
+                    err(s->line, "duplicate label '" + s->declName + "'");
+                }
+                currentFunctionLabels_[s->declName] = nextLabelId_++;
+                collectLabels(s->thenStmt.get());
+                return;
+            case StmtKind::Return:
+            case StmtKind::Break:
+            case StmtKind::Continue:
+            case StmtKind::Goto:
+            case StmtKind::LocalDecl:
+            case StmtKind::ExprStmt:
+            case StmtKind::Empty:
+            case StmtKind::Asm:
+                return;
+        }
+    }
+
     ir::StmtPtr buildStmt(const Stmt &s) {
         auto out = std::make_unique<ir::Stmt>();
         out->line = s.line;
@@ -882,11 +929,15 @@ class Builder {
                 out->kind = ir::StmtKind::While;
                 out->cond = buildExpr(*s.cond);
                 ++loopDepth_;
+                breakTargets_.push_back(-1);  // -1: let codegen's own loop-break-label stack resolve it
                 out->loopBody = buildStmt(*s.loopBody);
+                breakTargets_.pop_back();
                 if (s.postStmt) out->postStmt = buildStmt(*s.postStmt);
                 --loopDepth_;
                 return out;
             }
+            case StmtKind::Switch:
+                return buildSwitch(s);
             case StmtKind::Return:
                 out->kind = ir::StmtKind::Return;
                 if (s.initOrReturnOrExpr) {
@@ -894,10 +945,24 @@ class Builder {
                 }
                 return out;
             case StmtKind::Break:
-                if (loopDepth_ == 0) err(s.line, "'break' statement not inside a loop");
-                out->kind = ir::StmtKind::Break;
+                if (breakTargets_.empty()) err(s.line, "'break' statement not inside a loop or switch");
+                if (breakTargets_.back() >= 0) {
+                    // Inside a switch (and not inside a further-nested loop,
+                    // which would have pushed its own -1 on top): jump
+                    // straight past it, rather than falling into codegen's
+                    // generic Break handling, which only knows how to target
+                    // the nearest enclosing *loop*.
+                    out->kind = ir::StmtKind::Goto;
+                    out->labelId = breakTargets_.back();
+                } else {
+                    out->kind = ir::StmtKind::Break;
+                }
                 return out;
             case StmtKind::Continue:
+                // Deliberately keyed on loopDepth_ alone, not breakTargets_:
+                // `continue` always means the nearest enclosing *loop*, even
+                // from inside a switch nested in one (real C semantics) -
+                // switch contributes no continue target of its own.
                 if (loopDepth_ == 0) err(s.line, "'continue' statement not inside a loop");
                 out->kind = ir::StmtKind::Continue;
                 return out;
@@ -924,8 +989,142 @@ class Builder {
                 out->kind = ir::StmtKind::Asm;
                 out->asmText = s.asmText;
                 return out;
+            case StmtKind::Label: {
+                // Wraps the marker and its one attached statement in a
+                // Block, but WITHOUT pushScope()/popScope() (unlike a real
+                // source-level Block) - a label doesn't open a new scope in
+                // real C, so a LocalDecl under `thenStmt` must register
+                // into whichever scope is already active here, visible to
+                // whatever follows this Label in the real enclosing block.
+                out->kind = ir::StmtKind::Block;
+                auto marker = std::make_unique<ir::Stmt>();
+                marker->kind = ir::StmtKind::Label;
+                marker->line = s.line;
+                marker->labelId = currentFunctionLabels_.at(s.declName);
+                out->body.push_back(std::move(marker));
+                if (s.thenStmt) out->body.push_back(buildStmt(*s.thenStmt));
+                return out;
+            }
+            case StmtKind::Goto: {
+                auto it = currentFunctionLabels_.find(s.declName);
+                if (it == currentFunctionLabels_.end()) {
+                    err(s.line, "'goto' to undefined label '" + s.declName + "'");
+                }
+                out->kind = ir::StmtKind::Goto;
+                out->labelId = it->second;
+                return out;
+            }
         }
         err(s.line, "internal: unhandled stmt kind");
+    }
+
+    // Desugars `switch (expr) { case C1: B1 case C2: B2 default: B3 }` into
+    // (pseudo-code, using the new Label/Goto-only IR primitives - see
+    // IR.h's own comment on why they exist only for this):
+    //   { tmp = expr;
+    //     if (tmp == C1) goto L1;
+    //     if (tmp == C2) goto L2;
+    //     goto Ldefault;        // or Lend, if there's no `default`
+    //     L1: B1
+    //     L2: B2
+    //     Ldefault: B3
+    //     Lend: }
+    // `tmp` makes `expr` evaluate exactly once, same as real C, regardless
+    // of how many cases compare against it. Real fallthrough is simply not
+    // injecting a jump between one case's body and the next's label - the
+    // comparisons dispatch INTO the sequence, never between cases within
+    // it. `break` inside the switch (but not inside a further-nested loop)
+    // becomes a Goto Lend - see buildStmt's own Break case and
+    // breakTargets_'s comment.
+    ir::StmtPtr buildSwitch(const Stmt &s) {
+        auto out = std::make_unique<ir::Stmt>();
+        out->kind = ir::StmtKind::Block;
+        out->line = s.line;
+        pushScope();
+
+        ir::ExprPtr controlExpr = buildExpr(*s.cond);
+        ir::Slot *tempSlot = allocSlot(ir::SlotKind::Local, "__switch" + std::to_string(nextLabelId_));
+        tempSlot->type = controlExpr->type;
+
+        auto tempDecl = std::make_unique<ir::Stmt>();
+        tempDecl->kind = ir::StmtKind::LocalDecl;
+        tempDecl->line = s.line;
+        tempDecl->declSlot = tempSlot;
+        tempDecl->initOrReturnOrExpr = std::move(controlExpr);
+        out->body.push_back(std::move(tempDecl));
+
+        std::vector<int> caseLabels(s.cases.size());
+        int defaultIndex = -1;
+        for (size_t i = 0; i < s.cases.size(); i++) {
+            caseLabels[i] = nextLabelId_++;
+            if (s.cases[i].isDefault) defaultIndex = static_cast<int>(i);
+        }
+        int endLabel = nextLabelId_++;
+
+        for (size_t i = 0; i < s.cases.size(); i++) {
+            if (s.cases[i].isDefault) continue;
+
+            auto tempVar = std::make_unique<ir::Expr>();
+            tempVar->kind = ir::ExprKind::Var;
+            tempVar->type = tempSlot->type;
+            tempVar->slot = tempSlot;
+
+            auto caseLit = std::make_unique<ir::Expr>();
+            caseLit->kind = ir::ExprKind::IntLit;
+            caseLit->intValue = s.cases[i].value;
+            caseLit->type = tempSlot->type;
+
+            ir::ExprPtr lhs = promote(std::move(tempVar), s.line);
+            ir::ExprPtr rhs = promote(std::move(caseLit), s.line);
+            Type common = commonType(lhs->type, rhs->type);
+            lhs = wrapConvert(std::move(lhs), common, s.line);
+            rhs = wrapConvert(std::move(rhs), common, s.line);
+
+            auto cmp = std::make_unique<ir::Expr>();
+            cmp->kind = ir::ExprKind::Binary;
+            cmp->op = "==";
+            cmp->type = Type{BaseType::Int, false};
+            cmp->lhs = std::move(lhs);
+            cmp->rhs = std::move(rhs);
+
+            auto gotoCase = std::make_unique<ir::Stmt>();
+            gotoCase->kind = ir::StmtKind::Goto;
+            gotoCase->line = s.line;
+            gotoCase->labelId = caseLabels[i];
+
+            auto ifStmt = std::make_unique<ir::Stmt>();
+            ifStmt->kind = ir::StmtKind::If;
+            ifStmt->line = s.line;
+            ifStmt->cond = std::move(cmp);
+            ifStmt->thenStmt = std::move(gotoCase);
+            out->body.push_back(std::move(ifStmt));
+        }
+
+        auto gotoDefaultOrEnd = std::make_unique<ir::Stmt>();
+        gotoDefaultOrEnd->kind = ir::StmtKind::Goto;
+        gotoDefaultOrEnd->line = s.line;
+        gotoDefaultOrEnd->labelId = defaultIndex >= 0 ? caseLabels[defaultIndex] : endLabel;
+        out->body.push_back(std::move(gotoDefaultOrEnd));
+
+        breakTargets_.push_back(endLabel);
+        for (size_t i = 0; i < s.cases.size(); i++) {
+            auto label = std::make_unique<ir::Stmt>();
+            label->kind = ir::StmtKind::Label;
+            label->line = s.line;
+            label->labelId = caseLabels[i];
+            out->body.push_back(std::move(label));
+            for (const auto &stmt : s.cases[i].body) out->body.push_back(buildStmt(*stmt));
+        }
+        breakTargets_.pop_back();
+
+        auto endLabelStmt = std::make_unique<ir::Stmt>();
+        endLabelStmt->kind = ir::StmtKind::Label;
+        endLabelStmt->line = s.line;
+        endLabelStmt->labelId = endLabel;
+        out->body.push_back(std::move(endLabelStmt));
+
+        popScope();
+        return out;
     }
 
     ir::Program prog_;
@@ -937,6 +1136,17 @@ class Builder {
     int nextStringLitId_ = 0;  // ExprKind::StringLit's own synthetic globals - see buildExpr's own case
     bool allowExternal_ = false;
     int loopDepth_ = 0;  // >0 while building a While's own loopBody/postStmt - see Break/Continue
+    // What a bare `break` currently resolves to, innermost last: -1 for a
+    // loop (deferred to codegen's own per-backend loop-break-label stack,
+    // unchanged from before `switch` existed), or a switch's own Lend
+    // labelId - see buildStmt's Break case and buildSwitch.
+    std::vector<int> breakTargets_;
+    int nextLabelId_ = 0;  // ir::Stmt::labelId's own counter - see buildSwitch
+    // name -> labelId for the function currently being built - see
+    // collectLabels(). User `goto`/labels have function scope (not block
+    // scope, unlike a C++ variable), so this is reset once per function,
+    // not pushed/popped per block the way scopes_ is.
+    std::unordered_map<std::string, int> currentFunctionLabels_;
     TypeWidths widths_{};
     Type currentReturnType_;  // the function currently being built - see StmtKind::Return
     std::string currentSourceFile_;  // ditto - stamped onto a StringLit's own synthetic global
