@@ -100,7 +100,8 @@ inline int localOffsetDescendingWide(const Slot &slot, const TypeWidths &widths)
 struct Function {
     int id = 0;
     std::string sourceName;
-    Type returnType;
+    Type returnType;  // unused (stays default-Int) when isVoid is true
+    bool isVoid = false;  // 'void' return type: the function returns no value
     std::vector<Slot *> params;  // owned by Program::slots
 
     bool hasAddress = false;  // '@' addr: pins the entry point, not the whole body

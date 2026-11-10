@@ -248,7 +248,7 @@ std::string printIR(const ir::Program &prog, const std::string &sourceFile) {
     out << "\n; --- functions ---\n";
     for (const auto &fb : prog.functionBodies) {
         if (!sourceFile.empty() && fb.func->sourceFile != sourceFile) continue;
-        out << typeSpecText(fb.func->returnType) << " " << funcRef(fb.func) << "(";
+        out << (fb.func->isVoid ? "void" : typeSpecText(fb.func->returnType)) << " " << funcRef(fb.func) << "(";
         for (size_t i = 0; i < fb.func->params.size(); i++) {
             if (i > 0) out << ", ";
             out << typeSpecText(fb.func->params[i]->type) << " " << slotRef(fb.func->params[i]);

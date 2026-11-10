@@ -57,9 +57,16 @@ initElem
     ;
 
 // "int name#id(int p#id, ...)\n{ ... }\n" - see IRPrinter.cpp's own
-// functions loop.
+// functions loop. A function's own return type additionally allows
+// VOID_KW (see typeSpecOrVoid below) - unlike every other typeSpec use
+// in this grammar, which can never be void.
 funcDecl
-    : typeSpec ref LPAREN paramList? RPAREN block
+    : typeSpecOrVoid ref LPAREN paramList? RPAREN block
+    ;
+
+typeSpecOrVoid
+    : typeSpec
+    | VOID_KW
     ;
 
 paramList

@@ -11,10 +11,13 @@ handful of project-specific choices (its own COFF variant, its
 Types: `char`, `short`, `int`, `long`, `long long`, each `signed`
 (the default) or `unsigned`; a pointer to any of those, at any depth
 (`T*`, `T**`, ...); a fixed-size array of any of those or of a
-pointer. A function always declares an explicit return type (there is
-no `void`) and may be declared with a trailing `;` instead of a body
-as a prototype, resolved by name against whichever file actually
-defines it regardless of textual order.
+pointer. A function always declares an explicit return type and may be
+declared with a trailing `;` instead of a body as a prototype,
+resolved by name against whichever file actually defines it regardless
+of textual order. `void` is a valid return type (a function that
+returns no value, via a bare `return;` or by falling off its closing
+`}`); it isn't usable anywhere else `void*`, a `void` parameter, a
+`void` variable, etc. - see "Scope and limitations" below.
 
 Expressions: the usual arithmetic/comparison/logical/bitwise operators
 (see "Bitwise operators" below for that group specifically), `=` and
@@ -53,6 +56,14 @@ variadic functions, and designated initializers.
 
 Deliberate simplifications, not bugs:
 
+- `void` is only a function's return type; it's not a `baseTypeSpec`
+  alternative, so it never appears as a variable/parameter type, a
+  cast/`sizeof` operand, or `void*` - none of those parse. A `void`
+  function's `return;` must have no value (`return expr;` is a
+  compile error), and calling one is only valid as a bare expression
+  statement - using its (nonexistent) result as a value anywhere else
+  (an operand, an argument, assigned, `sizeof`'d, ...) is a compile
+  error too.
 - Integer promotion always promotes a sub-`int`-rank operand to
   **signed** `int`, even in the rare case where real C would promote
   `unsigned short` to `unsigned int` because `short`/`int` happen to

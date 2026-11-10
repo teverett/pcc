@@ -31,6 +31,8 @@ public:
 
     virtual std::any visitFuncDecl(PccIRParser::FuncDeclContext *context) = 0;
 
+    virtual std::any visitTypeSpecOrVoid(PccIRParser::TypeSpecOrVoidContext *context) = 0;
+
     virtual std::any visitParamList(PccIRParser::ParamListContext *context) = 0;
 
     virtual std::any visitParam(PccIRParser::ParamContext *context) = 0;

@@ -39,6 +39,10 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitTypeSpecOrVoid(PccIRParser::TypeSpecOrVoidContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitParamList(PccIRParser::ParamListContext *ctx) override {
     return visitChildren(ctx);
   }

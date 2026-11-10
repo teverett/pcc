@@ -57,7 +57,9 @@ typeSpec   : 'unsigned'? 'char'
            | 'unsigned'? 'long'
 
 globalDecl : typeSpec ref ('[' NUMBER ']' ('=' initList)? | ('=' NUMBER)?) ';'
-funcDecl   : typeSpec ref '(' (param (',' param)*)? ')' block
+// A function's own return type additionally allows 'void' (no other
+// typeSpec use does) - see Function::isVoid.
+funcDecl   : (typeSpec | 'void') ref '(' (param (',' param)*)? ')' block
 param      : typeSpec ref
 block      : '{' stmt* '}'
 

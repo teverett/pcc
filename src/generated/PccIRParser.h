@@ -13,24 +13,24 @@ class  PccIRParser : public antlr4::Parser {
 public:
   enum {
     GLOBALS_HEADER = 1, FUNCTIONS_HEADER = 2, INT_KW = 3, CHAR_KW = 4, SHORT_KW = 5, 
-    LONG_KW = 6, UNSIGNED_KW = 7, LOCAL_KW = 8, IF_KW = 9, ELSE_KW = 10, 
-    WHILE_KW = 11, RETURN_KW = 12, BREAK_KW = 13, CONTINUE_KW = 14, GOTO_KW = 15, 
-    POST_KW = 16, OLDVAL_KW = 17, LPAREN = 18, RPAREN = 19, LBRACK = 20, 
-    RBRACK = 21, LBRACE = 22, RBRACE = 23, SEMI = 24, COMMA = 25, ASSIGN = 26, 
-    HASH = 27, STAR = 28, AMP = 29, MINUS = 30, BANG = 31, TILDE = 32, SLASH = 33, 
-    PERCENT = 34, PLUS = 35, SHL = 36, SHR = 37, LE = 38, GE = 39, LT = 40, 
-    GT = 41, EQ = 42, NE = 43, CARET = 44, PIPE = 45, ANDAND = 46, OROR = 47, 
-    PLUSEQ = 48, MINUSEQ = 49, STAREQ = 50, SLASHEQ = 51, PERCENTEQ = 52, 
-    AMPEQ = 53, CARETEQ = 54, PIPEEQ = 55, SHLEQ = 56, SHREQ = 57, QUESTION = 58, 
-    COLON = 59, IDENT = 60, NUMBER = 61, WS = 62, ASM_BEGIN = 63, ASM_TEXT = 64, 
-    ASM_END = 65
+    LONG_KW = 6, UNSIGNED_KW = 7, VOID_KW = 8, LOCAL_KW = 9, IF_KW = 10, 
+    ELSE_KW = 11, WHILE_KW = 12, RETURN_KW = 13, BREAK_KW = 14, CONTINUE_KW = 15, 
+    GOTO_KW = 16, POST_KW = 17, OLDVAL_KW = 18, LPAREN = 19, RPAREN = 20, 
+    LBRACK = 21, RBRACK = 22, LBRACE = 23, RBRACE = 24, SEMI = 25, COMMA = 26, 
+    ASSIGN = 27, HASH = 28, STAR = 29, AMP = 30, MINUS = 31, BANG = 32, 
+    TILDE = 33, SLASH = 34, PERCENT = 35, PLUS = 36, SHL = 37, SHR = 38, 
+    LE = 39, GE = 40, LT = 41, GT = 42, EQ = 43, NE = 44, CARET = 45, PIPE = 46, 
+    ANDAND = 47, OROR = 48, PLUSEQ = 49, MINUSEQ = 50, STAREQ = 51, SLASHEQ = 52, 
+    PERCENTEQ = 53, AMPEQ = 54, CARETEQ = 55, PIPEEQ = 56, SHLEQ = 57, SHREQ = 58, 
+    QUESTION = 59, COLON = 60, IDENT = 61, NUMBER = 62, WS = 63, ASM_BEGIN = 64, 
+    ASM_TEXT = 65, ASM_END = 66
   };
 
   enum {
     RuleProgram = 0, RuleTypeSpec = 1, RuleGlobalDecl = 2, RuleInitList = 3, 
-    RuleInitElem = 4, RuleFuncDecl = 5, RuleParamList = 6, RuleParam = 7, 
-    RuleBlock = 8, RuleStmt = 9, RuleRef = 10, RuleCompoundOp = 11, RuleExpr = 12, 
-    RuleArgList = 13, RuleBinOp = 14
+    RuleInitElem = 4, RuleFuncDecl = 5, RuleTypeSpecOrVoid = 6, RuleParamList = 7, 
+    RuleParam = 8, RuleBlock = 9, RuleStmt = 10, RuleRef = 11, RuleCompoundOp = 12, 
+    RuleExpr = 13, RuleArgList = 14, RuleBinOp = 15
   };
 
   explicit PccIRParser(antlr4::TokenStream *input);
@@ -56,6 +56,7 @@ public:
   class InitListContext;
   class InitElemContext;
   class FuncDeclContext;
+  class TypeSpecOrVoidContext;
   class ParamListContext;
   class ParamContext;
   class BlockContext;
@@ -161,7 +162,7 @@ public:
   public:
     FuncDeclContext(antlr4::ParserRuleContext *parent, size_t invokingState);
     virtual size_t getRuleIndex() const override;
-    TypeSpecContext *typeSpec();
+    TypeSpecOrVoidContext *typeSpecOrVoid();
     RefContext *ref();
     antlr4::tree::TerminalNode *LPAREN();
     antlr4::tree::TerminalNode *RPAREN();
@@ -174,6 +175,20 @@ public:
   };
 
   FuncDeclContext* funcDecl();
+
+  class  TypeSpecOrVoidContext : public antlr4::ParserRuleContext {
+  public:
+    TypeSpecOrVoidContext(antlr4::ParserRuleContext *parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    TypeSpecContext *typeSpec();
+    antlr4::tree::TerminalNode *VOID_KW();
+
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+   
+  };
+
+  TypeSpecOrVoidContext* typeSpecOrVoid();
 
   class  ParamListContext : public antlr4::ParserRuleContext {
   public:

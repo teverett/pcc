@@ -41,6 +41,8 @@ public:
 
     virtual std::any visitLocalFunctionDecl(CParser::LocalFunctionDeclContext *context) = 0;
 
+    virtual std::any visitReturnTypeSpec(CParser::ReturnTypeSpecContext *context) = 0;
+
     virtual std::any visitParamList(CParser::ParamListContext *context) = 0;
 
     virtual std::any visitParam(CParser::ParamContext *context) = 0;

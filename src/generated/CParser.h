@@ -13,26 +13,26 @@ class  CParser : public antlr4::Parser {
 public:
   enum {
     INT_KW = 1, CHAR_KW = 2, SHORT_KW = 3, LONG_KW = 4, SIGNED_KW = 5, UNSIGNED_KW = 6, 
-    SIZEOF_KW = 7, IF_KW = 8, ELSE_KW = 9, WHILE_KW = 10, FOR_KW = 11, SWITCH_KW = 12, 
-    CASE_KW = 13, DEFAULT_KW = 14, RETURN_KW = 15, BREAK_KW = 16, CONTINUE_KW = 17, 
-    GOTO_KW = 18, EXTERN_KW = 19, LPAREN = 20, RPAREN = 21, LBRACK = 22, 
-    RBRACK = 23, LBRACE = 24, RBRACE = 25, AT = 26, SEMI = 27, COMMA = 28, 
-    ASSIGN = 29, STAR = 30, AMP = 31, MINUS = 32, BANG = 33, TILDE = 34, 
-    SLASH = 35, PERCENT = 36, PLUS = 37, SHL = 38, SHR = 39, LE = 40, GE = 41, 
-    LT = 42, GT = 43, EQ = 44, NE = 45, CARET = 46, PIPE = 47, ANDAND = 48, 
-    OROR = 49, PLUSEQ = 50, MINUSEQ = 51, STAREQ = 52, SLASHEQ = 53, PERCENTEQ = 54, 
-    AMPEQ = 55, CARETEQ = 56, PIPEEQ = 57, SHLEQ = 58, SHREQ = 59, INC = 60, 
-    DEC = 61, QUESTION = 62, COLON = 63, IDENT = 64, NUMBER = 65, CHARLIT = 66, 
-    STRINGLIT = 67, LINE_COMMENT = 68, BLOCK_COMMENT = 69, WS = 70, ASM_BEGIN = 71, 
-    ASM_TEXT = 72, ASM_END = 73
+    VOID_KW = 7, SIZEOF_KW = 8, IF_KW = 9, ELSE_KW = 10, WHILE_KW = 11, 
+    FOR_KW = 12, SWITCH_KW = 13, CASE_KW = 14, DEFAULT_KW = 15, RETURN_KW = 16, 
+    BREAK_KW = 17, CONTINUE_KW = 18, GOTO_KW = 19, EXTERN_KW = 20, LPAREN = 21, 
+    RPAREN = 22, LBRACK = 23, RBRACK = 24, LBRACE = 25, RBRACE = 26, AT = 27, 
+    SEMI = 28, COMMA = 29, ASSIGN = 30, STAR = 31, AMP = 32, MINUS = 33, 
+    BANG = 34, TILDE = 35, SLASH = 36, PERCENT = 37, PLUS = 38, SHL = 39, 
+    SHR = 40, LE = 41, GE = 42, LT = 43, GT = 44, EQ = 45, NE = 46, CARET = 47, 
+    PIPE = 48, ANDAND = 49, OROR = 50, PLUSEQ = 51, MINUSEQ = 52, STAREQ = 53, 
+    SLASHEQ = 54, PERCENTEQ = 55, AMPEQ = 56, CARETEQ = 57, PIPEEQ = 58, 
+    SHLEQ = 59, SHREQ = 60, INC = 61, DEC = 62, QUESTION = 63, COLON = 64, 
+    IDENT = 65, NUMBER = 66, CHARLIT = 67, STRINGLIT = 68, LINE_COMMENT = 69, 
+    BLOCK_COMMENT = 70, WS = 71, ASM_BEGIN = 72, ASM_TEXT = 73, ASM_END = 74
   };
 
   enum {
     RuleProgram = 0, RuleTypeSpec = 1, RuleBaseTypeSpec = 2, RuleTopLevelDecl = 3, 
-    RuleFunctionDecl = 4, RuleParamList = 5, RuleParam = 6, RuleGlobalDecl = 7, 
-    RuleArrayInit = 8, RuleArrayInitElem = 9, RuleBlock = 10, RuleStatement = 11, 
-    RuleSimpleStmt = 12, RuleSwitchCase = 13, RuleAssignOp = 14, RuleExpr = 15, 
-    RuleCondExpr = 16, RuleArgList = 17
+    RuleFunctionDecl = 4, RuleReturnTypeSpec = 5, RuleParamList = 6, RuleParam = 7, 
+    RuleGlobalDecl = 8, RuleArrayInit = 9, RuleArrayInitElem = 10, RuleBlock = 11, 
+    RuleStatement = 12, RuleSimpleStmt = 13, RuleSwitchCase = 14, RuleAssignOp = 15, 
+    RuleExpr = 16, RuleCondExpr = 17, RuleArgList = 18
   };
 
   explicit CParser(antlr4::TokenStream *input);
@@ -57,6 +57,7 @@ public:
   class BaseTypeSpecContext;
   class TopLevelDeclContext;
   class FunctionDeclContext;
+  class ReturnTypeSpecContext;
   class ParamListContext;
   class ParamContext;
   class GlobalDeclContext;
@@ -217,7 +218,7 @@ public:
     ExternFunctionDeclContext(FunctionDeclContext *ctx);
 
     antlr4::tree::TerminalNode *EXTERN_KW();
-    TypeSpecContext *typeSpec();
+    ReturnTypeSpecContext *returnTypeSpec();
     antlr4::tree::TerminalNode *IDENT();
     antlr4::tree::TerminalNode *LPAREN();
     antlr4::tree::TerminalNode *RPAREN();
@@ -232,7 +233,7 @@ public:
     LocalFunctionDeclContext(FunctionDeclContext *ctx);
 
     antlr4::Token *addr = nullptr;
-    TypeSpecContext *typeSpec();
+    ReturnTypeSpecContext *returnTypeSpec();
     antlr4::tree::TerminalNode *IDENT();
     antlr4::tree::TerminalNode *LPAREN();
     antlr4::tree::TerminalNode *RPAREN();
@@ -246,6 +247,20 @@ public:
   };
 
   FunctionDeclContext* functionDecl();
+
+  class  ReturnTypeSpecContext : public antlr4::ParserRuleContext {
+  public:
+    ReturnTypeSpecContext(antlr4::ParserRuleContext *parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    TypeSpecContext *typeSpec();
+    antlr4::tree::TerminalNode *VOID_KW();
+
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+   
+  };
+
+  ReturnTypeSpecContext* returnTypeSpec();
 
   class  ParamListContext : public antlr4::ParserRuleContext {
   public:

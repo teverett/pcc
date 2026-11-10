@@ -130,6 +130,7 @@ class Builder {
             pushScope();
             for (ir::Slot *p : irFn->params) declareLocal(p->sourceName, p, fn.line);
             currentReturnType_ = irFn->returnType;
+            currentFunctionIsVoid_ = irFn->isVoid;
             currentSourceFile_ = fn.sourceFile;
             currentFunctionLabels_.clear();
             collectLabels(fn.body.get());
@@ -179,6 +180,7 @@ class Builder {
             irFn->id = nextFuncId_++;
             irFn->sourceName = fn.name;
             irFn->returnType = fn.returnType;
+            irFn->isVoid = fn.isVoid;
             irFn->sourceFile = fn.sourceFile;
             // Registers an 'extern' function's name before any '&name'/
             // array-init element referring to it is resolved.
@@ -538,7 +540,20 @@ class Builder {
         return t;
     }
 
-    ir::ExprPtr buildExpr(const Expr &e) {
+    // `allowVoid`: true only for a bare expression statement ("f();"),
+    // the one place a void function's call is used for its side effect
+    // alone. Every other caller (an operand, an argument, a return value,
+    // ...) goes through the default, which rejects it - a void call's
+    // non-existent "result" can't be used as a value.
+    ir::ExprPtr buildExpr(const Expr &e, bool allowVoid = false) {
+        ir::ExprPtr out = buildExprImpl(e);
+        if (!allowVoid && out->kind == ir::ExprKind::Call && out->func && out->func->isVoid) {
+            err(e.line, "'" + out->func->sourceName + "' returns void - its call can't be used as a value");
+        }
+        return out;
+    }
+
+    ir::ExprPtr buildExprImpl(const Expr &e) {
         auto out = std::make_unique<ir::Expr>();
         out->line = e.line;
         switch (e.kind) {
@@ -941,6 +956,9 @@ class Builder {
             case StmtKind::Return:
                 out->kind = ir::StmtKind::Return;
                 if (s.initOrReturnOrExpr) {
+                    if (currentFunctionIsVoid_) {
+                        err(s.line, "a function returning void cannot 'return' a value");
+                    }
                     out->initOrReturnOrExpr = wrapConvert(buildExpr(*s.initOrReturnOrExpr), currentReturnType_, s.line);
                 }
                 return out;
@@ -980,7 +998,7 @@ class Builder {
             }
             case StmtKind::ExprStmt:
                 out->kind = ir::StmtKind::ExprStmt;
-                out->initOrReturnOrExpr = buildExpr(*s.initOrReturnOrExpr);
+                out->initOrReturnOrExpr = buildExpr(*s.initOrReturnOrExpr, /*allowVoid=*/true);
                 return out;
             case StmtKind::Empty:
                 out->kind = ir::StmtKind::Empty;
@@ -1149,6 +1167,7 @@ class Builder {
     std::unordered_map<std::string, int> currentFunctionLabels_;
     TypeWidths widths_{};
     Type currentReturnType_;  // the function currently being built - see StmtKind::Return
+    bool currentFunctionIsVoid_ = false;  // the function currently being built returns no value
     std::string currentSourceFile_;  // ditto - stamped onto a StringLit's own synthetic global
 };
 

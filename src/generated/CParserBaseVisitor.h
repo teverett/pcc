@@ -59,6 +59,10 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitReturnTypeSpec(CParser::ReturnTypeSpecContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitParamList(CParser::ParamListContext *ctx) override {
     return visitChildren(ctx);
   }

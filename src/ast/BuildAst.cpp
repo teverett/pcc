@@ -169,6 +169,17 @@ Type buildType(CParser::TypeSpecContext *ctx) {
     return t;
 }
 
+// A function's return type: 'void' sets `isVoid` and leaves `type`
+// default-constructed (unused by callers in that case).
+void buildReturnType(CParser::ReturnTypeSpecContext *ctx, Type &type, bool &isVoid) {
+    if (ctx->typeSpec()) {
+        type = buildType(ctx->typeSpec());
+        isVoid = false;
+    } else {
+        isVoid = true;
+    }
+}
+
 std::vector<ArrayInitElem> buildArrayInit(CParser::ArrayInitContext *ctx) {
     std::vector<ArrayInitElem> values;
     if (!ctx) return values;
@@ -654,7 +665,7 @@ Program buildProgram(CParser::ProgramContext *ctx) {
                 FunctionDecl fn;
                 fn.name = ext->IDENT()->getText();
                 fn.line = ext->getStart()->getLine();
-                fn.returnType = buildType(ext->typeSpec());
+                buildReturnType(ext->returnTypeSpec(), fn.returnType, fn.isVoid);
                 if (auto *pl = ext->paramList()) {
                     for (auto *p : pl->param()) {
                         fn.params.push_back(Param{p->IDENT()->getText(), buildType(p->typeSpec())});
@@ -670,7 +681,7 @@ Program buildProgram(CParser::ProgramContext *ctx) {
             FunctionDecl fn;
             fn.name = local->IDENT()->getText();
             fn.line = local->getStart()->getLine();
-            fn.returnType = buildType(local->typeSpec());
+            buildReturnType(local->returnTypeSpec(), fn.returnType, fn.isVoid);
             if (auto *pl = local->paramList()) {
                 for (auto *p : pl->param()) {
                     fn.params.push_back(Param{p->IDENT()->getText(), buildType(p->typeSpec())});

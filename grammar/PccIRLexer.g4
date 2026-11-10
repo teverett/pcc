@@ -39,6 +39,7 @@ CHAR_KW   : 'char' ;
 SHORT_KW  : 'short' ;
 LONG_KW   : 'long' ;
 UNSIGNED_KW : 'unsigned' ;
+VOID_KW   : 'void' ;
 LOCAL_KW  : 'local' ;
 IF_KW     : 'if' ;
 ELSE_KW   : 'else' ;

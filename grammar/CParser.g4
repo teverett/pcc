@@ -75,8 +75,17 @@ topLevelDecl
 // (that address lives in whichever file really defines it), so not
 // offered on that alternative.
 functionDecl
-    : 'extern' typeSpec IDENT '(' paramList? ')' ';'                         # externFunctionDecl
-    | typeSpec IDENT '(' paramList? ')' ('@' addr=NUMBER)? (block | ';')     # localFunctionDecl
+    : 'extern' returnTypeSpec IDENT '(' paramList? ')' ';'                         # externFunctionDecl
+    | returnTypeSpec IDENT '(' paramList? ')' ('@' addr=NUMBER)? (block | ';')     # localFunctionDecl
+    ;
+
+// A function's return type is either an ordinary typeSpec or 'void'
+// ("no value") - 'void' is deliberately not a baseTypeSpec alternative,
+// so it can never appear anywhere else typeSpec is used (a variable/
+// param/cast/sizeof operand), only here.
+returnTypeSpec
+    : typeSpec
+    | 'void'
     ;
 
 paramList

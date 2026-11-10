@@ -123,7 +123,8 @@ struct Param {
 
 struct FunctionDecl {
     std::string name;
-    Type returnType;
+    Type returnType;  // unused (stays default-Int) when isVoid is true
+    bool isVoid = false;  // 'void' return type: the function returns no value
     std::vector<Param> params;
     std::unique_ptr<Stmt> body;  // null for a prototype-only or 'extern' declaration
     int line = 0;

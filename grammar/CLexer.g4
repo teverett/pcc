@@ -18,6 +18,7 @@ SHORT_KW : 'short' ;
 LONG_KW  : 'long' ;
 SIGNED_KW: 'signed' ;
 UNSIGNED_KW: 'unsigned' ;
+VOID_KW  : 'void' ;
 SIZEOF_KW: 'sizeof' ;
 IF_KW    : 'if' ;
 ELSE_KW  : 'else' ;
