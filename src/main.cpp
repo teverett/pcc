@@ -216,9 +216,12 @@ ParsedTarget parseTargetTriple(const std::string &value) {
 }
 
 void listTriples() {
+    std::vector<std::string> triples;
     for (const auto &name : kTargetNames) {
-        for (const auto &host : hostsFor(name)) std::cout << name << "-" << host << "\n";
+        for (const auto &host : hostsFor(name)) triples.push_back(name + "-" + host);
     }
+    std::sort(triples.begin(), triples.end());
+    for (const auto &triple : triples) std::cout << triple << "\n";
 }
 
 // Several --target names below are deliberate, software-identical aliases
