@@ -5,6 +5,8 @@
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <iostream>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -14,7 +16,9 @@
 //
 // Supported: #include "file"/<file>, object-like and function-like #define
 // (including variadic macros, stringizing, and token pasting), #undef,
-// #ifdef/#ifndef/#if/#elif/#else/#endif, and the dynamic predefined macros.
+// #ifdef/#ifndef/#if/#elif/#else/#endif, the dynamic predefined macros,
+// #pragma once (other #pragma forms are silently ignored), #error, #warning,
+// and #line.
 //
 // Deliberate limitations:
 // - Recursive macro expansion is suppressed while that macro is being
@@ -646,8 +650,9 @@ Macro parseMacroDefinition(const std::string &arg, const std::string &where) {
 }
 
 std::string preprocessFile(const std::string &path, MacroMap &macros,
-                            std::vector<std::string> &includeStack, const std::string &dateStr,
-                            const std::string &timeStr) {
+                            std::vector<std::string> &includeStack, std::set<std::string> &pragmaOnceFiles,
+                            const std::string &dateStr, const std::string &timeStr) {
+    if (pragmaOnceFiles.count(path)) return "";
     if (std::find(includeStack.begin(), includeStack.end(), path) != includeStack.end()) {
         throw std::runtime_error("pcc preprocessor: circular #include involving '" + path + "'");
     }
@@ -663,8 +668,15 @@ std::string preprocessFile(const std::string &path, MacroMap &macros,
     int lineNo = 0;
     bool inBlockComment = false;
 
+    // #line NUM ["file"] retargets the file/line reported in diagnostics and
+    // __FILE__/__LINE__ for everything after it, until the next #line or the
+    // end of this file (it doesn't propagate across #include boundaries).
+    std::string currentFile = path;
+    long lineAdjust = 0;
+
     auto isActive = [&]() { return condStack.empty() || condStack.back().branchActive; };
-    auto where = [&](int n) { return path + ":" + std::to_string(n); };
+    auto effLine = [&](int n) { return n + lineAdjust; };
+    auto where = [&](int n) { return currentFile + ":" + std::to_string(effLine(n)); };
 
     while (std::getline(in, line)) {
         lineNo++;
@@ -690,7 +702,7 @@ std::string preprocessFile(const std::string &path, MacroMap &macros,
                         std::ifstream probe(incPath);
                         if (!probe) incPath = incName;  // fall back to as-given (cwd-relative)
                     }
-                    out << preprocessFile(incPath, macros, includeStack, dateStr, timeStr);
+                    out << preprocessFile(incPath, macros, includeStack, pragmaOnceFiles, dateStr, timeStr);
                 }
                 out << "\n";
                 continue;
@@ -723,7 +735,7 @@ std::string preprocessFile(const std::string &path, MacroMap &macros,
             }
             if (kw == "if") {
                 bool outer = isActive();
-                bool cond = outer && evalCondition(arg, macros, path, lineNo, dateStr, timeStr);
+                bool cond = outer && evalCondition(arg, macros, currentFile, effLine(lineNo), dateStr, timeStr);
                 condStack.push_back(CondFrame{outer, cond, cond});
                 out << "\n";
                 continue;
@@ -731,7 +743,8 @@ std::string preprocessFile(const std::string &path, MacroMap &macros,
             if (kw == "elif") {
                 if (condStack.empty()) throw std::runtime_error("pcc preprocessor: #elif without #if at " + where(lineNo));
                 CondFrame &top = condStack.back();
-                bool cond = top.outerActive && !top.everTaken && evalCondition(arg, macros, path, lineNo, dateStr, timeStr);
+                bool cond = top.outerActive && !top.everTaken &&
+                            evalCondition(arg, macros, currentFile, effLine(lineNo), dateStr, timeStr);
                 top.branchActive = cond;
                 if (cond) top.everTaken = true;
                 out << "\n";
@@ -751,6 +764,39 @@ std::string preprocessFile(const std::string &path, MacroMap &macros,
                 out << "\n";
                 continue;
             }
+            if (kw == "pragma") {
+                if (isActive() && trim(arg) == "once") pragmaOnceFiles.insert(path);
+                out << "\n";
+                continue;
+            }
+            if (kw == "error") {
+                if (isActive()) throw std::runtime_error("pcc preprocessor: #error " + arg + " at " + where(lineNo));
+                out << "\n";
+                continue;
+            }
+            if (kw == "warning") {
+                if (isActive()) std::cerr << "pcc preprocessor: warning: " << arg << " at " << where(lineNo) << "\n";
+                out << "\n";
+                continue;
+            }
+            if (kw == "line") {
+                if (isActive()) {
+                    size_t p = 0;
+                    while (p < arg.size() && std::isdigit(static_cast<unsigned char>(arg[p]))) p++;
+                    if (p == 0) throw std::runtime_error("pcc preprocessor: malformed #line at " + where(lineNo));
+                    long newLine = std::stol(arg.substr(0, p));
+                    std::string fileArg = trim(arg.substr(p));
+                    if (!fileArg.empty()) {
+                        if (fileArg.size() < 2 || fileArg.front() != '"' || fileArg.back() != '"') {
+                            throw std::runtime_error("pcc preprocessor: malformed #line filename at " + where(lineNo));
+                        }
+                        currentFile = fileArg.substr(1, fileArg.size() - 2);
+                    }
+                    lineAdjust = newLine - (lineNo + 1);
+                }
+                out << "\n";
+                continue;
+            }
             throw std::runtime_error("pcc preprocessor: unknown directive '#" + kw + "' at " + where(lineNo));
         }
 
@@ -758,7 +804,7 @@ std::string preprocessFile(const std::string &path, MacroMap &macros,
             out << "\n";
             continue;
         }
-        out << expandMacros(uncommented, macros, path, lineNo, dateStr, timeStr) << "\n";
+        out << expandMacros(uncommented, macros, currentFile, effLine(lineNo), dateStr, timeStr) << "\n";
     }
 
     if (!condStack.empty()) {
@@ -775,7 +821,8 @@ std::string preprocess(const std::string &path, const std::map<std::string, std:
     MacroMap macros;
     for (const auto &entry : predefined) macros[entry.first].replacement = entry.second;
     std::vector<std::string> includeStack;
-    return preprocessFile(path, macros, includeStack, currentDateStr(), currentTimeStr());
+    std::set<std::string> pragmaOnceFiles;
+    return preprocessFile(path, macros, includeStack, pragmaOnceFiles, currentDateStr(), currentTimeStr());
 }
 
 }  // namespace pcc

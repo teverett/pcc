@@ -3,6 +3,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -32,6 +33,16 @@ void requireContains(const std::string &text, const std::string &expected) {
     if (text.find(expected) == std::string::npos) {
         throw std::runtime_error("preprocessor output did not contain: " + expected + "\nOutput:\n" + text);
     }
+}
+
+void requireThrowsContaining(const std::function<void()> &action, const std::string &expected) {
+    try {
+        action();
+    } catch (const std::exception &error) {
+        requireContains(error.what(), expected);
+        return;
+    }
+    throw std::runtime_error("expected an exception containing: " + expected);
 }
 
 void testFunctionMacrosAndTokenOperators() {
@@ -82,6 +93,63 @@ void testRecursiveMacroTerminates() {
     requireContains(result, "int value = SELF;");
 }
 
+void testPragmaOnceSkipsSecondInclude() {
+    auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    std::filesystem::path headerPath =
+        std::filesystem::temp_directory_path() / ("pcc-preprocessor-test-header-" + std::to_string(suffix) + ".h");
+    {
+        std::ofstream header(headerPath);
+        header << "#pragma once\nint shared;\n";
+    }
+    try {
+        std::string result = preprocessSource("#include \"" + headerPath.string() + "\"\n" +
+                                               "#include \"" + headerPath.string() + "\"\n" + "int main() { return 0; }\n");
+        std::filesystem::remove(headerPath);
+        size_t first = result.find("int shared;");
+        if (first == std::string::npos) throw std::runtime_error("header contents missing from output");
+        if (result.find("int shared;", first + 1) != std::string::npos) {
+            throw std::runtime_error("#pragma once did not prevent a second inclusion");
+        }
+    } catch (...) {
+        std::filesystem::remove(headerPath);
+        throw;
+    }
+
+    // An unrecognized #pragma is silently ignored rather than rejected.
+    std::string ignored = preprocessSource("#pragma GCC poison malloc\nint x;\n");
+    requireContains(ignored, "int x;");
+}
+
+void testErrorDirectiveThrowsOnlyWhenActive() {
+    requireThrowsContaining([] { preprocessSource("#error something went wrong\n"); }, "something went wrong");
+
+    // Under a false #if branch, #error must not fire.
+    std::string result = preprocessSource(
+        "#if 0\n"
+        "#error should not fire\n"
+        "#endif\n"
+        "int x;\n");
+    requireContains(result, "int x;");
+}
+
+void testWarningDirectiveDoesNotThrow() {
+    std::string result = preprocessSource(
+        "#warning heads up\n"
+        "int x;\n");
+    requireContains(result, "int x;");
+}
+
+void testLineDirectiveRetargetsLineAndFile() {
+    std::string result = preprocessSource(
+        "int before = __LINE__;\n"
+        "#line 100 \"virtual.c\"\n"
+        "int after = __LINE__;\n"
+        "const char *file = __FILE__;\n");
+    requireContains(result, "int before = 1;");
+    requireContains(result, "int after = 100;");
+    requireContains(result, "const char *file = \"virtual.c\";");
+}
+
 }  // namespace
 
 int main() {
@@ -89,6 +157,10 @@ int main() {
         testFunctionMacrosAndTokenOperators();
         testVariadicAndRecursiveExpansion();
         testRecursiveMacroTerminates();
+        testPragmaOnceSkipsSecondInclude();
+        testErrorDirectiveThrowsOnlyWhenActive();
+        testWarningDirectiveDoesNotThrow();
+        testLineDirectiveRetargetsLineAndFile();
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
         return 1;
