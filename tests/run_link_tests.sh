@@ -11,7 +11,7 @@
 # declarations": extern only means anything under real separate
 # compilation).
 #
-# Usage: tests/run_link_tests.sh [path/to/pcc] [--target=pdp7|8086|8088|i386|vax]
+# Usage: tests/run_link_tests.sh [path/to/pcc] [--target=pdp7|8086|8088|i386|vax|avr|alpha]
 
 set -u
 
@@ -55,8 +55,21 @@ case "$TARGET" in
             exit 1
         fi
         ;;
+    avr)
+        if ! command -v qemu-system-avr >/dev/null 2>&1; then
+            echo "qemu-system-avr not found on PATH - install it (e.g. 'brew install qemu')" >&2
+            exit 1
+        fi
+        if ! command -v python3 >/dev/null 2>&1; then
+            echo "python3 not found on PATH - needed to talk to qemu's monitor" >&2
+            exit 1
+        fi
+        ;;
+    alpha)
+        # No external tool needed - see check_alpha()'s own comment.
+        ;;
     *)
-        echo "unknown --target '$TARGET' for run_link_tests.sh (known: pdp7, 8086, 8088, i386, vax - the targets this harness's own link flow is wired up for so far)" >&2
+        echo "unknown --target '$TARGET' for run_link_tests.sh (known: pdp7, 8086, 8088, i386, vax, avr, alpha - the targets this harness's own link flow is wired up for so far)" >&2
         exit 1
         ;;
 esac
@@ -231,6 +244,231 @@ check_vax() {
     return 1
 }
 
+# avr: the linked flat image loads at flash address 0 (AVRAssembler.h's kAVRFlashBaseAddress -
+# the real ATmega328P reset vector), run under qemu-system-avr's own "uno" board the same way
+# run_tests.sh's own check_avr() does; the result sits in r16:r17 the instant execution reaches
+# the entry sequence's own spin loop.
+check_avr() {
+    local a="$1" b="$2" name="$3"
+    local binfile="$tmpdir/$name.bin"
+    link_case "$a" "$b" "$name" coff flat "$binfile" || return 1
+
+    qemu_count=$((qemu_count + 1))
+    local monitor="$sockdir/$qemu_count"
+    local outfile="$tmpdir/$name.out"
+
+    qemu-system-avr -M uno -device "loader,file=$binfile,addr=0x0" \
+        -monitor "unix:$monitor,server,nowait" -display none -no-reboot -serial none \
+        >/dev/null 2>&1 &
+    local qemu_pid=$!
+    ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
+    local watcher=$!
+
+    python3 -I "$SCRIPT_DIR/qemu_wait.py" "$monitor" 40 >"$outfile"
+
+    kill "$qemu_pid" 2>/dev/null
+    wait "$qemu_pid" 2>/dev/null
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+
+    local r16_hex r17_hex
+    r16_hex="$(grep -oE 'R\[16\]: *[0-9a-fA-F]+' "$outfile" | head -1 | grep -oE '[0-9a-fA-F]+$')"
+    r17_hex="$(grep -oE 'R\[17\]: *[0-9a-fA-F]+' "$outfile" | head -1 | grep -oE '[0-9a-fA-F]+$')"
+    if [ -z "$r16_hex" ] || [ -z "$r17_hex" ]; then
+        echo "FAIL $name: qemu produced no R[16]/R[17] (timed out or crashed)"
+        return 1
+    fi
+
+    local dec=$(( (16#$r17_hex << 8) | 16#$r16_hex ))
+    dec="$(to_signed "$dec" 16)"
+    if [ "$dec" -eq "$expect" ]; then
+        echo "PASS $name (r16:r17=$dec)"
+        return 0
+    fi
+    echo "FAIL $name: expected $expect, got $dec (r16=$r16_hex r17=$r17_hex)"
+    return 1
+}
+
+# alpha: the linked flat image loads at AlphaAssembler.h's kAlphaBaseAddress and ends in
+# `halt`'s own self-branch (AlphaCodegen.h) - read back with the same from-scratch core
+# run_tests.sh's own check_alpha() uses, since qemu-system-alpha needs a real PALcode image
+# before it executes anything, even cross-object-linked code (see that function's own
+# comment).
+check_alpha() {
+    local a="$1" b="$2" name="$3"
+    local binfile="$tmpdir/$name.bin"
+    link_case "$a" "$b" "$name" coff flat "$binfile" || return 1
+
+    local outfile="$tmpdir/$name.sim.out"
+    python3 -I - "$binfile" > "$outfile" <<'PY'
+import struct
+import sys
+
+BASE = 0x00120000
+MASK64 = (1 << 64) - 1
+STEP_LIMIT = 2_000_000
+
+path = sys.argv[1]
+with open(path, "rb") as f:
+    data = f.read()
+mem = bytearray(0x400000)
+mem[0:len(data)] = data
+
+regs = [0] * 32
+
+
+def s16(v):
+    v &= 0xFFFF
+    return v - 0x10000 if v & 0x8000 else v
+
+
+def s32(v):
+    v &= 0xFFFFFFFF
+    return v - 0x100000000 if v & 0x80000000 else v
+
+
+def s64(v):
+    v &= MASK64
+    return v - (1 << 64) if v & (1 << 63) else v
+
+
+def getreg(i):
+    return 0 if i == 31 else regs[i]
+
+
+def setreg(i, v):
+    if i != 31:
+        regs[i] = v & MASK64
+
+
+def rd32(addr):
+    return struct.unpack_from("<I", mem, addr - BASE)[0]
+
+
+def rdmem(addr, n):
+    off = addr - BASE
+    return int.from_bytes(mem[off:off + n], "little")
+
+
+def wrmem(addr, v, n):
+    off = addr - BASE
+    mem[off:off + n] = (v & ((1 << (8 * n)) - 1)).to_bytes(n, "little")
+
+
+pc = BASE
+halted = False
+for _ in range(STEP_LIMIT):
+    word = rd32(pc)
+    opcode = (word >> 26) & 0x3F
+    ra = (word >> 21) & 0x1F
+    this_pc = pc
+    pc += 4
+
+    if opcode in (0x08, 0x09, 0x0A, 0x0C, 0x0D, 0x0E, 0x28, 0x29, 0x2C, 0x2D, 0x1A):
+        rb = (word >> 16) & 0x1F
+        disp16 = word & 0xFFFF
+        if opcode == 0x1A:
+            action = (disp16 >> 14) & 0x3
+            target = getreg(rb)
+            if action == 1:
+                setreg(ra, pc)
+            pc = target
+            continue
+        disp = s16(disp16)
+        addr = getreg(rb) + disp
+        if opcode == 0x08:
+            setreg(ra, getreg(rb) + disp)
+        elif opcode == 0x09:
+            setreg(ra, getreg(rb) + (disp << 16))
+        elif opcode == 0x0A:
+            setreg(ra, rdmem(addr, 1))
+        elif opcode == 0x0C:
+            setreg(ra, rdmem(addr, 2))
+        elif opcode == 0x0E:
+            wrmem(addr, getreg(ra), 1)
+        elif opcode == 0x0D:
+            wrmem(addr, getreg(ra), 2)
+        elif opcode == 0x28:
+            setreg(ra, s32(rdmem(addr, 4)) & MASK64)
+        elif opcode == 0x29:
+            setreg(ra, rdmem(addr, 8))
+        elif opcode == 0x2C:
+            wrmem(addr, getreg(ra), 4)
+        elif opcode == 0x2D:
+            wrmem(addr, getreg(ra), 8)
+        continue
+
+    if 0x30 <= opcode <= 0x3F:
+        disp21 = word & 0x1FFFFF
+        if disp21 & (1 << 20):
+            disp21 -= 1 << 21
+        target = this_pc + 4 + disp21 * 4
+        v = s64(getreg(ra))
+        taken = {
+            0x30: True, 0x38: (v & 1) == 0, 0x39: v == 0, 0x3A: v < 0,
+            0x3B: v <= 0, 0x3C: (v & 1) == 1, 0x3D: v != 0, 0x3E: v >= 0, 0x3F: v > 0,
+        }.get(opcode)
+        if taken is None:
+            raise RuntimeError(f"unsupported branch opcode {opcode:#x} at {this_pc:#x}")
+        if taken and target == this_pc:
+            halted = True
+            break
+        if taken:
+            pc = target
+        continue
+
+    if opcode in (0x10, 0x11, 0x12, 0x13):
+        is_lit = (word >> 12) & 1
+        rc = word & 0x1F
+        function = (word >> 5) & 0x7F
+        bv = ((word >> 13) & 0xFF) if is_lit else getreg((word >> 16) & 0x1F)
+        av = getreg(ra)
+        if opcode == 0x10:
+            fn = {0x20: lambda: av + bv, 0x29: lambda: av - bv,
+                  0x2D: lambda: 1 if (av & MASK64) == (bv & MASK64) else 0,
+                  0x4D: lambda: 1 if s64(av) < s64(bv) else 0,
+                  0x6D: lambda: 1 if s64(av) <= s64(bv) else 0,
+                  0x1D: lambda: 1 if (av & MASK64) < (bv & MASK64) else 0,
+                  0x3D: lambda: 1 if (av & MASK64) <= (bv & MASK64) else 0}.get(function)
+        elif opcode == 0x11:
+            fn = {0x00: lambda: av & bv, 0x20: lambda: av | bv, 0x40: lambda: av ^ bv,
+                  0x28: lambda: av | (~bv)}.get(function)
+        elif opcode == 0x12:
+            sh = bv & 0x3F
+            fn = {0x39: lambda: av << sh, 0x34: lambda: (av & MASK64) >> sh,
+                  0x3C: lambda: s64(av) >> sh}.get(function)
+        else:
+            fn = {0x20: lambda: av * bv, 0x30: lambda: ((av & MASK64) * (bv & MASK64)) >> 64}.get(function)
+        if fn is None:
+            raise RuntimeError(f"unsupported opcode {opcode:#x}/{function:#x} at {this_pc:#x}")
+        setreg(rc, fn())
+        continue
+
+    raise RuntimeError(f"unsupported opcode {opcode:#x} at {this_pc:#x}")
+else:
+    print("TIMEOUT")
+    sys.exit(0)
+
+if not halted:
+    print("TIMEOUT")
+    sys.exit(0)
+
+print(s32(regs[1]))
+PY
+    local result
+    result="$(cat "$outfile")"
+    if [ "$result" = "TIMEOUT" ]; then
+        echo "FAIL $name: simulator never reached the halt loop (step limit exceeded)"
+        return 1
+    fi
+    if [ "$result" -eq "$expect" ] 2>/dev/null; then
+        echo "PASS $name (t0=$result)"
+        return 0
+    fi
+    echo "FAIL $name: expected $expect, got $result"
+    return 1
+}
+
 # A handful of (target, case) pairs are architecturally incapable, not
 # broken, the same situation run_tests.sh's own is_known_unsupported()
 # covers for the single-file suite: 8086/8088's --format=raw output is
@@ -248,6 +486,18 @@ is_known_unsupported() {
     case "$TARGET:$1" in
         8086:stack_safety_headroom) return 0 ;;
         8088:stack_safety_headroom) return 0 ;;
+        avr:stack_safety_headroom) return 0 ;;  # filler[1000] alone (2000 bytes) doesn't fit
+                                                  # the ATmega328P's 2 KB of SRAM - see
+                                                  # AVRCodegen.h's own header comment.
+        avr:extern_array) return 0 ;;   # SRAM has no static initial contents, so a Global's
+                                          # initializer is runtime `sts` code that only ever runs
+                                          # out of the object defining `main` (see AVRCodegen.h's
+                                          # own header comment) - an initializer defined in a
+                                          # *different* linked object, read before any of that
+                                          # object's own functions are ever called, never runs.
+                                          # No Harvard-data target here (mcs51/pic16/pic18) is
+                                          # wired into this harness at all, for the same reason.
+        avr:extern_basic) return 0 ;;   # same as extern_array above.
         *) return 1 ;;
     esac
 }
@@ -273,6 +523,8 @@ for a in "$LINK_DIR"/*_a.c; do
         8088) check_x86 "$a" "$b" "$base" coff raw 0 || fail=1 ;;
         i386) check_x86 "$a" "$b" "$base" coff flat 1 || fail=1 ;;
         vax) check_vax "$a" "$b" "$base" || fail=1 ;;
+        avr) check_avr "$a" "$b" "$base" || fail=1 ;;
+        alpha) check_alpha "$a" "$b" "$base" || fail=1 ;;
     esac
 done
 

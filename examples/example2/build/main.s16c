@@ -1,0 +1,47 @@
+org 0
+
+fn_main:
+    push.w fb
+    mov.w sp,fb
+    sub.w 4,sp
+    mov.w 0,r0
+    mov.w r0,[fb-2]
+    mov.w 0,r0
+    mov.w r0,[fb-4]
+L0:
+    mov.w [fb-4],r0
+    push.w r0
+    mov.w 10,r0
+    pop.w r1
+    cmp.w r0,r1
+    jlt L3
+    mov.w 0,r0
+    jmp L4
+L3:
+    mov.w 1,r0
+L4:
+    cmp.w 0,r0
+    jeq L1
+    mov.w [fb-4],r0
+    mov.w r0,r1
+    mov.w [fb-2],r0
+    add.w r1,r0
+    mov.w r0,[fb-2]
+L2:
+    mov.w 1,r0
+    mov.w r0,r1
+    mov.w [fb-4],r0
+    push.w r0
+    add.w r1,r0
+    mov.w r0,[fb-4]
+    pop.w r0
+    jmp L0
+L1:
+    mov.w [fb-2],r0
+    mov.w fb,sp
+    pop.w fb
+    rts
+    mov.w fb,sp
+    pop.w fb
+    rts
+

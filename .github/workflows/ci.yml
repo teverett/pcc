@@ -90,10 +90,10 @@ jobs:
 
       - name: Build and run macOS hello example
         run: |
-          make -C example macos
+          make -C examples/example1 macos
           python3 - <<'PY'
           import subprocess
-          result = subprocess.run(["example/build/hello-macos"], capture_output=True)
+          result = subprocess.run(["examples/example1/build/hello-macos"], capture_output=True)
           assert result.stdout == b"hello pcc\n", (result.stdout, result.stderr)
           assert result.returncode == 0, result.returncode
           PY
@@ -185,10 +185,10 @@ jobs:
       - name: Build and run Linux hello example
         shell: bash -el {0}
         run: |
-          make -C example linux
+          make -C examples/example1 linux
           python3 - <<'PY'
           import subprocess
-          output = subprocess.check_output(["example/build/hello-linux"])
+          output = subprocess.check_output(["examples/example1/build/hello-linux"])
           assert output == b"hello pcc\n", repr(output)
           PY
 
@@ -271,10 +271,10 @@ jobs:
       - name: Build and run Windows hello example
         run: |
           export PATH="/opt/bin:$PATH"
-          mingw32-make -C example windows PCC=../build/bin/pcc.exe
+          mingw32-make -C examples/example1 windows PCC=../build/bin/pcc.exe
           python3 - <<'PY'
           import subprocess
-          output = subprocess.check_output(["example/build/hello-windows.exe"])
+          output = subprocess.check_output(["examples/example1/build/hello-windows.exe"])
           assert output in (b"hello pcc\n", b"hello pcc\r\n"), repr(output)
           PY
 

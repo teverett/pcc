@@ -163,17 +163,30 @@ struct Avail {
     std::unordered_set<ir::Slot *> deps;
 };
 
-void invalidateSlot(std::unordered_map<std::string, Avail> &avail, ir::Slot *written) {
-    for (auto it = avail.begin(); it != avail.end();) {
-        if (it->second.deps.count(written)) {
-            it = avail.erase(it);
-        } else {
-            ++it;
+using AvailMap = std::unordered_map<std::string, Avail>;
+// Every scope enclosing the expression being walked, outermost first, so a
+// write can invalidate a candidate cached by any of them, not just the
+// innermost. Each cseBlock scope owns exactly one entry, pushed for the
+// body's duration.
+using AvailStack = std::vector<AvailMap *>;
+
+void invalidateSlot(AvailStack &stack, ir::Slot *written) {
+    for (AvailMap *avail : stack) {
+        for (auto it = avail->begin(); it != avail->end();) {
+            if (it->second.deps.count(written)) {
+                it = avail->erase(it);
+            } else {
+                ++it;
+            }
         }
     }
 }
 
-void cseExpr(ir::ExprPtr &e, std::unordered_map<std::string, Avail> &avail, std::vector<ir::StmtPtr> &body,
+void clearAll(AvailStack &stack) {
+    for (AvailMap *avail : stack) avail->clear();
+}
+
+void cseExpr(ir::ExprPtr &e, AvailStack &stack, std::vector<ir::StmtPtr> &body,
               size_t &i, ir::Program &prog, int &tempCounter, bool &changed, const std::string &sourceFile) {
     if (!e) return;
 
@@ -183,31 +196,33 @@ void cseExpr(ir::ExprPtr &e, std::unordered_map<std::string, Avail> &avail, std:
     // restriction and still gets the normal treatment below.
     if (e->kind == ir::ExprKind::Unary && e->op == "&") {
         if (e->rhs && e->rhs->kind == ir::ExprKind::Index) {
-            cseExpr(e->rhs->lhs, avail, body, i, prog, tempCounter, changed, sourceFile);
+            cseExpr(e->rhs->lhs, stack, body, i, prog, tempCounter, changed, sourceFile);
         }
         return;
     }
 
     // Bottom-up: a nested candidate is resolved before its enclosing
     // expression's key is computed (see LocalCSE.h's gap note).
-    cseExpr(e->lhs, avail, body, i, prog, tempCounter, changed, sourceFile);
-    cseExpr(e->rhs, avail, body, i, prog, tempCounter, changed, sourceFile);
-    for (auto &arg : e->args) cseExpr(arg, avail, body, i, prog, tempCounter, changed, sourceFile);
+    cseExpr(e->lhs, stack, body, i, prog, tempCounter, changed, sourceFile);
+    cseExpr(e->rhs, stack, body, i, prog, tempCounter, changed, sourceFile);
+    for (auto &arg : e->args) cseExpr(arg, stack, body, i, prog, tempCounter, changed, sourceFile);
 
     // Invalidation after children, which evaluate first. CompoundAssign/
     // CompoundDerefAssign need the same treatment as their non-compound
-    // counterparts.
+    // counterparts. It reaches every enclosing scope, not just this one,
+    // since a write inside a nested if/while body still clobbers a value
+    // an outer scope cached before the nested body ran.
     switch (e->kind) {
         case ir::ExprKind::Assign:
         case ir::ExprKind::CompoundAssign:
-            invalidateSlot(avail, e->slot);
+            invalidateSlot(stack, e->slot);
             break;
         case ir::ExprKind::DerefAssign:
         case ir::ExprKind::CompoundDerefAssign:
         case ir::ExprKind::Call:
         case ir::ExprKind::CallPtr:
         case ir::ExprKind::Intrinsic:
-            avail.clear();
+            clearAll(stack);
             break;
         default:
             break;
@@ -215,6 +230,7 @@ void cseExpr(ir::ExprPtr &e, std::unordered_map<std::string, Avail> &avail, std:
 
     if (!isEligible(e.get())) return;
 
+    AvailMap &avail = *stack.back();
     std::string key = exprKey(e.get());
     auto it = avail.find(key);
     if (it == avail.end()) {
@@ -245,33 +261,37 @@ void cseExpr(ir::ExprPtr &e, std::unordered_map<std::string, Avail> &avail, std:
     changed = true;
 }
 
-void cseVisit(ir::Stmt *s, ir::Program &prog, int &tempCounter, bool &changed, const std::string &sourceFile);
+void cseVisit(ir::Stmt *s, AvailStack &stack, ir::Program &prog, int &tempCounter, bool &changed,
+              const std::string &sourceFile);
 
-// The CSE engine, scoped to one Block's own statement list; a nested
-// If/While body never shares this scope's avail table.
-void cseBlock(std::vector<ir::StmtPtr> &body, ir::Program &prog, int &tempCounter, bool &changed,
+// The CSE engine, scoped to one Block's own statement list. A nested
+// If/While body gets its own entry pushed onto `stack` for candidate
+// matching, but a write anywhere in it still invalidates this scope (and
+// any further out) through that shared stack.
+void cseBlock(std::vector<ir::StmtPtr> &body, AvailStack &stack, ir::Program &prog, int &tempCounter, bool &changed,
                 const std::string &sourceFile) {
-    std::unordered_map<std::string, Avail> avail;
+    AvailMap avail;
+    stack.push_back(&avail);
     for (size_t i = 0; i < body.size(); i++) {
         ir::Stmt *s = body[i].get();
         switch (s->kind) {
             case ir::StmtKind::Block:
-                cseBlock(s->body, prog, tempCounter, changed, sourceFile);
+                cseBlock(s->body, stack, prog, tempCounter, changed, sourceFile);
                 break;
             case ir::StmtKind::If:
-                cseExpr(s->cond, avail, body, i, prog, tempCounter, changed, sourceFile);
-                cseVisit(s->thenStmt.get(), prog, tempCounter, changed, sourceFile);
-                cseVisit(s->elseStmt.get(), prog, tempCounter, changed, sourceFile);
+                cseExpr(s->cond, stack, body, i, prog, tempCounter, changed, sourceFile);
+                cseVisit(s->thenStmt.get(), stack, prog, tempCounter, changed, sourceFile);
+                cseVisit(s->elseStmt.get(), stack, prog, tempCounter, changed, sourceFile);
                 break;
             case ir::StmtKind::While:
-                cseExpr(s->cond, avail, body, i, prog, tempCounter, changed, sourceFile);
-                cseVisit(s->loopBody.get(), prog, tempCounter, changed, sourceFile);
-                cseVisit(s->postStmt.get(), prog, tempCounter, changed, sourceFile);
+                cseExpr(s->cond, stack, body, i, prog, tempCounter, changed, sourceFile);
+                cseVisit(s->loopBody.get(), stack, prog, tempCounter, changed, sourceFile);
+                cseVisit(s->postStmt.get(), stack, prog, tempCounter, changed, sourceFile);
                 break;
             case ir::StmtKind::Return:
             case ir::StmtKind::LocalDecl:
             case ir::StmtKind::ExprStmt:
-                cseExpr(s->initOrReturnOrExpr, avail, body, i, prog, tempCounter, changed, sourceFile);
+                cseExpr(s->initOrReturnOrExpr, stack, body, i, prog, tempCounter, changed, sourceFile);
                 break;
             case ir::StmtKind::Break:
             case ir::StmtKind::Continue:
@@ -293,23 +313,25 @@ void cseBlock(std::vector<ir::StmtPtr> &body, ir::Program &prog, int &tempCounte
                 break;
         }
     }
+    stack.pop_back();
 }
 
 // Finds every Block reachable from `s`, each becoming its own cseBlock
 // scope; a brace-less single-statement If/While body is left untouched.
-void cseVisit(ir::Stmt *s, ir::Program &prog, int &tempCounter, bool &changed, const std::string &sourceFile) {
+void cseVisit(ir::Stmt *s, AvailStack &stack, ir::Program &prog, int &tempCounter, bool &changed,
+              const std::string &sourceFile) {
     if (!s) return;
     switch (s->kind) {
         case ir::StmtKind::Block:
-            cseBlock(s->body, prog, tempCounter, changed, sourceFile);
+            cseBlock(s->body, stack, prog, tempCounter, changed, sourceFile);
             return;
         case ir::StmtKind::If:
-            cseVisit(s->thenStmt.get(), prog, tempCounter, changed, sourceFile);
-            cseVisit(s->elseStmt.get(), prog, tempCounter, changed, sourceFile);
+            cseVisit(s->thenStmt.get(), stack, prog, tempCounter, changed, sourceFile);
+            cseVisit(s->elseStmt.get(), stack, prog, tempCounter, changed, sourceFile);
             return;
         case ir::StmtKind::While:
-            cseVisit(s->loopBody.get(), prog, tempCounter, changed, sourceFile);
-            cseVisit(s->postStmt.get(), prog, tempCounter, changed, sourceFile);
+            cseVisit(s->loopBody.get(), stack, prog, tempCounter, changed, sourceFile);
+            cseVisit(s->postStmt.get(), stack, prog, tempCounter, changed, sourceFile);
             return;
         default:
             return;
@@ -321,7 +343,10 @@ void cseVisit(ir::Stmt *s, ir::Program &prog, int &tempCounter, bool &changed, c
 bool LocalCSE::run(ir::Program &prog, const std::string &sourceFile) const {
     bool changed = false;
     int tempCounter = 0;
-    for (auto &fb : prog.functionBodies) cseVisit(fb.body.get(), prog, tempCounter, changed, sourceFile);
+    for (auto &fb : prog.functionBodies) {
+        AvailStack stack;
+        cseVisit(fb.body.get(), stack, prog, tempCounter, changed, sourceFile);
+    }
     return changed;
 }
 

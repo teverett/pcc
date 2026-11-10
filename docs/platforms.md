@@ -56,6 +56,46 @@ retro hardware through pluggable backends. Today it supports:
   `MUL`/`DIV`) that almost everything maps onto one real instruction.
   Tested against an `open-simh` PDP-11 simulator; not run by `make test`
   (not wired into the Makefile's `test` rule — see `docs/building.md`).
+- **pdp10** — real PDP-10 (KL10-class) assembly/machine code (own
+  dialect; `Pdp10Assembler.h`), a bare flat binary loaded/entered at
+  `010000` octal, halting via the real `JRST 4,0` ("HALT") instruction
+  (with a `JRST` safety net in case a simulator's halt just resumes).
+  `char`/`short`/`int` are all one native 36-bit word (not
+  byte-addressable — the same convention as `pdp7`); `long` is 2 words,
+  `long long` is 4. Sixteen real accumulators exist, and an ACn's
+  register and the memory word at address n (0-17 octal) are the exact
+  same storage — `AC1`/`AC2`/`AC3` hold the values in flight, `AC16`
+  ("F") is the frame pointer and `AC17` ("P") is the real hardware
+  stack-pointer accumulator: calls use the real `PUSHJ`/`POPJ`/`PUSH`/
+  `POP` family, confirmed directly against the real simulator that
+  `PUSH`/`PUSHJ` increment `P`'s address *before* storing — the real
+  stack grows upward, the opposite of every byte-addressable target's
+  software stack here, flipping every sign in the frame layout (a
+  Param sits *below* the frame pointer, a Local *above* it). `*` uses
+  the real double-length `MUL` (confirmed directly that the truncated
+  single-length product lands in `AC+1`, not `AC`); `/`/`%` use the
+  real single-length `IDIV` (confirmed directly to *not* take a
+  double-length dividend, unlike `MUL`). There's no native unsigned
+  compare or divide: an unsigned `<`/`<=`/`>`/`>=` splits into a
+  same-sign-bit case (an ordinary signed `SUB` can't overflow) and a
+  differing-sign-bit case (decided directly from which operand has the
+  bit set, since a plain "flip the sign bit, then subtract" trick can
+  itself overflow — confirmed by a real failure during development);
+  unsigned `/`/`%` is a 36-bit restoring shift-subtract division loop,
+  since the real double-length `DIV` turned out (confirmed directly)
+  not to treat a zero-extended dividend as a plain unsigned 72-bit
+  magnitude. Every branch/jump (`JRST`, the `JUMPx` family) takes a
+  full 18-bit absolute address in one instruction, so there's no
+  short-branch range limit and no `safeBranch()`-style trick. Objects
+  use the ad hoc COFF machine ID `0x1010`. The real `pdp10` (open-simh
+  V3.12-3) simulator on this machine crashes on any plain `d`/`e`
+  <address> command (a stack-smashing write inside its own symbolic
+  parser, confirmed with `lldb`) — only register access and its
+  `load`/binary-file commands are unaffected — so
+  `tests/run_tests.sh --target=pdp10` loads the compiled program as a
+  classic RIM10B paper-tape boot block via `load -r` instead of
+  depositing it word by word; `tests/pdp10/*.c` holds the pdp10-only
+  cases. Not run by `make test`.
 - **stm8** — real STM8 assembly/machine code (`STM8Assembler.h`), a bare
   flat binary loaded/entered at `$0100`. `int` is 16 bits; the STM8 has
   an 8-bit accumulator `a` and two 16-bit index registers (`x`/`y`), but
@@ -65,12 +105,16 @@ retro hardware through pluggable backends. Today it supports:
   transit registers). Every multi-byte cell is big-endian (`LDW` stores
   high byte first) — the only big-endian target here. No automated test
   yet.
-- **m16c** — real Renesas M16C assembly (`M16cAssembler.h`), a bare flat
-  binary loaded/entered at `$0400`. `int` is 16 bits; values live in four
-  16-bit general registers (`R0`-`R3`) plus two dedicated address
-  registers (`A0`/`A1`, never colliding with `R0`/`R1`), with a real
-  hardware stack (`SP`, `PUSH.W`/`POP.W`/`JSR.W`/`RTS`) and real EIS-style
-  `MUL.W`/`DIVU.W`. No automated test yet.
+- **m16c**/**m30626fjpfp** — real Renesas M16C assembly (`M16cAssembler.h`),
+  a bare flat binary loaded/entered at `$0400`, one shared backend for the
+  M16C/60 core and any chip built on it; `--target=m30626fjpfp` (the
+  Renesas M30626FJPFP) is a software-identical alias, since the chip's
+  real hardware differences (on-chip peripherals, memory size) are
+  invisible to any instruction this compiler emits. `int` is 16 bits;
+  values live in four 16-bit general registers (`R0`-`R3`) plus two
+  dedicated address registers (`A0`/`A1`, never colliding with `R0`/`R1`),
+  with a real hardware stack (`SP`, `PUSH.W`/`POP.W`/`JSR.W`/`RTS`) and
+  real EIS-style `MUL.W`/`DIVU.W`. No automated test yet.
 - **8080** — real Intel 8080 assembly/machine code (`I8080Assembler.h`),
   a bare flat binary loaded/entered at `$0100`. Values live in fixed
   memory cells (like 6502's zero-page pseudo-registers, but without the
@@ -265,6 +309,92 @@ retro hardware through pluggable backends. Today it supports:
   VAX-only cases, run alongside the shared corpus by
   `tests/run_tests.sh --target=vax`, and `tests/run_link_tests.sh
   --target=vax` covers cross-object linking. Not run by `make test`.
+- **avr** — real ATmega328P machine code, scoped to that one chip within the AVR family (own
+  operand dialect; `AVRAssembler.h`): 16-bit little-endian instruction words, two words for
+  `call`/`jmp`/`lds`/`sts`. 32 KB flash (program memory) starting at the real reset vector
+  address 0, and 2 KB SRAM (data memory) starting at 0x0100 - a genuine Harvard split, so every
+  Global lives in SRAM (`ram`/`lds`/`sts`), never flash, with its initializer run as `sts` code
+  once at program start rather than loaded statically (SRAM has no static contents). `int`/
+  `short` are 16 bits (one register pair), matching the hardware's native word, not VAX/ARM's 32.
+  Real registers throughout, not mcs51/stm8's software pseudo-register/frame-stack style: `r16:
+  r17` ("ac") is `genExpr()`'s result for anything up to 2 bytes, `r18:r19` ("bc") the other
+  operand, `r26:r27`/`r30:r31` (X/Z) address scratch, and `r28:r29` (Y) the frame pointer - a real
+  hardware stack frame (`push`/`pop`, `in`/`out` on SPL/SPH), arguments pushed right to left and
+  reached through Y past the saved caller-Y and return address, matching `ir::IR.h`'s own
+  Param-offset convention. A `long`/`long long` is staged through four fixed 8-byte SRAM scratch
+  buffers instead of splitting more of the 32 registers across every width. Hardware `mul`
+  (unsigned 8x8->16) backs both a narrow (3-`mul` 16x16->16) and a wide (schoolbook) multiply; there
+  is no hardware divide at any width, so `/`/`%` are a bit-serial restoring-division loop. Real
+  `brxx` only reaches a 7-bit signed displacement, so every conditional branch goes through an
+  inverted-short-branch-over-a-`jmp` idiom (`safeBranch()`, the same split `MCS51Codegen.cpp`
+  uses, not a `j<cc>` assembler pseudo-op). The link base is flash address 0, the entry stub sets
+  `SPL`/`SPH` to RAMEND, and objects use the ad hoc COFF machine ID `0x4156`. A Global actually
+  *defined* (with an initializer) in an object other than the one with `main` is never initialized
+  under real separate compilation (SRAM's own lack of static contents, cross-object - see
+  `AVRCodegen.h`'s own header comment); no Harvard-data target here is wired into
+  `tests/run_link_tests.sh` for the same reason, until now. Verified under
+  `qemu-system-avr -M uno` (a real ATmega328P core, not a from-scratch interpreter);
+  `tests/avr/*.c` holds the AVR-only cases, run alongside the shared corpus by
+  `tests/run_tests.sh --target=avr`, and `tests/run_link_tests.sh --target=avr` covers
+  cross-object linking. Not run by `make test`.
+- **alpha** — 64-bit DEC Alpha AXP machine code (own operand dialect;
+  `AlphaAssembler.h`): little-endian, fixed-width instruction words built
+  from Memory, Jump, Branch and Operate formats, every encoding a real
+  Alpha opcode/function-field bit pattern. Unlike every 32-bit-register
+  backend here, `long`/`long long` are the real, native 64-bit quadword -
+  one register, not a word pair - so wide arithmetic needs no cross-word
+  carry juggling at all; only narrowing a result back down to `int` (or
+  narrower) needs extra care, since Alpha's own arithmetic/shift
+  instructions are always 64-bit. There is no absolute-addressing memory
+  operand (`lda`/`ldah` build an address a register at a time) and no
+  integer divide instruction at all - a genuine, well-known omission from
+  the real ISA - so `/`/`%` always run a bit-serial restoring-division
+  loop, for both `int` and `long long`. Calls go through `jsr`/`ret` (the
+  real Alpha calling convention's `pv`/`t12` register holds the callee's
+  address), arguments are pushed right to left and reached through `fp`,
+  and comparisons produce a 0/1 boolean directly (`cmpeq`/`cmplt`/`cmple`
+  and their unsigned `cmpult`/`cmpule` counterparts) rather than setting
+  any condition-code register - Alpha has none. The link base is
+  `0x00120000`, the entry stub sets `sp` to `0x00200000`, and objects use
+  the real historical Windows NT/Alpha COFF machine ID `0x184`. No SIMH or
+  qemu target here can run bare Alpha code without a real PALcode image
+  (confirmed directly against `qemu-system-alpha`), so
+  `tests/run_tests.sh --target=alpha`/`tests/run_link_tests.sh
+  --target=alpha` instead drive a small from-scratch Alpha core, the same
+  idea as `8008`'s own; `tests/alpha/*.c` holds the Alpha-only cases. Not
+  run by `make test`.
+- **saturn** — a deliberately simplified, byte-addressed model of the HP
+  Saturn (the 4-bit/nibble-oriented CPU in the HP48/HP49 calculator
+  series), not a real nibble-accurate one: real nibble-level addressing
+  and bit-packed instruction encoding would need a bespoke sub-byte
+  relocation scheme this project's linker has no support for, so this
+  backend instead models the chip at the word level pdp7's own backend
+  already proved out, just byte- rather than word-addressed. Five
+  Saturn-style registers - `a`/`c`/`b` (general-purpose, real Saturn
+  register letters) and `d0`/`d1` (real Saturn address registers, used
+  here as this backend's stack pointer and frame pointer) - plus
+  mnemonics evoking real Saturn assembly (`goto`/`gosbvl`/`rtn`,
+  real-register names); the actual encoding (`SaturnAssembler.cpp`) is
+  this backend's own invention, not real Saturn nibble-level machine
+  code. Real Saturn hardware has no multiply or divide instruction, so
+  both are software routines (`saturnRuntimeAsm()`'s `__mul32`/
+  `__udivmod32`) called like any other function. `char`/`short` get their
+  own narrower `ldb`/`ldh`/`stb`/`sth` access; `int`/pointers use a plain
+  4-byte `ld`/`st`; `long`/`long long` are handled 4 bytes at a time, with
+  carry/borrow recovered via an unsigned-wraparound `cmp`+`jb` test (no
+  hardware carry flag to chain through otherwise). `'@'` fixed placement
+  isn't supported (a compile error, not silent corruption) - the shared
+  `place.c`/`identical_code_folding_addr_exclusion.c` tests are skipped
+  for this target. The link base is `0x1000`, the entry stub sets `d0`
+  to `0xF000`, and objects use the ad hoc COFF machine ID `0x5A74`; the
+  linked-output format name is `flat` (not `raw`, which the shared
+  `RawFormat` writer reserves for an x86 boot sector). No real or
+  mainstream Saturn emulator exists for headless, scriptable register
+  checks (x48/emu48 are interactive HP48/HP49 calculator emulators, not
+  bare Saturn cores) - and this backend's own dialect is this project's
+  invention anyway - so `tests/run_tests.sh --target=saturn` drives a
+  small from-scratch interpreter written just for it, the same idea as
+  `8008`'s/`alpha`'s own. Not run by `make test`.
 
 Every global variable is a single statically allocated word; every Local
 and Param lives in a per-call frame that each backend builds on whatever
@@ -278,12 +408,14 @@ The same C subset compiles to every target, each predefining its own
 macro for `#ifdef`-gated code (an alias target defines both its base
 target's macro and its own): `__PDP7__`, `__8086__` (also for `8088`),
 `__6502__` (also for `65c02`, plus `__65C02__`), `__68000__` (also for
-`mc68328`, plus `__MC68328__`), `__PDP11__`, `__STM8__`, `__M16C__`,
-`__8080__`, `__Z80__`, `__8008__`, `__MCS51__` (also for
+`mc68328`, plus `__MC68328__`), `__PDP11__`, `__PDP10__`, `__STM8__`, `__M16C__` (also
+for `m30626fjpfp`, plus `__M30626FJPFP__`), `__8080__`, `__Z80__`,
+`__8008__`, `__MCS51__` (also for
 `8051`/`8052`/`8031`/`8032`, plus each one's own `__8051__`/`__8052__`/
 `__8031__`/`__8032__`), `__PIC16__`, `__PIC18__`, `__STM32__`, `__I386__`,
 `__ARMV7A__`, `__ARMV8A__` (also `__aarch64__`), `__CORTEX_M3__` (also
 for `cortex-m4`/`cortex-m7`, plus `__CORTEX_M4__`/`__CORTEX_M7__`),
 `__R10000__` (also for `r4000`, plus `__R4000__`), `__POWERPC__` (also
-`__ppc__`), `__SPARC__` (also `__sparc__`), `__VAX__` (also `__vax__`) — see `src/main.cpp`'s
-`makeBackend()` comment.
+`__ppc__`), `__SPARC__` (also `__sparc__`), `__VAX__` (also `__vax__`), `__AVR__` (also
+`__AVR_ATmega328P__`), `__ALPHA__` (also
+`__alpha__`), `__SATURN__` — see `src/main.cpp`'s `makeBackend()` comment.

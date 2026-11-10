@@ -56,6 +56,7 @@
 #include "codegen/m68k/M68kCodegen.h"
 #include "codegen/mc68328/MC68328Codegen.h"
 #include "codegen/pdp11/Pdp11Codegen.h"
+#include "codegen/pdp10/Pdp10Codegen.h"
 #include "codegen/i8080/I8080Codegen.h"
 #include "codegen/z80/Z80Codegen.h"
 #include "codegen/i8008/I8008Codegen.h"
@@ -74,6 +75,10 @@
 #include "codegen/powerpc/PowerPCCodegen.h"
 #include "codegen/sparc/SparcCodegen.h"
 #include "codegen/vax/VaxCodegen.h"
+#include "codegen/avr/AVRCodegen.h"
+#include "codegen/alpha/AlphaCodegen.h"
+#include "codegen/saturn/SaturnCodegen.h"
+#include "codegen/tms320c6713/Tms320C6713Codegen.h"
 #include "fileformat/FileFormat.h"
 #include "linker/Linker.h"
 #include "linker/WindowsLinuxLinker.h"
@@ -88,6 +93,7 @@
 #include "linker/factory/MC68328LinkerFactory.h"
 #include "linker/factory/M68kLinkerFactory.h"
 #include "linker/factory/Pdp11LinkerFactory.h"
+#include "linker/factory/Pdp10LinkerFactory.h"
 #include "linker/factory/M16cLinkerFactory.h"
 #include "linker/factory/I386LinkerFactory.h"
 #include "linker/factory/ArmLinkerFactory.h"
@@ -98,6 +104,10 @@
 #include "linker/factory/PowerPCLinkerFactory.h"
 #include "linker/factory/SparcLinkerFactory.h"
 #include "linker/factory/VaxLinkerFactory.h"
+#include "linker/factory/AVRLinkerFactory.h"
+#include "linker/factory/AlphaLinkerFactory.h"
+#include "linker/factory/SaturnLinkerFactory.h"
+#include "linker/factory/Tms320C6713LinkerFactory.h"
 #include "linker/factory/MCS51LinkerFactory.h"
 #include "linker/factory/PIC16LinkerFactory.h"
 #include "linker/factory/PIC18LinkerFactory.h"
@@ -174,9 +184,10 @@ void writeToBuildDir(const std::string &name, const std::string &content, bool b
 // independently valid on the command line). Used both for "unknown
 // --target" error messages and for --list-triples.
 const std::vector<std::string> kTargetNames = {
-    "pdp7", "8086", "8088", "6502", "65c02", "68000", "mc68328", "pdp11", "8080", "z80", "8008",
-    "stm8", "stm32", "i386", "m16c", "pic16", "pic18", "r10000", "r4000", "cortex-m3", "cortex-m4",
-    "cortex-m7", "8051", "8052", "8031", "8032", "armv7a", "armv8a", "powerpc", "sparc", "vax",
+    "pdp7", "8086", "8088", "6502", "65c02", "68000", "mc68328", "pdp11", "pdp10", "8080", "z80", "8008",
+    "stm8", "stm32", "i386", "m16c", "m30626fjpfp", "pic16", "pic18", "r10000", "r4000", "cortex-m3",
+    "cortex-m4", "cortex-m7", "8051", "8052", "8031", "8032", "armv7a", "armv8a", "powerpc", "sparc",
+    "vax", "avr", "alpha", "saturn", "tms320c6713",
 };
 
 std::string knownTargetsList() {
@@ -240,13 +251,14 @@ std::unique_ptr<pcc::Backend> makeBackend(const std::string &target) {
     if (target == "68000") return std::make_unique<pcc::M68kCodegen>();
     if (target == "mc68328") return std::make_unique<pcc::MC68328Codegen>();
     if (target == "pdp11") return std::make_unique<pcc::Pdp11Codegen>();
+    if (target == "pdp10") return std::make_unique<pcc::Pdp10Codegen>();
     if (target == "8080") return std::make_unique<pcc::I8080Codegen>();
     if (target == "z80") return std::make_unique<pcc::Z80Codegen>();
     if (target == "8008") return std::make_unique<pcc::I8008Codegen>();
     if (target == "stm8") return std::make_unique<pcc::STM8Codegen>();
     if (target == "stm32") return std::make_unique<pcc::STM32Codegen>();
     if (target == "i386") return std::make_unique<pcc::I386Codegen>();
-    if (target == "m16c") return std::make_unique<pcc::M16cCodegen>();
+    if (target == "m16c" || target == "m30626fjpfp") return std::make_unique<pcc::M16cCodegen>();
     if (target == "pic16") return std::make_unique<pcc::PIC16Codegen>();
     if (target == "pic18") return std::make_unique<pcc::PIC18Codegen>();
     if (target == "r10000" || target == "r4000") return std::make_unique<pcc::MipsCodegen>();
@@ -263,6 +275,10 @@ std::unique_ptr<pcc::Backend> makeBackend(const std::string &target) {
     if (target == "powerpc") return std::make_unique<pcc::PowerPCCodegen>();
     if (target == "sparc") return std::make_unique<pcc::SparcCodegen>();
     if (target == "vax") return std::make_unique<pcc::VaxCodegen>();
+    if (target == "avr") return std::make_unique<pcc::AVRCodegen>();
+    if (target == "alpha") return std::make_unique<pcc::AlphaCodegen>();
+    if (target == "saturn") return std::make_unique<pcc::SaturnCodegen>();
+    if (target == "tms320c6713") return std::make_unique<pcc::Tms320C6713Codegen>();
     return nullptr;
 }
 
@@ -281,7 +297,8 @@ std::unique_ptr<pcc::TargetLinker> makeLinker(const std::string &target,
     if (target == "mc68328") return pcc::makeMC68328Linker();
     if (target == "68000") return pcc::makeM68kLinker();
     if (target == "pdp11") return pcc::makePdp11Linker();
-    if (target == "m16c") return pcc::makeM16cLinker();
+    if (target == "pdp10") return pcc::makePdp10Linker();
+    if (target == "m16c" || target == "m30626fjpfp") return pcc::makeM16cLinker();
     if (target == "i386") return pcc::makeI386Linker();
     if (target == "armv7a") return pcc::makeArmLinker();
     if (target == "armv8a") return pcc::makeArm64Linker();
@@ -291,6 +308,10 @@ std::unique_ptr<pcc::TargetLinker> makeLinker(const std::string &target,
     if (target == "powerpc") return pcc::makePowerPCLinker();
     if (target == "sparc") return pcc::makeSparcLinker();
     if (target == "vax") return pcc::makeVaxLinker();
+    if (target == "avr") return pcc::makeAVRLinker();
+    if (target == "alpha") return pcc::makeAlphaLinker();
+    if (target == "saturn") return pcc::makeSaturnLinker();
+    if (target == "tms320c6713") return pcc::makeTms320C6713Linker();
     if (target == "8051" || target == "8052" || target == "8031" || target == "8032") return pcc::makeMCS51Linker();
     if (target == "pic16") return pcc::makePIC16Linker();
     if (target == "pic18") return pcc::makePIC18Linker();
@@ -756,6 +777,8 @@ int main(int argc, char **argv) {
         predefinedMacros["__MC68328__"] = "1";
     } else if (target == "pdp11") {
         predefinedMacros["__PDP11__"] = "1";
+    } else if (target == "pdp10") {
+        predefinedMacros["__PDP10__"] = "1";
     } else if (target == "8080") {
         predefinedMacros["__8080__"] = "1";
     } else if (target == "z80") {
@@ -768,8 +791,9 @@ int main(int argc, char **argv) {
         predefinedMacros["__STM32__"] = "1";
     } else if (target == "i386") {
         predefinedMacros["__I386__"] = "1";
-    } else if (target == "m16c") {
+    } else if (target == "m16c" || target == "m30626fjpfp") {
         predefinedMacros["__M16C__"] = "1";
+        if (target == "m30626fjpfp") predefinedMacros["__M30626FJPFP__"] = "1";
     } else if (target == "pic16") {
         predefinedMacros["__PIC16__"] = "1";
     } else if (target == "pic18") {
@@ -804,6 +828,17 @@ int main(int argc, char **argv) {
     } else if (target == "vax") {
         predefinedMacros["__VAX__"] = "1";
         predefinedMacros["__vax__"] = "1";
+    } else if (target == "avr") {
+        predefinedMacros["__AVR__"] = "1";
+        predefinedMacros["__AVR_ATmega328P__"] = "1";
+    } else if (target == "alpha") {
+        predefinedMacros["__ALPHA__"] = "1";
+        predefinedMacros["__alpha__"] = "1";
+    } else if (target == "saturn") {
+        predefinedMacros["__SATURN__"] = "1";
+    } else if (target == "tms320c6713") {
+        predefinedMacros["__TMS320C6713__"] = "1";
+        predefinedMacros["__tms320c6713__"] = "1";
     }
 
     // An external reference is allowed under a real object format for this

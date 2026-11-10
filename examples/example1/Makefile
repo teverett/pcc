@@ -1,5 +1,5 @@
 EXAMPLE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-ROOT := $(abspath $(EXAMPLE_DIR)/..)
+ROOT := $(abspath $(EXAMPLE_DIR)/../..)
 PCC ?= $(ROOT)/build/bin/pcc
 BUILD_DIR ?= $(EXAMPLE_DIR)build
 

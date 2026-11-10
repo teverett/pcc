@@ -11,10 +11,10 @@ triple syntax and `--list-triples`.
 # platforms
 
 Supported `--target` values: `pdp7`, `8086`/`8088`, `6502`/`65c02`,
-`68000`, `mc68328`, `pdp11`, `stm8`, `m16c`, `8080`, `z80`, `8008`,
+`68000`, `mc68328`, `pdp11`, `stm8`, `m16c`/`m30626fjpfp`, `8080`, `z80`, `8008`,
 `8051`/`8052`/`8031`/`8032`, `pic16`, `pic18`, `stm32`, `i386`,
 `armv7a`, `armv8a`, `cortex-m3`/`cortex-m4`/`cortex-m7`,
-`r10000`/`r4000`, `powerpc`, `sparc`, `vax` — see
+`r10000`/`r4000`, `powerpc`, `sparc`, `vax`, `avr`, `alpha` — see
 [`docs/platforms.md`](docs/platforms.md) for what each target's real
 hardware is and how it's tested.
 

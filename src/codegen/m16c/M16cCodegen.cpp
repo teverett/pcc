@@ -58,10 +58,21 @@ void M16cCodegen::genLocalArrayInit(const ir::Slot *slot) {
 }
 
 std::string M16cCodegen::generate(const ir::Program &prog, bool objectMode) {
+    perFileAsm_.clear();
     const ir::Function *mainFn = nullptr;
     for (const auto &fn : prog.functions) {
         if (fn->sourceName == "main") mainFn = fn.get();
     }
+    std::string full;
+    // Hands the text generated so far to the whole-program output and to the
+    // input file it belongs to, leaving code_ empty for the next piece.
+    auto flush = [&](const std::string &file) {
+        std::string chunk = code_.str();
+        code_.str("");
+        code_.clear();
+        full += chunk;
+        perFileAsm_[file] += chunk;
+    };
 
     code_ << "org " << (objectMode ? 0 : kBaseAddress) << "\n\n";
     if (!objectMode) {
@@ -70,12 +81,17 @@ std::string M16cCodegen::generate(const ir::Program &prog, bool objectMode) {
         code_ << "    jsr.w " << label(mainFn) << "\n";
         code_ << "halt:\n    jmp halt\n\n";
     }
+    flush(mainFn ? mainFn->sourceFile : std::string());
 
-    for (const auto &fb : prog.functionBodies) genFunction(fb);
+    for (const auto &fb : prog.functionBodies) {
+        genFunction(fb);
+        flush(fb.func->sourceFile);
+    }
 
     for (const auto &slot : prog.slots) {
         if (slot->kind != ir::SlotKind::Global) continue;
         if (slot->isExternal) continue;
+        const size_t before = trailer_.size();
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit, slot->type);
@@ -102,10 +118,11 @@ std::string M16cCodegen::generate(const ir::Program &prog, bool objectMode) {
                 trailer_.push_back(line.str());
             }
         }
+        for (size_t i = before; i < trailer_.size(); i++) perFileAsm_[slot->sourceFile] += trailer_[i] + "\n";
     }
 
     std::ostringstream out;
-    out << code_.str();
+    out << full;
     for (const auto &line : trailer_) out << line << "\n";
     return out.str();
 }

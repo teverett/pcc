@@ -144,6 +144,7 @@ FileFormatKind detectFileFormat(const std::string &bytes) {
         0x6800,  // m68k
         0x16C3,  // m16c
         0x1121,  // pdp11
+        0x1010,  // pdp10
         0x3386,  // i386
         0xAA64,  // armv8a (AArch64)
         0xA032,  // armv7a (A32)
@@ -153,6 +154,12 @@ FileFormatKind detectFileFormat(const std::string &bytes) {
         0x5043,  // powerpc
         0x5350,  // sparc
         0x5641,  // vax
+        0x0184,  // alpha
+        0x4156,  // avr
+        0x5A74,  // saturn
+        0x6713,  // tms320c6713 (currently unused - this target has no coff/object support yet,
+                 // see Tms320C6713Codegen.h's own header comment; listed here only to satisfy
+                 // every target's own reserved-machine-ID convention)
         0x8051,  // 8051/8052/8031/8032 (mcs51)
         0xFC18,  // pic18
         0x16F8,  // pic16

@@ -6,7 +6,7 @@
 # on every target (see ../src/Backend.h: a .c file means the same
 # thing regardless of --target).
 #
-# Usage: tests/run_tests.sh [path/to/pcc] [--target=pdp7|pdp11|vax|r10000|powerpc|cortex-m3|8086|8088|6502|65c02|68000|mc68328|8080|z80|8008|8051|stm32|i386|armv7a|armv8a] [--optimize]
+# Usage: tests/run_tests.sh [path/to/pcc] [--target=pdp7|pdp11|pdp10|vax|avr|alpha|saturn|tms320c6713|r10000|powerpc|cortex-m3|8086|8088|6502|65c02|68000|mc68328|8080|z80|8008|8051|stm32|i386|armv7a|armv8a] [--optimize]
 #
 # --optimize passes pcc's own --optimize straight through to every
 # compile below, so the exact same checks also confirm the IR
@@ -47,6 +47,16 @@ case "$TARGET" in
         fi
         if ! command -v python3 >/dev/null 2>&1; then
             echo "python3 not found on PATH - needed to build check_pdp11()'s own deposit script" >&2
+            exit 1
+        fi
+        ;;
+    pdp10)
+        if ! command -v pdp10 >/dev/null 2>&1; then
+            echo "pdp10 (open-simh) not found on PATH - install it (e.g. 'brew install open-simh')" >&2
+            exit 1
+        fi
+        if ! command -v python3 >/dev/null 2>&1; then
+            echo "python3 not found on PATH - needed to build check_pdp10()'s own RIM10 loader tape" >&2
             exit 1
         fi
         ;;
@@ -269,8 +279,47 @@ case "$TARGET" in
             exit 1
         fi
         ;;
+    avr)
+        # Real ATmega328P machine code (see ../src/codegen/avr/AVRCodegen.h's own header
+        # comment), run under qemu-system-avr's own "uno" (Arduino UNO) board - a genuine,
+        # independent AVR core, not a from-scratch interpreter. The board's reset vector is a
+        # real address 0, same as this backend's own `org 0`, so no PC-forcing `loader` device
+        # is needed the way check_armv7a()/check_68000() need (see check_avr()'s own comment).
+        if ! command -v qemu-system-avr >/dev/null 2>&1; then
+            echo "qemu-system-avr not found on PATH - install it (e.g. 'brew install qemu')" >&2
+            exit 1
+        fi
+        if ! command -v python3 >/dev/null 2>&1; then
+            echo "python3 not found on PATH - needed to talk to qemu's monitor" >&2
+            exit 1
+        fi
+        ;;
+    alpha)
+        # No real simulator here either - qemu-system-alpha needs a PALcode image before it
+        # will execute a single native instruction, even on its bare "-M none" board (see
+        # check_alpha()'s own comment), so check_alpha() below drives a small from-scratch
+        # Alpha core written just for this - standard library only, nothing to install.
+        ;;
+    saturn)
+        # There's no mainstream standalone HP Saturn emulator suitable for headless, scriptable
+        # register checks (x48/emu48 are interactive HP48/HP49 calculator emulators, not bare
+        # Saturn cores), and this backend's own instruction encoding is this project's own
+        # invention anyway (see src/codegen/saturn/SaturnAssembler.h), not real Saturn machine
+        # code - so check_saturn() below drives a small from-scratch interpreter for exactly
+        # this backend's own dialect, the same idea as check_8008()/check_alpha(). Standard
+        # library only, nothing to install.
+        ;;
+    tms320c6713)
+        # No mainstream standalone TMS320C6713 simulator is suitable for headless, scriptable
+        # register checks (TI's own Code Composer Studio simulator is a full interactive IDE,
+        # not a scriptable bare core), and this backend's instruction stream depends on real
+        # pipeline hazards (branch/load/multiply delay slots) no generic tool would model the
+        # way this project's own codegen expects anyway - so check_tms320c6713() below drives a
+        # small from-scratch C67x core written just for this, the same idea as check_alpha()/
+        # check_saturn(). Standard library only, nothing to install.
+        ;;
     *)
-        echo "unknown --target '$TARGET' (known: pdp7, pdp11, vax, r10000, powerpc, cortex-m3, 8086, 8088, 6502, 65c02, 68000, mc68328, 8080, z80, 8008, 8051, stm32, i386, armv7a, armv8a)" >&2
+        echo "unknown --target '$TARGET' (known: pdp7, pdp11, pdp10, vax, avr, alpha, saturn, tms320c6713, r10000, powerpc, cortex-m3, 8086, 8088, 6502, 65c02, 68000, mc68328, 8080, z80, 8008, 8051, stm32, i386, armv7a, armv8a)" >&2
         exit 1
         ;;
 esac
@@ -431,6 +480,98 @@ PY
     return 1
 }
 
+# The real `pdp10` (open-simh V3.12-3) simulator on this machine crashes (a stack-smashing
+# write, confirmed with lldb) inside its own symbolic parser the instant any plain `d`/`e`
+# <address> command touches memory - deposit, examine, and even `d pc <addr>` are all affected,
+# always, regardless of switches; only a *register* (`e ac1`, `d acN ...`) or the `load`
+# command's own binary-file loaders are unaffected. So unlike check_pdp7()/check_pdp11() above,
+# this doesn't deposit the compiled program word-by-word: it re-encodes the `--format=raw`
+# image (5 bytes per 36-bit word - see Pdp10Codegen.h's own header comment) as a classic
+# RIM10B paper-tape boot block (the real PDP-10 binary-loader format `load -r` accepts - a
+# first word giving the bootstrap-loader word count, that many loader words skipped, then an
+# IOWD-headed data block plus checksum, and a final `JRST start` word, which the loader itself
+# uses to set the simulated PC - confirmed directly against the simulator, including that
+# `load`'s own address/value parsing never goes anywhere near the buggy code path). Every
+# detail here (the frame format, the loader-count encoding for RIM10B vs ITS RIM, the additive
+# checksum, PUSH/PUSHJ's real stack-pointer-in-AC semantics this target's own calling
+# convention relies on) was confirmed by hand against the real simulator before being wired in
+# here - see this project's own development notes.
+check_pdp10() {
+    local src="$1" name="$2"
+    local binfile="$tmpdir/$name.bin"
+
+    if ! "$PCC" --target=pdp10 --format=raw \
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+        echo "FAIL $name: compile error"
+        sed 's/^/    /' "$tmpdir/$name.log"
+        return 1
+    fi
+
+    local rimfile="$tmpdir/$name.rim" simfile="$tmpdir/$name.simh" outfile="$tmpdir/$name.out"
+    python3 -I - "$binfile" "$rimfile" "$simfile" <<'PY'
+import sys
+binpath, rimpath, simpath = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(binpath, "rb") as f:
+    data = f.read()
+if len(data) % 5:
+    raise SystemExit(f"raw image length {len(data)} isn't a multiple of 5 bytes/word")
+
+FMASK = 0o777777777777
+RMASK = 0o777777
+BASE = 0o10000  # must match Pdp10Codegen.cpp's own kBaseAddress
+
+words = []
+for i in range(0, len(data), 5):
+    b0, b1, b2, b3, b4 = data[i:i + 5]
+    words.append((b0 & 0xF) << 32 | b1 << 24 | b2 << 16 | b3 << 8 | b4)
+
+
+def enc_word(w, out):
+    w &= FMASK
+    for i in range(6):
+        out.append(((w >> (30 - 6 * i)) & 0x3F) | 0x80)
+
+
+out = bytearray()
+ldrc = 0o16  # RIM10B loader-word count
+enc_word((((RMASK ^ (ldrc - 1)) & RMASK) << 18) | 0, out)
+for _ in range(ldrc):
+    enc_word(0, out)
+n = len(words)
+header = (((-n) & RMASK) << 18) | ((BASE - 1) & RMASK)
+enc_word(header, out)
+cksm = header
+for w in words:
+    enc_word(w, out)
+    cksm = (cksm + w) & FMASK
+enc_word(cksm, out)
+enc_word((0o254 << 27) | BASE, out)  # JRST start - sets the loader's own final PC
+
+with open(rimpath, "wb") as f:
+    f.write(bytes(out))
+with open(simpath, "w") as f:
+    f.write(f"load -r {rimpath}\ngo\ne ac1\n")
+PY
+
+    run_with_timeout 10 bash -c "pdp10 '$simfile' </dev/null >'$outfile' 2>/dev/null"
+
+    local ac1_octal
+    ac1_octal="$(grep '^AC1:' "$outfile" | awk '{print $2}')"
+    if [ -z "$ac1_octal" ]; then
+        echo "FAIL $name: simulator produced no AC1 (timed out or crashed)"
+        return 1
+    fi
+
+    local ac1_dec
+    ac1_dec="$(to_signed "$((8#$ac1_octal))" 36)"
+    if [ "$ac1_dec" -eq "$expect" ]; then
+        echo "PASS $name (AC1=$ac1_dec)"
+        return 0
+    fi
+    echo "FAIL $name: expected $expect, got $ac1_dec (AC1 octal: $ac1_octal)"
+    return 1
+}
+
 check_vax() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
@@ -463,6 +604,690 @@ check_vax() {
         return 0
     fi
     echo "FAIL $name: expected $expect, got $r0_dec (R0 hex: $r0_hex)"
+    return 1
+}
+
+# No SIMH (or qemu) target models a bare Alpha CPU usably here: qemu-system-alpha always
+# starts in PALmode and needs a real PALcode image before it will execute a single native
+# instruction, even on its bare "-M none" board (confirmed directly - the CPU sits at a fixed
+# PALcode entry vector, PC never reaches a `-device loader`-forced address the way MIPS/
+# PowerPC's own bare boards do) - writing one is out of scope for a compiler test harness.
+# check_alpha() instead drives a small from-scratch Alpha core written just for this, the same
+# idea as check_8008's/check_6502's own standalone cores: it decodes exactly the Memory/Jump/
+# Branch/Operate-format subset AlphaAssembler.cpp ever emits (real encodings, see its own
+# header comment) and runs the raw image from AlphaCodegen.cpp's own kBaseAddress until PC
+# settles on `halt`'s own self-branch (see AlphaCodegen.h's header comment on why that, not a
+# real halt, is this target's only way to stop).
+check_alpha() {
+    local src="$1" name="$2"
+    local binfile="$tmpdir/$name.bin"
+
+    if ! "$PCC" --target=alpha --format=raw \
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+        echo "FAIL $name: compile error"
+        sed 's/^/    /' "$tmpdir/$name.log"
+        return 1
+    fi
+
+    local outfile="$tmpdir/$name.sim.out"
+    python3 -I - "$binfile" > "$outfile" <<'PY'
+import struct
+import sys
+
+BASE = 0x00120000
+MASK64 = (1 << 64) - 1
+STEP_LIMIT = 2_000_000
+
+path = sys.argv[1]
+with open(path, "rb") as f:
+    data = f.read()
+mem = bytearray(0x400000)
+mem[0:len(data)] = data
+
+regs = [0] * 32  # v0,t0-t7,s0-s5,fp,a0-a5,t8-t11,ra,t12,at,gp,sp,zero (AlphaAssembler.cpp's regNumber())
+
+
+def s16(v):
+    v &= 0xFFFF
+    return v - 0x10000 if v & 0x8000 else v
+
+
+def s32(v):
+    v &= 0xFFFFFFFF
+    return v - 0x100000000 if v & 0x80000000 else v
+
+
+def s64(v):
+    v &= MASK64
+    return v - (1 << 64) if v & (1 << 63) else v
+
+
+def getreg(i):
+    return 0 if i == 31 else regs[i]
+
+
+def setreg(i, v):
+    if i != 31:
+        regs[i] = v & MASK64
+
+
+def rd32(addr):
+    return struct.unpack_from("<I", mem, addr - BASE)[0]
+
+
+def rdmem(addr, n):
+    off = addr - BASE
+    return int.from_bytes(mem[off:off + n], "little")
+
+
+def wrmem(addr, v, n):
+    off = addr - BASE
+    mem[off:off + n] = (v & ((1 << (8 * n)) - 1)).to_bytes(n, "little")
+
+
+pc = BASE
+halted = False
+for _ in range(STEP_LIMIT):
+    word = rd32(pc)
+    opcode = (word >> 26) & 0x3F
+    ra = (word >> 21) & 0x1F
+    this_pc = pc
+    pc += 4
+
+    if opcode in (0x08, 0x09, 0x0A, 0x0C, 0x0D, 0x0E, 0x28, 0x29, 0x2C, 0x2D, 0x1A):
+        rb = (word >> 16) & 0x1F
+        disp16 = word & 0xFFFF
+        if opcode == 0x1A:  # jmp/jsr/ret (Jump format)
+            action = (disp16 >> 14) & 0x3
+            target = getreg(rb)
+            if action == 1:  # jsr
+                setreg(ra, pc)
+            pc = target
+            continue
+        disp = s16(disp16)
+        addr = getreg(rb) + disp
+        if opcode == 0x08:  # lda
+            setreg(ra, getreg(rb) + disp)
+        elif opcode == 0x09:  # ldah
+            setreg(ra, getreg(rb) + (disp << 16))
+        elif opcode == 0x0A:  # ldindbu
+            setreg(ra, rdmem(addr, 1))
+        elif opcode == 0x0C:  # ldindhu
+            setreg(ra, rdmem(addr, 2))
+        elif opcode == 0x0E:  # stindb
+            wrmem(addr, getreg(ra), 1)
+        elif opcode == 0x0D:  # stindh
+            wrmem(addr, getreg(ra), 2)
+        elif opcode == 0x28:  # ldindl
+            setreg(ra, s32(rdmem(addr, 4)) & MASK64)
+        elif opcode == 0x29:  # ldindq
+            setreg(ra, rdmem(addr, 8))
+        elif opcode == 0x2C:  # stindl
+            wrmem(addr, getreg(ra), 4)
+        elif opcode == 0x2D:  # stindq
+            wrmem(addr, getreg(ra), 8)
+        continue
+
+    if 0x30 <= opcode <= 0x3F:  # Branch format
+        disp21 = word & 0x1FFFFF
+        if disp21 & (1 << 20):
+            disp21 -= 1 << 21
+        target = this_pc + 4 + disp21 * 4
+        v = s64(getreg(ra))
+        taken = {
+            0x30: True, 0x38: (v & 1) == 0, 0x39: v == 0, 0x3A: v < 0,
+            0x3B: v <= 0, 0x3C: (v & 1) == 1, 0x3D: v != 0, 0x3E: v >= 0, 0x3F: v > 0,
+        }.get(opcode)
+        if taken is None:
+            raise RuntimeError(f"unsupported branch opcode {opcode:#x} at {this_pc:#x}")
+        if taken and target == this_pc:
+            halted = True
+            break
+        if taken:
+            pc = target
+        continue
+
+    if opcode in (0x10, 0x11, 0x12, 0x13):  # Operate format
+        is_lit = (word >> 12) & 1
+        rc = word & 0x1F
+        function = (word >> 5) & 0x7F
+        bv = ((word >> 13) & 0xFF) if is_lit else getreg((word >> 16) & 0x1F)
+        av = getreg(ra)
+        if opcode == 0x10:
+            fn = {0x20: lambda: av + bv, 0x29: lambda: av - bv,
+                  0x2D: lambda: 1 if (av & MASK64) == (bv & MASK64) else 0,
+                  0x4D: lambda: 1 if s64(av) < s64(bv) else 0,
+                  0x6D: lambda: 1 if s64(av) <= s64(bv) else 0,
+                  0x1D: lambda: 1 if (av & MASK64) < (bv & MASK64) else 0,
+                  0x3D: lambda: 1 if (av & MASK64) <= (bv & MASK64) else 0}.get(function)
+        elif opcode == 0x11:
+            fn = {0x00: lambda: av & bv, 0x20: lambda: av | bv, 0x40: lambda: av ^ bv,
+                  0x28: lambda: av | (~bv)}.get(function)
+        elif opcode == 0x12:
+            sh = bv & 0x3F
+            fn = {0x39: lambda: av << sh, 0x34: lambda: (av & MASK64) >> sh,
+                  0x3C: lambda: s64(av) >> sh}.get(function)
+        else:
+            fn = {0x20: lambda: av * bv, 0x30: lambda: ((av & MASK64) * (bv & MASK64)) >> 64}.get(function)
+        if fn is None:
+            raise RuntimeError(f"unsupported opcode {opcode:#x}/{function:#x} at {this_pc:#x}")
+        setreg(rc, fn())
+        continue
+
+    raise RuntimeError(f"unsupported opcode {opcode:#x} at {this_pc:#x}")
+else:
+    print("TIMEOUT")
+    sys.exit(0)
+
+if not halted:
+    print("TIMEOUT")
+    sys.exit(0)
+
+print(s32(regs[1]))  # t0 (AlphaAssembler.cpp's regNumber(): v0=0, t0=1, ...)
+PY
+    local result
+    result="$(cat "$outfile")"
+    if [ "$result" = "TIMEOUT" ]; then
+        echo "FAIL $name: simulator never reached the halt loop (step limit exceeded)"
+        return 1
+    fi
+    if [ "$result" -eq "$expect" ] 2>/dev/null; then
+        echo "PASS $name (t0=$result)"
+        return 0
+    fi
+    echo "FAIL $name: expected $expect, got $result"
+    return 1
+}
+
+# This backend's own instruction encoding (src/codegen/saturn/SaturnAssembler.cpp) is this
+# project's own invention, not real HP Saturn machine code (see SaturnAssembler.h's own header
+# comment) - the real chip is 4-bit/nibble-addressed and this backend deliberately models it as
+# a simplified, byte-addressed, 32-bit-register machine instead. There's no real or mainstream
+# emulator for this backend's own dialect, so check_saturn() drives a small from-scratch
+# interpreter written just for it, the same idea as check_8008()/check_alpha(). It decodes every
+# opcode SaturnAssembler.cpp's own encodeInstr() can emit and runs the raw image from
+# SaturnCodegen.cpp's own kSaturnBaseAddress until it hits the `halt` opcode (0x00); the result
+# is whatever register `a` (this backend's accumulator-by-convention) holds at that point, since
+# every return value - direct from `main` or any nested call - ends up there.
+check_saturn() {
+    local src="$1" name="$2"
+    local binfile="$tmpdir/$name.bin"
+
+    if ! "$PCC" --target=saturn --format=raw \
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+        echo "FAIL $name: compile error"
+        sed 's/^/    /' "$tmpdir/$name.log"
+        return 1
+    fi
+
+    local outfile="$tmpdir/$name.sim.out"
+    python3 -I - "$binfile" > "$outfile" <<'PY'
+import sys
+
+BASE = 0x1000
+MEMSIZE = 0x10000
+STEP_LIMIT = 2_000_000
+NO_BASE = 0xFF
+
+path = sys.argv[1]
+with open(path, "rb") as f:
+    data = f.read()
+mem = bytearray(MEMSIZE)
+mem[BASE:BASE + len(data)] = data  # the raw image's byte 0 is logical address BASE, not 0
+
+regs = [0, 0, 0, 0, 0]  # a, c, b, d0, d1 (SaturnAssembler.cpp's regNumber())
+
+
+def u32(v):
+    return v & 0xFFFFFFFF
+
+
+def s32(v):
+    v &= 0xFFFFFFFF
+    return v - 0x100000000 if v & 0x80000000 else v
+
+
+def rd32(addr):
+    addr &= 0xFFFFFFFF
+    return int.from_bytes(mem[addr:addr + 4], "little")
+
+
+def wr32(addr, v):
+    addr &= 0xFFFFFFFF
+    mem[addr:addr + 4] = u32(v).to_bytes(4, "little")
+
+
+def rd16(addr):
+    addr &= 0xFFFFFFFF
+    return int.from_bytes(mem[addr:addr + 2], "little")
+
+
+def wr16(addr, v):
+    addr &= 0xFFFFFFFF
+    mem[addr:addr + 2] = (v & 0xFFFF).to_bytes(2, "little")
+
+
+pc = BASE
+cmp_a = 0
+cmp_b = 0
+halted = False
+for _ in range(STEP_LIMIT):
+    op = mem[pc]
+    pc += 1
+
+    def fetch8():
+        global pc
+        v = mem[pc]
+        pc += 1
+        return v
+
+    def fetch32():
+        global pc
+        v = rd32(pc)
+        pc += 4
+        return v
+
+    def read_src():
+        tag = fetch8()
+        return regs[fetch8()] if tag == 0 else fetch32()
+
+    def mem_addr():
+        base = fetch8()
+        disp = fetch32()
+        return u32(disp if base == NO_BASE else regs[base] + disp)
+
+    if op == 0x00:  # halt
+        halted = True
+        break
+    elif op == 0x01:  # clr
+        regs[fetch8()] = 0
+    elif op == 0x02:  # mov
+        rd = fetch8()
+        regs[rd] = u32(read_src())
+    elif op == 0x03:  # ld
+        rd = fetch8()
+        regs[rd] = rd32(mem_addr())
+    elif op == 0x04:  # st
+        addr = mem_addr()
+        wr32(addr, read_src())
+    elif op == 0x05:  # add
+        rd = fetch8()
+        regs[rd] = u32(regs[rd] + read_src())
+    elif op == 0x06:  # sub
+        rd = fetch8()
+        regs[rd] = u32(regs[rd] - read_src())
+    elif op == 0x07:  # inc
+        rd = fetch8()
+        regs[rd] = u32(regs[rd] + 1)
+    elif op == 0x08:  # dec
+        rd = fetch8()
+        regs[rd] = u32(regs[rd] - 1)
+    elif op == 0x09:  # neg
+        rd = fetch8()
+        regs[rd] = u32(-regs[rd])
+    elif op == 0x0A:  # and
+        rd = fetch8()
+        regs[rd] = u32(regs[rd] & read_src())
+    elif op == 0x0B:  # or
+        rd = fetch8()
+        regs[rd] = u32(regs[rd] | read_src())
+    elif op == 0x0C:  # xor
+        rd = fetch8()
+        regs[rd] = u32(regs[rd] ^ read_src())
+    elif op == 0x0D:  # not
+        rd = fetch8()
+        regs[rd] = u32(~regs[rd])
+    elif op == 0x0E:  # shl
+        rd = fetch8()
+        regs[rd] = u32(regs[rd] << (read_src() & 31))
+    elif op == 0x0F:  # shr (logical)
+        rd = fetch8()
+        regs[rd] = u32(regs[rd]) >> (read_src() & 31)
+    elif op == 0x10:  # sar (arithmetic)
+        rd = fetch8()
+        regs[rd] = u32(s32(regs[rd]) >> (read_src() & 31))
+    elif op == 0x11:  # cmp
+        rd = fetch8()
+        cmp_a = regs[rd]
+        cmp_b = read_src()
+    elif op == 0x12:  # goto
+        pc = fetch32()
+    elif op == 0x13:  # gosbvl
+        target = fetch32()
+        regs[3] = u32(regs[3] - 4)
+        wr32(regs[3], pc)
+        pc = target
+    elif op == 0x14:  # rtn
+        pc = rd32(regs[3])
+        regs[3] = u32(regs[3] + 4)
+    elif 0x15 <= op <= 0x1E:  # jcc
+        target = fetch32()
+        cond = {
+            0x15: cmp_a == cmp_b, 0x16: cmp_a != cmp_b,
+            0x17: s32(cmp_a) < s32(cmp_b), 0x18: s32(cmp_a) <= s32(cmp_b),
+            0x19: s32(cmp_a) > s32(cmp_b), 0x1A: s32(cmp_a) >= s32(cmp_b),
+            0x1B: u32(cmp_a) < u32(cmp_b), 0x1C: u32(cmp_a) <= u32(cmp_b),
+            0x1D: u32(cmp_a) > u32(cmp_b), 0x1E: u32(cmp_a) >= u32(cmp_b),
+        }[op]
+        if cond:
+            pc = target
+    elif op == 0x1F:  # push
+        val = read_src()
+        regs[3] = u32(regs[3] - 4)
+        wr32(regs[3], val)
+    elif op == 0x20:  # pop
+        rd = fetch8()
+        regs[rd] = rd32(regs[3])
+        regs[3] = u32(regs[3] + 4)
+    elif op == 0x21:  # jmpr
+        rd = fetch8()
+        pc = regs[rd]
+    elif op == 0x22:  # gosbvlr
+        rd = fetch8()
+        target = regs[rd]
+        regs[3] = u32(regs[3] - 4)
+        wr32(regs[3], pc)
+        pc = target
+    elif op == 0x23:  # ldb
+        rd = fetch8()
+        regs[rd] = mem[mem_addr()]
+    elif op == 0x24:  # stb
+        addr = mem_addr()
+        mem[addr] = read_src() & 0xFF
+    elif op == 0x25:  # ldh
+        rd = fetch8()
+        regs[rd] = rd16(mem_addr())
+    elif op == 0x26:  # sth
+        addr = mem_addr()
+        wr16(addr, read_src())
+    else:
+        raise RuntimeError(f"unsupported opcode {op:#x} at {pc - 1:#x}")
+else:
+    print("TIMEOUT")
+    sys.exit(0)
+
+if not halted:
+    print("TIMEOUT")
+    sys.exit(0)
+
+print(s32(regs[0]))  # a
+PY
+    local result
+    result="$(cat "$outfile")"
+    if [ "$result" = "TIMEOUT" ]; then
+        echo "FAIL $name: simulator never reached halt (step limit exceeded)"
+        return 1
+    fi
+    if [ "$result" -eq "$expect" ] 2>/dev/null; then
+        echo "PASS $name (a=$result)"
+        return 0
+    fi
+    echo "FAIL $name: expected $expect, got $result"
+    return 1
+}
+
+# No mainstream standalone TMS320C6713 simulator is scriptable/headless-suitable (see this
+# target's own case comment above), and a correct test here specifically needs to prove this
+# backend's own delay-slot NOP insertion is right, not just assumed - so check_tms320c6713()
+# drives a small from-scratch C67x core, decoding exactly the instruction words
+# Tms320C6713Assembler.cpp ever emits (see its own header comment for the bit layouts) and
+# modeling the branch/load/multiply pipeline hazards faithfully: a scheduled register write (a
+# load's destination, a multiply's product) only lands in the register file after the real
+# number of intervening instructions have executed, exactly mirroring real hardware timing,
+# the same idea as check_alpha()'s own from-scratch core.
+check_tms320c6713() {
+    local src="$1" name="$2"
+    local binfile="$tmpdir/$name.bin"
+
+    if ! "$PCC" --target=tms320c6713 --format=raw \
+            $OPTFLAGS --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+        echo "FAIL $name: compile error"
+        sed 's/^/    /' "$tmpdir/$name.log"
+        return 1
+    fi
+
+    local outfile="$tmpdir/$name.sim.out"
+    python3 -I - "$binfile" > "$outfile" <<'PY'
+import struct
+import sys
+
+BASE = 0x00020000
+MASK32 = 0xFFFFFFFF
+MEM_SIZE = 0x00200000
+STEP_LIMIT = 4_000_000
+
+path = sys.argv[1]
+with open(path, "rb") as f:
+    data = f.read()
+mem = bytearray(MEM_SIZE)
+mem[0:len(data)] = data
+
+
+def s32(v):
+    v &= MASK32
+    return v - (1 << 32) if v & 0x80000000 else v
+
+
+def rd32(addr):
+    return struct.unpack_from("<I", mem, addr - BASE)[0]
+
+
+def rdmem(addr, n):
+    off = addr - BASE
+    return int.from_bytes(mem[off:off + n], "little")
+
+
+def wrmem(addr, v, n):
+    off = addr - BASE
+    mem[off:off + n] = (v & ((1 << (8 * n)) - 1)).to_bytes(n, "little")
+
+
+regs = [0] * 16  # B0..B15
+
+
+def decode(word):
+    if word == 0:
+        return ("NOP",)
+    if word & 0x4:
+        op = (word >> 4) & 0x7
+        base = (word >> 18) & 0x1F
+        srcdst = (word >> 23) & 0x1F
+        names = {2: "LDB", 4: "LDH", 6: "LDW", 3: "STB", 5: "STH", 7: "STW"}
+        return ("MEM", names[op], base, srcdst)
+    b3 = (word >> 3) & 1
+    b4 = (word >> 4) & 1
+    if b3 and b4:
+        op = (word >> 5) & 0x7F
+        src1 = (word >> 13) & 0x1F
+        src2 = (word >> 18) & 0x1F
+        dst = (word >> 23) & 0x1F
+        names = {0x03: "ADD", 0x07: "SUB", 0x7b: "AND", 0x7f: "OR", 0x6f: "XOR",
+                 0x53: "CMPEQ", 0x47: "CMPGT", 0x4f: "CMPGTU", 0x57: "CMPLT", 0x5f: "CMPLTU"}
+        return ("ALUL", names[op], src1, src2, dst)
+    if b3 and not b4:
+        h = (word >> 6) & 1
+        cst = (word >> 7) & 0xFFFF
+        dst = (word >> 23) & 0x1F
+        return ("MVK", h, cst, dst)
+    if (not b3) and b4:
+        z = (word >> 28) & 1
+        creg = (word >> 29) & 0x7
+        cst = (word >> 7) & 0x1FFFFF
+        if cst & (1 << 20):
+            cst -= 1 << 21
+        return ("BCONST", z, creg, cst)
+    # b3==0, b4==0
+    if not ((word >> 5) & 1):
+        op = (word >> 7) & 0x1F
+        src1 = (word >> 13) & 0x1F
+        src2 = (word >> 18) & 0x1F
+        dst = (word >> 23) & 0x1F
+        names = {0x19: "MPY", 0x01: "MPYH", 0x09: "MPYHL", 0x11: "MPYLH"}
+        return ("MPY", names[op], src1, src2, dst)
+    if (word >> 9) & 1:
+        src2 = (word >> 18) & 0x1F
+        return ("BREG", src2)
+    op = (word >> 6) & 0x3F
+    src1 = (word >> 13) & 0x1F  # shift count register
+    src2 = (word >> 18) & 0x1F  # value register
+    dst = (word >> 23) & 0x1F
+    names = {0x33: "SHL", 0x37: "SHR", 0x27: "SHRU"}
+    return ("ALUS", names[op], src1, src2, dst)
+
+
+pc = BASE
+pending_loads = []   # [(fire_step, reg, value), ...]
+pending_mul = []     # [(fire_step, reg, value), ...]
+pending_branch = None  # (fire_step, target) or None
+halted = False
+
+for step in range(STEP_LIMIT):
+    still = []
+    for fire, reg, val in pending_loads:
+        if fire == step:
+            regs[reg] = val & MASK32
+        else:
+            still.append((fire, reg, val))
+    pending_loads = still
+    still = []
+    for fire, reg, val in pending_mul:
+        if fire == step:
+            regs[reg] = val & MASK32
+        else:
+            still.append((fire, reg, val))
+    pending_mul = still
+
+    this_pc = pc
+    word = rd32(pc)
+    decoded = decode(word)
+    pc_next = pc + 4
+
+    kind = decoded[0]
+    if kind == "NOP":
+        pass
+    elif kind == "ALUL":
+        _, name, src1, src2, dst = decoded
+        a, b = regs[src1], regs[src2]
+        if name == "ADD":
+            v = a + b
+        elif name == "SUB":
+            v = a - b
+        elif name == "AND":
+            v = a & b
+        elif name == "OR":
+            v = a | b
+        elif name == "XOR":
+            v = a ^ b
+        elif name == "CMPEQ":
+            v = 1 if (a & MASK32) == (b & MASK32) else 0
+        elif name == "CMPGT":
+            v = 1 if s32(a) > s32(b) else 0
+        elif name == "CMPGTU":
+            v = 1 if (a & MASK32) > (b & MASK32) else 0
+        elif name == "CMPLT":
+            v = 1 if s32(a) < s32(b) else 0
+        else:  # CMPLTU
+            v = 1 if (a & MASK32) < (b & MASK32) else 0
+        regs[dst] = v & MASK32
+    elif kind == "ALUS":
+        _, name, src1, src2, dst = decoded
+        value = regs[src2] & MASK32
+        shamt = regs[src1] & 0x1F
+        if name == "SHL":
+            v = (value << shamt) & MASK32
+        elif name == "SHRU":
+            v = (value >> shamt) & MASK32
+        else:  # SHR (arithmetic)
+            v = (s32(value) >> shamt) & MASK32
+        regs[dst] = v
+    elif kind == "MVK":
+        _, h, cst, dst = decoded
+        if h:
+            regs[dst] = (regs[dst] & 0xFFFF) | ((cst & 0xFFFF) << 16)
+        else:
+            v = cst & 0xFFFF
+            if v & 0x8000:
+                v -= 0x10000
+            regs[dst] = v & MASK32
+    elif kind == "MPY":
+        _, name, src1, src2, dst = decoded
+        a, b = regs[src1] & MASK32, regs[src2] & MASK32
+
+        def lo16s(x):
+            x &= 0xFFFF
+            return x - 0x10000 if x & 0x8000 else x
+
+        def hi16s(x):
+            return lo16s((x >> 16) & 0xFFFF)
+
+        if name == "MPY":
+            v = lo16s(a) * lo16s(b)
+        elif name == "MPYH":
+            v = hi16s(a) * hi16s(b)
+        elif name == "MPYHL":
+            v = hi16s(a) * lo16s(b)
+        else:  # MPYLH
+            v = lo16s(a) * hi16s(b)
+        pending_mul.append((step + 2, dst, v & MASK32))
+    elif kind == "MEM":
+        _, name, base, srcdst = decoded
+        addr = regs[base] & MASK32
+        if name == "LDB":
+            pending_loads.append((step + 5, srcdst, rdmem(addr, 1)))
+        elif name == "LDH":
+            pending_loads.append((step + 5, srcdst, rdmem(addr, 2)))
+        elif name == "LDW":
+            pending_loads.append((step + 5, srcdst, rdmem(addr, 4)))
+        elif name == "STB":
+            wrmem(addr, regs[srcdst], 1)
+        elif name == "STH":
+            wrmem(addr, regs[srcdst], 2)
+        else:  # STW
+            wrmem(addr, regs[srcdst], 4)
+    elif kind == "BCONST":
+        _, z, creg, cst = decoded
+        taken = True
+        if creg == 1:
+            taken = (regs[0] == 0) if z == 1 else (regs[0] != 0)
+        target = (this_pc + cst * 4) & MASK32
+        if taken:
+            if creg == 0 and target == this_pc:
+                halted = True
+                break
+            pending_branch = (step + 5, target)
+    elif kind == "BREG":
+        _, src2 = decoded
+        target = regs[src2] & MASK32
+        pending_branch = (step + 5, target)
+    else:
+        raise RuntimeError(f"unsupported decode {decoded} at {this_pc:#x}")
+
+    if pending_branch is not None and pending_branch[0] == step:
+        pc_next = pending_branch[1]
+        pending_branch = None
+
+    pc = pc_next
+else:
+    print("TIMEOUT")
+    sys.exit(0)
+
+if not halted:
+    print("TIMEOUT")
+    sys.exit(0)
+
+print(s32(regs[0]))
+PY
+    local result
+    result="$(cat "$outfile")"
+    if [ "$result" = "TIMEOUT" ]; then
+        echo "FAIL $name: simulator never reached the halt loop (step limit exceeded)"
+        return 1
+    fi
+    if [ "$result" -eq "$expect" ] 2>/dev/null; then
+        echo "PASS $name (B0=$result)"
+        return 0
+    fi
+    echo "FAIL $name: expected $expect, got $result"
     return 1
 }
 
@@ -667,6 +1492,53 @@ check_armv8a() {
         return 0
     fi
     echo "FAIL $name: expected $expect, got $x0_dec (X00 hex: $x0_hex)"
+    return 1
+}
+
+# qemu-system-avr's "uno" board (a real ATmega328P) boots with PC already at 0, matching this
+# backend's own `org 0` reset vector directly - no PC-forcing `loader` device needed the way
+# check_armv7a()/check_68000() need on a bare `-M none` CPU. The program's own result sits in
+# r16:r17 (`ac0:ac1`, AVRCodegen.h's own header comment) the instant execution reaches `_start`'s
+# `done: jmp done` spin loop.
+check_avr() {
+    local src="$1" name="$2"
+    local binfile="$tmpdir/$name.bin"
+
+    if ! "$PCC" --target=avr --format=raw \
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+        echo "FAIL $name: compile error"
+        sed 's/^/    /' "$tmpdir/$name.log"
+        return 1
+    fi
+
+    qemu_count=$((qemu_count + 1))
+    local monitor="$sockdir/$qemu_count"
+    local outfile="$tmpdir/$name.out"
+
+    qemu-system-avr -M uno -device "loader,file=$binfile,addr=0x0" \
+        -monitor "unix:$monitor,server,nowait" -display none -no-reboot -serial none \
+        >"$tmpdir/$name.qemu.log" 2>&1 &
+    local qemu_pid=$!
+    ( sleep 45; kill -9 "$qemu_pid" 2>/dev/null ) &
+    local watcher=$!
+
+    wait_for_qemu "$name" "$monitor" "$outfile" "$qemu_pid" "$watcher" || return 1
+
+    local r16_hex r17_hex
+    r16_hex="$(grep -oE 'R\[16\]: *[0-9a-fA-F]+' "$outfile" | head -1 | grep -oE '[0-9a-fA-F]+$')"
+    r17_hex="$(grep -oE 'R\[17\]: *[0-9a-fA-F]+' "$outfile" | head -1 | grep -oE '[0-9a-fA-F]+$')"
+    if [ -z "$r16_hex" ] || [ -z "$r17_hex" ]; then
+        echo "FAIL $name: qemu produced no R[16]/R[17] (timed out or crashed)"
+        return 1
+    fi
+
+    local dec=$(( (16#$r17_hex << 8) | 16#$r16_hex ))
+    dec="$(to_signed "$dec" 16)"
+    if [ "$dec" -eq "$expect" ]; then
+        echo "PASS $name (r16:r17=$dec)"
+        return 0
+    fi
+    echo "FAIL $name: expected $expect, got $dec (r16=$r16_hex r17=$r17_hex)"
     return 1
 }
 
@@ -1761,6 +2633,10 @@ is_known_unsupported() {
     case "$TARGET:$1" in
         pdp7:types_longlong_divmod.c) return 0 ;;          # no verified wide multiply/divide routine
         pdp7:types_longlong_divmod_repeated.c) return 0 ;; # same - no verified wide multiply/divide routine
+        saturn:types_longlong_divmod.c) return 0 ;;          # no verified multi-chunk multiply/divide routine
+        saturn:types_longlong_divmod_repeated.c) return 0 ;; # same - no verified multi-chunk multiply/divide routine
+        saturn:place.c) return 0 ;;                          # '@' fixed placement isn't supported on this backend
+        saturn:identical_code_folding_addr_exclusion.c) return 0 ;; # same - needs '@' fixed placement
         8086:types_longlong_divmod.c) return 0 ;;          # routine doesn't fit the 512-byte boot sector
         8088:types_longlong_divmod.c) return 0 ;;
         8086:types_longlong_divmod_repeated.c) return 0 ;; # same - doesn't fit the 512-byte boot sector
@@ -1808,6 +2684,12 @@ is_known_unsupported() {
         8051:types_params_return.c) return 0 ;;
         pdp11:types_longlong_divmod.c) return 0 ;;          # no verified wide multiply/divide routine
         pdp11:types_longlong_divmod_repeated.c) return 0 ;; # same - no verified wide multiply/divide routine
+        pdp10:types_longlong_divmod.c) return 0 ;;          # no verified wide multiply/divide routine
+        pdp10:types_longlong_divmod_repeated.c) return 0 ;; # same - no verified wide multiply/divide routine
+        pdp10:types_arrays.c) return 0 ;;                   # a wide (long/long long) ARRAY ELEMENT's own
+                                                             # read/write still only moves one native word here -
+                                                             # same limitation as pdp11's own entry above (see
+                                                             # Pdp10Codegen.cpp's own genIndexAddr()/genIndex())
         pdp11:types_arrays.c) return 0 ;;                   # a wide (long/long long) ARRAY ELEMENT's own
                                                              # read/write still only moves one native word here -
                                                              # see Pdp11Codegen.cpp's own genIndexAddr()/genIndex()
@@ -1862,7 +2744,12 @@ for src in "$SCRIPT_DIR"/*.c "${target_sources[@]}"; do
     case "$TARGET" in
         pdp7) check_pdp7 "$src" "$name" || fail=1 ;;
         pdp11) check_pdp11 "$src" "$name" || fail=1 ;;
+        pdp10) check_pdp10 "$src" "$name" || fail=1 ;;
         vax) check_vax "$src" "$name" || fail=1 ;;
+        avr) check_avr "$src" "$name" || fail=1 ;;
+        alpha) check_alpha "$src" "$name" || fail=1 ;;
+        saturn) check_saturn "$src" "$name" || fail=1 ;;
+        tms320c6713) check_tms320c6713 "$src" "$name" || fail=1 ;;
         r10000) check_r10000 "$src" "$name" || fail=1 ;;
         powerpc) check_powerpc "$src" "$name" || fail=1 ;;
         cortex-m3) check_cortex_m3 "$src" "$name" || fail=1 ;;

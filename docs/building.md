@@ -12,9 +12,9 @@ make test           # the preprocessor/archive/Mach-O/hosted-linker/pic16+pic18 
 documented in `docs/platforms.md`'s own per-target entry - a missing
 tool fails loudly rather than being silently skipped).
 
-`tests/run_tests.sh` also has checks for `pdp11`, `r10000`, `powerpc`,
-`cortex-m3`, `armv7a`, `armv8a`, and `8008` that `make test` doesn't
-run; invoke any of these directly with `tests/run_tests.sh
+`tests/run_tests.sh` also has checks for `pdp11`, `pdp10`, `r10000`,
+`powerpc`, `cortex-m3`, `armv7a`, `armv8a`, and `8008` that `make test`
+doesn't run; invoke any of these directly with `tests/run_tests.sh
 build/bin/pcc --target=<name>`. Their software-identical aliases
 (`r4000`, `cortex-m4`/`cortex-m7`, like `8088`'s alias of `8086`
 above) aren't separately runnable here - same backend, provably

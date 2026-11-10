@@ -75,7 +75,7 @@ SPACE +=
 # on every source file before ANTLR ever sees it) - not backend-
 # specific, but still their own subdirectories needing the same vpath
 # treatment.
-BACKEND_DIRS := $(SRC_DIR)/codegen/pdp7 $(SRC_DIR)/codegen/x86_8086 $(SRC_DIR)/codegen/m6502 $(SRC_DIR)/codegen/m65c02 $(SRC_DIR)/codegen/m68k $(SRC_DIR)/codegen/mc68328 $(SRC_DIR)/codegen/pdp11 $(SRC_DIR)/codegen/i8080 $(SRC_DIR)/codegen/pic16 $(SRC_DIR)/codegen/pic18 $(SRC_DIR)/codegen/z80 $(SRC_DIR)/codegen/i8008 $(SRC_DIR)/codegen/stm8 $(SRC_DIR)/codegen/m16c $(SRC_DIR)/codegen/mips $(SRC_DIR)/codegen/mcs51 $(SRC_DIR)/codegen/stm32 $(SRC_DIR)/codegen/i386 $(SRC_DIR)/codegen/armm $(SRC_DIR)/codegen/arm $(SRC_DIR)/codegen/arm64 $(SRC_DIR)/codegen/powerpc $(SRC_DIR)/codegen/sparc $(SRC_DIR)/codegen/vax
+BACKEND_DIRS := $(SRC_DIR)/codegen/pdp7 $(SRC_DIR)/codegen/x86_8086 $(SRC_DIR)/codegen/m6502 $(SRC_DIR)/codegen/m65c02 $(SRC_DIR)/codegen/m68k $(SRC_DIR)/codegen/mc68328 $(SRC_DIR)/codegen/pdp11 $(SRC_DIR)/codegen/pdp10 $(SRC_DIR)/codegen/i8080 $(SRC_DIR)/codegen/pic16 $(SRC_DIR)/codegen/pic18 $(SRC_DIR)/codegen/z80 $(SRC_DIR)/codegen/i8008 $(SRC_DIR)/codegen/stm8 $(SRC_DIR)/codegen/m16c $(SRC_DIR)/codegen/mips $(SRC_DIR)/codegen/mcs51 $(SRC_DIR)/codegen/stm32 $(SRC_DIR)/codegen/i386 $(SRC_DIR)/codegen/armm $(SRC_DIR)/codegen/arm $(SRC_DIR)/codegen/arm64 $(SRC_DIR)/codegen/powerpc $(SRC_DIR)/codegen/sparc $(SRC_DIR)/codegen/vax $(SRC_DIR)/codegen/avr $(SRC_DIR)/codegen/alpha $(SRC_DIR)/codegen/saturn $(SRC_DIR)/codegen/tms320c6713
 AST_DIR      := $(SRC_DIR)/ast
 IR_DIR       := $(SRC_DIR)/ir
 LINKER_DIR   := $(SRC_DIR)/linker
@@ -130,6 +130,7 @@ HAND_SRCS := \
     $(FACTORY_DIR)/STM8LinkerFactory.cpp \
     $(FACTORY_DIR)/MC68328LinkerFactory.cpp \
     $(FACTORY_DIR)/Pdp11LinkerFactory.cpp \
+    $(FACTORY_DIR)/Pdp10LinkerFactory.cpp \
     $(FACTORY_DIR)/M16cLinkerFactory.cpp \
     $(FACTORY_DIR)/I386LinkerFactory.cpp \
     $(FACTORY_DIR)/ArmLinkerFactory.cpp \
@@ -139,6 +140,10 @@ HAND_SRCS := \
     $(FACTORY_DIR)/PowerPCLinkerFactory.cpp \
     $(FACTORY_DIR)/SparcLinkerFactory.cpp \
     $(FACTORY_DIR)/VaxLinkerFactory.cpp \
+    $(FACTORY_DIR)/AVRLinkerFactory.cpp \
+    $(FACTORY_DIR)/AlphaLinkerFactory.cpp \
+    $(FACTORY_DIR)/SaturnLinkerFactory.cpp \
+    $(FACTORY_DIR)/Tms320C6713LinkerFactory.cpp \
     $(FACTORY_DIR)/Arm64LinkerFactory.cpp \
     $(FACTORY_DIR)/MCS51LinkerFactory.cpp \
     $(FACTORY_DIR)/PIC16LinkerFactory.cpp \
@@ -172,6 +177,8 @@ HAND_SRCS := \
     $(SRC_DIR)/codegen/mc68328/MC68328Assembler.cpp \
     $(SRC_DIR)/codegen/pdp11/Pdp11Codegen.cpp \
     $(SRC_DIR)/codegen/pdp11/Pdp11Assembler.cpp \
+    $(SRC_DIR)/codegen/pdp10/Pdp10Codegen.cpp \
+    $(SRC_DIR)/codegen/pdp10/Pdp10Assembler.cpp \
     $(SRC_DIR)/codegen/i8080/I8080Codegen.cpp \
     $(SRC_DIR)/codegen/i8080/I8080Assembler.cpp \
     $(SRC_DIR)/codegen/z80/Z80Codegen.cpp \
@@ -205,7 +212,15 @@ HAND_SRCS := \
     $(SRC_DIR)/codegen/sparc/SparcCodegen.cpp \
     $(SRC_DIR)/codegen/sparc/SparcAssembler.cpp \
     $(SRC_DIR)/codegen/vax/VaxCodegen.cpp \
-    $(SRC_DIR)/codegen/vax/VaxAssembler.cpp
+    $(SRC_DIR)/codegen/vax/VaxAssembler.cpp \
+    $(SRC_DIR)/codegen/avr/AVRCodegen.cpp \
+    $(SRC_DIR)/codegen/avr/AVRAssembler.cpp \
+    $(SRC_DIR)/codegen/alpha/AlphaCodegen.cpp \
+    $(SRC_DIR)/codegen/alpha/AlphaAssembler.cpp \
+    $(SRC_DIR)/codegen/saturn/SaturnCodegen.cpp \
+    $(SRC_DIR)/codegen/saturn/SaturnAssembler.cpp \
+    $(SRC_DIR)/codegen/tms320c6713/Tms320C6713Codegen.cpp \
+    $(SRC_DIR)/codegen/tms320c6713/Tms320C6713Assembler.cpp
 
 ALL_SRCS := $(GENERATED_SRCS) $(HAND_SRCS)
 OBJS     := $(patsubst %,$(OBJ_DIR)/%.o,$(notdir $(ALL_SRCS)))
@@ -282,6 +297,7 @@ test: all $(BIN_DIR)/preprocessor_test $(BIN_DIR)/archive_reader_test $(BIN_DIR)
 	python3 tests/hosted_linux_linker_test.py $(TARGET)
 	python3 tests/pic16_function_pointer_call_test.py $(TARGET)
 	python3 tests/pic16_pic18_extern_function_address_test.py $(TARGET)
+	python3 tests/m30626fjpfp_alias_test.py $(TARGET)
 	./tests/run_tests.sh $(TARGET) --target=pdp7
 	./tests/run_tests.sh $(TARGET) --target=8086
 	./tests/run_tests.sh $(TARGET) --target=6502
