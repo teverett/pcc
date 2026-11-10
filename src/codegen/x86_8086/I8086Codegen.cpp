@@ -1311,11 +1311,6 @@ void I8086Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool want
     if (wantRemainder) code_ << "    mov ax, dx\n";
 }
 
-std::string I8086Codegen::buildAssembleCommand(const std::string &assemblerPath, const std::string & /*format*/,
-                                                 const std::string &srcPath, const std::string &outPath) const {
-    return "\"" + assemblerPath + "\" -f bin -o \"" + outPath + "\" \"" + srcPath + "\"";
-}
-
 // A from-scratch x86 instruction encoder, no external assembler needed.
 //
 // The boot-sector padding/signature is only added for `--format=raw`, never in

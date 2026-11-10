@@ -925,12 +925,6 @@ void Arm64Codegen::genLogicalNot(const ir::Expr &rhs) {
     code_ << "    cmp " << reg(0, wide) << "," << (wide ? "xzr" : "wzr") << "\n    cseteq w0\n";
 }
 
-std::string Arm64Codegen::buildAssembleCommand(const std::string &, const std::string &format, const std::string &,
-                                                const std::string &) const {
-    throw std::runtime_error("the armv8a backend has no external assembler - '" + format +
-                              "' isn't a format assembleInProcess() supports (only 'bin' is)");
-}
-
 std::optional<std::string> Arm64Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "raw") return assembleArm64(asmText);

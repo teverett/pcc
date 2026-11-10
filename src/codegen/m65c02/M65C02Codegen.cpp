@@ -1428,12 +1428,6 @@ void M65C02Codegen::genLogicalNot(const ir::Expr &rhs) {
     code_ << Ldone << ":\n";
 }
 
-std::string M65C02Codegen::buildAssembleCommand(const std::string &, const std::string &format, const std::string &,
-                                                 const std::string &) const {
-    throw std::runtime_error("the 65C02 backend has no external assembler - '" + format +
-                              "' isn't a format assembleInProcess() supports (only 'bin' is)");
-}
-
 std::optional<std::string> M65C02Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "raw") return assembleM65C02(asmText);

@@ -1148,12 +1148,6 @@ void Pdp10Codegen::genLogicalNot(const ir::Expr &rhs) {
     code_ << Ldone << ":\n";
 }
 
-std::string Pdp10Codegen::buildAssembleCommand(const std::string &, const std::string &format, const std::string &,
-                                                 const std::string &) const {
-    throw std::runtime_error("the pdp10 backend has no external assembler - '" + format +
-                              "' isn't a format assembleInProcess() supports");
-}
-
 std::optional<std::string> Pdp10Codegen::assembleInProcess(const std::string &asmText,
                                                             const std::string &format) const {
     if (format == "raw") return assemblePdp10(asmText);

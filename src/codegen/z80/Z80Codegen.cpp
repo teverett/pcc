@@ -1433,12 +1433,6 @@ void Z80Codegen::testTruthy(const ir::Expr &e) {
     }
 }
 
-std::string Z80Codegen::buildAssembleCommand(const std::string &, const std::string &format, const std::string &,
-                                              const std::string &) const {
-    throw std::runtime_error("the Z80 backend has no external assembler - '" + format +
-                              "' isn't a format assembleInProcess() supports (only 'bin' is)");
-}
-
 std::optional<std::string> Z80Codegen::assembleInProcess(const std::string &asmText,
                                                            const std::string &format) const {
     if (format == "raw") return assembleZ80(asmText);

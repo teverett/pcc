@@ -2,8 +2,8 @@
 //
 // Reads one or more C source files, parsed separately but merged into one
 // program sharing a flat global/function namespace, then compiles the
-// result via a Backend (see Codegen.h) and, unless --format=asm, pipes the
-// output through the target's real assembler.
+// result via a Backend (see Codegen.h) and, unless --format=asm, assembles
+// it with that target's own in-process assembler.
 
 #include <unistd.h>
 
@@ -128,7 +128,7 @@ class CountingErrorListener : public antlr4::BaseErrorListener {
 
 void usage(const char *argv0) {
     std::cerr << "Usage: " << argv0
-              << " [--target=<target>[-<host>]] [--format=asm|<target-specific>] [--out file] [--assembler path]\n"
+              << " [--target=<target>[-<host>]] [--format=asm|<target-specific>] [--out file]\n"
                  "       [--optimize] [--dump-ir] [--dump-asm] file.c [file2.c ...]\n"
                  "   or: " << argv0
               << " --link [--target=<target>[-<host>]] --format=<target-native> [--gc-sections] [--base=<word-addr>] [--out file] file1.o [file2.o ...]\n"
@@ -414,58 +414,17 @@ std::string compileOneFile(const std::string &srcPath, const std::map<std::strin
     return asmText;
 }
 
-// Assembles `asmText` into `format`; "asm" is a no-op. Prefers the
-// backend's in-process assembler, falling back to its external assembler
-// tool via a temp file pair.
-std::string assembleOne(const pcc::Backend &backend, const std::string &asmText, const std::string &format,
-                          const std::string &assemblerPath) {
+// Assembles `asmText` into `format`; "asm" is a no-op. Every backend
+// assembles every format it lists in assembledFormats() in-process (see
+// Codegen.h's own assembleInProcess()) - there's no external assembler
+// fallback.
+std::string assembleOne(const pcc::Backend &backend, const std::string &asmText, const std::string &format) {
     if (format == "asm") return asmText;
 
     if (std::optional<std::string> result = backend.assembleInProcess(asmText, format)) return *result;
 
-    // mkstemp() (not mkstemps(), MinGW lacks it) can't give the input file
-    // its required extension directly, so it's added via a rename after.
-    std::string tmpDir = std::filesystem::temp_directory_path().string();
-    std::string tmpPathTemplate = tmpDir + "/pcc_XXXXXX";
-    std::vector<char> tmpPath(tmpPathTemplate.begin(), tmpPathTemplate.end());
-    tmpPath.push_back('\0');
-    int fd = mkstemp(tmpPath.data());
-    if (fd < 0) throw std::runtime_error("could not create a temporary file for the generated assembly");
-    close(fd);
-    std::string tmpPathStr = std::string(tmpPath.data()) + backend.sourceExtension();
-    if (std::rename(tmpPath.data(), tmpPathStr.c_str()) != 0) {
-        std::remove(tmpPath.data());
-        throw std::runtime_error("could not create a temporary file for the generated assembly");
-    }
-    {
-        std::ofstream tmp(tmpPathStr);
-        tmp << asmText;
-    }
-
-    std::string outTmpPathTemplate = tmpDir + "/pcc_out_XXXXXX";
-    std::vector<char> outTmpPath(outTmpPathTemplate.begin(), outTmpPathTemplate.end());
-    outTmpPath.push_back('\0');
-    int outFd = mkstemp(outTmpPath.data());
-    if (outFd < 0) {
-        std::remove(tmpPathStr.c_str());
-        throw std::runtime_error("could not create a temporary output file");
-    }
-    std::string outTmpPathStr(outTmpPath.data());
-    close(outFd);
-
-    std::string cmd = backend.buildAssembleCommand(assemblerPath, format, tmpPathStr, outTmpPathStr);
-    int rc = std::system(cmd.c_str());
-    std::remove(tmpPathStr.c_str());
-    if (rc != 0) {
-        std::remove(outTmpPathStr.c_str());
-        throw std::runtime_error("assembling with '" + assemblerPath +
-                                   "' failed (pass --assembler=<path> if it's not on PATH / at the default location)");
-    }
-    std::ifstream outFile(outTmpPathStr, std::ios::binary);
-    std::ostringstream ss;
-    ss << outFile.rdbuf();
-    std::remove(outTmpPathStr.c_str());
-    return ss.str();
+    throw std::runtime_error("internal: " + backend.name() + " backend has no in-process assembler for format '" +
+                               format + "'");
 }
 
 }  // namespace
@@ -483,8 +442,6 @@ int main(int argc, char **argv) {
     std::string target = "pdp7";
     std::string format = "asm";
     std::string outPath;
-    std::string assemblerPath;
-    bool assemblerPathSet = false;
     std::string systemLinker = "ld";
     bool systemLinkerSet = false;
     std::vector<std::string> srcPaths;
@@ -517,9 +474,6 @@ int main(int argc, char **argv) {
             formatSet = true;
         } else if (!(v = takeValue("--out=")).empty()) {
             outPath = v;
-        } else if (!(v = takeValue("--assembler=")).empty()) {
-            assemblerPath = v;
-            assemblerPathSet = true;
         } else if (!(v = takeValue("--linker=")).empty()) {
             systemLinker = v;
             systemLinkerSet = true;
@@ -726,7 +680,6 @@ int main(int argc, char **argv) {
         }
         if (auto *arm64 = dynamic_cast<pcc::Arm64Codegen *>(backend.get())) arm64->setHostedAbi(macosHosted);
     }
-    if (!assemblerPathSet) assemblerPath = backend->defaultAssemblerPath();
 
     std::vector<std::string> assembledFormats = backend->assembledFormats();
     bool formatOk = format == "asm";
@@ -865,7 +818,7 @@ int main(int argc, char **argv) {
                 }
                 std::string asmText =
                     compileOneFile(srcPath, predefinedMacros, *fileBackend, allowExternal, optimize, dumpIr, dumpAsm);
-                std::string bytes = assembleOne(*fileBackend, asmText, format, assemblerPath);
+                std::string bytes = assembleOne(*fileBackend, asmText, format);
                 writeToBuildDir(baseName(srcPath) + ".o", bytes, /*binary=*/true);
             }
         } catch (const std::exception &e) {
@@ -880,7 +833,7 @@ int main(int argc, char **argv) {
     try {
         std::string asmText =
             compileOneFile(srcPaths[0], predefinedMacros, *backend, allowExternal, optimize, dumpIr, dumpAsm);
-        std::string bytes = assembleOne(*backend, asmText, format, assemblerPath);
+        std::string bytes = assembleOne(*backend, asmText, format);
         if (backend->isObjectFormat(format) && outPath.empty()) {
             writeToBuildDir(baseName(srcPaths[0]) + ".o", bytes, /*binary=*/true);
         } else {

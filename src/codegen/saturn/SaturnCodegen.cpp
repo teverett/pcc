@@ -14,12 +14,6 @@ namespace {
 }
 }  // namespace
 
-std::string SaturnCodegen::buildAssembleCommand(const std::string &, const std::string &format, const std::string &,
-                                                 const std::string &) const {
-    throw std::runtime_error("saturn: no external assembler - --format=" + format +
-                              " must go through assembleInProcess()");
-}
-
 std::optional<std::string> SaturnCodegen::assembleInProcess(const std::string &asmText,
                                                               const std::string &format) const {
     if (format == "raw") return assembleSaturn(asmText, /*allowExternal=*/false);

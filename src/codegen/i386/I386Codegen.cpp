@@ -927,12 +927,6 @@ void I386Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool wantR
     if (wantRemainder) code_ << "    mov eax,edx\n";
 }
 
-std::string I386Codegen::buildAssembleCommand(const std::string &, const std::string &format, const std::string &,
-                                                const std::string &) const {
-    throw std::runtime_error("the i386 backend has no external assembler - '" + format +
-                              "' isn't a format assembleInProcess() supports (only 'bin' is)");
-}
-
 std::optional<std::string> I386Codegen::assembleInProcess(const std::string &asmText,
                                                             const std::string &format) const {
     if (format == "raw") return assembleI386(asmText);

@@ -1417,12 +1417,6 @@ void Tms320C6713Codegen::genBinary(const ir::Expr &e) {
     genCompare(op, *e.lhs, *e.rhs);
 }
 
-std::string Tms320C6713Codegen::buildAssembleCommand(const std::string &, const std::string &format,
-                                                       const std::string &, const std::string &) const {
-    throw std::runtime_error("the tms320c6713 backend has no external assembler - '" + format +
-                              "' isn't a format assembleInProcess() supports (only 'raw' is)");
-}
-
 std::optional<std::string> Tms320C6713Codegen::assembleInProcess(const std::string &asmText,
                                                                    const std::string &format) const {
     if (format == "raw") return assembleTms320C6713(asmText);

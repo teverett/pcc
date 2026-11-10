@@ -1086,12 +1086,6 @@ void ArmCodegen::genLogicalNot(const ir::Expr &rhs) {
     code_ << "    moveq r0,1\n";
 }
 
-std::string ArmCodegen::buildAssembleCommand(const std::string &, const std::string &format, const std::string &,
-                                              const std::string &) const {
-    throw std::runtime_error("the armv7a backend has no external assembler - '" + format +
-                              "' isn't a format assembleInProcess() supports (only 'bin' is)");
-}
-
 std::optional<std::string> ArmCodegen::assembleInProcess(const std::string &asmText,
                                                            const std::string &format) const {
     if (format == "raw") return assembleArm(asmText);

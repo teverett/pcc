@@ -30,9 +30,6 @@ class I8086Codegen : public Backend {
     TypeWidths typeWidths() const override { return {1, 2, 2, 4, 8}; }
     std::string sourceExtension() const override { return ".asm"; }
     std::vector<std::string> assembledFormats() const override { return {"raw", "coff", "elf"}; }
-    std::string defaultAssemblerPath() const override { return "nasm"; }
-    std::string buildAssembleCommand(const std::string &assemblerPath, const std::string &format,
-                                      const std::string &srcPath, const std::string &outPath) const override;
     std::map<std::string, std::string> perFileAsm() const override;
     std::optional<std::string> assembleInProcess(const std::string &asmText,
                                                   const std::string &format) const override;

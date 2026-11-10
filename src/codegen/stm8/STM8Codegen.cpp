@@ -1410,12 +1410,6 @@ void STM8Codegen::genLogicalNot(const ir::Expr &rhs) {
     code_ << Ldone << ":\n";
 }
 
-std::string STM8Codegen::buildAssembleCommand(const std::string &, const std::string &format, const std::string &,
-                                               const std::string &) const {
-    throw std::runtime_error("the stm8 backend has no external assembler - '" + format +
-                              "' isn't a format assembleInProcess() supports (only 'bin' is)");
-}
-
 std::optional<std::string> STM8Codegen::assembleInProcess(const std::string &asmText,
                                                            const std::string &format) const {
     if (format == "raw") return assembleSTM8(asmText);

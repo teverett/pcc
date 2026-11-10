@@ -41,22 +41,14 @@ class Backend {
     // program for 8086 but a relocatable object for z80). Default: only "coff".
     virtual bool isObjectFormat(const std::string &format) const { return format == "coff"; }
 
-    // Where to find the real assembler if --assembler wasn't given: a relative path or a
-    // PATH-resolved command name.
-    virtual std::string defaultAssemblerPath() const = 0;
-
-    // Shell command to assemble `srcPath` into `outPath` using `format` and `assemblerPath`.
-    virtual std::string buildAssembleCommand(const std::string &assemblerPath, const std::string &format,
-                                              const std::string &srcPath, const std::string &outPath) const = 0;
-
     // Valid only after generate() was called on this instance: splits the combined generated
     // text per input source file (for --dump-asm). Text not tied to one input file (entry
     // sequence, internal helper routines) is attributed to the file defining `main`.
     virtual std::map<std::string, std::string> perFileAsm() const = 0;
 
-    // Assembles `asmText` for `format` entirely in-process, or returns nullopt if this
-    // backend doesn't support that; the caller then falls back to buildAssembleCommand()
-    // plus an external assembler subprocess.
+    // Assembles `asmText` for `format` entirely in-process. Every format a backend lists in
+    // assembledFormats() must return a real value here - there's no external assembler
+    // fallback - so the default (nullopt) is only reachable for an internal error.
     virtual std::optional<std::string> assembleInProcess(const std::string &asmText,
                                                            const std::string &format) const {
         (void)asmText;

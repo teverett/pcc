@@ -1486,12 +1486,6 @@ void I8080Codegen::testTruthy(const ir::Expr &e) {
     code_ << "    mov a,c\n    ora a\n";
 }
 
-std::string I8080Codegen::buildAssembleCommand(const std::string &, const std::string &format, const std::string &,
-                                                const std::string &) const {
-    throw std::runtime_error("the 8080 backend has no external assembler - '" + format +
-                              "' isn't a format assembleInProcess() supports (only 'bin' is)");
-}
-
 std::optional<std::string> I8080Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "raw") return assembleI8080(asmText);

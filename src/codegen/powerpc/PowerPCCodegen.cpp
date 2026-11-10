@@ -1031,12 +1031,6 @@ void PowerPCCodegen::genLogicalNot(const ir::Expr &rhs) {
     code_ << Ldone << ":\n";
 }
 
-std::string PowerPCCodegen::buildAssembleCommand(const std::string &, const std::string &format, const std::string &,
-                                                   const std::string &) const {
-    throw std::runtime_error("the powerpc backend has no external assembler - '" + format +
-                              "' isn't a format assembleInProcess() supports (only 'raw' is)");
-}
-
 std::optional<std::string> PowerPCCodegen::assembleInProcess(const std::string &asmText,
                                                                const std::string &format) const {
     if (format == "raw") return assemblePowerPC(asmText);

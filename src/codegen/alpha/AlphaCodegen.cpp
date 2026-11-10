@@ -844,12 +844,6 @@ void AlphaCodegen::genLogicalNot(const ir::Expr &rhs) {
     code_ << "    cmpeq t0,t0,zero\n";
 }
 
-std::string AlphaCodegen::buildAssembleCommand(const std::string &, const std::string &format, const std::string &,
-                                                const std::string &) const {
-    throw std::runtime_error("the alpha backend has no external assembler - '" + format +
-                              "' isn't a format assembleInProcess() supports");
-}
-
 std::optional<std::string> AlphaCodegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "raw") return assembleAlpha(asmText);

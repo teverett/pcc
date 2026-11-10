@@ -89,9 +89,6 @@ class Tms320C6713Codegen : public Backend {
     // never implements real separate compilation (no relocatable object format) for this
     // target.
     std::vector<std::string> assembledFormats() const override { return {"raw"}; }
-    std::string defaultAssemblerPath() const override { return ""; }
-    std::string buildAssembleCommand(const std::string &assemblerPath, const std::string &format,
-                                      const std::string &srcPath, const std::string &outPath) const override;
     std::map<std::string, std::string> perFileAsm() const override;
     std::optional<std::string> assembleInProcess(const std::string &asmText,
                                                   const std::string &format) const override;

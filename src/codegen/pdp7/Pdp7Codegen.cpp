@@ -1985,17 +1985,8 @@ void Pdp7Codegen::genShift(const std::string &op, const ir::Expr &lhs, const ir:
     code_ << "   lac " << V << "\n";
 }
 
-std::string Pdp7Codegen::buildAssembleCommand(const std::string &assemblerPath, const std::string &format,
-                                               const std::string &srcPath, const std::string &outPath) const {
-    std::string cmd = "\"" + assemblerPath + "\" --format=" + format;
-    if (!outPath.empty()) cmd += " --output \"" + outPath + "\"";
-    cmd += " \"" + srcPath + "\"";
-    return cmd;
-}
-
-// No external assembler for this target - always returns a value for
-// every format assembledFormats() lists, never falling back to
-// buildAssembleCommand() above.
+// Always returns a value for every format assembledFormats() lists - there's no
+// external assembler to fall back to.
 std::optional<std::string> Pdp7Codegen::assembleInProcess(const std::string &asmText,
                                                            const std::string &format) const {
     if (format == "a7out") return assemblePdp7(asmText, Pdp7OutputFormat::A7Out);

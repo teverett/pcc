@@ -973,12 +973,6 @@ void PIC18Codegen::genLogicalNot(const ir::Expr &rhs) {
     code_ << Ldone << ":\n";
 }
 
-std::string PIC18Codegen::buildAssembleCommand(const std::string &, const std::string &format, const std::string &,
-                                                 const std::string &) const {
-    throw std::runtime_error("the pic18 backend has no external assembler - '" + format +
-                              "' isn't a format assembleInProcess() supports (see that function's own comment)");
-}
-
 std::optional<std::string> PIC18Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
     if (format == "hex") return assemblePIC18(asmText);
