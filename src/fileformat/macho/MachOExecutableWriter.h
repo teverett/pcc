@@ -10,7 +10,7 @@
 namespace pcc {
 
 // Writes the final linked arm64 macOS executable (a real, loadable, code-signed Mach-O
-// MH_EXECUTE) for the hosted macOS linker (see linker/NativeMacOSLinker.h) - the "target file
+// MH_EXECUTE) for the hosted macOS linker (see linker/MacOSLinker.h) - the "target file
 // format" half of that linker, as MachOHostedReader.h is its "object file format" half.
 
 // Where this image base-loads; every address this writer computes is `kImageBase` plus some
@@ -26,7 +26,7 @@ constexpr uint16_t kGotPageoff12 = 8;
 
 // Tags a `MachOImage::symbols`/merge-time symbol value as living in `__DATA` (`kDataSymbolTag`) and,
 // within that, in `__bss` rather than initialized `__data` (`kBssSymbolTag`) - set by
-// linker/NativeMacOSLinker.cpp's mergeObjects() and read back by both it (while patching
+// linker/MacOSLinker.cpp's mergeObjects() and read back by both it (while patching
 // relocations) and makeMachExecutable() (while emitting final symbol addresses).
 constexpr uint64_t kDataSymbolTag = 1ULL << 63;
 constexpr uint64_t kBssSymbolTag = 1ULL << 62;
@@ -39,7 +39,7 @@ struct Import {
     uint32_t pointerOffset = 0;
 };
 
-// One real dylib or .tbd stub this program links against - what linker/NativeMacOSLinker.cpp's
+// One real dylib or .tbd stub this program links against - what linker/MacOSLinker.cpp's
 // loadLibrary()/loadInputs() resolve `-l`/direct dylib arguments into, and what `MachOImage::libraries`
 // below (and makeMachExecutable()'s LC_LOAD_DYLIB commands) consume.
 struct Library {
@@ -50,7 +50,7 @@ struct Library {
 };
 
 // The fully laid-out, fully relocated program this writer serializes into a real Mach-O file.
-// linker/NativeMacOSLinker.cpp's mergeObjects() builds one (code/got/data/bssSize sized and
+// linker/MacOSLinker.cpp's mergeObjects() builds one (code/got/data/bssSize sized and
 // patched, every symbol/import resolved to its final offset); makeMachExecutable() below turns
 // it into real load commands, segments, bind opcodes, symbol table and a code signature.
 struct MachOImage {

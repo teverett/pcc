@@ -1,4 +1,4 @@
-#include "NativeMacOSLinker.h"
+#include "MacOSLinker.h"
 
 #include <algorithm>
 #include <cstdlib>

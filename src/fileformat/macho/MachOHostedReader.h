@@ -12,7 +12,7 @@ namespace pcc {
 
 // Reads real, already-assembled thin 64-bit arm64 Mach-O input (MH_OBJECT object files,
 // MH_DYLIB shared libraries, and Apple's text-based ".tbd" stub libraries) for the hosted
-// macOS linker (see linker/NativeMacOSLinker.h) - unlike MachOFormat.h/.cpp's reader/writer
+// macOS linker (see linker/MacOSLinker.h) - unlike MachOFormat.h/.cpp's reader/writer
 // pair, which only ever round-trips this project's own simplified freestanding layout.
 
 // One real MH_OBJECT's or MH_DYLIB's parsed contents. For an object (`parseMachO(...,

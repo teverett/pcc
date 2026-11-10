@@ -1,4 +1,4 @@
-#include "HostedLinker.h"
+#include "WindowsLinuxLinker.h"
 
 #include <algorithm>
 #include <array>
@@ -28,7 +28,7 @@
 #include "fileformat/elf/ELFImage.h"
 #include "fileformat/elf/HostedElfExecutableWriter.h"
 #include "fileformat/elf/HostedElfReader.h"
-#include "NativeMacOSLinker.h"
+#include "MacOSLinker.h"
 #include "codegen/i386/I386Assembler.h"
 #include "fileformat/FileFormat.h"
 

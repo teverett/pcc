@@ -10,7 +10,7 @@
 namespace pcc {
 
 // Reads real i386 COFF import libraries, GNU import archives, and DLL export tables for the
-// hosted Windows linker (see linker/HostedLinker.h) - a different concern from
+// hosted Windows linker (see linker/WindowsLinuxLinker.h) - a different concern from
 // HostedCoffReader.h (a real COFF *object* file) and PeExportReader.h (one DLL's raw export
 // table, used here as a building block).
 

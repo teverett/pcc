@@ -8,10 +8,10 @@
 namespace pcc {
 
 // Writes the final linked i386 Windows executable (a real, loadable PE32) for the hosted PE
-// linker (see linker/HostedLinker.h) - the "target file format" half of that linker, as
+// linker (see linker/WindowsLinuxLinker.h) - the "target file format" half of that linker, as
 // HostedPeReader.h is its "object/library file format" half.
 
-// Where this program's image base-loads; linker/HostedLinker.cpp's mergePeObjects() lays out
+// Where this program's image base-loads; linker/WindowsLinuxLinker.cpp's mergePeObjects() lays out
 // `image` against `kPeBase + 0x1000`.
 constexpr uint32_t kPeBase = 0x00400000;
 

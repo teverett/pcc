@@ -23,7 +23,7 @@ struct HostedImport {
     bool isData = false;
 };
 
-// The fully laid-out, fully relocated hosted i386 Windows program - what linker/HostedLinker.cpp's
+// The fully laid-out, fully relocated hosted i386 Windows program - what linker/WindowsLinuxLinker.cpp's
 // mergePeObjects() builds, and fileformat/coff/HostedPeExecutableWriter.h's makePe() turns into a
 // real PE executable.
 struct PEImage {

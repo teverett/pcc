@@ -75,7 +75,7 @@
 #include "codegen/sparc/SparcCodegen.h"
 #include "fileformat/FileFormat.h"
 #include "linker/Linker.h"
-#include "linker/HostedLinker.h"
+#include "linker/WindowsLinuxLinker.h"
 #include "linker/factory/I8086LinkerFactory.h"
 #include "linker/factory/Pdp7LinkerFactory.h"
 #include "linker/factory/Z80LinkerFactory.h"
@@ -185,7 +185,7 @@ std::string knownTargetsList() {
 
 // The host component of a <target>-<host> triple: which real OS (if any) a
 // target's backend can produce a hosted executable for, via
-// linker/HostedLinker.h (i386) or linker/NativeMacOSLinker.h (armv8a).
+// linker/WindowsLinuxLinker.h (i386) or linker/MacOSLinker.h (armv8a).
 // "none" (freestanding/bare metal) is the only host every target supports.
 std::vector<std::string> hostsFor(const std::string &target) {
     if (target == "i386") return {"none", "linux", "windows"};

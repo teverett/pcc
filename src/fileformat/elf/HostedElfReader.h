@@ -6,7 +6,7 @@
 
 namespace pcc {
 
-// Reads real i386 ELF input for the hosted linker (see linker/HostedLinker.h) - unlike
+// Reads real i386 ELF input for the hosted linker (see linker/WindowsLinuxLinker.h) - unlike
 // ElfFormat.h/.cpp's reader/writer pair, which only ever round-trips this project's own simplified
 // freestanding layout.
 

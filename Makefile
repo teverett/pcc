@@ -118,8 +118,8 @@ HAND_SRCS := \
     $(FILEFORMAT_DIR)/elf/HostedElfExecutableWriter.cpp \
     $(FILEFORMAT_DIR)/macho/MachOHostedReader.cpp \
     $(FILEFORMAT_DIR)/macho/MachOExecutableWriter.cpp \
-    $(LINKER_DIR)/NativeMacOSLinker.cpp \
-    $(LINKER_DIR)/HostedLinker.cpp \
+    $(LINKER_DIR)/MacOSLinker.cpp \
+    $(LINKER_DIR)/WindowsLinuxLinker.cpp \
     $(LINKER_DIR)/GenericLinker.cpp \
     $(FACTORY_DIR)/Z80LinkerFactory.cpp \
     $(FACTORY_DIR)/M6502LinkerFactory.cpp \

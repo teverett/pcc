@@ -10,7 +10,7 @@ namespace pcc {
 // One real ELF shared library (`.so`) this program links against - what
 // fileformat/elf/HostedElfReader.h's readElfDynamicLibrary() parses, and what `ELFImage::dynamicLibraries`
 // below (and makeElf()'s DT_NEEDED entries) consume. `asNeeded` is linking-time-only bookkeeping
-// (linker/HostedLinker.cpp drops an unused `--as-needed` library before building the final `ELFImage`).
+// (linker/WindowsLinuxLinker.cpp drops an unused `--as-needed` library before building the final `ELFImage`).
 struct DynamicLibrary {
     std::string name;
     struct Export {
@@ -30,7 +30,7 @@ struct DynamicImport {
     std::string version;
 };
 
-// The fully laid-out, fully relocated hosted i386 Linux program - what linker/HostedLinker.cpp's
+// The fully laid-out, fully relocated hosted i386 Linux program - what linker/WindowsLinuxLinker.cpp's
 // mergeElfObjects() builds, and fileformat/elf/HostedElfExecutableWriter.h's makeElf() turns into a
 // real ELF executable.
 struct ELFImage {
