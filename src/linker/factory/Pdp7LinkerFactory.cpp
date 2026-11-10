@@ -78,9 +78,9 @@ void patchPdp7Sub(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t val
 
 }  // namespace
 
-std::unique_ptr<TargetLinker> makePdp7Linker() {
+std::unique_ptr<TargetLinker> makePdp7Linker(uint32_t baseAddressWords) {
     GenericLinkerConfig config;
-    config.baseAddress = kPdp7BaseAddress * 3;
+    config.baseAddress = baseAddressWords * 3;
     config.machineType = kPdp7CoffMachine;
     // Beyond the entry sequence, this is the single object that defines
     // the shared runtime (see pdp7RuntimeAsm()), since every user object

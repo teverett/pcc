@@ -137,7 +137,7 @@ require an external system linker.
 ## Link mode
 
 ```
-pcc --link [--target=<name>[-<host>]] --format=<target-native> [--gc-sections] [--out=file] file1.o [file2.o ...]
+pcc --link [--target=<name>[-<host>]] --format=<target-native> [--gc-sections] [--base=<word-addr>] [--out=file] file1.o [file2.o ...]
 ```
 
 | Switch | Meaning |
@@ -147,6 +147,7 @@ pcc --link [--target=<name>[-<host>]] --format=<target-native> [--gc-sections] [
 | `--format=<fmt>` | Final linked output format. Every target except `pdp7`/`8086`/`8088` supports the same uniform set: `flat` (just the final bytes, no container at all), `coff`, `elf`, `aout`. `pdp7` supports its own historical set instead - `a7out`, `list`, `ptr`, `rim`, `coff`, `aout`; `8086`/`8088` support `raw` (a real, directly-bootable 512-byte boot sector) in place of `flat`, plus `coff`, `elf`, `aout`. |
 | `--out=file` | Where to write the linked result. Omit it to write to stdout. |
 | `--gc-sections` | Drops any input object's own function/global that's never reached from the entry point's own call graph (a real `extern` reference used purely to take a function's address, not to call it, still counts as reached), instead of linking every object in full. Only valid with a non-hosted `--target` (e.g. `pdp7`): each object's own cross-file-visible names (`g_`/`p_`/`fn_`, pdp7's own `G_`/`P_`/`FN_`) mark where one function/global ends and the next begins, so dropping one never removes part of another still in use - an object whose own backend gives no way to tell a same-object address reference's real target apart from any other symbol in it is linked in full regardless, the same as without this flag. |
+| `--base=<word-addr>` | Links the given objects to run starting at this word address instead of the target's own ordinary default (`pdp7`: 4096, the start of the real machine's swappable "user" region). Only supported for `--target=pdp7` right now. Lets kernel-resident code (e.g. a boot-time entry sequence, or anything that must stay outside whatever a swappable region's own transfers might overwrite) link starting near word address 0, matching where the real kernel's own low-memory-resident code lives - the entry sequence itself (`jms FN_main; hlt` plus the shared runtime) is unchanged, so this moves *where* a program runs, not *what* runs first. Avoid literal `--base=0` for anything that makes real function calls: this runtime's own `__addr` scratch cell (used for every computed pointer dereference) sits at relative offset 9 from the entry, landing exactly on the real PDP-7's own hardware autoindex register 9 at base 0 (any *indirect* reference to word address 8 or 9 auto-increments it first - see `../../UnixV0-C/src-c/sys/s4.c`'s own header) - confirmed directly to hang real code. A small nonzero base (e.g. 16, clear of both that hazard and whatever a swappable region above it needs) is both safe and matches the real kernel's own layout, which reserves roughly that much low memory for its interrupt vector table anyway. |
 
 Every other flag (`--assembler`, `--optimize`, `--dump-ir`,
 `--dump-asm`) applies only to compile mode.

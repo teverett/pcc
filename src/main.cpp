@@ -119,7 +119,7 @@ void usage(const char *argv0) {
               << " [--target=<target>[-<host>]] [--format=asm|<target-specific>] [--out file] [--assembler path]\n"
                  "       [--optimize] [--dump-ir] [--dump-asm] file.c [file2.c ...]\n"
                  "   or: " << argv0
-              << " --link [--target=<target>[-<host>]] --format=<target-native> [--gc-sections] [--out file] file1.o [file2.o ...]\n"
+              << " --link [--target=<target>[-<host>]] --format=<target-native> [--gc-sections] [--base=<word-addr>] [--out file] file1.o [file2.o ...]\n"
                  "\n"
                  "<target> is a backend name (e.g. pdp7, i386, armv8a) and <host> is the real OS\n"
                  "the produced executable runs on - 'none' (the default, meaning freestanding/\n"
@@ -263,8 +263,11 @@ std::unique_ptr<pcc::Backend> makeBackend(const std::string &target) {
     return nullptr;
 }
 
-std::unique_ptr<pcc::TargetLinker> makeLinker(const std::string &target) {
-    if (target == "pdp7") return pcc::makePdp7Linker();
+std::unique_ptr<pcc::TargetLinker> makeLinker(const std::string &target,
+                                               std::optional<uint32_t> baseAddressWords = std::nullopt) {
+    if (target == "pdp7") {
+        return baseAddressWords ? pcc::makePdp7Linker(*baseAddressWords) : pcc::makePdp7Linker();
+    }
     if (target == "8086" || target == "8088") return pcc::makeI8086Linker();
     if (target == "z80") return pcc::makeZ80Linker();
     if (target == "6502") return pcc::makeM6502Linker();
@@ -473,6 +476,7 @@ int main(int argc, char **argv) {
     bool dumpAsm = false;
     bool link = false;
     bool gcSections = false;
+    std::optional<uint32_t> baseAddressWords;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -521,6 +525,13 @@ int main(int argc, char **argv) {
             link = true;
         } else if (arg == "--gc-sections") {
             gcSections = true;
+        } else if (!(v = takeValue("--base=")).empty()) {
+            try {
+                baseAddressWords = static_cast<uint32_t>(std::stoul(v));
+            } catch (const std::exception &) {
+                std::cerr << "--base must be a decimal word address, got '" << v << "'\n";
+                return 1;
+            }
         } else if (arg == "-h" || arg == "--help") {
             usage(argv[0]);
             return 0;
@@ -603,6 +614,14 @@ int main(int argc, char **argv) {
         std::cerr << "--gc-sections is only valid with --link and a non-hosted --target (e.g. --target=pdp7)\n";
         return 1;
     }
+    if (baseAddressWords && !link) {
+        std::cerr << "--base requires --link\n";
+        return 1;
+    }
+    if (baseAddressWords && target != "pdp7") {
+        std::cerr << "--base is only supported for --target=pdp7 right now\n";
+        return 1;
+    }
 
     // --link mode: merging .o files (TargetLinker) and writing the result
     // in a given format (FileFormatWriter) are decoupled; `target` picks
@@ -628,7 +647,7 @@ int main(int argc, char **argv) {
             }
             return 0;
         }
-        std::unique_ptr<pcc::TargetLinker> linker = makeLinker(target);
+        std::unique_ptr<pcc::TargetLinker> linker = makeLinker(target, baseAddressWords);
         if (!linker) {
             std::cerr << "unknown --target '" << target << "' (known targets: " << knownTargetsList() << ")\n";
             return 1;

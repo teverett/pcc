@@ -1,20 +1,43 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 
+#include "codegen/pdp7/Pdp7Assembler.h"
 #include "linker/Linker.h"
 
 namespace pcc {
 
 // Builds a GenericLinker for the PDP-7, whose 18-bit words are packed
 // 3 bytes each, big-endian; `addressUnitBytes = 3`/`outputUnitBits = 18`
-// tell GenericLinker this packing, and `kPdp7BaseAddress` (a word
-// address) is scaled by 3 to match. The three local patchers
-// (kPdp7RelocOr/Add/Sub) exist because none of pdp7's relocation
-// shapes are plain additive/relative byte patches. The 8192-word
-// (020000 octal) direct-addressing limit is enforced per-relocation in
-// patchPdp7Or/Add rather than as a pre-flight check, since every
-// address reference here is a relocation.
-std::unique_ptr<TargetLinker> makePdp7Linker();
+// tell GenericLinker this packing, and `baseAddressWords` (a word
+// address, default `kPdp7BaseAddress`) is scaled by 3 to match. The
+// three local patchers (kPdp7RelocOr/Add/Sub) exist because none of
+// pdp7's relocation shapes are plain additive/relative byte patches.
+// The 8192-word (020000 octal) direct-addressing limit is enforced
+// per-relocation in patchPdp7Or/Add rather than as a pre-flight check,
+// since every address reference here is a relocation.
+//
+// A non-default `baseAddressWords` links the given objects to run
+// starting somewhere other than the ordinary user-program base - the
+// real kernel's own low-memory-resident region (`.. = 0` in
+// `../../../src-assem/sys/s1.s`) starts near word address 0, not
+// `kPdp7BaseAddress` (4096) - needed to keep kernel-resident code
+// (e.g. a disk-completion poll loop) outside whatever address range a
+// swappable "user" region's own transfers might overwrite (confirmed
+// directly: this is what actually lets a real disk transfer covering
+// the entire ordinary 4096-8191 user range stop hanging, instead of
+// overwriting the very poll loop waiting on it). The entry sequence
+// is unchanged (`jms FN_main; hlt` plus the shared runtime) - this
+// does not yet replicate the real interrupt vector table/CAL-trap
+// entry that would really live at low addresses, only the base
+// address itself. Literal 0 is NOT safe for code that makes real
+// function calls: this runtime's own `__addr` scratch cell lands on
+// word address 9 at that base, the real PDP-7's own hardware
+// autoindex register 9 (confirmed directly to hang real code) - a
+// small nonzero base (e.g. 16) avoids it and still matches how much
+// low memory the real kernel's own interrupt vector table needs
+// anyway.
+std::unique_ptr<TargetLinker> makePdp7Linker(uint32_t baseAddressWords = kPdp7BaseAddress);
 
 }  // namespace pcc

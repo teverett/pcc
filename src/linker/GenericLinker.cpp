@@ -287,6 +287,11 @@ ObjectFile GenericLinker::merge(const std::vector<ObjectFile> &userObjects, bool
                 std::optional<std::pair<size_t, size_t>> target = targetOf(i, r);
                 if (!target) fail("'..' relocation's own target address falls outside every known section");
                 auto [tObj, tSec] = *target;
+                // `gcSections` can move a section to a *lower* address than its own pre-link
+                // offset (when something earlier in the same object got dropped), making this a
+                // genuine negative shift - stored here as its usual two's-complement uint32_t
+                // bit pattern, correct for the final add a patch function does, but NOT safe to
+                // divide with ordinary unsigned division below (see there for why).
                 value = sectionNewBase[tObj][tSec] - sections[tObj][tSec].start;
             } else if (r.symbolName == "..d") {
                 value = dataBase[i];
@@ -299,7 +304,16 @@ ObjectFile GenericLinker::merge(const std::vector<ObjectFile> &userObjects, bool
             auto patchIt = config_.relocPatchers.find(r.type);
             if (patchIt == config_.relocPatchers.end()) fail("unknown relocation type " + std::to_string(r.type));
             uint32_t siteFinalAddr = sectionNewBase[i][sec] + (r.offset - sections[i][sec].start);
-            patchIt->second(image, idx, value / config_.addressUnitBytes, siteFinalAddr / config_.addressUnitBytes);
+            // `value` is always an exact multiple of `addressUnitBytes` (every section boundary
+            // and base address is word-aligned), but it can carry a negative shift (see the ".."
+            // case above) as an ordinary uint32_t two's-complement bit pattern. Plain unsigned
+            // division would corrupt that - `(-177 as uint32_t) / 3` is nowhere near
+            // `-59 as uint32_t` - so this reinterprets it as the signed quantity it really is,
+            // divides with ordinary signed division (exact, since it always divides evenly), and
+            // converts back; a non-negative `value` (the overwhelmingly common case: every named-
+            // symbol and "..d" value, and most "..") divides identically either way.
+            int32_t signedValue = static_cast<int32_t>(value) / static_cast<int32_t>(config_.addressUnitBytes);
+            patchIt->second(image, idx, static_cast<uint32_t>(signedValue), siteFinalAddr / config_.addressUnitBytes);
         }
     }
 
