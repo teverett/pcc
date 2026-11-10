@@ -11,7 +11,7 @@
 # declarations": extern only means anything under real separate
 # compilation).
 #
-# Usage: tests/run_link_tests.sh [path/to/pcc] [--target=pdp7|8086|8088|i386]
+# Usage: tests/run_link_tests.sh [path/to/pcc] [--target=pdp7|8086|8088|i386|vax]
 
 set -u
 
@@ -49,8 +49,14 @@ case "$TARGET" in
             exit 1
         fi
         ;;
+    vax)
+        if ! command -v vax780 >/dev/null 2>&1; then
+            echo "vax780 (open-simh) not found on PATH - install it (e.g. 'brew install open-simh' or 'apt install simh')" >&2
+            exit 1
+        fi
+        ;;
     *)
-        echo "unknown --target '$TARGET' for run_link_tests.sh (known: pdp7, 8086, 8088, i386 - the targets this harness's own link flow is wired up for so far)" >&2
+        echo "unknown --target '$TARGET' for run_link_tests.sh (known: pdp7, 8086, 8088, i386, vax - the targets this harness's own link flow is wired up for so far)" >&2
         exit 1
         ;;
 esac
@@ -189,6 +195,42 @@ check_x86() {
     return 1
 }
 
+# vax: the linked flat image loads at 4000 (hex), VaxAssembler.h's kVaxBaseAddress, and its
+# entry sequence ends in a `halt` with the result in R0 - read back the same way
+# run_tests.sh's own check_vax() does.
+check_vax() {
+    local a="$1" b="$2" name="$3"
+    local binfile="$tmpdir/$name.bin"
+    link_case "$a" "$b" "$name" coff flat "$binfile" || return 1
+
+    local simfile="$tmpdir/$name.simh" outfile="$tmpdir/$name.out"
+    printf 'load -o %s 4000\nd pc 4000\ngo\ne r0\nquit\n' "$binfile" >"$simfile"
+
+    ( vax780 "$simfile" </dev/null >"$outfile" 2>/dev/null ) &
+    local sim_pid=$!
+    ( sleep 10; kill -9 "$sim_pid" 2>/dev/null ) &
+    local watcher=$!
+    wait "$sim_pid" 2>/dev/null
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+
+    local r0_hex
+    r0_hex="$(grep '^R0:' "$outfile" | awk '{print $2}')"
+    if [ -z "$r0_hex" ]; then
+        echo "FAIL $name: simulator produced no R0 (timed out or crashed)"
+        return 1
+    fi
+
+    local r0_dec
+    r0_dec="$(to_signed "$((16#$r0_hex))" 32)"
+    if [ "$r0_dec" -eq "$expect" ]; then
+        echo "PASS $name (R0=$r0_dec)"
+        return 0
+    fi
+    echo "FAIL $name: expected $expect, got $r0_dec (R0 hex: $r0_hex)"
+    return 1
+}
+
 # A handful of (target, case) pairs are architecturally incapable, not
 # broken, the same situation run_tests.sh's own is_known_unsupported()
 # covers for the single-file suite: 8086/8088's --format=raw output is
@@ -230,6 +272,7 @@ for a in "$LINK_DIR"/*_a.c; do
         8086) check_x86 "$a" "$b" "$base" coff raw 0 || fail=1 ;;
         8088) check_x86 "$a" "$b" "$base" coff raw 0 || fail=1 ;;
         i386) check_x86 "$a" "$b" "$base" coff flat 1 || fail=1 ;;
+        vax) check_vax "$a" "$b" "$base" || fail=1 ;;
     esac
 done
 

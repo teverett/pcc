@@ -152,6 +152,7 @@ FileFormatKind detectFileFormat(const std::string &bytes) {
         0x4000,  // r10000/r4000 (MIPS)
         0x5043,  // powerpc
         0x5350,  // sparc
+        0x5641,  // vax
         0x8051,  // 8051/8052/8031/8032 (mcs51)
         0xFC18,  // pic18
         0x16F8,  // pic16

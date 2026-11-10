@@ -6,7 +6,7 @@
 # on every target (see ../src/Backend.h: a .c file means the same
 # thing regardless of --target).
 #
-# Usage: tests/run_tests.sh [path/to/pcc] [--target=pdp7|pdp11|r10000|powerpc|cortex-m3|8086|8088|6502|65c02|68000|mc68328|8080|z80|8008|8051|stm32|i386|armv7a|armv8a] [--optimize]
+# Usage: tests/run_tests.sh [path/to/pcc] [--target=pdp7|pdp11|vax|r10000|powerpc|cortex-m3|8086|8088|6502|65c02|68000|mc68328|8080|z80|8008|8051|stm32|i386|armv7a|armv8a] [--optimize]
 #
 # --optimize passes pcc's own --optimize straight through to every
 # compile below, so the exact same checks also confirm the IR
@@ -47,6 +47,12 @@ case "$TARGET" in
         fi
         if ! command -v python3 >/dev/null 2>&1; then
             echo "python3 not found on PATH - needed to build check_pdp11()'s own deposit script" >&2
+            exit 1
+        fi
+        ;;
+    vax)
+        if ! command -v vax780 >/dev/null 2>&1; then
+            echo "vax780 (open-simh) not found on PATH - install it (e.g. 'brew install open-simh' or 'apt install simh')" >&2
             exit 1
         fi
         ;;
@@ -264,7 +270,7 @@ case "$TARGET" in
         fi
         ;;
     *)
-        echo "unknown --target '$TARGET' (known: pdp7, pdp11, r10000, powerpc, cortex-m3, 8086, 8088, 6502, 65c02, 68000, mc68328, 8080, z80, 8008, 8051, stm32, i386, armv7a, armv8a)" >&2
+        echo "unknown --target '$TARGET' (known: pdp7, pdp11, vax, r10000, powerpc, cortex-m3, 8086, 8088, 6502, 65c02, 68000, mc68328, 8080, z80, 8008, 8051, stm32, i386, armv7a, armv8a)" >&2
         exit 1
         ;;
 esac
@@ -422,6 +428,41 @@ PY
         return 0
     fi
     echo "FAIL $name: expected $expect, got $r0_dec (R0 octal: $r0_octal)"
+    return 1
+}
+
+check_vax() {
+    local src="$1" name="$2"
+    local binfile="$tmpdir/$name.bin"
+
+    if ! "$PCC" --target=vax --format=raw \
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+        echo "FAIL $name: compile error"
+        sed 's/^/    /' "$tmpdir/$name.log"
+        return 1
+    fi
+
+    local simfile="$tmpdir/$name.simh" outfile="$tmpdir/$name.out"
+    # 4000 (hex) is VaxCodegen.cpp's kBaseAddress: the program loads and starts there, and
+    # ends in a `halt` that stops SIMH with the result in R0.
+    printf 'load -o %s 4000\nd pc 4000\ngo\ne r0\nquit\n' "$binfile" >"$simfile"
+
+    run_with_timeout 10 bash -c "vax780 '$simfile' </dev/null >'$outfile' 2>/dev/null"
+
+    local r0_hex
+    r0_hex="$(grep '^R0:' "$outfile" | awk '{print $2}')"
+    if [ -z "$r0_hex" ]; then
+        echo "FAIL $name: simulator produced no R0 (timed out or crashed)"
+        return 1
+    fi
+
+    local r0_dec
+    r0_dec="$(to_signed "$((16#$r0_hex))" 32)"
+    if [ "$r0_dec" -eq "$expect" ]; then
+        echo "PASS $name (R0=$r0_dec)"
+        return 0
+    fi
+    echo "FAIL $name: expected $expect, got $r0_dec (R0 hex: $r0_hex)"
     return 1
 }
 
@@ -1802,7 +1843,12 @@ is_known_unsupported() {
     esac
 }
 
-for src in "$SCRIPT_DIR"/*.c; do
+target_sources=()
+if [ -d "$SCRIPT_DIR/$TARGET" ]; then
+    target_sources=("$SCRIPT_DIR/$TARGET"/*.c)
+fi
+
+for src in "$SCRIPT_DIR"/*.c "${target_sources[@]}"; do
     expect="$(grep -m1 -oE 'EXPECT: *-?[0-9]+' "$src" | grep -oE '\-?[0-9]+$' || true)"
     if [ -z "$expect" ]; then
         continue
@@ -1816,6 +1862,7 @@ for src in "$SCRIPT_DIR"/*.c; do
     case "$TARGET" in
         pdp7) check_pdp7 "$src" "$name" || fail=1 ;;
         pdp11) check_pdp11 "$src" "$name" || fail=1 ;;
+        vax) check_vax "$src" "$name" || fail=1 ;;
         r10000) check_r10000 "$src" "$name" || fail=1 ;;
         powerpc) check_powerpc "$src" "$name" || fail=1 ;;
         cortex-m3) check_cortex_m3 "$src" "$name" || fail=1 ;;
