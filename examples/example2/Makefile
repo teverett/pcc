@@ -12,10 +12,10 @@ $(BUILD_DIR):
 	mkdir -p "$@"
 
 $(BUILD_DIR)/main.o: main.c | $(BUILD_DIR)
-	$(PCC) --target=$(TARGET) --format=coff --dump-ir --dump-asm --out="$@" "$<"
+	$(RCC) --target=$(TARGET) --format=coff --dump-ir --dump-asm --out="$@" "$<"
 
 $(BUILD_DIR)/main.bin: $(BUILD_DIR)/main.o
-	$(PCC) --link --target=$(TARGET) --format=flat --out="$@" "$<"
+	$(RCC) --link --target=$(TARGET) --format=flat --out="$@" "$<"
 
 clean:
 	rm -rf "$(BUILD_DIR)"

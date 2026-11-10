@@ -1,4 +1,4 @@
-// pcc - a compiler for pdp-c-compiler's C subset.
+// rcc - the retargetable C compiler, for a small C subset.
 //
 // Reads one or more C source files, parsed separately but merged into one
 // program sharing a flat global/function namespace, then compiles the
@@ -207,7 +207,7 @@ std::vector<std::string> hostsFor(const std::string &target) {
 }
 
 // Parses a --target value shaped like a GNU-style <target>-<host> triple:
-// pcc's own backend name is already the "target" component (the ISA pcc
+// rcc's own backend name is already the "target" component (the ISA rcc
 // generates code for); "host" here is the real OS the produced executable
 // will run on. A target name containing its own dash (e.g. cortex-m3) is
 // unaffected, since the suffix after the last dash is only treated as a
@@ -243,78 +243,78 @@ void listTriples() {
 // backend): each pair's real hardware differences are invisible to any
 // instruction this compiler emits, so there's nothing for a separate
 // Codegen to do differently.
-std::unique_ptr<pcc::Backend> makeBackend(const std::string &target) {
-    if (target == "pdp7") return std::make_unique<pcc::Pdp7Codegen>();
-    if (target == "8086" || target == "8088") return std::make_unique<pcc::I8086Codegen>();
-    if (target == "6502") return std::make_unique<pcc::M6502Codegen>();
-    if (target == "65c02") return std::make_unique<pcc::M65C02Codegen>();
-    if (target == "68000") return std::make_unique<pcc::M68kCodegen>();
-    if (target == "mc68328") return std::make_unique<pcc::MC68328Codegen>();
-    if (target == "pdp11") return std::make_unique<pcc::Pdp11Codegen>();
-    if (target == "pdp10") return std::make_unique<pcc::Pdp10Codegen>();
-    if (target == "8080") return std::make_unique<pcc::I8080Codegen>();
-    if (target == "z80") return std::make_unique<pcc::Z80Codegen>();
-    if (target == "8008") return std::make_unique<pcc::I8008Codegen>();
-    if (target == "stm8") return std::make_unique<pcc::STM8Codegen>();
-    if (target == "stm32") return std::make_unique<pcc::STM32Codegen>();
-    if (target == "i386") return std::make_unique<pcc::I386Codegen>();
-    if (target == "m16c" || target == "m30626fjpfp") return std::make_unique<pcc::M16cCodegen>();
-    if (target == "pic16") return std::make_unique<pcc::PIC16Codegen>();
-    if (target == "pic18") return std::make_unique<pcc::PIC18Codegen>();
-    if (target == "r10000" || target == "r4000") return std::make_unique<pcc::MipsCodegen>();
+std::unique_ptr<rcc::Backend> makeBackend(const std::string &target) {
+    if (target == "pdp7") return std::make_unique<rcc::Pdp7Codegen>();
+    if (target == "8086" || target == "8088") return std::make_unique<rcc::I8086Codegen>();
+    if (target == "6502") return std::make_unique<rcc::M6502Codegen>();
+    if (target == "65c02") return std::make_unique<rcc::M65C02Codegen>();
+    if (target == "68000") return std::make_unique<rcc::M68kCodegen>();
+    if (target == "mc68328") return std::make_unique<rcc::MC68328Codegen>();
+    if (target == "pdp11") return std::make_unique<rcc::Pdp11Codegen>();
+    if (target == "pdp10") return std::make_unique<rcc::Pdp10Codegen>();
+    if (target == "8080") return std::make_unique<rcc::I8080Codegen>();
+    if (target == "z80") return std::make_unique<rcc::Z80Codegen>();
+    if (target == "8008") return std::make_unique<rcc::I8008Codegen>();
+    if (target == "stm8") return std::make_unique<rcc::STM8Codegen>();
+    if (target == "stm32") return std::make_unique<rcc::STM32Codegen>();
+    if (target == "i386") return std::make_unique<rcc::I386Codegen>();
+    if (target == "m16c" || target == "m30626fjpfp") return std::make_unique<rcc::M16cCodegen>();
+    if (target == "pic16") return std::make_unique<rcc::PIC16Codegen>();
+    if (target == "pic18") return std::make_unique<rcc::PIC18Codegen>();
+    if (target == "r10000" || target == "r4000") return std::make_unique<rcc::MipsCodegen>();
     if (target == "cortex-m3" || target == "cortex-m4" || target == "cortex-m7") {
-        return std::make_unique<pcc::ArmMCodegen>();
+        return std::make_unique<rcc::ArmMCodegen>();
     }
     if (target == "8051" || target == "8052" || target == "8031" || target == "8032") {
-        return std::make_unique<pcc::MCS51Codegen>();
+        return std::make_unique<rcc::MCS51Codegen>();
     }
     // armv7a (32-bit AArch32) and armv8a (64-bit AArch64) are genuinely
     // different instruction sets, each with its own Codegen.
-    if (target == "armv7a") return std::make_unique<pcc::ArmCodegen>();
-    if (target == "armv8a") return std::make_unique<pcc::Arm64Codegen>();
-    if (target == "powerpc") return std::make_unique<pcc::PowerPCCodegen>();
-    if (target == "sparc") return std::make_unique<pcc::SparcCodegen>();
-    if (target == "vax") return std::make_unique<pcc::VaxCodegen>();
-    if (target == "avr") return std::make_unique<pcc::AVRCodegen>();
-    if (target == "alpha") return std::make_unique<pcc::AlphaCodegen>();
-    if (target == "saturn") return std::make_unique<pcc::SaturnCodegen>();
-    if (target == "tms320c6713") return std::make_unique<pcc::Tms320C6713Codegen>();
+    if (target == "armv7a") return std::make_unique<rcc::ArmCodegen>();
+    if (target == "armv8a") return std::make_unique<rcc::Arm64Codegen>();
+    if (target == "powerpc") return std::make_unique<rcc::PowerPCCodegen>();
+    if (target == "sparc") return std::make_unique<rcc::SparcCodegen>();
+    if (target == "vax") return std::make_unique<rcc::VaxCodegen>();
+    if (target == "avr") return std::make_unique<rcc::AVRCodegen>();
+    if (target == "alpha") return std::make_unique<rcc::AlphaCodegen>();
+    if (target == "saturn") return std::make_unique<rcc::SaturnCodegen>();
+    if (target == "tms320c6713") return std::make_unique<rcc::Tms320C6713Codegen>();
     return nullptr;
 }
 
-std::unique_ptr<pcc::TargetLinker> makeLinker(const std::string &target,
+std::unique_ptr<rcc::TargetLinker> makeLinker(const std::string &target,
                                                std::optional<uint32_t> baseAddressWords = std::nullopt) {
     if (target == "pdp7") {
-        return baseAddressWords ? pcc::makePdp7Linker(*baseAddressWords) : pcc::makePdp7Linker();
+        return baseAddressWords ? rcc::makePdp7Linker(*baseAddressWords) : rcc::makePdp7Linker();
     }
-    if (target == "8086" || target == "8088") return pcc::makeI8086Linker();
-    if (target == "z80") return pcc::makeZ80Linker();
-    if (target == "6502") return pcc::makeM6502Linker();
-    if (target == "65c02") return pcc::makeM65C02Linker();
-    if (target == "8080") return pcc::makeI8080Linker();
-    if (target == "8008") return pcc::makeI8008Linker();
-    if (target == "stm8") return pcc::makeSTM8Linker();
-    if (target == "mc68328") return pcc::makeMC68328Linker();
-    if (target == "68000") return pcc::makeM68kLinker();
-    if (target == "pdp11") return pcc::makePdp11Linker();
-    if (target == "pdp10") return pcc::makePdp10Linker();
-    if (target == "m16c" || target == "m30626fjpfp") return pcc::makeM16cLinker();
-    if (target == "i386") return pcc::makeI386Linker();
-    if (target == "armv7a") return pcc::makeArmLinker();
-    if (target == "armv8a") return pcc::makeArm64Linker();
-    if (target == "cortex-m3" || target == "cortex-m4" || target == "cortex-m7") return pcc::makeArmMLinker();
-    if (target == "stm32") return pcc::makeSTM32Linker();
-    if (target == "r10000" || target == "r4000") return pcc::makeMipsLinker();
-    if (target == "powerpc") return pcc::makePowerPCLinker();
-    if (target == "sparc") return pcc::makeSparcLinker();
-    if (target == "vax") return pcc::makeVaxLinker();
-    if (target == "avr") return pcc::makeAVRLinker();
-    if (target == "alpha") return pcc::makeAlphaLinker();
-    if (target == "saturn") return pcc::makeSaturnLinker();
-    if (target == "tms320c6713") return pcc::makeTms320C6713Linker();
-    if (target == "8051" || target == "8052" || target == "8031" || target == "8032") return pcc::makeMCS51Linker();
-    if (target == "pic16") return pcc::makePIC16Linker();
-    if (target == "pic18") return pcc::makePIC18Linker();
+    if (target == "8086" || target == "8088") return rcc::makeI8086Linker();
+    if (target == "z80") return rcc::makeZ80Linker();
+    if (target == "6502") return rcc::makeM6502Linker();
+    if (target == "65c02") return rcc::makeM65C02Linker();
+    if (target == "8080") return rcc::makeI8080Linker();
+    if (target == "8008") return rcc::makeI8008Linker();
+    if (target == "stm8") return rcc::makeSTM8Linker();
+    if (target == "mc68328") return rcc::makeMC68328Linker();
+    if (target == "68000") return rcc::makeM68kLinker();
+    if (target == "pdp11") return rcc::makePdp11Linker();
+    if (target == "pdp10") return rcc::makePdp10Linker();
+    if (target == "m16c" || target == "m30626fjpfp") return rcc::makeM16cLinker();
+    if (target == "i386") return rcc::makeI386Linker();
+    if (target == "armv7a") return rcc::makeArmLinker();
+    if (target == "armv8a") return rcc::makeArm64Linker();
+    if (target == "cortex-m3" || target == "cortex-m4" || target == "cortex-m7") return rcc::makeArmMLinker();
+    if (target == "stm32") return rcc::makeSTM32Linker();
+    if (target == "r10000" || target == "r4000") return rcc::makeMipsLinker();
+    if (target == "powerpc") return rcc::makePowerPCLinker();
+    if (target == "sparc") return rcc::makeSparcLinker();
+    if (target == "vax") return rcc::makeVaxLinker();
+    if (target == "avr") return rcc::makeAVRLinker();
+    if (target == "alpha") return rcc::makeAlphaLinker();
+    if (target == "saturn") return rcc::makeSaturnLinker();
+    if (target == "tms320c6713") return rcc::makeTms320C6713Linker();
+    if (target == "8051" || target == "8052" || target == "8031" || target == "8032") return rcc::makeMCS51Linker();
+    if (target == "pic16") return rcc::makePIC16Linker();
+    if (target == "pic18") return rcc::makePIC18Linker();
     return nullptr;
 }
 
@@ -323,7 +323,7 @@ std::unique_ptr<pcc::TargetLinker> makeLinker(const std::string &target,
 // onto `combined`; name resolution (IRBuilder) runs once, afterward, over
 // the whole concatenated list, so no file needs to declare another's
 // function first.
-void parseAndMergeFile(const std::string &srcPath, const std::string &source, pcc::Program &combined) {
+void parseAndMergeFile(const std::string &srcPath, const std::string &source, rcc::Program &combined) {
     CountingErrorListener errors;
 
     antlr4::ANTLRInputStream input(source);
@@ -339,7 +339,7 @@ void parseAndMergeFile(const std::string &srcPath, const std::string &source, pc
     CParser::ProgramContext *tree = parser.program();
     if (errors.count > 0) throw std::runtime_error(srcPath + ": syntax errors, not compiling");
 
-    pcc::Program fileProg = pcc::buildProgram(tree);
+    rcc::Program fileProg = rcc::buildProgram(tree);
     for (auto &fn : fileProg.functions) {
         fn.sourceFile = srcPath;
         combined.functions.push_back(std::move(fn));
@@ -354,11 +354,11 @@ void parseAndMergeFile(const std::string &srcPath, const std::string &source, pc
 // on this invocation. `allowExternal` (true only for --format=coff) is
 // threaded through to both buildIR() and Backend::generate()'s objectMode.
 std::string compileOneFile(const std::string &srcPath, const std::map<std::string, std::string> &predefinedMacros,
-                             pcc::Backend &backend, bool allowExternal, bool optimize, bool dumpIr, bool dumpAsm) {
-    pcc::Program prog;
-    parseAndMergeFile(srcPath, pcc::preprocess(srcPath, predefinedMacros), prog);
+                             rcc::Backend &backend, bool allowExternal, bool optimize, bool dumpIr, bool dumpAsm) {
+    rcc::Program prog;
+    parseAndMergeFile(srcPath, rcc::preprocess(srcPath, predefinedMacros), prog);
 
-    pcc::ir::Program irProg = pcc::buildIR(prog, backend.typeWidths(), allowExternal);
+    rcc::ir::Program irProg = rcc::buildIR(prog, backend.typeWidths(), allowExternal);
 
     if (optimize) {
         // Constant propagation first: substituting a Var read with its
@@ -366,44 +366,44 @@ std::string compileOneFile(const std::string &srcPath, const std::map<std::strin
         // literal-literal expressions to fold and, once a local's only
         // reads are gone, feeds DeadCodeElimination a now-unused
         // declaration to drop.
-        pcc::ConstantPropagation cprop;
+        rcc::ConstantPropagation cprop;
         cprop.run(irProg, srcPath);
         // Constant folding next, so DeadCodeElimination can reason about
         // initializers it collapses to a side-effect-free constant.
-        pcc::ConstantFolding cf;
+        rcc::ConstantFolding cf;
         cf.run(irProg, srcPath);
         // Strength reduction only rewrites an op whose other operand isn't
         // a literal, so ordering after constant folding loses nothing.
-        pcc::AlgebraicSimplification algsimp;
+        rcc::AlgebraicSimplification algsimp;
         algsimp.run(irProg, srcPath);
         // Local CSE after the above so it matches each pass's canonicalized
         // form (e.g. a strength-reduced `x << 1`, not the original `x * 2`).
-        pcc::LocalCSE cse;
+        rcc::LocalCSE cse;
         cse.run(irProg, srcPath);
         // Before DeadCodeElimination, so a LocalDecl this pass strips down
         // to a bare, unread declaration looks unused to it too.
-        pcc::DeadStoreElimination dse;
+        rcc::DeadStoreElimination dse;
         dse.run(irProg, srcPath);
-        pcc::DeadCodeElimination dce;
+        rcc::DeadCodeElimination dce;
         dce.run(irProg, srcPath);
         // LocalCSE may have introduced new locals after buildIR() already
         // assigned frame offsets once.
-        pcc::recomputeFrameLayout(irProg, backend.typeWidths());
+        rcc::recomputeFrameLayout(irProg, backend.typeWidths());
         // Only when this compile sees the entire program: dropping a
         // function/global's own definition is only safe once every
         // reference to it is known, which --format=coff's separate
         // compilation doesn't guarantee.
         if (!allowExternal) {
-            pcc::IdenticalCodeFolding icf;
+            rcc::IdenticalCodeFolding icf;
             icf.run(irProg, srcPath);
-            pcc::UnusedGlobalElimination uge;
+            rcc::UnusedGlobalElimination uge;
             uge.run(irProg, srcPath);
         }
     }
 
-    pcc::validateIRSyntax(irProg);
+    rcc::validateIRSyntax(irProg);
 
-    if (dumpIr) writeToBuildDir(baseName(srcPath) + ".ir", pcc::printIR(irProg, srcPath));
+    if (dumpIr) writeToBuildDir(baseName(srcPath) + ".ir", rcc::printIR(irProg, srcPath));
 
     std::string asmText = backend.generate(irProg, /*objectMode=*/allowExternal);
     if (dumpAsm) {
@@ -418,7 +418,7 @@ std::string compileOneFile(const std::string &srcPath, const std::map<std::strin
 // assembles every format it lists in assembledFormats() in-process (see
 // Codegen.h's own assembleInProcess()) - there's no external assembler
 // fallback.
-std::string assembleOne(const pcc::Backend &backend, const std::string &asmText, const std::string &format) {
+std::string assembleOne(const rcc::Backend &backend, const std::string &asmText, const std::string &format) {
     if (format == "asm") return asmText;
 
     if (std::optional<std::string> result = backend.assembleInProcess(asmText, format)) return *result;
@@ -616,17 +616,17 @@ int main(int argc, char **argv) {
                 if (systemLinkerSet || windowsLinkerKindSet) {
                     throw std::runtime_error("--linker and --windows-linker are unsupported: hosted linking is internal");
                 }
-                pcc::HostedTarget hostedTarget = windowsHosted ? pcc::HostedTarget::WindowsI386 :
-                                                macosHosted ? pcc::HostedTarget::MacOSArm64 :
-                                                              pcc::HostedTarget::LinuxI386;
-                pcc::linkHosted(systemLinkInputs, hostedTarget, output);
+                rcc::HostedTarget hostedTarget = windowsHosted ? rcc::HostedTarget::WindowsI386 :
+                                                macosHosted ? rcc::HostedTarget::MacOSArm64 :
+                                                              rcc::HostedTarget::LinuxI386;
+                rcc::linkHosted(systemLinkInputs, hostedTarget, output);
             } catch (const std::exception &e) {
                 std::cerr << e.what() << "\n";
                 return 1;
             }
             return 0;
         }
-        std::unique_ptr<pcc::TargetLinker> linker = makeLinker(target, baseAddressWords);
+        std::unique_ptr<rcc::TargetLinker> linker = makeLinker(target, baseAddressWords);
         if (!linker) {
             std::cerr << "unknown --target '" << target << "' (known targets: " << knownTargetsList() << ")\n";
             return 1;
@@ -640,11 +640,11 @@ int main(int argc, char **argv) {
             std::cerr << ")\n";
             return 1;
         }
-        auto outKind = pcc::fileFormatKindFromName(format);
+        auto outKind = rcc::fileFormatKindFromName(format);
         // formatOk above already confirmed format names a real FileFormatKind.
-        std::unique_ptr<pcc::FileFormatWriter> writer = pcc::makeFileFormatWriter(*outKind);
+        std::unique_ptr<rcc::FileFormatWriter> writer = rcc::makeFileFormatWriter(*outKind);
         try {
-            std::vector<pcc::ObjectFile> objects;
+            std::vector<rcc::ObjectFile> objects;
             for (const std::string &path : srcPaths) {
                 std::ifstream in(path, std::ios::binary);
                 if (!in) throw std::runtime_error("could not read object file '" + path + "'");
@@ -654,10 +654,10 @@ int main(int argc, char **argv) {
                 // Sniffed from leading bytes, not assumed to be COFF, so
                 // objects compiled with different --format choices can
                 // still be linked together.
-                pcc::FileFormatKind kind = pcc::detectFileFormat(bytes);
-                objects.push_back(pcc::makeFileFormatReader(kind)->read(bytes));
+                rcc::FileFormatKind kind = rcc::detectFileFormat(bytes);
+                objects.push_back(rcc::makeFileFormatReader(kind)->read(bytes));
             }
-            pcc::ObjectFile linked = linker->merge(objects, gcSections);
+            rcc::ObjectFile linked = linker->merge(objects, gcSections);
             writeResult(outPath, writer->write(linked));
         } catch (const std::exception &e) {
             std::cerr << e.what() << "\n";
@@ -667,18 +667,18 @@ int main(int argc, char **argv) {
     }
 
     // --- ordinary compile mode. ---
-    std::unique_ptr<pcc::Backend> backend = makeBackend(target);
+    std::unique_ptr<rcc::Backend> backend = makeBackend(target);
     if (!backend) {
         std::cerr << "unknown --target '" << target << "' (known targets: " << knownTargetsList() << ")\n";
         return 1;
     }
     if (hosted) {
-        auto *i386 = dynamic_cast<pcc::I386Codegen *>(backend.get());
+        auto *i386 = dynamic_cast<rcc::I386Codegen *>(backend.get());
         if (i386) {
             i386->setHostedAbi(true);
             i386->setWindowsAbi(windowsHosted);
         }
-        if (auto *arm64 = dynamic_cast<pcc::Arm64Codegen *>(backend.get())) arm64->setHostedAbi(macosHosted);
+        if (auto *arm64 = dynamic_cast<rcc::Arm64Codegen *>(backend.get())) arm64->setHostedAbi(macosHosted);
     }
 
     std::vector<std::string> assembledFormats = backend->assembledFormats();
@@ -805,14 +805,14 @@ int main(int argc, char **argv) {
         // would leak each file's generated text into the next one's object.
         try {
             for (const std::string &srcPath : srcPaths) {
-                std::unique_ptr<pcc::Backend> fileBackend = makeBackend(target);
+                std::unique_ptr<rcc::Backend> fileBackend = makeBackend(target);
                 if (hosted) {
-                    auto *i386 = dynamic_cast<pcc::I386Codegen *>(fileBackend.get());
+                    auto *i386 = dynamic_cast<rcc::I386Codegen *>(fileBackend.get());
                     if (i386) {
                         i386->setHostedAbi(true);
                         i386->setWindowsAbi(windowsHosted);
                     }
-                    if (auto *arm64 = dynamic_cast<pcc::Arm64Codegen *>(fileBackend.get())) {
+                    if (auto *arm64 = dynamic_cast<rcc::Arm64Codegen *>(fileBackend.get())) {
                         arm64->setHostedAbi(macosHosted);
                     }
                 }

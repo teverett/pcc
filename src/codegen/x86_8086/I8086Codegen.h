@@ -11,7 +11,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates 16-bit real-mode 8086 assembly (NASM syntax). Every
 // variable/temporary is one 16-bit word; register-indexed addressing
@@ -57,7 +57,7 @@ class I8086Codegen : public Backend {
     // Shared tail for an indexed CompoundAssign/CompoundDerefAssign; bx holds the resolved address.
     void genCompoundThroughBx(const ir::Expr &e);
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
     // log2 of an element type's width, used to scale an array index.
     int elemShift(Type t) const {
@@ -188,4 +188,4 @@ class I8086Codegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

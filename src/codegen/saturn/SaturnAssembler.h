@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // A from-scratch, in-process two-pass assembler for exactly the narrow Saturn assembly dialect
 // SaturnCodegen.cpp emits.
@@ -61,4 +61,4 @@ std::string assembleSaturn(const std::string &asmText, bool allowExternal = fals
 // objects and its synthesized entry object, avoiding a serialize/deserialize round trip.
 ObjectFile assembleSaturnObject(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

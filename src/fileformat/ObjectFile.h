@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace pcc {
+namespace rcc {
 
 // `value` is a byte offset from `.text` start (absolute address once linked is `base + value`),
 // except when `isData` is set. `isDefined=false` is a forward reference a linker must resolve
@@ -57,4 +57,4 @@ struct ObjectFile {
     uint32_t textAlignment = 1;
 };
 
-}  // namespace pcc
+}  // namespace rcc

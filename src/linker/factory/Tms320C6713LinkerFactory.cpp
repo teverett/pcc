@@ -4,7 +4,7 @@
 
 #include "linker/GenericLinker.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 // Matches Tms320C6713Codegen.cpp's own kBaseAddress (not otherwise exported - this linker never
@@ -23,4 +23,4 @@ std::unique_ptr<TargetLinker> makeTms320C6713Linker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

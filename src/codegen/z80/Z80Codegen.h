@@ -9,7 +9,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates this project's own Z80 assembly dialect (real, standard Z80
 // mnemonics - see Z80Assembler.h) from IR, using the same memory-resident
@@ -186,4 +186,4 @@ class Z80Codegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace pcc {
+namespace rcc {
 
 // One resolved Windows import (from a COFF import library, a GNU import archive member, or a DLL's
 // own export table) - what fileformat/coff/HostedPeReader.h's readCoffImportObject()/
@@ -39,4 +39,4 @@ struct PEImage {
     std::vector<uint32_t> baseRelocations;
 };
 
-}  // namespace pcc
+}  // namespace rcc

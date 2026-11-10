@@ -46,16 +46,16 @@
 #       within the real 8192-word address space, not a huge wrapped value that happened to clear
 #       the overflow check by luck.
 #
-# Usage: tests/run_base_address_tests.sh [path/to/pcc]
+# Usage: tests/run_base_address_tests.sh [path/to/rcc]
 
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PCC="$SCRIPT_DIR/../build/bin/pcc"
-[ $# -ge 1 ] && PCC="$1"
+RCC="$SCRIPT_DIR/../build/bin/rcc"
+[ $# -ge 1 ] && RCC="$1"
 
-if [ ! -x "$PCC" ]; then
-    echo "pcc binary not found at $PCC - build it first ('make')" >&2
+if [ ! -x "$RCC" ]; then
+    echo "rcc binary not found at $RCC - build it first ('make')" >&2
     exit 1
 fi
 if ! command -v pdp7 >/dev/null 2>&1; then
@@ -74,12 +74,12 @@ test_base_runs_correctly() {
 int helper(int x) { return x + 1; }
 int main() { return helper(41); }
 EOF
-    if ! "$PCC" --target=pdp7 --format=coff --out="$dir/t.o" "$dir/t.c" >"$dir/log" 2>&1; then
+    if ! "$RCC" --target=pdp7 --format=coff --out="$dir/t.o" "$dir/t.c" >"$dir/log" 2>&1; then
         echo "FAIL test_base_runs_correctly: fixture itself failed to compile"
         cat "$dir/log"
         return 1
     fi
-    if ! "$PCC" --link --target=pdp7 --format=list --base=16 --out="$dir/t.lst" "$dir/t.o" >"$dir/log" 2>&1; then
+    if ! "$RCC" --link --target=pdp7 --format=list --base=16 --out="$dir/t.lst" "$dir/t.o" >"$dir/log" 2>&1; then
         echo "FAIL test_base_runs_correctly: --base=16 link unexpectedly failed:"
         cat "$dir/log"
         return 1
@@ -97,7 +97,7 @@ EOF
         return 1
     fi
 
-    if ! "$PCC" --link --target=pdp7 --format=rim --base=16 --out="$dir/t.rim" "$dir/t.o" >"$dir/log" 2>&1; then
+    if ! "$RCC" --link --target=pdp7 --format=rim --base=16 --out="$dir/t.rim" "$dir/t.o" >"$dir/log" 2>&1; then
         echo "FAIL test_base_runs_correctly: --base=16 rim link unexpectedly failed:"
         cat "$dir/log"
         return 1
@@ -143,7 +143,7 @@ test_gc_sections_negative_shift() {
     # shape instead of a guessed-smaller stand-in. Not run under the simulator (`dsktrans`'s own
     # busy-poll would spin forever with no real IOT device behind it, the same genuine limitation
     # sys/s1.c's own `swap` work ran into for real) - checking the link succeeds and every
-    # resolved address is sane is the right level here, same as pcc's own tests/disk.c stopping
+    # resolved address is sane is the right level here, same as rcc's own tests/disk.c stopping
     # at "compiles and links", not "runs".
     cat >"$dir/t.c" <<'EOF'
 int betwen(int value, int low, int high) {
@@ -177,9 +177,9 @@ int dsktrans(int wordCount, int bufAddr, int bcdTrackSector, int opCode) {
     opCode;
     asm { 0707144 }
     asm {
-PCCDSKWAIT:
+RCCDSKWAIT:
         0707121
-        jmp PCCDSKWAIT
+        jmp RCCDSKWAIT
         0707132
     }
     return 0;
@@ -195,12 +195,12 @@ int main() {
     return dsktrans(-64, 100, 8, 3584);
 }
 EOF
-    if ! "$PCC" --target=pdp7 --format=coff --out="$dir/t.o" "$dir/t.c" >"$dir/log" 2>&1; then
+    if ! "$RCC" --target=pdp7 --format=coff --out="$dir/t.o" "$dir/t.c" >"$dir/log" 2>&1; then
         echo "FAIL test_gc_sections_negative_shift: fixture itself failed to compile"
         cat "$dir/log"
         return 1
     fi
-    if ! "$PCC" --link --target=pdp7 --format=list --gc-sections --base=0 --out="$dir/t.lst" "$dir/t.o" \
+    if ! "$RCC" --link --target=pdp7 --format=list --gc-sections --base=0 --out="$dir/t.lst" "$dir/t.o" \
             >"$dir/log" 2>&1; then
         echo "FAIL test_gc_sections_negative_shift: --gc-sections --base=0 link unexpectedly failed" \
              "(the bug this test guards against):"

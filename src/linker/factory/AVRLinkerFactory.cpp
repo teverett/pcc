@@ -5,7 +5,7 @@
 #include "codegen/avr/AVRAssembler.h"
 #include "linker/GenericLinker.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -86,4 +86,4 @@ std::unique_ptr<TargetLinker> makeAVRLinker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

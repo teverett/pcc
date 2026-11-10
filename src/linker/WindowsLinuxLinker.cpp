@@ -32,7 +32,7 @@
 #include "codegen/i386/I386Assembler.h"
 #include "fileformat/FileFormat.h"
 
-namespace pcc {
+namespace rcc {
 namespace {
 
 using Bytes = std::string;
@@ -478,7 +478,7 @@ MergedProgram mergeObjects(std::vector<Unit> units, HostedTarget target, uint64_
                     [](const DynamicImport &item) { return item.symbol == "__libc_start_main"; })) ||
         (target == HostedTarget::WindowsI386 && std::any_of(imports.begin(), imports.end(),
                     [](const HostedImport &item) { return item.symbol == "_exit"; })));
-    units.insert(units.begin(), {std::move(startup), "<pcc startup>"});
+    units.insert(units.begin(), {std::move(startup), "<rcc startup>"});
     std::vector<uint32_t> bases(units.size()), dataBases(units.size());
     uint32_t textSize = 0, dataSize = 0;
     for (size_t i = 0; i < units.size(); ++i) {
@@ -631,13 +631,13 @@ MergedProgram mergeObjects(std::vector<Unit> units, HostedTarget target, uint64_
             if (!sym.isDefined) continue;
             if (sym.name == ".." || sym.name == "..d") continue;
             std::string name = sym.name;
-            bool local = name.rfind("__pcc_local_", 0) == 0 || name.rfind("__pcc_tmp_", 0) == 0;
+            bool local = name.rfind("__rcc_local_", 0) == 0 || name.rfind("__rcc_tmp_", 0) == 0;
             if (local) {
                 auto old = renamed[i].find(name);
                 if (old != renamed[i].end()) name = old->second;
                 else {
                     std::string original = name;
-                    name += "$pcc" + std::to_string(i);
+                    name += "$rcc" + std::to_string(i);
                     renamed[i][original] = name;
                 }
             }
@@ -738,9 +738,9 @@ void writeAtomic(const std::string &path, const Bytes &data, bool executable) {
     std::filesystem::path destination(path);
     std::filesystem::path parent = destination.parent_path();
     if (parent.empty()) parent = ".";
-    std::filesystem::path temporary = parent / (destination.filename().string() + ".pcc-tmp");
+    std::filesystem::path temporary = parent / (destination.filename().string() + ".rcc-tmp");
     for (unsigned suffix = 0; std::filesystem::exists(temporary); ++suffix) {
-        temporary = parent / (destination.filename().string() + ".pcc-tmp-" + std::to_string(suffix));
+        temporary = parent / (destination.filename().string() + ".rcc-tmp-" + std::to_string(suffix));
     }
     {
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
@@ -849,4 +849,4 @@ void linkHosted(const std::vector<std::string> &inputs, HostedTarget target, con
     writeAtomic(outputPath, output, target != HostedTarget::WindowsI386);
 }
 
-}  // namespace pcc
+}  // namespace rcc

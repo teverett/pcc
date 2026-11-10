@@ -6,7 +6,7 @@
 
 #include "SaturnAssembler.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 [[noreturn]] void err(int line, const std::string &msg) {
@@ -1453,4 +1453,4 @@ __udivmod32_done:
 )ASM";
 }
 
-}  // namespace pcc
+}  // namespace rcc

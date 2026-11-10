@@ -4,7 +4,7 @@
 #include "codegen/pdp10/Pdp10Assembler.h"
 #include "codegen/pdp10/Pdp10Codegen.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -64,4 +64,4 @@ std::unique_ptr<TargetLinker> makePdp10Linker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

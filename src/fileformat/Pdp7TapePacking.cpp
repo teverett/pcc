@@ -2,7 +2,7 @@
 
 #include <stdexcept>
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -79,4 +79,4 @@ std::vector<uint8_t> pdp7TextBytesFromWords(const std::vector<uint32_t> &words) 
     return textBytes;
 }
 
-}  // namespace pcc
+}  // namespace rcc

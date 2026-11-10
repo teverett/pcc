@@ -2,7 +2,7 @@
 
 #include "optimizers/Optimizer.h"
 
-namespace pcc {
+namespace rcc {
 
 // Merges functions with structurally identical bodies into one definition,
 // redirecting every Call/`&fn` reference to a kept survivor and dropping the
@@ -28,4 +28,4 @@ class IdenticalCodeFolding : public Optimizer {
     bool run(ir::Program &prog, const std::string &sourceFile) const override;
 };
 
-}  // namespace pcc
+}  // namespace rcc

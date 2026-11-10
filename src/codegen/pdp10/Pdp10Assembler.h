@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // This target's own custom COFF/object-format machine ID (no real one exists for this dialect).
 constexpr uint16_t kPdp10CoffMachine = 0x1010;
@@ -25,7 +25,7 @@ constexpr uint16_t kPdp10RelocAbs18 = 1;
 
 // A from-scratch, in-process two-pass assembler for exactly the narrow PDP-10 dialect
 // Pdp10Codegen.cpp emits - not a general-purpose MACRO-10 assembler. Parses via the shared
-// grammar/PccAsm.g4 grammar.
+// grammar/RccAsm.g4 grammar.
 //
 // Every instruction here has the same uniform shape "mnemonic ac,E": a 4-bit accumulator
 // field (`ac`, always a bare literal 0-17 - this dialect never needs a symbolic register name,
@@ -56,4 +56,4 @@ std::string assemblePdp10(const std::string &asmText);
 // error. Returns the format-neutral ObjectFile; never touches a real object-format byte layout.
 ObjectFile assemblePdp10Object(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

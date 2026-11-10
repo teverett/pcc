@@ -10,7 +10,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates MIPS assembly (see MipsAssembler.h) for the IR built by
 // IRBuilder, targeting MIPS I (runs unchanged on R10000/R4000/etc, so
@@ -92,7 +92,7 @@ class MipsCodegen : public Backend {
     // already hold the resolved target address on entry.
     void genCompoundThroughT2(const ir::Expr &e);
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
     // log2 of an element type's width (1/2/4/8 bytes -> 0/1/2/3).
     int elemShift(Type t) const {
@@ -168,4 +168,4 @@ class MipsCodegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

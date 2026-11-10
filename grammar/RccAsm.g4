@@ -1,10 +1,10 @@
-grammar PccAsm;
+grammar RccAsm;
 
 // ---------------------------------------------------------------------
-// One shared textual "assembly IR" grammar used by every pcc backend's
+// One shared textual "assembly IR" grammar used by every rcc backend's
 // own in-process assembler (pdp7/MiniAssembler.cpp today; the 8086
 // backend's own assembler is meant to reuse it too, once built - see
-// ../docs/pdp-c-compiler.md). Each backend emits its own dialect of
+// ../docs/language.md). Each backend emits its own dialect of
 // *this* syntax (different mnemonics, different operand conventions)
 // and each backend's own semantic layer interprets the parsed operand
 // list according to its own target's real semantics:
@@ -22,12 +22,12 @@ grammar PccAsm;
 //    argument to it - ordinary NASM semantics.
 //
 // Deliberately NOT a general-purpose assembly grammar: no macros, no
-// section directives, nothing beyond what pcc's own backends are ever
+// section directives, nothing beyond what rcc's own backends are ever
 // observed to emit. In particular this is NOT
 // ../../pdp-assembler/grammar/Pdp7.g4 (the *historical* as.s/as7
 // grammar, handling real kernel sources with packed-char literals,
 // numeric relative labels, `@local` directives, and `"`-comments) -
-// this one is pcc's own, much narrower, and uses `;` for comments
+// this one is rcc's own, much narrower, and uses `;` for comments
 // (matching 8086/NASM's own convention, rather than inventing a third
 // one) on both targets.
 // ---------------------------------------------------------------------
@@ -39,7 +39,7 @@ program
 // Always exactly one statement per physical line - no `;`-joined
 // multi-statement lines the way the historical as.s/as7 grammar
 // allows (`;` is this grammar's comment character instead - see
-// COMMENT below). Every pcc backend emits one label-and/or-statement
+// COMMENT below). Every rcc backend emits one label-and/or-statement
 // per line, so this grammar doesn't need that extra complexity; a
 // multi-word data declaration is just several consecutive lines
 // instead (see pdp7/Pdp7Backend.cpp's `declareArray`).

@@ -6,7 +6,7 @@
 #include "codegen/pic18/PIC18Assembler.h"
 #include "linker/GenericLinker.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 // Must mirror PIC18Codegen.cpp's object-mode entry sequence: clear
@@ -110,4 +110,4 @@ std::unique_ptr<TargetLinker> makePIC18Linker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

@@ -3,21 +3,21 @@
 #include <stdexcept>
 #include <unordered_map>
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("CoffFormat: " + msg); }
 
 constexpr uint16_t kI386WindowsMachine = 0x014C;
-constexpr uint16_t kPccI386Machine = 0x3386;
+constexpr uint16_t kRccI386Machine = 0x3386;
 constexpr uint16_t kI386RelocAbs32 = 1;
 constexpr uint16_t kI386RelocRel32 = 2;
 constexpr uint16_t kImageRelI386Dir32 = 0x0006;
 constexpr uint16_t kImageRelI386Rel32 = 0x0014;
 
-bool isPccLocalSymbol(const std::string &name) {
-    return name.compare(0, 12, "__pcc_local_") == 0 || name.compare(0, 10, "__pcc_tmp_") == 0;
+bool isRccLocalSymbol(const std::string &name) {
+    return name.compare(0, 12, "__rcc_local_") == 0 || name.compare(0, 10, "__rcc_tmp_") == 0;
 }
 
 void put16(std::string &out, uint16_t v) {
@@ -183,7 +183,7 @@ std::string CoffFormatWriter::write(const ObjectFile &obj) const {
         // SectionNumber: 0 (undefined), 1 (.text), or 2 (.bss).
         put16(out, sectionSymbol ? 1 : (!sym.isDefined ? 0 : (sym.isData ? 2 : 1)));
         put16(out, 0);                                        // Type
-        const bool local = windowsI386 && (sectionSymbol || isPccLocalSymbol(sym.name));
+        const bool local = windowsI386 && (sectionSymbol || isRccLocalSymbol(sym.name));
         out.push_back(static_cast<char>(local ? 3 : 2));  // C_STAT or C_EXT
         out.push_back(static_cast<char>(sectionSymbol ? 1 : 0));  // NumberOfAuxSymbols
         if (sectionSymbol) {
@@ -211,7 +211,7 @@ ObjectFile CoffFormatReader::read(const std::string &bytes) const {
     need(bytes, 0, kFileHeaderSize);
     ObjectFile obj;
     const bool windowsI386 = get16(bytes, 0) == kI386WindowsMachine;
-    obj.machineType = windowsI386 ? kPccI386Machine : get16(bytes, 0);
+    obj.machineType = windowsI386 ? kRccI386Machine : get16(bytes, 0);
     uint16_t numSections = get16(bytes, 2);
     if (numSections != 2) {
         fail("expected exactly two sections (.text, .bss), got " + std::to_string(numSections));
@@ -283,4 +283,4 @@ ObjectFile CoffFormatReader::read(const std::string &bytes) const {
     return obj;
 }
 
-}  // namespace pcc
+}  // namespace rcc

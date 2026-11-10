@@ -7,28 +7,28 @@
 # the "_a.c" half (the one with main) - same convention as
 # run_tests.sh's own single-file loop, just for the extern/--link path
 # that loop can't reach (every one of its own files is a complete,
-# single-TU program - see docs/pdp-c-compiler.md's "Extern
+# single-TU program - see docs/language.md's "Extern
 # declarations": extern only means anything under real separate
 # compilation).
 #
-# Usage: tests/run_link_tests.sh [path/to/pcc] [--target=pdp7|8086|8088|i386|vax|avr|alpha]
+# Usage: tests/run_link_tests.sh [path/to/rcc] [--target=pdp7|8086|8088|i386|vax|avr|alpha]
 
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LINK_DIR="$SCRIPT_DIR/link"
-PCC="$SCRIPT_DIR/../build/bin/pcc"
+RCC="$SCRIPT_DIR/../build/bin/rcc"
 TARGET="pdp7"
 
 for arg in "$@"; do
     case "$arg" in
         --target=*) TARGET="${arg#--target=}" ;;
-        *) PCC="$arg" ;;
+        *) RCC="$arg" ;;
     esac
 done
 
-if [ ! -x "$PCC" ]; then
-    echo "pcc binary not found at $PCC - build it first ('make')" >&2
+if [ ! -x "$RCC" ]; then
+    echo "rcc binary not found at $RCC - build it first ('make')" >&2
     exit 1
 fi
 
@@ -79,7 +79,7 @@ tmpdir="$(mktemp -d)"
 # qemu monitor sockets live in their own short directory: a unix socket
 # path is limited to about 104 bytes, which `$tmpdir` plus a long case
 # name can exceed.
-sockdir="$(mktemp -d /tmp/pccq.XXXXXX)"
+sockdir="$(mktemp -d /tmp/rccq.XXXXXX)"
 qemu_count=0
 trap 'rm -rf "$tmpdir" "$sockdir"' EXIT
 
@@ -101,17 +101,17 @@ link_case() {
     local a="$1" b="$2" name="$3" fmt="$4" linkfmt="$5" outfile="$6"
     local aobj="$tmpdir/$name.a.o" bobj="$tmpdir/$name.b.o"
 
-    if ! "$PCC" --target="$TARGET" --format="$fmt" --out="$aobj" "$a" >"$tmpdir/$name.log" 2>&1; then
+    if ! "$RCC" --target="$TARGET" --format="$fmt" --out="$aobj" "$a" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error ($a)"
         sed 's/^/    /' "$tmpdir/$name.log"
         return 1
     fi
-    if ! "$PCC" --target="$TARGET" --format="$fmt" --out="$bobj" "$b" >"$tmpdir/$name.log" 2>&1; then
+    if ! "$RCC" --target="$TARGET" --format="$fmt" --out="$bobj" "$b" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error ($b)"
         sed 's/^/    /' "$tmpdir/$name.log"
         return 1
     fi
-    if ! "$PCC" --link --target="$TARGET" --format="$linkfmt" --out="$outfile" "$aobj" "$bobj" >"$tmpdir/$name.log" 2>&1; then
+    if ! "$RCC" --link --target="$TARGET" --format="$linkfmt" --out="$outfile" "$aobj" "$bobj" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: link error"
         sed 's/^/    /' "$tmpdir/$name.log"
         return 1
@@ -475,7 +475,7 @@ PY
 # always exactly one 512-byte boot sector (see RawFormat.cpp's
 # kSectorSize), with no multi-sector loader, so any case whose linked
 # code+data crosses that line fails this way on those two targets
-# regardless of how compact pcc's own codegen is. stack_safety_headroom
+# regardless of how compact rcc's own codegen is. stack_safety_headroom
 # is sized against pdp7's own 8192-word address space, to exercise
 # Pdp7LinkerFactory.cpp's pdp7-only kStackReserve margin - a concept
 # with no 8086/8088 counterpart - and that sizing is what crosses the

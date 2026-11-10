@@ -9,7 +9,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates this project's WDC 65C02 assembly dialect (see
 // M65C02Assembler.h) for the IR built by IRBuilder. Identical to
@@ -80,7 +80,7 @@ class M65C02Codegen : public Backend {
                                                   const std::string &format) const override;
 
    private:
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > 2; }
     int wordCountOf(Type t) const { return widthOfType(t) / 2; }
     int elemShift(Type t) const {
@@ -256,4 +256,4 @@ class M65C02Codegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

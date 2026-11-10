@@ -29,11 +29,11 @@ Affects the `pdp7` target (`src/codegen/pdp7/Pdp7Codegen.cpp`).
 A function declared with `@addr` (e.g. `int f() @ 2000 { ... }`) is
 pinned to that address, but its compiler-generated prologue reloads
 its own return address relative to its own entry label the same way
-every ordinary pcc-emitted call site sets it up beforehand. When the
+every ordinary rcc-emitted call site sets it up beforehand. When the
 only thing that ever transfers control to it is hand-written assembly
 outside that call graph (e.g. a `jms`/`jmp` from a separately
 assembled low-memory vector table, built with `pdp-assembler` and
-combined with a `pcc --link`ed image), that reload reads stale/wrong
+combined with a `rcc --link`ed image), that reload reads stale/wrong
 data and the function's own first real instructions never run:
 execution instead jumps back to the address the external caller's own
 sequence started at, re-running it in a loop. Confirmed directly on
@@ -44,7 +44,7 @@ back into the external caller instead of continuing into the
 function's own body.
 
 Workaround: make the `@addr`-placed function's entire body a single
-unconditional `asm { }` jump to a separate, ordinarily pcc-linked
+unconditional `asm { }` jump to a separate, ordinarily rcc-linked
 (non-`@addr`) function that does the real work — only the jump
 target's address needs to be fixed, so the broken self-reference is
 never exercised.
@@ -55,7 +55,7 @@ Affects the `pdp7` target in combination with `--link --gc-sections`.
 
 `--gc-sections` keeps a function only if something already in the
 kept call graph calls it. An `@addr`-placed function meant to be
-entered solely from outside pcc's own compiled output (e.g. a
+entered solely from outside rcc's own compiled output (e.g. a
 hand-assembled vector table jumping to a fixed address) has no such
 caller, so it gets discarded even though its placement is a real,
 explicit root. Confirmed directly: the same `@addr`-placed function

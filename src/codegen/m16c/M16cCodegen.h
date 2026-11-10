@@ -9,7 +9,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates Renesas M16C assembly (this project's own dialect - see
 // M16cAssembler.h) for the IR built by IRBuilder. `generate()` returns a
@@ -95,7 +95,7 @@ class M16cCodegen : public Backend {
     // Re-truncates r0 to `to`'s width, re-extending per its signedness.
     void narrowR0To(Type to);
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
     int wordCountOf(Type t) const { return widthOfType(t) / 2; }
     // log2 of the element width (1/2/4/8 bytes -> 0/1/2/3).
@@ -192,4 +192,4 @@ class M16cCodegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

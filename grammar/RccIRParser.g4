@@ -1,10 +1,10 @@
-parser grammar PccIRParser;
+parser grammar RccIRParser;
 
-options { tokenVocab = PccIRLexer; }
+options { tokenVocab = RccIRLexer; }
 
 // ---------------------------------------------------------------------
 // Parser half of the grammar for IRPrinter.cpp's own output (see
-// PccIRLexer.g4's header comment for the split-grammar/`asm {...}`
+// RccIRLexer.g4's header comment for the split-grammar/`asm {...}`
 // reason, and ../src/ir/IRValidator.h for where this gets used).
 //
 // No operator-precedence table: IRPrinter.cpp always fully
@@ -19,7 +19,7 @@ program
     : GLOBALS_HEADER globalDecl* FUNCTIONS_HEADER funcDecl* EOF
     ;
 
-// IRPrinter.cpp's own canonical spelling of a pcc::Type (see
+// IRPrinter.cpp's own canonical spelling of a rcc::Type (see
 // typeSpecText() there) - always the shortest real-C spelling
 // ("int"/"unsigned int"/"char"/.../"long long"/"unsigned long long"),
 // never the source grammar's fuller combinatorial typeSpec (e.g.

@@ -8,7 +8,7 @@
 #include "codegen/alpha/AlphaAssembler.h"
 #include "linker/GenericLinker.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -103,4 +103,4 @@ std::unique_ptr<TargetLinker> makeAlphaLinker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

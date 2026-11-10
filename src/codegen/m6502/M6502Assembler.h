@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // No real COFF machine ID exists for the 6502; this is a project-local stand-in.
 constexpr uint16_t kM6502CoffMachine = 0x6502;
@@ -35,4 +35,4 @@ std::string assembleM6502(const std::string &asmText);
 // format-neutral ObjectFile; this function never writes real object bytes.
 ObjectFile assembleM6502Object(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

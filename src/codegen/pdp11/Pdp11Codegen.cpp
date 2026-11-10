@@ -6,7 +6,7 @@
 #include "Pdp11Assembler.h"
 #include "fileformat/FileFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 [[noreturn]] void err(int line, const std::string &msg) {
@@ -1152,4 +1152,4 @@ std::optional<std::string> Pdp11Codegen::assembleInProcess(const std::string &as
     return std::nullopt;
 }
 
-}  // namespace pcc
+}  // namespace rcc

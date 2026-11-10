@@ -7,7 +7,7 @@
 #include "fileformat/coff/PEImage.h"
 #include "fileformat/archive/ArchiveReader.h"
 
-namespace pcc {
+namespace rcc {
 
 // Reads real i386 COFF import libraries, GNU import archives, and DLL export tables for the
 // hosted Windows linker (see linker/WindowsLinuxLinker.h) - a different concern from
@@ -30,4 +30,4 @@ std::vector<HostedImport> windowsDllImports(const std::string &bytes, const std:
 // keyed by member index.
 std::unordered_map<size_t, HostedImport> gnuCoffImports(const std::vector<ArchiveMember> &members);
 
-}  // namespace pcc
+}  // namespace rcc

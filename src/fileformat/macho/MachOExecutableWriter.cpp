@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <unordered_map>
 
-namespace pcc {
+namespace rcc {
 namespace {
 
 using Bytes = std::string;
@@ -478,7 +478,7 @@ Bytes makeMachExecutable(MachOImage &image) {
     codeDirectory.push_back(0);
     codeDirectory.push_back(12);
     appendBE32(codeDirectory, 0);
-    codeDirectory += "pcc\0";
+    codeDirectory += "rcc\0";
     codeDirectory.resize(48, '\0');
     for (uint32_t slot = 0; slot < pageSlots; ++slot) {
         size_t pageOffset = static_cast<size_t>(slot) * kSignaturePageSize;
@@ -501,4 +501,4 @@ Bytes makeMachExecutable(MachOImage &image) {
     return output;
 }
 
-}  // namespace pcc
+}  // namespace rcc

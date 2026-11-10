@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // This dialect's own machine ID; not a registered COFF value.
 constexpr uint16_t kMipsCoffMachine = 0x4000;
@@ -43,4 +43,4 @@ std::string assembleMips(const std::string &asmText);
 // (see GenericLinker.h) since the object has no fixed base address yet.
 ObjectFile assembleMipsObject(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

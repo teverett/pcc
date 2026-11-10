@@ -2,7 +2,7 @@
 
 #include "optimizers/Optimizer.h"
 
-namespace pcc {
+namespace rcc {
 
 // Replaces a Unary/Binary expression whose operand(s) are already IntLit
 // with the IntLit it computes to (e.g. `2 + 3` -> `5`). Purely local to one
@@ -17,4 +17,4 @@ class ConstantFolding : public Optimizer {
     bool run(ir::Program &prog, const std::string &sourceFile) const override;
 };
 
-}  // namespace pcc
+}  // namespace rcc

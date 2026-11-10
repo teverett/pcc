@@ -2,7 +2,7 @@
 
 #include "optimizers/Optimizer.h"
 
-namespace pcc {
+namespace rcc {
 
 // Strength reduction: rewrites a Binary expression with exactly one IntLit
 // operand into a cheaper identity (e.g. `x * 2` -> `x << 1`, `x / 1` -> `x`).
@@ -20,4 +20,4 @@ class AlgebraicSimplification : public Optimizer {
     bool run(ir::Program &prog, const std::string &sourceFile) const override;
 };
 
-}  // namespace pcc
+}  // namespace rcc

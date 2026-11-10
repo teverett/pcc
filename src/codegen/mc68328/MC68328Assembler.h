@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // Custom machine ID for this target (no registered COFF/object-format ID exists for the MC68328),
 // distinct from m68k's kM68kCoffMachine since objects for the two are never link-compatible: only
@@ -35,4 +35,4 @@ std::string assembleMC68328(const std::string &asmText);
 // base is added.
 ObjectFile assembleMC68328Object(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

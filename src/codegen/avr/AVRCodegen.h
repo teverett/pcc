@@ -11,7 +11,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates ATmega328P assembly (real AVR mnemonics, see AVRAssembler.h) from IRBuilder's IR.
 // `--target=avr` names the ISA family; codegen itself is scoped to the ATmega328P specifically:
@@ -204,7 +204,7 @@ class AVRCodegen : public Backend {
     // evaluation (which can clobber it).
     void genCompoundThroughX(const ir::Expr &e);
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
 
     // Address of `slot`, a Local or Param, as a Y-relative displacement (see this file's own
     // header comment) - may exceed `ldd`/`std`'s 0-63 range, in which case loadSlotInto()/
@@ -273,4 +273,4 @@ class AVRCodegen : public Backend {
     std::map<int, std::string> irLabels_;
 };
 
-}  // namespace pcc
+}  // namespace rcc

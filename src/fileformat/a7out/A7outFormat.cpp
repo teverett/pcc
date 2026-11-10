@@ -6,7 +6,7 @@
 
 #include "fileformat/Pdp7TapePacking.h"
 
-namespace pcc {
+namespace rcc {
 
 std::string A7outFormatWriter::write(const ObjectFile &obj) const {
     if (obj.unitBits != 18) {
@@ -50,4 +50,4 @@ ObjectFile A7outFormatReader::read(const std::string &bytes) const {
     return obj;
 }
 
-}  // namespace pcc
+}  // namespace rcc

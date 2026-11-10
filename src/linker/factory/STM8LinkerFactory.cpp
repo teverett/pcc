@@ -3,7 +3,7 @@
 #include "linker/GenericLinker.h"
 #include "codegen/stm8/STM8Assembler.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 // 65280 (0xFF00) is the stack top; 57344 (0xE000) is the software frame-stack's initial top.
@@ -39,4 +39,4 @@ std::unique_ptr<TargetLinker> makeSTM8Linker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

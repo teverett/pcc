@@ -5,7 +5,7 @@
 
 #include "fileformat/coff/PEImage.h"
 
-namespace pcc {
+namespace rcc {
 
 // Writes the final linked i386 Windows executable (a real, loadable PE32) for the hosted PE
 // linker (see linker/WindowsLinuxLinker.h) - the "target file format" half of that linker, as
@@ -20,4 +20,4 @@ constexpr uint32_t kPeBase = 0x00400000;
 // `.reloc` base-relocation section.
 std::string makePe(const PEImage &image);
 
-}  // namespace pcc
+}  // namespace rcc

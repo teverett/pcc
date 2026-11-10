@@ -8,7 +8,7 @@
 #include "../Type.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Turns target-independent IR (names already resolved, semantics already checked by
 // IRBuilder) into a target's assembly text, and drives that target's assembler to produce
@@ -57,4 +57,4 @@ class Backend {
     }
 };
 
-}  // namespace pcc
+}  // namespace rcc

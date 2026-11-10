@@ -36,16 +36,16 @@
 #       `pdp7` simulator - the fix must not refuse a program just for
 #       being nontrivially sized, only one that's actually unsafe.
 #
-# Usage: tests/run_stack_safety_tests.sh [path/to/pcc]
+# Usage: tests/run_stack_safety_tests.sh [path/to/rcc]
 
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PCC="$SCRIPT_DIR/../build/bin/pcc"
-[ $# -ge 1 ] && PCC="$1"
+RCC="$SCRIPT_DIR/../build/bin/rcc"
+[ $# -ge 1 ] && RCC="$1"
 
-if [ ! -x "$PCC" ]; then
-    echo "pcc binary not found at $PCC - build it first ('make')" >&2
+if [ ! -x "$RCC" ]; then
+    echo "rcc binary not found at $RCC - build it first ('make')" >&2
     exit 1
 fi
 if ! command -v pdp7 >/dev/null 2>&1; then
@@ -96,19 +96,19 @@ test_overflow_refused() {
     # danger zone, not just theoretically close).
     write_fixture "$dir" 3600
 
-    if ! "$PCC" --target=pdp7 --format=coff --out="$dir/main.o" "$dir/main.c" >"$dir/log" 2>&1; then
+    if ! "$RCC" --target=pdp7 --format=coff --out="$dir/main.o" "$dir/main.c" >"$dir/log" 2>&1; then
         echo "FAIL test_overflow_refused: fixture itself failed to compile (bug in the test, not the fix)"
         cat "$dir/log"
         return 1
     fi
-    if ! "$PCC" --target=pdp7 --format=coff --out="$dir/data.o" "$dir/data.c" >"$dir/log" 2>&1; then
+    if ! "$RCC" --target=pdp7 --format=coff --out="$dir/data.o" "$dir/data.c" >"$dir/log" 2>&1; then
         echo "FAIL test_overflow_refused: fixture itself failed to compile (bug in the test, not the fix)"
         cat "$dir/log"
         return 1
     fi
 
     local linkOut
-    linkOut="$("$PCC" --link --target=pdp7 --format=rim --out="$dir/out.rim" "$dir/main.o" "$dir/data.o" 2>&1)"
+    linkOut="$("$RCC" --link --target=pdp7 --format=rim --out="$dir/out.rim" "$dir/main.o" "$dir/data.o" 2>&1)"
     local linkStatus=$?
 
     if [ "$linkStatus" -eq 0 ]; then
@@ -135,17 +135,17 @@ test_headroom_accepted_and_runs() {
     # test_overflow_refused above, just small enough to be safe.
     write_fixture "$dir" 1000
 
-    if ! "$PCC" --target=pdp7 --format=coff --out="$dir/main.o" "$dir/main.c" >"$dir/log" 2>&1; then
+    if ! "$RCC" --target=pdp7 --format=coff --out="$dir/main.o" "$dir/main.c" >"$dir/log" 2>&1; then
         echo "FAIL test_headroom_accepted_and_runs: compile error (main.c)"
         cat "$dir/log"
         return 1
     fi
-    if ! "$PCC" --target=pdp7 --format=coff --out="$dir/data.o" "$dir/data.c" >"$dir/log" 2>&1; then
+    if ! "$RCC" --target=pdp7 --format=coff --out="$dir/data.o" "$dir/data.c" >"$dir/log" 2>&1; then
         echo "FAIL test_headroom_accepted_and_runs: compile error (data.c)"
         cat "$dir/log"
         return 1
     fi
-    if ! "$PCC" --link --target=pdp7 --format=rim --out="$dir/out.rim" "$dir/main.o" "$dir/data.o" >"$dir/log" 2>&1; then
+    if ! "$RCC" --link --target=pdp7 --format=rim --out="$dir/out.rim" "$dir/main.o" "$dir/data.o" >"$dir/log" 2>&1; then
         echo "FAIL test_headroom_accepted_and_runs: link unexpectedly refused a program with real headroom:"
         cat "$dir/log"
         return 1

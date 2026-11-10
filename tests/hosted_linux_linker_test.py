@@ -7,7 +7,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PCC = Path(sys.argv.pop(1) if len(sys.argv) > 1 else ROOT / "build/bin/pcc").resolve()
+RCC = Path(sys.argv.pop(1) if len(sys.argv) > 1 else ROOT / "build/bin/rcc").resolve()
 BUILD = ROOT / "build/hosted-linux-unit-tests"
 
 
@@ -81,7 +81,7 @@ class LinuxHostedLinkerTest(unittest.TestCase):
     def compile(self, stem, source):
         src, obj = BUILD / (stem + ".c"), BUILD / (stem + ".o")
         src.write_text(source)
-        result = subprocess.run([str(PCC), "--target=i386-linux",
+        result = subprocess.run([str(RCC), "--target=i386-linux",
                                  f"--out={obj}", str(src)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return obj
@@ -89,7 +89,7 @@ class LinuxHostedLinkerTest(unittest.TestCase):
     def link(self, stem, obj, *args):
         output = BUILD / stem
         output.write_bytes(b"preserved output")
-        result = subprocess.run([str(PCC), "--link", "--target=i386-linux",
+        result = subprocess.run([str(RCC), "--link", "--target=i386-linux",
                                  f"--out={output}", str(obj), *map(str, args)],
                                 capture_output=True, text=True)
         return result, output
@@ -203,14 +203,14 @@ class LinuxHostedLinkerTest(unittest.TestCase):
 
     def test_default_symbol_version_requirement(self):
         obj = self.compile("version-main", "int library_value(); int main(){return library_value();}")
-        library = self.fixture("version-lib", (("library_value", 2, 2),), ("PCC_1.0",))
+        library = self.fixture("version-lib", (("library_value", 2, 2),), ("RCC_1.0",))
         result, output = self.link("version-app", obj, library)
         self.assertEqual(result.returncode, 0, result.stderr)
         data, tags, strings, _ = dynamic_info(output)
         self.assertEqual(tags[0x6fffffff], [1])
         need = tags[0x6ffffffe][0] - 0x08048000
         version_name = struct.unpack_from("<I", data, need + 24)[0]
-        self.assertEqual(strings[version_name:].split(b"\0", 1)[0], b"PCC_1.0")
+        self.assertEqual(strings[version_name:].split(b"\0", 1)[0], b"RCC_1.0")
         symbol_versions = tags[0x6ffffff0][0] - 0x08048000
         self.assertEqual(struct.unpack_from("<HH", data, symbol_versions), (0, 2))
 
@@ -218,13 +218,13 @@ class LinuxHostedLinkerTest(unittest.TestCase):
         obj = self.compile("default-main", "int library_value(); int main(){return library_value();}")
         library = self.fixture("default-lib", (("library_value", 2, 3),
                                                 ("library_value", 2, 0x8002)),
-                               ("PCC_OLD", "PCC_NEW"))
+                               ("RCC_OLD", "RCC_NEW"))
         result, output = self.link("default-app", obj, library)
         self.assertEqual(result.returncode, 0, result.stderr)
         data, tags, strings, _ = dynamic_info(output)
         need = tags[0x6ffffffe][0] - 0x08048000
         version_name = struct.unpack_from("<I", data, need + 24)[0]
-        self.assertEqual(strings[version_name:].split(b"\0", 1)[0], b"PCC_NEW")
+        self.assertEqual(strings[version_name:].split(b"\0", 1)[0], b"RCC_NEW")
 
     def test_single_import_plt0_is_exactly_sixteen_bytes(self):
         obj = self.compile("plt-main", "int library_value(); int main(){return library_value();}")
@@ -323,7 +323,7 @@ class LinuxHostedLinkerTest(unittest.TestCase):
         self.assertEqual(output.read_bytes(), b"preserved output")
 
     def libc_paths(self):
-        configured = os.environ.get("PCC_LINUX_LIBRARY_PATHS")
+        configured = os.environ.get("RCC_LINUX_LIBRARY_PATHS")
         paths = configured.split(os.pathsep) if configured else [
             "/usr/lib/i386-linux-gnu", "/lib/i386-linux-gnu", "/usr/lib32", "/lib32"]
         if not any((Path(path) / "libc.so").exists() for path in paths):
@@ -332,7 +332,7 @@ class LinuxHostedLinkerTest(unittest.TestCase):
 
     def test_real_libc_startup_and_puts_versions(self):
         paths = self.libc_paths()
-        obj = self.compile("libc-main", 'int puts(char *text); int main(){puts("hello pcc");return 0;}')
+        obj = self.compile("libc-main", 'int puts(char *text); int main(){puts("hello rcc");return 0;}')
         result, output = self.link("libc-app", obj, *paths, "-lc")
         self.assertEqual(result.returncode, 0, result.stderr)
         data, tags, strings, needed = dynamic_info(output)

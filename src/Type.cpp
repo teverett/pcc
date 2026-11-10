@@ -1,6 +1,6 @@
 #include "Type.h"
 
-namespace pcc {
+namespace rcc {
 
 int rank(BaseType base) {
     switch (base) {
@@ -44,4 +44,4 @@ Type commonType(Type a, Type b) {
     return rank(a.base) > rank(b.base) ? a : b;
 }
 
-}  // namespace pcc
+}  // namespace rcc

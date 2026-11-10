@@ -3,7 +3,7 @@
 #include "linker/GenericLinker.h"
 #include "codegen/i8080/I8080Assembler.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 // 65280 (0xFF00): the 8080's SP is undefined at reset and CALL/RET/PUSH/POP need a real value.
@@ -32,4 +32,4 @@ std::unique_ptr<TargetLinker> makeI8080Linker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

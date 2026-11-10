@@ -5,7 +5,7 @@
 
 #include "fileformat/elf/ELFImage.h"
 
-namespace pcc {
+namespace rcc {
 
 // Writes the final linked i386 Linux executable (a real, loadable ELF - statically linked, or
 // dynamically linked against `image.dynamicLibraries`) for the hosted ELF linker (see
@@ -20,4 +20,4 @@ constexpr uint32_t kElfBase = 0x08048000;
 // when `image.dynamicLibraries` is non-empty).
 std::string makeElf(const ELFImage &image);
 
-}  // namespace pcc
+}  // namespace rcc

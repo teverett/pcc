@@ -5,7 +5,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace pcc {
+namespace rcc {
 
 // One real ELF shared library (`.so`) this program links against - what
 // fileformat/elf/HostedElfReader.h's readElfDynamicLibrary() parses, and what `ELFImage::dynamicLibraries`
@@ -42,4 +42,4 @@ struct ELFImage {
     uint32_t gotOffset = 0;
 };
 
-}  // namespace pcc
+}  // namespace rcc

@@ -9,7 +9,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates Intel 8008 assembly for the IR built by IRBuilder. Key 8008 hardware constraints this backend works
 // around:
@@ -49,7 +49,7 @@ class I8008Codegen : public Backend {
                                                   const std::string &format) const override;
 
    private:
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > 2; }
     int wordCountOf(Type t) const { return widthOfType(t) / 2; }
     int elemShift(Type t) const {
@@ -266,4 +266,4 @@ class I8008Codegen : public Backend {
     std::string getWideEqualitySubroutine(int words);
 };
 
-}  // namespace pcc
+}  // namespace rcc

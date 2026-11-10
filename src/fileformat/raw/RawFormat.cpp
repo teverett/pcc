@@ -2,7 +2,7 @@
 
 #include <stdexcept>
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 constexpr size_t kSectorSize = 512;
@@ -40,4 +40,4 @@ ObjectFile RawFormatReader::read(const std::string &bytes) const {
     return obj;
 }
 
-}  // namespace pcc
+}  // namespace rcc

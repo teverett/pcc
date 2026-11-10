@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <unordered_map>
 
-namespace pcc {
+namespace rcc {
 namespace {
 
 using Bytes = std::string;
@@ -196,4 +196,4 @@ Bytes makeElf(const ELFImage &image) {
     return out;
 }
 
-}  // namespace pcc
+}  // namespace rcc

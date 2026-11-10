@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // This project's own non-registered COFF machine ID for the M16C; checked by
 // M16cLinkerFactory.cpp against `--target=m16c`.
@@ -29,7 +29,7 @@ constexpr uint16_t kM16cRelocAbs16 = 1;
 // (unlike real M16C short PC-relative conditional jumps), so there is no
 // branch-range limit to work around.
 //
-// Parses via the shared grammar ../../../grammar/PccAsm.g4; a register name
+// Parses via the shared grammar ../../../grammar/RccAsm.g4; a register name
 // is syntactically just an identifier, so this file decides per operand
 // whether an identifier names a register or a label (see classifyOperand()
 // in M16cAssembler.cpp).
@@ -49,4 +49,4 @@ std::string assembleM16c(const std::string &asmText);
 // eventual linked base, resolved only by a linker).
 ObjectFile assembleM16cObject(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

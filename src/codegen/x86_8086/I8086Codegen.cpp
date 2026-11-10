@@ -4,7 +4,7 @@
 
 #include "I8086Assembler.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 [[noreturn]] void err(int line, const std::string &msg) {
@@ -1331,4 +1331,4 @@ std::optional<std::string> I8086Codegen::assembleInProcess(const std::string &as
     return std::nullopt;
 }
 
-}  // namespace pcc
+}  // namespace rcc

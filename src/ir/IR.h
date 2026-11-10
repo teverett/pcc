@@ -6,7 +6,7 @@
 
 #include "../Type.h"
 
-namespace pcc::ir {
+namespace rcc::ir {
 
 // The IR is AST.h's tree shape with every name resolved: a Var/Index/Assign's
 // identifier becomes a direct Slot*, and a Call's callee a direct Function*
@@ -231,4 +231,4 @@ struct Program {
     std::vector<FunctionBody> functionBodies;           // one per function that has a body
 };
 
-}  // namespace pcc::ir
+}  // namespace rcc::ir

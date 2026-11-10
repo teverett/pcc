@@ -6,10 +6,10 @@
 #include "ANTLRInputStream.h"
 #include "BaseErrorListener.h"
 #include "CommonTokenStream.h"
-#include "PccAsmLexer.h"
-#include "PccAsmParser.h"
+#include "RccAsmLexer.h"
+#include "RccAsmParser.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -37,13 +37,13 @@ void checkAsmSyntax(const std::string &asmText, int sourceLine) {
     if (!text.empty() && text.back() != '\n') text += "\n";
 
     antlr4::ANTLRInputStream input(text);
-    PccAsmLexer lexer(&input);
+    RccAsmLexer lexer(&input);
     AsmSyntaxErrorListener errors;
     lexer.removeErrorListeners();
     lexer.addErrorListener(&errors);
 
     antlr4::CommonTokenStream tokens(&lexer);
-    PccAsmParser parser(&tokens);
+    RccAsmParser parser(&tokens);
     parser.removeErrorListeners();
     parser.addErrorListener(&errors);
 
@@ -736,4 +736,4 @@ Program buildProgram(CParser::ProgramContext *ctx) {
     return prog;
 }
 
-}  // namespace pcc
+}  // namespace rcc

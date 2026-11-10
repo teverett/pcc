@@ -5,11 +5,11 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PCC = Path(sys.argv.pop(1) if len(sys.argv) > 1 else ROOT / "build/bin/pcc").resolve()
+RCC = Path(sys.argv.pop(1) if len(sys.argv) > 1 else ROOT / "build/bin/rcc").resolve()
 BUILD = ROOT / "build/m16c-dump-asm-tests"
-# --dump-asm always writes to "build/<name><ext>" relative to pcc's own cwd
+# --dump-asm always writes to "build/<name><ext>" relative to rcc's own cwd
 # (main.cpp's writeToBuildDir()), ignoring --out's directory - so these
-# tests run pcc with cwd=ROOT and look for the dump there, not under BUILD.
+# tests run rcc with cwd=ROOT and look for the dump there, not under BUILD.
 ROOT_BUILD = ROOT / "build"
 
 
@@ -25,7 +25,7 @@ class M16cDumpAsmTest(unittest.TestCase):
         if asm_out.exists():
             asm_out.unlink()
         result = subprocess.run(
-            [str(PCC), "--target=m16c", "--dump-asm", f"--out={BUILD / 'ret42.o'}", str(src)],
+            [str(RCC), "--target=m16c", "--dump-asm", f"--out={BUILD / 'ret42.o'}", str(src)],
             capture_output=True, text=True, cwd=ROOT,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -47,7 +47,7 @@ class M16cDumpAsmTest(unittest.TestCase):
 
         for src, out in ((helper_src, BUILD / "helper.o"), (main_src, BUILD / "caller.o")):
             result = subprocess.run(
-                [str(PCC), "--target=m30626fjpfp", "--format=coff", "--dump-asm", f"--out={out}", str(src)],
+                [str(RCC), "--target=m30626fjpfp", "--format=coff", "--dump-asm", f"--out={out}", str(src)],
                 capture_output=True, text=True, cwd=ROOT,
             )
             self.assertEqual(result.returncode, 0, result.stderr)

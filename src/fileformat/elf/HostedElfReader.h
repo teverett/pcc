@@ -4,7 +4,7 @@
 
 #include "fileformat/elf/ELFImage.h"
 
-namespace pcc {
+namespace rcc {
 
 // Reads real i386 ELF input for the hosted linker (see linker/WindowsLinuxLinker.h) - unlike
 // ElfFormat.h/.cpp's reader/writer pair, which only ever round-trips this project's own simplified
@@ -22,4 +22,4 @@ bool isElfDynamicImage(const std::string &bytes);
 // only against `.text`).
 void validateHostedElfObject(const std::string &bytes);
 
-}  // namespace pcc
+}  // namespace rcc

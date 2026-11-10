@@ -5,7 +5,7 @@
 
 #include "Linker.h"
 
-namespace pcc {
+namespace rcc {
 
 // `siteFinalAddr` is only needed by relative patches (target - (site+N)); targets with
 // non-additive combine semantics or non-contiguous fields supply their own patch functions instead.
@@ -92,4 +92,4 @@ class GenericLinker : public TargetLinker {
     GenericLinkerConfig config_;
 };
 
-}  // namespace pcc
+}  // namespace rcc

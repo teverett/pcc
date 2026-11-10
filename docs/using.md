@@ -1,6 +1,6 @@
 # Command-line switches
 
-A build produces a single `pcc` binary (`build/bin/pcc`) that runs in
+A build produces a single `rcc` binary (`build/bin/rcc`) that runs in
 one of two modes:
 
 - **Compile mode** (the default): turns one or more `.c` files into
@@ -16,13 +16,13 @@ and what each one's own hardware/instruction set actually is.
 ## Compile mode
 
 ```
-pcc [--target=<name>] [--format=asm|<target-specific>] [--out=file]
+rcc [--target=<name>] [--format=asm|<target-specific>] [--out=file]
     [--optimize] [--dump-ir] [--dump-asm] file.c [file2.c ...]
 ```
 
 | Switch | Meaning |
 | --- | --- |
-| `--target=<name>[-<host>]` | Which backend to compile for, and optionally which real OS the produced executable will run on. `<name>` default: `pdp7`. One of `pdp7`, `8086`, `8088`, `6502`, `65c02`, `68000`, `mc68328`, `pdp11`, `pdp10`, `stm8`, `m16c`, `m30626fjpfp`, `8080`, `z80`, `8008`, `8051`, `8052`, `8031`, `8032`, `stm32`, `i386`, `pic16`, `pic18`, `r10000`, `r4000`, `cortex-m3`, `cortex-m4`, `cortex-m7`, `armv7a`, `armv8a`, `powerpc`, `sparc`, `vax`, `avr`, `alpha`, `saturn`, `tms320c6713` — see `docs/platforms.md`. Several of these are deliberate, software-identical aliases for a sibling target rather than separate backends (`8088`→`8086`, `8052`/`8031`/`8032`→`8051`, `r4000`→`r10000`, `cortex-m4`/`cortex-m7`→`cortex-m3`, `m30626fjpfp`→`m16c`) - see each one's own entry in `docs/platforms.md` and `src/main.cpp`'s own `makeBackend()` comment. `<host>` defaults to `none` (freestanding/bare metal) and is otherwise `linux`/`windows` (`i386` only) or `macos` (`armv8a` only) - see "Hosted executables" below. Run `pcc --list-triples` for every `<name>-<host>` combination actually supported. |
+| `--target=<name>[-<host>]` | Which backend to compile for, and optionally which real OS the produced executable will run on. `<name>` default: `pdp7`. One of `pdp7`, `8086`, `8088`, `6502`, `65c02`, `68000`, `mc68328`, `pdp11`, `pdp10`, `stm8`, `m16c`, `m30626fjpfp`, `8080`, `z80`, `8008`, `8051`, `8052`, `8031`, `8032`, `stm32`, `i386`, `pic16`, `pic18`, `r10000`, `r4000`, `cortex-m3`, `cortex-m4`, `cortex-m7`, `armv7a`, `armv8a`, `powerpc`, `sparc`, `vax`, `avr`, `alpha`, `saturn`, `tms320c6713` — see `docs/platforms.md`. Several of these are deliberate, software-identical aliases for a sibling target rather than separate backends (`8088`→`8086`, `8052`/`8031`/`8032`→`8051`, `r4000`→`r10000`, `cortex-m4`/`cortex-m7`→`cortex-m3`, `m30626fjpfp`→`m16c`) - see each one's own entry in `docs/platforms.md` and `src/main.cpp`'s own `makeBackend()` comment. `<host>` defaults to `none` (freestanding/bare metal) and is otherwise `linux`/`windows` (`i386` only) or `macos` (`armv8a` only) - see "Hosted executables" below. Run `rcc --list-triples` for every `<name>-<host>` combination actually supported. |
 | `--list-triples` | Print every supported `<name>-<host>` triple, one per line, and exit. |
 | `--format=<fmt>` | What to produce. `asm` (the default) means "just the generated assembly text, don't assemble it". Every target supports the same uniform set of real formats, each handed to that target's own in-process assembler - no external assembler tool needed for any of them: `raw` (a complete, directly-loadable/bootable whole program - `hex` instead, for `pic16`/`pic18`'s own Intel-HEX convention), and the five real object-file formats real separate compilation uses - `coff`, `elf`, `macho`, `aout` (each a genuine relocatable object with symbols/relocations, for a future `--link` step), and `objraw` (a bare, symbol-less dump of the assembled bytes, for inspection only - it can never be `--link`ed, since it has thrown away the very `fn_main` symbol every target's linker needs). The two oldest targets keep their own historical format names instead: `pdp7` supports `a7out`, `list`, `ptr`, `rim`, `coff` (word-oriented paper-tape/listing formats, from before the format-neutral object model existed); `8086`/`8088` support `bin`, `coff`, `elf`. Two targets support fewer formats than the uniform set, with no real object format at all: `saturn` supports only `raw`/`coff` (its own `--link` output is `flat`, not `raw` - see `docs/platforms.md`); `tms320c6713` supports only `raw` (a first pass, with no relocatable object format and so no `--link` support at all). A non-object format (`raw`/`hex`/`bin`/`asm`, or `pdp7`'s own `a7out`/`list`/`ptr`/`rim`) takes exactly one `.c` file - only the real object formats support combining multiple independently-compiled files, via `--link` afterward. |
 | `--out=file` | Where to write the result. Omit it to write to stdout; with an object format and no `--out`, output instead goes to `build/<name>.o` (one per input file). |
@@ -45,12 +45,12 @@ external symbols and calls use the i386 C ABI (`--format` is then implied
 as `elf`):
 
 ```sh
-pcc --target=i386-linux --out=main.o main.c
-pcc --link --target=i386-linux --out=app \
+rcc --target=i386-linux --out=main.o main.c
+rcc --link --target=i386-linux --out=app \
     main.o -L/usr/lib/i386-linux-gnu -lm -lc
 ```
 
-Hosted links use pcc's internal i386 ELF writer and never invoke an
+Hosted links use rcc's internal i386 ELF writer and never invoke an
 external linker. It supports static executable images, ordinary static
 archives and i386 ELF shared libraries. Shared-library imports use ELF dynamic symbols and
 PLT/GOT relocations; dynamic executables name `/lib/ld-linux.so.2` as
@@ -74,12 +74,12 @@ For 32-bit Windows PE executables and COFF `.lib` libraries, use the
 implied as `coff`):
 
 ```sh
-pcc --target=i386-windows --out=main.obj main.c
-pcc --link --target=i386-windows --out=app.exe \
+rcc --target=i386-windows --out=main.obj main.c
+rcc --link --target=i386-windows --out=app.exe \
     main.obj -Lpath/to/libs -lfoo
 ```
 
-Hosted links use pcc's internal PE32 writer. Ordinary static COFF
+Hosted links use rcc's internal PE32 writer. Ordinary static COFF
 archives (`.lib` or `.a`) are selected lazily. Microsoft short import
 objects and GNU import archives (`.dll.a`) supply named or ordinal DLL
 imports, including `__imp_` data pointers. A positional i386 DLL or
@@ -106,8 +106,8 @@ For Apple Silicon macOS arm64 executables, use the `armv8a-macos` triple
 (`--format` is then implied as `macho`):
 
 ```sh
-pcc --target=armv8a-macos --out=main.o main.c
-pcc --link --target=armv8a-macos --out=app \
+rcc --target=armv8a-macos --out=main.o main.c
+rcc --link --target=armv8a-macos --out=app \
     main.o -lSystem
 ```
 
@@ -130,13 +130,13 @@ only.
 The `examples/example1/` directory contains `hello.c` and a Makefile with native
 `macos`, `linux`, and `windows` build targets. `make -C examples/example1` builds
 the target matching the host OS; use `make -C examples/example1 macos`, `linux`,
-or `windows` explicitly. Hosted links use pcc's internal linker and do not
+or `windows` explicitly. Hosted links use rcc's internal linker and do not
 require an external system linker.
 
 ## Link mode
 
 ```
-pcc --link [--target=<name>[-<host>]] --format=<target-native> [--gc-sections] [--base=<word-addr>] [--out=file] file1.o [file2.o ...]
+rcc --link [--target=<name>[-<host>]] --format=<target-native> [--gc-sections] [--base=<word-addr>] [--out=file] file1.o [file2.o ...]
 ```
 
 | Switch | Meaning |

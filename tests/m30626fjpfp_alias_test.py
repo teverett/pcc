@@ -5,7 +5,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PCC = Path(sys.argv.pop(1) if len(sys.argv) > 1 else ROOT / "build/bin/pcc").resolve()
+RCC = Path(sys.argv.pop(1) if len(sys.argv) > 1 else ROOT / "build/bin/rcc").resolve()
 BUILD = ROOT / "build/m30626fjpfp-alias-tests"
 
 SOURCE = """
@@ -41,7 +41,7 @@ class M30626fjpfpAliasTest(unittest.TestCase):
         m30626_out = BUILD / "ret42_m30626fjpfp.s16c"
         for target, out in (("m16c", m16c_out), ("m30626fjpfp", m30626_out)):
             result = subprocess.run(
-                [str(PCC), f"--target={target}", "--format=asm", f"--out={out}", str(self.source_path)],
+                [str(RCC), f"--target={target}", "--format=asm", f"--out={out}", str(self.source_path)],
                 capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -53,7 +53,7 @@ class M30626fjpfpAliasTest(unittest.TestCase):
         # cortex-m3 pattern of defining both the base and specific macro.
         out = BUILD / "macro_check.s16c"
         result = subprocess.run(
-            [str(PCC), "--target=m30626fjpfp", "--format=asm", f"--out={out}", str(self.macro_source_path)],
+            [str(RCC), "--target=m30626fjpfp", "--format=asm", f"--out={out}", str(self.macro_source_path)],
             capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -61,7 +61,7 @@ class M30626fjpfpAliasTest(unittest.TestCase):
 
         plain_out = BUILD / "macro_check_m16c.s16c"
         result = subprocess.run(
-            [str(PCC), "--target=m16c", "--format=asm", f"--out={plain_out}", str(self.macro_source_path)],
+            [str(RCC), "--target=m16c", "--format=asm", f"--out={plain_out}", str(self.macro_source_path)],
             capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)

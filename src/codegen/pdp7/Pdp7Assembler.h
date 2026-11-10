@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // A from-scratch, in-process two-pass assembler for exactly the
 // narrow pdp7 assembly dialect Pdp7Codegen.cpp emits, not the full
@@ -74,4 +74,4 @@ std::string assemblePdp7(const std::string &asmText, Pdp7OutputFormat format, bo
 // entry object, avoiding a serialize/deserialize round trip.
 ObjectFile assemblePdp7Object(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

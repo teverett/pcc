@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // Custom, non-registered COFF/object-format machine ID for this project's
 // ARM A32 dialect, checked by ArmLinkerFactory.cpp against `--target=armv7a`.
@@ -26,7 +26,7 @@ constexpr uint16_t kArmRelocMovTHi = 3;
 
 // An in-process two-pass assembler for the narrow ARMv7-A "A32" dialect
 // ArmCodegen.cpp emits, not a general-purpose ARM assembler. Parses via
-// the shared grammar ../../../grammar/PccAsm.g4. Every operand is a plain
+// the shared grammar ../../../grammar/RccAsm.g4. Every operand is a plain
 // expression (a number, register name, or label), not real ARM UAL
 // syntax: no `#` immediate prefix, no `[Rn, #imm]` memory operand, no
 // shifted-register operand2 syntax. Addressing modes the grammar can't
@@ -51,4 +51,4 @@ std::string assembleArm(const std::string &asmText);
 // ObjectFile a codegen backend builds once per compile.
 ObjectFile assembleArmObject(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

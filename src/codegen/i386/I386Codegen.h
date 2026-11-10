@@ -9,7 +9,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates 32-bit protected-mode i386 assembly for the IR built by IRBuilder. `eax` is the
 // accumulator; `ebx` doubles as the other binary-op operand and the one indirect-addressing
@@ -74,7 +74,7 @@ class I386Codegen : public Backend {
     // already hold the resolved address on entry.
     void genCompoundThroughEbx(const ir::Expr &e);
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
     // log2 of an element type's width (1/2/4/8 bytes -> 0/1/2/3), the shift amount an index
     // is scaled by.
@@ -136,12 +136,12 @@ class I386Codegen : public Backend {
     }
 
     std::string allocTemp() {
-        return (hostedAbi_ ? "__pcc_tmp_" : "t") + std::to_string(tempCounter_++);
+        return (hostedAbi_ ? "__rcc_tmp_" : "t") + std::to_string(tempCounter_++);
     }
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() {
-        return (hostedAbi_ ? "__pcc_local_" : "L") + std::to_string(labelCounter_++);
+        return (hostedAbi_ ? "__rcc_local_" : "L") + std::to_string(labelCounter_++);
     }
     // Maps an ir::Stmt::labelId (switch's own Label/Goto - see IR.h) to this
     // backend's own label text, generated the first time either a Label
@@ -167,4 +167,4 @@ class I386Codegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

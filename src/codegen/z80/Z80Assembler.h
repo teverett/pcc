@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // Custom COFF machine ID; no official Z80 machine ID exists.
 constexpr uint16_t kZ80CoffMachine = 0x5A38;  // ASCII "Z8"
@@ -43,4 +43,4 @@ std::string assembleZ80(const std::string &asmText);
 // `org 0` until a linker adds that base in.
 ObjectFile assembleZ80Object(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

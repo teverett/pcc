@@ -2,7 +2,7 @@
 
 #include "fileformat/FileFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 // 512-byte x86 boot sector: `obj.textBytes` padded with zeros and signed
 // `0xAA55` at the end, per BIOS convention. No symbol table. Trailing zero
@@ -20,4 +20,4 @@ class RawFormatReader : public FileFormatReader {
     ObjectFile read(const std::string &bytes) const override;
 };
 
-}  // namespace pcc
+}  // namespace rcc

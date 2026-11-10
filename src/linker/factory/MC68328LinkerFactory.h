@@ -4,7 +4,7 @@
 
 #include "linker/Linker.h"
 
-namespace pcc {
+namespace rcc {
 
 // Builds a GenericLinker for the MC68328 (DragonBall), big-endian. The
 // synthesized entry object lays out the real reset vector table
@@ -12,4 +12,4 @@ namespace pcc {
 // followed by `_start`.
 std::unique_ptr<TargetLinker> makeMC68328Linker();
 
-}  // namespace pcc
+}  // namespace rcc

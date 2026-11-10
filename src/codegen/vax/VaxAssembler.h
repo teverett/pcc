@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // Ad-hoc COFF machine ID for this dialect, ASCII "VA" (no real VAX COFF ID exists).
 constexpr uint16_t kVaxCoffMachine = 0x5641;
@@ -22,7 +22,7 @@ constexpr uint16_t kVaxRelocAbs32 = 1;
 // In-process two-pass assembler for the VAX-11/780 dialect VaxCodegen.cpp emits. Every
 // instruction encodes real VAX machine code bit-for-bit (little-endian, variable length,
 // one operand specifier byte per operand); this dialect only narrows which mnemonics exist
-// and spells addressing modes so they fit the shared PccAsm grammar, which has no `#`, `@`
+// and spells addressing modes so they fit the shared RccAsm grammar, which has no `#`, `@`
 // or trailing `+` token:
 //
 //   r0..r11, ap, fp, sp   register                      (mode 5)
@@ -51,4 +51,4 @@ std::string assembleVax(const std::string &asmText);
 // resolves only to "offset from org 0" until that base is added).
 ObjectFile assembleVaxObject(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

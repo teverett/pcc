@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // This target's own custom COFF/object-format machine ID (no real one exists for this dialect).
 constexpr uint16_t kPdp11CoffMachine = 0x1121;
@@ -24,7 +24,7 @@ constexpr uint16_t kPdp11RelocRel16 = 2;
 
 // A from-scratch, in-process two-pass assembler for exactly the narrow PDP-11 dialect
 // Pdp11Codegen.cpp emits - not a general-purpose MACRO-11 assembler. Parses via the shared
-// grammar/PccAsm.g4 grammar. There's no real MACRO-11 `(Rn)`/`#n`/`@#n` syntax: the grammar
+// grammar/RccAsm.g4 grammar. There's no real MACRO-11 `(Rn)`/`#n`/`@#n` syntax: the grammar
 // can't distinguish "(expr)" from "(Rn)", so each addressing mode that can't be a bare
 // register-or-label operand gets its own mnemonic (`ldind`/`stind` for `(Rn)`, `push`/`pop`
 // for `-(SP)`/`(SP)+`, `lea` for a label's address). The one exception is the grammar's
@@ -46,4 +46,4 @@ std::string assemblePdp11(const std::string &asmText);
 // error. Returns the format-neutral ObjectFile; never touches a real object-format byte layout.
 ObjectFile assemblePdp11Object(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

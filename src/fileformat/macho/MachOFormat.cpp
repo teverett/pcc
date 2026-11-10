@@ -7,7 +7,7 @@
 
 #include "codegen/arm64/Arm64Assembler.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -442,4 +442,4 @@ ObjectFile MachOFormatReader::read(const std::string &bytes) const {
     return obj;
 }
 
-}  // namespace pcc
+}  // namespace rcc

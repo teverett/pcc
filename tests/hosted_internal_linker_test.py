@@ -7,7 +7,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PCC = Path(sys.argv.pop(1) if len(sys.argv) > 1 else ROOT / "build/bin/pcc").resolve()
+RCC = Path(sys.argv.pop(1) if len(sys.argv) > 1 else ROOT / "build/bin/rcc").resolve()
 BUILD = ROOT / "build/hosted-internal-linker-tests"
 
 
@@ -22,7 +22,7 @@ class HostedInternalLinkerTest(unittest.TestCase):
         source_path.write_text(source)
         host = "windows" if hosted == "--hosted=windows" else "macos" if hosted == "--hosted=macos" else "linux"
         result = subprocess.run(
-            [str(PCC), f"--target={target}-{host}", f"--out={object_path}", str(source_path)],
+            [str(RCC), f"--target={target}-{host}", f"--out={object_path}", str(source_path)],
             capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -31,7 +31,7 @@ class HostedInternalLinkerTest(unittest.TestCase):
     def link(self, target, hosted, object_path, output_path, *extra):
         host = "windows" if hosted == "--hosted=windows" else "macos" if hosted == "--hosted=macos" else "linux"
         result = subprocess.run(
-            [str(PCC), "--link", f"--target={target}-{host}", f"--out={output_path}", str(object_path), *extra],
+            [str(RCC), "--link", f"--target={target}-{host}", f"--out={output_path}", str(object_path), *extra],
             capture_output=True, text=True,
         )
         return result
@@ -139,7 +139,7 @@ class HostedInternalLinkerTest(unittest.TestCase):
         output = BUILD / "preserved-output"
         output.write_bytes(b"keep this file")
         result = subprocess.run(
-            [str(PCC), "--link", "--target=i386-linux",
+            [str(RCC), "--link", "--target=i386-linux",
              f"--linker={BUILD / 'must-not-run'}", f"--out={output}", str(obj)],
             capture_output=True, text=True,
         )
@@ -278,7 +278,7 @@ class HostedInternalLinkerTest(unittest.TestCase):
 
     def test_windows_crt_resolves_puts_without_a_builtin_runtime(self):
         main = self.compile("i386", "--hosted=windows", "crt-puts-main",
-                            'int puts(char *text); int main() { puts("hello pcc"); return 0; }\n')
+                            'int puts(char *text); int main() { puts("hello rcc"); return 0; }\n')
         dll = self.dll_fixture("msvcrt.dll", export=["puts", "exit"])
         output = BUILD / "crt-puts.exe"
         result = self.link("i386", "--hosted=windows", main, output, str(dll))
@@ -556,7 +556,7 @@ class HostedInternalLinkerTest(unittest.TestCase):
         output = BUILD / "preserved-pe-output"
         output.write_bytes(b"keep this PE file")
         result = subprocess.run(
-            [str(PCC), "--link", "--target=i386-windows",
+            [str(RCC), "--link", "--target=i386-windows",
              "--windows-linker=mingw", f"--out={output}", str(obj)],
             capture_output=True, text=True,
         )

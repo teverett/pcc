@@ -10,7 +10,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates AArch64 assembly (this project's dialect - see
 // Arm64Assembler.h) for the IR built by IRBuilder, targeting the
@@ -117,7 +117,7 @@ class Arm64Codegen : public Backend {
     // dereferencing a plain pointer value.
     void genCompoundThroughX2(const ir::Expr &e, bool mayBeUnaligned = false);
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
     // log2 of an element type's width (1/2/4/8 bytes -> 0/1/2/3) - the
     // shift amount genIndexAddr() scales an index by.
@@ -220,4 +220,4 @@ class Arm64Codegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

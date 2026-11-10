@@ -14,7 +14,7 @@
 #include "fileformat/a7out/A7outFormat.h"
 #include "fileformat/list/ListFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 std::unique_ptr<FileFormatWriter> makeFileFormatWriter(FileFormatKind kind) {
     switch (kind) {
@@ -171,4 +171,4 @@ FileFormatKind detectFileFormat(const std::string &bytes) {
     return FileFormatKind::Flat;
 }
 
-}  // namespace pcc
+}  // namespace rcc

@@ -1,5 +1,5 @@
 
-// Generated from /Users/tom/projects/pcc/grammar/PccAsm.g4 by ANTLR 4.13.2
+// Generated from /Users/tom/projects/pcc/grammar/RccAsm.g4 by ANTLR 4.13.2
 
 #pragma once
 
@@ -9,7 +9,7 @@
 
 
 
-class  PccAsmParser : public antlr4::Parser {
+class  RccAsmParser : public antlr4::Parser {
 public:
   enum {
     T__0 = 1, IDENT = 2, NUMBER = 3, COLON = 4, EQUALS = 5, COMMA = 6, PLUS = 7, 
@@ -22,11 +22,11 @@ public:
     RuleExpr = 5, RuleSyllable = 6, RuleSign = 7, RuleAtom = 8
   };
 
-  explicit PccAsmParser(antlr4::TokenStream *input);
+  explicit RccAsmParser(antlr4::TokenStream *input);
 
-  PccAsmParser(antlr4::TokenStream *input, const antlr4::atn::ParserATNSimulatorOptions &options);
+  RccAsmParser(antlr4::TokenStream *input, const antlr4::atn::ParserATNSimulatorOptions &options);
 
-  ~PccAsmParser() override;
+  ~RccAsmParser() override;
 
   std::string getGrammarFileName() const override;
 
@@ -111,7 +111,7 @@ public:
   public:
     TimesStmtContext(StatementContext *ctx);
 
-    PccAsmParser::ExprContext *count = nullptr;
+    RccAsmParser::ExprContext *count = nullptr;
     antlr4::Token *mnemonic = nullptr;
     antlr4::tree::TerminalNode *LPAREN();
     antlr4::tree::TerminalNode *RPAREN();
@@ -131,7 +131,7 @@ public:
     AssignStmtContext(StatementContext *ctx);
 
     antlr4::Token *lhs = nullptr;
-    PccAsmParser::ExprContext *rhs = nullptr;
+    RccAsmParser::ExprContext *rhs = nullptr;
     antlr4::tree::TerminalNode *EQUALS();
     antlr4::tree::TerminalNode *IDENT();
     ExprContext *expr();

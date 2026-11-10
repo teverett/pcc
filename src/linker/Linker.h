@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // The architecture-specific half of `--link`: combines independently-compiled object files into
 // one fully-resolved, linked ObjectFile; writing the result out in a particular file format is a
@@ -35,4 +35,4 @@ class TargetLinker {
     virtual std::vector<std::string> outputFormats() const = 0;
 };
 
-}  // namespace pcc
+}  // namespace rcc

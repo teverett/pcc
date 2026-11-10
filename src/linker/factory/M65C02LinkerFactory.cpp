@@ -6,7 +6,7 @@
 #include "linker/GenericLinker.h"
 #include "codegen/m65c02/M65C02Assembler.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 // sp must be seeded to the same top-of-frame-stack address (0xF000) as
@@ -54,4 +54,4 @@ std::unique_ptr<TargetLinker> makeM65C02Linker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

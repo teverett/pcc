@@ -1,5 +1,5 @@
 
-// Generated from /Users/tom/projects/pcc/grammar/PccAsm.g4 by ANTLR 4.13.2
+// Generated from /Users/tom/projects/pcc/grammar/RccAsm.g4 by ANTLR 4.13.2
 
 #pragma once
 
@@ -9,7 +9,7 @@
 
 
 
-class  PccAsmLexer : public antlr4::Lexer {
+class  RccAsmLexer : public antlr4::Lexer {
 public:
   enum {
     T__0 = 1, IDENT = 2, NUMBER = 3, COLON = 4, EQUALS = 5, COMMA = 6, PLUS = 7, 
@@ -17,9 +17,9 @@ public:
     NEWLINE = 14, WS = 15
   };
 
-  explicit PccAsmLexer(antlr4::CharStream *input);
+  explicit RccAsmLexer(antlr4::CharStream *input);
 
-  ~PccAsmLexer() override;
+  ~RccAsmLexer() override;
 
 
   std::string getGrammarFileName() const override;

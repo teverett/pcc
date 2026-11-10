@@ -3,7 +3,7 @@
 #include "codegen/sparc/SparcAssembler.h"
 #include "linker/GenericLinker.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -84,4 +84,4 @@ std::unique_ptr<TargetLinker> makeSparcLinker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

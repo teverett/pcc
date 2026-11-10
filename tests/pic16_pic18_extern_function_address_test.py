@@ -6,7 +6,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PCC = Path(sys.argv.pop(1) if len(sys.argv) > 1 else ROOT / "build/bin/pcc").resolve()
+RCC = Path(sys.argv.pop(1) if len(sys.argv) > 1 else ROOT / "build/bin/rcc").resolve()
 BUILD = ROOT / "build/pic16-pic18-extern-function-address-tests"
 
 # fa/fb are only ever defined in B_SOURCE, taken as array-initializer
@@ -72,12 +72,12 @@ class PIC16PIC18ExternFunctionAddressTest(unittest.TestCase):
         out = BUILD / f"out_{target}.bin"
         for src, obj in ((self.a_path, a_obj), (self.b_path, b_obj)):
             result = subprocess.run(
-                [str(PCC), f"--target={target}", "--format=coff", f"--out={obj}", str(src)],
+                [str(RCC), f"--target={target}", "--format=coff", f"--out={obj}", str(src)],
                 capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
         result = subprocess.run(
-            [str(PCC), "--link", f"--target={target}", "--format=flat", f"--out={out}", str(a_obj), str(b_obj)],
+            [str(RCC), "--link", f"--target={target}", "--format=flat", f"--out={out}", str(a_obj), str(b_obj)],
             capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -131,7 +131,7 @@ class PIC16PIC18ExternFunctionAddressTest(unittest.TestCase):
 
     def test_pic16_still_rejects_address_of_function_defined_in_same_file(self):
         result = subprocess.run(
-            [str(PCC), "--target=pic16", "--format=coff", f"--out={BUILD / 'same16.o'}", str(self.same_file_path)],
+            [str(RCC), "--target=pic16", "--format=coff", f"--out={BUILD / 'same16.o'}", str(self.same_file_path)],
             capture_output=True, text=True,
         )
         self.assertNotEqual(result.returncode, 0)
@@ -139,7 +139,7 @@ class PIC16PIC18ExternFunctionAddressTest(unittest.TestCase):
 
     def test_pic18_still_rejects_address_of_function_defined_in_same_file(self):
         result = subprocess.run(
-            [str(PCC), "--target=pic18", "--format=coff", f"--out={BUILD / 'same18.o'}", str(self.same_file_path)],
+            [str(RCC), "--target=pic18", "--format=coff", f"--out={BUILD / 'same18.o'}", str(self.same_file_path)],
             capture_output=True, text=True,
         )
         self.assertNotEqual(result.returncode, 0)

@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // Custom, non-registered COFF/object-format machine ID for this project's
 // AArch64 dialect, checked by Arm64LinkerFactory.cpp against `--target=armv8a`.
@@ -29,7 +29,7 @@ constexpr uint16_t kArm64DarwinRelocPageoff12 = 6;
 
 // An in-process two-pass assembler for the narrow AArch64 ("A64") dialect
 // Arm64Codegen.cpp emits, not a general-purpose A64 assembler. Parses via
-// the shared grammar ../../../grammar/PccAsm.g4. Every operand is a plain
+// the shared grammar ../../../grammar/RccAsm.g4. Every operand is a plain
 // expression (a number, register name, or label); every load/store goes
 // through the dedicated `ldind`/`stind` mnemonics instead of a bracketed
 // memory operand, always a fixed zero displacement.
@@ -66,4 +66,4 @@ std::string assembleArm64(const std::string &asmText);
 // format-neutral ObjectFile a codegen backend builds once per compile.
 ObjectFile assembleArm64Object(const std::string &asmText, bool darwinHosted = false);
 
-}  // namespace pcc
+}  // namespace rcc

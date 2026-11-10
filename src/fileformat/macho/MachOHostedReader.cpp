@@ -10,7 +10,7 @@
 
 #include "codegen/arm64/Arm64Assembler.h"
 
-namespace pcc {
+namespace rcc {
 namespace {
 
 using Bytes = std::string;
@@ -420,7 +420,7 @@ MachObjectInfo parseMachO(const Bytes &bytes, const std::string &label, bool req
             bool defined = (type & 0x0e) == 0x0e;
             symbolNames[i] = cstringAt(bytes, stringOffset + name, stringOffset + stringSize);
             if (defined && (type & 0x01) == 0) {
-                symbolNames[i] = "__pcc_local_" + std::to_string(i) + "_" + symbolNames[i];
+                symbolNames[i] = "__rcc_local_" + std::to_string(i) + "_" + symbolNames[i];
             }
             if (defined && bssSectionIndex != 0 && section == bssSectionIndex) {
                 if (value < bssSectionAddress || value - bssSectionAddress > bssSize) {
@@ -484,4 +484,4 @@ MachObjectInfo parseMachO(const Bytes &bytes, const std::string &label, bool req
     return result;
 }
 
-}  // namespace pcc
+}  // namespace rcc

@@ -9,7 +9,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates STM8 assembly (this project's own dialect - see STM8Assembler.h)
 // for the IR built by IRBuilder. `generate()` returns a complete,
@@ -113,7 +113,7 @@ class STM8Codegen : public Backend {
     // Leaves slot[idxExpr]'s effective address in the `ptr` memory cell.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
     int wordCountOf(Type t) const { return widthOfType(t) / 2; }
     // log2 of the element width (1/2/4/8 bytes -> 0/1/2/3), the number of
@@ -221,4 +221,4 @@ class STM8Codegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

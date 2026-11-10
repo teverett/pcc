@@ -12,11 +12,11 @@
 #include "ANTLRInputStream.h"
 #include "BaseErrorListener.h"
 #include "CommonTokenStream.h"
-#include "PccAsmLexer.h"
-#include "PccAsmParser.h"
+#include "RccAsmLexer.h"
+#include "RccAsmParser.h"
 #include "fileformat/coff/CoffFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -69,7 +69,7 @@ const std::unordered_map<std::string, uint32_t> &builtins() {
     return table;
 }
 
-// --- Parsing, via the one shared grammar/PccAsm.g4 -----------------------
+// --- Parsing, via the one shared grammar/RccAsm.g4 -----------------------
 //
 // The shared grammar is generic across backends: a statement is
 // "mnemonic, operand (',' operand)*" with no notion of what the
@@ -100,7 +100,7 @@ struct Line {
     std::vector<Segment> segments;
 };
 
-std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
+std::vector<Syllable> exprToSyllables(RccAsmParser::ExprContext *ctx) {
     std::vector<Syllable> result;
     for (auto *syl : ctx->syllable()) {
         char sign = 0;
@@ -117,13 +117,13 @@ std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
     return result;
 }
 
-void appendOperandSyllables(PccAsmParser::OperandContext *ctx, std::vector<Syllable> &out) {
+void appendOperandSyllables(RccAsmParser::OperandContext *ctx, std::vector<Syllable> &out) {
     if (ctx->LBRACKET()) fail("'[...]' addressing isn't part of pdp7's own dialect");
     auto more = exprToSyllables(ctx->expr());
     out.insert(out.end(), more.begin(), more.end());
 }
 
-Segment buildSegment(PccAsmParser::LineContext *ctx) {
+Segment buildSegment(RccAsmParser::LineContext *ctx) {
     Segment seg;
     for (auto *lbl : ctx->label()) seg.labels.push_back(lbl->IDENT()->getText());
 
@@ -132,20 +132,20 @@ Segment buildSegment(PccAsmParser::LineContext *ctx) {
         seg.kind = Segment::None;
         return seg;
     }
-    if (auto *assign = dynamic_cast<PccAsmParser::AssignStmtContext *>(stmt)) {
+    if (auto *assign = dynamic_cast<RccAsmParser::AssignStmtContext *>(stmt)) {
         seg.kind = Segment::Assign;
         seg.lhs = assign->lhs->getText();
         seg.syllables = exprToSyllables(assign->rhs);
         return seg;
     }
-    if (dynamic_cast<PccAsmParser::TimesStmtContext *>(stmt)) {
+    if (dynamic_cast<RccAsmParser::TimesStmtContext *>(stmt)) {
         fail("'times' isn't part of pdp7's own dialect - that's purely an 8086/NASM idiom");
     }
-    auto *instr = dynamic_cast<PccAsmParser::InstrStmtContext *>(stmt);
+    auto *instr = dynamic_cast<RccAsmParser::InstrStmtContext *>(stmt);
     if (!instr) fail("internal: unhandled statement alternative");
 
     seg.kind = Segment::Expr;
-    SylKind mnemonicKind = (instr->mnemonic->getType() == PccAsmParser::NUMBER) ? SylKind::Number : SylKind::Symbol;
+    SylKind mnemonicKind = (instr->mnemonic->getType() == RccAsmParser::NUMBER) ? SylKind::Number : SylKind::Symbol;
     seg.syllables.push_back({0, mnemonicKind, instr->mnemonic->getText()});
     for (auto *op : instr->operand()) appendOperandSyllables(op, seg.syllables);
     return seg;
@@ -165,17 +165,17 @@ class ThrowingErrorListener : public antlr4::BaseErrorListener {
 // rather than the generated Visitor interface.
 std::vector<Line> parseProgram(const std::string &text) {
     antlr4::ANTLRInputStream input(text);
-    PccAsmLexer lexer(&input);
+    RccAsmLexer lexer(&input);
     ThrowingErrorListener errors;
     lexer.removeErrorListeners();
     lexer.addErrorListener(&errors);
 
     antlr4::CommonTokenStream tokens(&lexer);
-    PccAsmParser parser(&tokens);
+    RccAsmParser parser(&tokens);
     parser.removeErrorListeners();
     parser.addErrorListener(&errors);
 
-    PccAsmParser::ProgramContext *prog = parser.program();
+    RccAsmParser::ProgramContext *prog = parser.program();
 
     std::vector<Line> lines;
     for (auto *lineCtx : prog->line()) {
@@ -210,8 +210,19 @@ class Assembler {
         symbols_ = builtins();
         symbols_["."] = BASE;
         // An object file's text starts at word 0; placing it is the
-        // linker's job, not the assembler's.
-        symbols_[".."] = allowExternal_ ? 0 : kPdp7BaseAddress;
+        // linker's job, not the assembler's - so in object mode `..`
+        // carries the same RELATIVE marker `.` itself starts with
+        // (BASE = 0 | RELATIVE), not a plain 0. Both read as "address
+        // 0 for now, shifted by this object's real base once the
+        // linker picks one" - but only a RELATIVE value propagates
+        // that marker through `. = ..+N` (a fixed-placement directive,
+        // `@addr`): evalExpr ORs every term's own RELATIVE flag into
+        // the result, so a plain, unflagged `..` here would silently
+        // strip it from any symbol placed this way, and every later
+        // reference to that symbol would then bake in `N` itself as a
+        // literal, never-relocated address - correct only by accident,
+        // when this object happens to end up based at literal 0.
+        symbols_[".."] = allowExternal_ ? RELATIVE : kPdp7BaseAddress;
     }
 
     void run(const std::vector<Line> &lines) {
@@ -226,7 +237,12 @@ class Assembler {
     const std::vector<std::string> &mline() const { return mline_; }
     const std::unordered_map<std::string, uint32_t> &labels() const { return labels_; }
     const std::vector<Relocation> &relocations() const { return relocations_; }
-    uint32_t base() const { return symbols_.at(".."); }
+    // Masked off: in object mode `..` itself now carries the same
+    // RELATIVE marker `.` does (see the constructor's own comment), so
+    // every caller here that wants the plain numeric base - not "is
+    // this relative" - needs it stripped, the same way `storeWord`
+    // already masks every other read of `symbols_[".."]`.
+    uint32_t base() const { return symbols_.at("..") & MASK18; }
 
    private:
     void processLine(const Line &line) {
@@ -522,4 +538,4 @@ ObjectFile assemblePdp7Object(const std::string &asmText) {
     return buildObjectFile(assembler);
 }
 
-}  // namespace pcc
+}  // namespace rcc

@@ -9,7 +9,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates Thumb-2 assembly (see STM32Assembler.h) for a real STM32 Cortex-M3.
 //
@@ -87,7 +87,7 @@ class STM32Codegen : public Backend {
     // Leaves slot[idxExpr]'s effective address in `r2`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     // Only `long long` is wider than the native 32-bit int - the one type needing the r0:r1
     // register-pair convention below.
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
@@ -195,4 +195,4 @@ class STM32Codegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

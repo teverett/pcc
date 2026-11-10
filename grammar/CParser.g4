@@ -3,7 +3,7 @@ parser grammar CParser;
 options { tokenVocab = CLexer; }
 
 // ---------------------------------------------------------------------
-// Parser half of pdp-c-compiler's C-subset grammar (see CLexer.g4 for
+// Parser half of rcc's C-subset grammar (see CLexer.g4 for
 // the lexer half, and ../README.md for exactly what's in and out of
 // scope: char/short/int/long/long long, each signed or unsigned, each
 // optionally pointer-typed (typeSpec's own trailing '*'s - see
@@ -36,7 +36,7 @@ typeSpec
     : baseTypeSpec '*'*
     ;
 
-// BuildAst turns this into a pcc::Type (see ../src/Type.h); a bare
+// BuildAst turns this into a rcc::Type (see ../src/Type.h); a bare
 // 'signed'/'unsigned' with no following width keyword means int, same
 // as real C.
 baseTypeSpec
@@ -69,7 +69,7 @@ topLevelDecl
 //
 // An optional '@' addr pins the function's entry point to an exact
 // address - see ../docs/ir.md's "Fixed absolute placement" and
-// ../docs/pdp-c-compiler.md's "Placement" section for what that
+// ../docs/language.md's "Placement" section for what that
 // address means on each backend, and the real motivation (kernel
 // interrupt/trap vectors). Not meaningful on an 'extern' declaration
 // (that address lives in whichever file really defines it), so not
@@ -198,7 +198,7 @@ expr
 // above) sit at the same relative spots real C puts them: shifts
 // bind tighter than relational comparisons but looser than '+'/'-';
 // '&'/'^'/'|' bind looser than equality but tighter than '&&' - see
-// ../docs/pdp-c-compiler.md's "Bitwise operators" for what each one
+// ../docs/language.md's "Bitwise operators" for what each one
 // actually does on each backend (notably: pdp7 has no hardware `or`
 // or variable-count shift, so `|` and `<<`/`>>` are synthesized from
 // instructions it does have).

@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // Non-standard COFF machine ID for this dialect (ASCII "PC"), checked by
 // PowerPCLinkerFactory.cpp against `--target=powerpc`.
@@ -34,7 +34,7 @@ constexpr uint16_t kPowerPCRelocAbs32 = 4;
 
 // Two-pass, in-process assembler for this project's own narrow PowerPC
 // dialect (not a general-purpose PowerPC assembler), parsed via the shared
-// grammar/PccAsm.g4. Every operand is a bare register, number, or label -
+// grammar/RccAsm.g4. Every operand is a bare register, number, or label -
 // there is no `0(r4)`/`%hi()`/`%lo()` syntax; an addressing mode that needs
 // one instead gets its own dedicated mnemonic (`ldind`/`stind`, fixed zero
 // displacement), and `lis`/`ori` resolve a label operand to its address's
@@ -58,4 +58,4 @@ std::string assemblePowerPC(const std::string &asmText);
 // no such relocation; only a genuinely external `bl` target does.
 ObjectFile assemblePowerPCObject(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

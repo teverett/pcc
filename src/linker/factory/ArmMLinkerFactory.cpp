@@ -3,7 +3,7 @@
 #include "codegen/armm/ArmMAssembler.h"
 #include "linker/GenericLinker.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -106,4 +106,4 @@ std::unique_ptr<TargetLinker> makeArmMLinker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

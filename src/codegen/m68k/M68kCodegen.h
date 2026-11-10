@@ -10,7 +10,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates this project's 68000 dialect (see M68kAssembler.h) for the IR built by
 // IRBuilder, as a flat binary loaded at a fixed address (kBaseAddress) with no OS,
@@ -94,7 +94,7 @@ class M68kCodegen : public Backend {
     // Leaves slot[idxExpr]'s own effective address in `A0`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
     // Number of doubling ("addl d0,d0") steps to scale an index by this element width.
     int elemDoublings(Type t) const {
@@ -183,4 +183,4 @@ class M68kCodegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

@@ -6,7 +6,7 @@
 #include "codegen/pdp7/Pdp7Assembler.h"
 #include "linker/Linker.h"
 
-namespace pcc {
+namespace rcc {
 
 // Builds a GenericLinker for the PDP-7, whose 18-bit words are packed
 // 3 bytes each, big-endian; `addressUnitBytes = 3`/`outputUnitBits = 18`
@@ -40,4 +40,4 @@ namespace pcc {
 // anyway.
 std::unique_ptr<TargetLinker> makePdp7Linker(uint32_t baseAddressWords = kPdp7BaseAddress);
 
-}  // namespace pcc
+}  // namespace rcc

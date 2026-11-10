@@ -4,7 +4,7 @@
 #include <iostream>
 #include <unordered_set>
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -172,4 +172,4 @@ bool DeadCodeElimination::run(ir::Program &prog, const std::string &sourceFile) 
     return changed;
 }
 
-}  // namespace pcc
+}  // namespace rcc

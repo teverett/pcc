@@ -6,7 +6,7 @@
 
 #include "ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // Serializes a format-neutral ObjectFile (ObjectFile.h) to one real on-disk byte layout. One
 // implementation per format, in its own subdirectory under fileformat/ (see FileFormatKind). The
@@ -47,4 +47,4 @@ std::string fileFormatName(FileFormatKind kind);
 // `--link` input); `Flat` has no magic number, so it's the last-resort fallback.
 FileFormatKind detectFileFormat(const std::string &bytes);
 
-}  // namespace pcc
+}  // namespace rcc

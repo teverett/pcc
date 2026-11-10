@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // Ad-hoc COFF machine ID for this dialect, ASCII "AV" (no real AVR COFF ID exists).
 constexpr uint16_t kAVRCoffMachine = 0x4156;
@@ -41,7 +41,7 @@ constexpr uint16_t kAVRRelocLdiw16 = 3;
 // In-process two-pass assembler for the ATmega328P-scoped AVR dialect AVRCodegen.cpp emits.
 // Every instruction encodes real AVR machine code bit-for-bit (16-bit words, little-endian;
 // `call`/`jmp`/`lds`/`sts` are two words, the second a plain 16-bit field); mnemonics and operand
-// syntax are spelled out so they fit the shared PccAsm grammar, which has no `#`, `@` or trailing
+// syntax are spelled out so they fit the shared RccAsm grammar, which has no `#`, `@` or trailing
 // `+` token:
 //
 //   r0..r31               a register, by number (no ap/fp/sp names - Y (r28:r29) is this
@@ -84,4 +84,4 @@ std::string assembleAVR(const std::string &asmText);
 // address.
 ObjectFile assembleAVRObject(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

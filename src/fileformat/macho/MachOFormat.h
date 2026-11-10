@@ -2,7 +2,7 @@
 
 #include "fileformat/FileFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 // 32-bit Mach-O MH_OBJECT: mach_header, one LC_SEGMENT (__text section),
 // one LC_SYMTAB, nlist/relocation_info entries matching the real Mach-O ABI.
@@ -21,4 +21,4 @@ class MachOFormatReader : public FileFormatReader {
     ObjectFile read(const std::string &bytes) const override;
 };
 
-}  // namespace pcc
+}  // namespace rcc

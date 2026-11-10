@@ -13,13 +13,13 @@ uint32_t read32(const std::string &bytes, size_t offset) {
 }
 
 void checkBssSymbol(bool initialized) {
-    pcc::ObjectFile object;
-    object.machineType = pcc::kArm64DarwinMachine;
+    rcc::ObjectFile object;
+    object.machineType = rcc::kArm64DarwinMachine;
     object.textBytes = {0xc0, 0x03, 0x5f, 0xd6};
     if (initialized) object.dataBytes = {23, 0, 0, 0};
     object.dataSize = 8;
     object.symbols = {{"_zero", 0, true, true, true}};
-    auto bytes = pcc::MachOFormatWriter().write(object);
+    auto bytes = rcc::MachOFormatWriter().write(object);
     size_t command = 32;
     uint32_t symbolOffset = 0;
     unsigned sections = 0, bssSection = 0;

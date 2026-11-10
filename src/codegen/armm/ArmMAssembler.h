@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // Custom COFF machine ID for this dialect; low byte names ARMv7-M/ARMv7E-M,
 // shared by the cortex-m3/m4/m7 target aliases since they emit identical code.
@@ -49,4 +49,4 @@ std::string assembleArmM(const std::string &asmText);
 // relocation only when its target is undefined in this file.
 ObjectFile assembleArmMObject(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

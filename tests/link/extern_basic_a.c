@@ -3,7 +3,7 @@
 // both declared `extern`, both actually defined in
 // extern_basic_b.c's own separately-compiled translation unit, and
 // only resolved for real at --link time (see
-// ../../docs/pdp-c-compiler.md's "Extern declarations").
+// ../../docs/language.md's "Extern declarations").
 extern int addTen(int x);
 extern int shared;
 

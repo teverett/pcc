@@ -7,7 +7,7 @@
 #include "Arm64Assembler.h"
 #include "fileformat/FileFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 [[noreturn]] void err(int line, const std::string &msg) {
@@ -315,7 +315,7 @@ std::string Arm64Codegen::generate(const ir::Program &prog, bool objectMode) {
 
     std::ostringstream out;
     out << code_.str();
-    if (objectMode) out << "__pcc_macho_data_start:\n";
+    if (objectMode) out << "__rcc_macho_data_start:\n";
     for (const auto &line : trailer_) out << line << "\n";
     return out.str();
 }
@@ -938,4 +938,4 @@ std::optional<std::string> Arm64Codegen::assembleInProcess(const std::string &as
     return std::nullopt;
 }
 
-}  // namespace pcc
+}  // namespace rcc

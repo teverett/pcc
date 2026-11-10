@@ -5,14 +5,14 @@
 
 #include "Pdp7Assembler.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 [[noreturn]] void err(int line, const std::string &msg) {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
-// A raw data word (grammar/PccAsm.g4's bare NUMBER syntax has no
+// A raw data word (grammar/RccAsm.g4's bare NUMBER syntax has no
 // unary minus) must be written as its two's-complement 18-bit pattern
 // rather than a signed decimal string.
 long pdp7Word(long v) { return v & 0777777; }
@@ -2056,4 +2056,4 @@ std::string pdp7RuntimeAsm(bool pushPop, bool divMod, bool uDivMod) {
     return o.str();
 }
 
-}  // namespace pcc
+}  // namespace rcc

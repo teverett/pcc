@@ -9,7 +9,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates ARM assembly (this project's dialect - see ArmAssembler.h)
 // for the IR built by IRBuilder, targeting the ARMv7-A "A32" (32-bit ARM,
@@ -97,7 +97,7 @@ class ArmCodegen : public Backend {
     // dereferencing a plain pointer value.
     void genCompoundThroughR2(const ir::Expr &e, bool mayBeUnaligned = false);
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
     // log2 of an element type's width (1/2/4/8 bytes -> 0/1/2/3) - the
     // shift amount genIndexAddr()/genAddrOf()'s Index case scale an index by.
@@ -213,4 +213,4 @@ class ArmCodegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

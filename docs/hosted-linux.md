@@ -17,7 +17,7 @@ inputs. Scripts are bounded to 64 KiB, eight nesting/include levels, and 128
 inputs; cycles and unsupported directives are errors. `GROUP` requests a fixed
 point across archive members. Archives are extracted lazily; malformed members
 are diagnosed. Unused `AS_NEEDED` shared libraries are omitted.
-Selected static objects use pcc's single executable `.text` plus `.bss` model;
+Selected static objects use rcc's single executable `.text` plus `.bss` model;
 initialized data, additional allocated sections, and non-text relocations are
 explicitly unsupported. This restriction does not apply to shared libraries,
 whose segments, data, dependencies, and relocations are handled by Linux's
@@ -43,9 +43,9 @@ installed there or found by the Linux loader's normal search mechanism.
 
 Run `tests/run_hosted_link_tests.sh` on an i386-compatible Linux kernel with
 the i386 loader and libc development files installed. GNU `as`, `ar`, and `ld`
-are used only to construct independent test libraries, not by pcc.
-`PCC_LINUX_LIBRARY_PATHS` is a colon-separated list of cross-library directories.
-On another host, `PCC_HOSTED_LINUX_PREPARE_ONLY=1`,
-`PCC_HOSTED_TEST_LD`, `PCC_HOSTED_TEST_AS`, and `PCC_HOSTED_TEST_AR` prepare cross-target fixtures and
+are used only to construct independent test libraries, not by rcc.
+`RCC_LINUX_LIBRARY_PATHS` is a colon-separated list of cross-library directories.
+On another host, `RCC_HOSTED_LINUX_PREPARE_ONLY=1`,
+`RCC_HOSTED_TEST_LD`, `RCC_HOSTED_TEST_AS`, and `RCC_HOSTED_TEST_AR` prepare cross-target fixtures and
 run structural tests without claiming runtime success; execute the prepared
 programs separately on Linux.

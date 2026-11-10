@@ -2,7 +2,7 @@
 
 #include "optimizers/Optimizer.h"
 
-namespace pcc {
+namespace rcc {
 
 // Removes dead code that needs no control-flow graph or constant folding:
 // statements after a `return` in the same block, bare `;` statements, and
@@ -18,4 +18,4 @@ class DeadCodeElimination : public Optimizer {
     bool run(ir::Program &prog, const std::string &sourceFile) const override;
 };
 
-}  // namespace pcc
+}  // namespace rcc

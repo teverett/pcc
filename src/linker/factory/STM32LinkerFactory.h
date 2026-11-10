@@ -4,7 +4,7 @@
 
 #include "linker/Linker.h"
 
-namespace pcc {
+namespace rcc {
 
 // Builds a GenericLinker for the stm32 (Cortex-M3/Thumb-2) backend: relocation kinds for `lea`'s
 // split 32-bit address load (MovWLo/MovTHi) and `bl`/`b`'s wide Thumb-2 branch field (Branch25),
@@ -15,4 +15,4 @@ namespace pcc {
 // `kRamBase` by STM32Assembler.cpp itself, independently of flash placement.
 std::unique_ptr<TargetLinker> makeSTM32Linker();
 
-}  // namespace pcc
+}  // namespace rcc

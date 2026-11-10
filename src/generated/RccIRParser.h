@@ -1,5 +1,5 @@
 
-// Generated from /Users/tom/projects/pcc/grammar/PccIRParser.g4 by ANTLR 4.13.2
+// Generated from /Users/tom/projects/pcc/grammar/RccIRParser.g4 by ANTLR 4.13.2
 
 #pragma once
 
@@ -9,7 +9,7 @@
 
 
 
-class  PccIRParser : public antlr4::Parser {
+class  RccIRParser : public antlr4::Parser {
 public:
   enum {
     GLOBALS_HEADER = 1, FUNCTIONS_HEADER = 2, INT_KW = 3, CHAR_KW = 4, SHORT_KW = 5, 
@@ -33,11 +33,11 @@ public:
     RuleExpr = 13, RuleArgList = 14, RuleBinOp = 15
   };
 
-  explicit PccIRParser(antlr4::TokenStream *input);
+  explicit RccIRParser(antlr4::TokenStream *input);
 
-  PccIRParser(antlr4::TokenStream *input, const antlr4::atn::ParserATNSimulatorOptions &options);
+  RccIRParser(antlr4::TokenStream *input, const antlr4::atn::ParserATNSimulatorOptions &options);
 
-  ~PccIRParser() override;
+  ~RccIRParser() override;
 
   std::string getGrammarFileName() const override;
 

@@ -2,7 +2,7 @@
 
 #include "optimizers/Optimizer.h"
 
-namespace pcc {
+namespace rcc {
 
 // Intraprocedural constant propagation: walking one function's body in
 // source order, tracks which Local/Param scalars currently hold a known
@@ -40,4 +40,4 @@ class ConstantPropagation : public Optimizer {
     bool run(ir::Program &prog, const std::string &sourceFile) const override;
 };
 
-}  // namespace pcc
+}  // namespace rcc

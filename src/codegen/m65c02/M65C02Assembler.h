@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // Distinct from kM6502CoffMachine (0x6502) so a 65C02 object can't link
 // with an NMOS 6502 object: the CMOS-only stz/stzp opcode this backend
@@ -50,4 +50,4 @@ std::string assembleM65C02(const std::string &asmText);
 // pseudo-symbol ".." (this object's eventual linked base).
 ObjectFile assembleM65C02Object(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

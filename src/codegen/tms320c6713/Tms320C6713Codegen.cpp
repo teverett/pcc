@@ -6,7 +6,7 @@
 #include "Tms320C6713Assembler.h"
 #include "fileformat/FileFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 [[noreturn]] void err(int line, const std::string &msg) {
@@ -1423,4 +1423,4 @@ std::optional<std::string> Tms320C6713Codegen::assembleInProcess(const std::stri
     return std::nullopt;
 }
 
-}  // namespace pcc
+}  // namespace rcc

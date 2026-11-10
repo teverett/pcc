@@ -2,7 +2,7 @@
 
 #include "optimizers/Optimizer.h"
 
-namespace pcc {
+namespace rcc {
 
 // Removes a store to a scalar Local/Param whose value is never used -
 // closing the gap ConstantPropagation.h's own header documents. Restricted,
@@ -42,4 +42,4 @@ class DeadStoreElimination : public Optimizer {
     bool run(ir::Program &prog, const std::string &sourceFile) const override;
 };
 
-}  // namespace pcc
+}  // namespace rcc

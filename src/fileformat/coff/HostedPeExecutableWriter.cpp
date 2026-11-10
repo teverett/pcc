@@ -4,7 +4,7 @@
 #include <map>
 #include <set>
 
-namespace pcc {
+namespace rcc {
 namespace {
 
 using Bytes = std::string;
@@ -95,4 +95,4 @@ Bytes makePe(const PEImage &image) {
     return out;
 }
 
-}  // namespace pcc
+}  // namespace rcc

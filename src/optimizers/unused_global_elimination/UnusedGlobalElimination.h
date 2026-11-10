@@ -2,7 +2,7 @@
 
 #include "optimizers/Optimizer.h"
 
-namespace pcc {
+namespace rcc {
 
 // Removes every global Slot that nothing in the program reads, writes, or
 // takes the address of, directly or via another live global's array
@@ -25,4 +25,4 @@ class UnusedGlobalElimination : public Optimizer {
     bool run(ir::Program &prog, const std::string &sourceFile) const override;
 };
 
-}  // namespace pcc
+}  // namespace rcc

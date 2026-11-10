@@ -1,6 +1,6 @@
-# The pdp-c-compiler language and object model
+# The rcc language and object model
 
-This is the language-level reference for pcc's own C subset, plus the
+This is the language-level reference for rcc's own C subset, plus the
 handful of project-specific choices (its own COFF variant, its
 `asm { ... }` escape hatch, its text preprocessor) that don't belong in
 `docs/building.md`/`docs/using.md` (the CLI) or `docs/platforms.md`
@@ -138,13 +138,13 @@ for exactly what `addr` means and how each backend applies it.
 
 `asm { ... }` is an escape hatch, not a parsed sub-language: the raw
 text between the braces is emitted into the generated assembly exactly
-as written, with no attempt by pcc to understand it — meant for real
+as written, with no attempt by rcc to understand it — meant for real
 hardware instructions this C subset has no portable expression for at
 all (e.g. the PDP-7 disk controller's raw IOT instructions). It's
 target-specific by construction (the text has to already be valid
 assembly for whichever `--target` is compiling it), has no return
 value, and it's the caller's own job to leave registers/the
-accumulator in a sane state around it — pcc doesn't track what an
+accumulator in a sane state around it — rcc doesn't track what an
 `asm` block does to them.
 
 ## Preprocessor
@@ -171,7 +171,7 @@ an `#include` are approximate.
 
 ## COFF object files
 
-pcc's own `--format=coff` is a real relocatable object (one `.text`
+rcc's own `--format=coff` is a real relocatable object (one `.text`
 section, one `.bss` size reservation, a symbol table, a relocation
 table), but it's a **deliberate, non-standard** choice: COFF has no
 historical tie to any target this project supports (PDP-7 predates it
@@ -179,7 +179,7 @@ entirely; real 16-bit 8086/DOS tooling used OMF, not COFF). Every
 object this project writes uses its own custom, unregistered `Machine`
 value, which existing tooling's COFF readers (`objdump` included)
 reject outright as "not a valid object file" purely because of that
-one unrecognized field — this is expected, not a bug: pcc's COFF is
+one unrecognized field — this is expected, not a bug: rcc's COFF is
 one of several interchangeable object-container formats it defines
 purely for its own `--link` step (alongside ELF/Mach-O/a.out), never
 meant for interop with a real, independent COFF toolchain. See
@@ -236,6 +236,6 @@ declare).
 
 ## Building / Usage
 
-Building pcc from source, and every compile-mode/link-mode
+Building rcc from source, and every compile-mode/link-mode
 command-line switch, are documented separately — see
 [`docs/building.md`](building.md) and [`docs/using.md`](using.md).

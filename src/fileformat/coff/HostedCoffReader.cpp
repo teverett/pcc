@@ -4,7 +4,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace pcc {
+namespace rcc {
 namespace {
 
 [[noreturn]] void fail(const std::string &message) {
@@ -103,7 +103,7 @@ ObjectFile readHostedCoff(const std::string &bytes) {
         if (section > static_cast<int>(sections.size())) fail("invalid symbol section");
         if (section > 0 && sections[section - 1].loaded) {
             if (value > sections[section - 1].size) fail("symbol outside section");
-            if (storage == 3) name = "__pcc_local_coff_" + std::to_string(i);
+            if (storage == 3) name = "__rcc_local_coff_" + std::to_string(i);
             names[i] = name;
             valid[i] = true;
             object.symbols.push_back({name, sections[section - 1].base + value, true, false});

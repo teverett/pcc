@@ -6,7 +6,7 @@
 
 #include "fileformat/coff/PeExportReader.h"
 
-namespace pcc {
+namespace rcc {
 namespace {
 
 using Bytes = std::string;
@@ -179,4 +179,4 @@ std::unordered_map<size_t, HostedImport> gnuCoffImports(const std::vector<Archiv
     return imports;
 }
 
-}  // namespace pcc
+}  // namespace rcc

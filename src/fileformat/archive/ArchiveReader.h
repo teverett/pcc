@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-namespace pcc {
+namespace rcc {
 
 struct ArchiveMember {
     std::string name;
@@ -12,4 +12,4 @@ struct ArchiveMember {
 
 std::vector<ArchiveMember> readArchive(const std::string &bytes);
 
-}  // namespace pcc
+}  // namespace rcc

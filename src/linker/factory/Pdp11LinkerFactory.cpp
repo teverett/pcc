@@ -3,7 +3,7 @@
 #include "linker/GenericLinker.h"
 #include "codegen/pdp11/Pdp11Assembler.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 // Mode-067 PC-relative extension word: the displacement is relative to
@@ -37,4 +37,4 @@ std::unique_ptr<TargetLinker> makePdp11Linker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

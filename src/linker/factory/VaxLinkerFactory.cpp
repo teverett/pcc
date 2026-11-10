@@ -3,7 +3,7 @@
 #include "codegen/vax/VaxAssembler.h"
 #include "linker/GenericLinker.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -29,4 +29,4 @@ std::unique_ptr<TargetLinker> makeVaxLinker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

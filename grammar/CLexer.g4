@@ -1,7 +1,7 @@
 lexer grammar CLexer;
 
 // ---------------------------------------------------------------------
-// Lexer half of pdp-c-compiler's C-subset grammar (see CParser.g4 for
+// Lexer half of rcc's C-subset grammar (see CParser.g4 for
 // the parser half and ../README.md for what the language actually
 // is). Split from a single combined grammar specifically so `asm
 // { ... }` (below) can use a real lexer mode to capture its raw body
@@ -109,10 +109,10 @@ WS            : [ \t\r\n]+ -> skip ;
 // raw text between the braces (ASM_TEXT, captured verbatim here - no
 // nested braces, since no target's own assembly dialect uses them)
 // is emitted into the generated assembly exactly as written, with no
-// attempt by pcc to understand it. Meant for real hardware
+// attempt by rcc to understand it. Meant for real hardware
 // instructions this C subset has no portable expression for at all
 // (e.g. the PDP-7 disk controller's raw IOT instructions -
-// `dscs`/`dslw`/.../`dsrs`) - see ../docs/pdp-c-compiler.md's "Inline
+// `dscs`/`dslw`/.../`dsrs`) - see ../docs/language.md's "Inline
 // asm" for the ground rules (target-specific by construction, no
 // return value, caller's own job to keep AC/registers in a sane
 // state around it).

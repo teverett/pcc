@@ -6,9 +6,9 @@
 # on every target (see ../src/Backend.h: a .c file means the same
 # thing regardless of --target).
 #
-# Usage: tests/run_tests.sh [path/to/pcc] [--target=pdp7|pdp11|pdp10|vax|avr|alpha|saturn|tms320c6713|r10000|powerpc|cortex-m3|8086|8088|6502|65c02|68000|mc68328|8080|z80|8008|8051|stm32|i386|armv7a|armv8a] [--optimize]
+# Usage: tests/run_tests.sh [path/to/rcc] [--target=pdp7|pdp11|pdp10|vax|avr|alpha|saturn|tms320c6713|r10000|powerpc|cortex-m3|8086|8088|6502|65c02|68000|mc68328|8080|z80|8008|8051|stm32|i386|armv7a|armv8a] [--optimize]
 #
-# --optimize passes pcc's own --optimize straight through to every
+# --optimize passes rcc's own --optimize straight through to every
 # compile below, so the exact same checks also confirm the IR
 # optimizer pipeline (see ../docs/optimization.md) never changes a
 # program's own observable result.
@@ -16,7 +16,7 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PCC="$SCRIPT_DIR/../build/bin/pcc"
+RCC="$SCRIPT_DIR/../build/bin/rcc"
 TARGET="pdp7"
 OPTFLAGS=""
 
@@ -24,12 +24,12 @@ for arg in "$@"; do
     case "$arg" in
         --target=*) TARGET="${arg#--target=}" ;;
         --optimize) OPTFLAGS="--optimize" ;;
-        *) PCC="$arg" ;;
+        *) RCC="$arg" ;;
     esac
 done
 
-if [ ! -x "$PCC" ]; then
-    echo "pcc binary not found at $PCC - build it first ('make')" >&2
+if [ ! -x "$RCC" ]; then
+    echo "rcc binary not found at $RCC - build it first ('make')" >&2
     exit 1
 fi
 
@@ -329,7 +329,7 @@ tmpdir="$(mktemp -d)"
 # qemu monitor sockets live in their own short directory: a unix socket
 # path is limited to about 104 bytes, which `$tmpdir` plus a long test
 # name can exceed.
-sockdir="$(mktemp -d /tmp/pccq.XXXXXX)"
+sockdir="$(mktemp -d /tmp/rccq.XXXXXX)"
 qemu_count=0
 trap 'rm -rf "$tmpdir" "$sockdir"' EXIT
 
@@ -381,7 +381,7 @@ check_pdp7() {
     local src="$1" name="$2"
     local rimfile="$tmpdir/$name.rim"
 
-    if ! "$PCC" --target=pdp7 --format=rim \
+    if ! "$RCC" --target=pdp7 --format=rim \
             $OPTFLAGS --dump-ir --out="$rimfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -434,7 +434,7 @@ check_pdp11() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=pdp11 --format=raw \
+    if ! "$RCC" --target=pdp11 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -500,7 +500,7 @@ check_pdp10() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=pdp10 --format=raw \
+    if ! "$RCC" --target=pdp10 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -576,7 +576,7 @@ check_vax() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=vax --format=raw \
+    if ! "$RCC" --target=vax --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -622,7 +622,7 @@ check_alpha() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=alpha --format=raw \
+    if ! "$RCC" --target=alpha --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -813,7 +813,7 @@ check_saturn() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=saturn --format=raw \
+    if ! "$RCC" --target=saturn --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -1039,7 +1039,7 @@ check_tms320c6713() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=tms320c6713 --format=raw \
+    if ! "$RCC" --target=tms320c6713 --format=raw \
             $OPTFLAGS --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -1314,7 +1314,7 @@ check_8086() {
     local target="$1" src="$2" name="$3"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target="$target" --format=raw \
+    if ! "$RCC" --target="$target" --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -1355,7 +1355,7 @@ check_i386() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=i386 --format=raw \
+    if ! "$RCC" --target=i386 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -1402,7 +1402,7 @@ check_armv7a() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=armv7a --format=raw \
+    if ! "$RCC" --target=armv7a --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -1458,7 +1458,7 @@ check_armv8a() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=armv8a --format=raw \
+    if ! "$RCC" --target=armv8a --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -1504,7 +1504,7 @@ check_avr() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=avr --format=raw \
+    if ! "$RCC" --target=avr --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -1560,7 +1560,7 @@ check_r10000() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=r10000 --format=raw \
+    if ! "$RCC" --target=r10000 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -1610,7 +1610,7 @@ check_powerpc() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=powerpc --format=raw \
+    if ! "$RCC" --target=powerpc --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -1678,7 +1678,7 @@ check_cortex_m3() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=cortex-m3 --format=raw \
+    if ! "$RCC" --target=cortex-m3 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -1731,7 +1731,7 @@ check_68000() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=68000 --format=raw \
+    if ! "$RCC" --target=68000 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -1788,7 +1788,7 @@ check_mc68328() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=mc68328 --format=raw \
+    if ! "$RCC" --target=mc68328 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -1837,7 +1837,7 @@ check_6502() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=6502 --format=raw \
+    if ! "$RCC" --target=6502 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -1903,7 +1903,7 @@ check_65c02() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=65c02 --format=raw \
+    if ! "$RCC" --target=65c02 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -1970,7 +1970,7 @@ check_8080() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=8080 --format=raw \
+    if ! "$RCC" --target=8080 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -2033,7 +2033,7 @@ check_z80() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=z80 --format=raw \
+    if ! "$RCC" --target=z80 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -2102,7 +2102,7 @@ check_8008() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=8008 --format=raw \
+    if ! "$RCC" --target=8008 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -2327,7 +2327,7 @@ check_8051() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=8051 --format=raw \
+    if ! "$RCC" --target=8051 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"
@@ -2579,7 +2579,7 @@ check_stm32() {
     local src="$1" name="$2"
     local binfile="$tmpdir/$name.bin"
 
-    if ! "$PCC" --target=stm32 --format=raw \
+    if ! "$RCC" --target=stm32 --format=raw \
             $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
         echo "FAIL $name: compile error"
         sed 's/^/    /' "$tmpdir/$name.log"

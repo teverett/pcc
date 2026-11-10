@@ -9,7 +9,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates PIC16 mid-range (14-bit core) assembly for the IR built by
 // IRBuilder, modeled on the PIC16F84A: SFR map (INDF=0, STATUS=3, FSR=4,
@@ -128,7 +128,7 @@ class PIC16Codegen : public Backend {
     // always a plain address (native int width), and genAddrOf() computes
     // it without calling genExpr() on the operand's value, so
     // `&someLongVariable` still works even though reading it would not.
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     void requireNarrow(const ir::Expr &e) const;
     // log2 of an element type's width (1/2/4/8 bytes -> 0/1/2/3 left
     // shifts): genIndexAddr()'s scale factor for an index.
@@ -287,4 +287,4 @@ class PIC16Codegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

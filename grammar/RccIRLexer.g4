@@ -1,4 +1,4 @@
-lexer grammar PccIRLexer;
+lexer grammar RccIRLexer;
 
 // ---------------------------------------------------------------------
 // Lexer half of the grammar for IRPrinter.cpp's own output format (see
@@ -17,7 +17,7 @@ lexer grammar PccIRLexer;
 // what IRPrinter.cpp emits, nothing more - e.g. every binary/unary
 // expression is always fully parenthesized by the printer, so this
 // grammar needs no operator-precedence table at all (see
-// PccIRParser.g4's own comment).
+// RccIRParser.g4's own comment).
 // ---------------------------------------------------------------------
 
 // The two fixed section-header lines printIR() always writes (see
@@ -25,12 +25,12 @@ lexer grammar PccIRLexer;
 // comment line would be, so ANTLR's own maximal-munch rule always
 // prefers these over treating the line as a comment, with no need for
 // a general `;`-starts-a-comment rule here at all (unlike
-// grammar/PccAsm.g4 - this format uses `;` only as a statement
+// grammar/RccAsm.g4 - this format uses `;` only as a statement
 // terminator, never for comments).
 GLOBALS_HEADER   : '; --- globals ---' ;
 FUNCTIONS_HEADER : '; --- functions ---' ;
 
-// Keyword/punctuation tokens PccIRParser.g4 uses as bare string
+// Keyword/punctuation tokens RccIRParser.g4 uses as bare string
 // literals - an explicit rule here because split lexer+parser
 // grammars (unlike a combined one) can't auto-create them for the
 // parser; see CLexer.g4's own comment for the same point.
@@ -108,10 +108,10 @@ IDENT  : [A-Za-z_][A-Za-z0-9_]* ;
 // IRPrinter.cpp print it exactly this way - a bare sign with no space
 // and no surrounding parens). Every operator use of '-' instead has a
 // space, a '(', or another operator character right after it, so it
-// never matches this rule - see PccIRParser.g4's own comment.
+// never matches this rule - see RccIRParser.g4's own comment.
 NUMBER : '-'? [0-9]+ ;
 
-// No general `;`-starts-a-comment rule (unlike grammar/PccAsm.g4) -
+// No general `;`-starts-a-comment rule (unlike grammar/RccAsm.g4) -
 // IRPrinter.cpp never writes a trailing comment after real content,
 // only the two fixed whole-line headers above, so every other `;` in
 // the input is a real SEMI.

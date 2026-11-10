@@ -4,7 +4,7 @@
 
 #include "linker/Linker.h"
 
-namespace pcc {
+namespace rcc {
 
 // Builds a GenericLinker for PIC18, with a three-byte carry-correct
 // split patch for the 20-bit GOTO/CALL word address, a bounds-checked
@@ -18,4 +18,4 @@ namespace pcc {
 // in that same file.
 std::unique_ptr<TargetLinker> makePIC18Linker();
 
-}  // namespace pcc
+}  // namespace rcc

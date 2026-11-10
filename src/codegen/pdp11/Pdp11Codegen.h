@@ -9,7 +9,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates PDP-11 assembly (this project's own dialect - see Pdp11Assembler.h) for the IR
 // built by IRBuilder. `generate()` returns a complete flat binary loaded at a fixed address
@@ -91,7 +91,7 @@ class Pdp11Codegen : public Backend {
     // otherwise.
     void narrowR0To(Type to);
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
     // How many native 16-bit words `t` occupies - 1 up to `int`, 2 for `long`, 4 for `long long`.
     int wordCountOf(Type t) const { return widthOfType(t) / 2; }
@@ -207,4 +207,4 @@ class Pdp11Codegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

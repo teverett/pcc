@@ -1,6 +1,6 @@
 #include "FlatFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 std::string FlatFormatWriter::write(const ObjectFile &obj) const {
     return std::string(obj.textBytes.begin(), obj.textBytes.end());
@@ -12,4 +12,4 @@ ObjectFile FlatFormatReader::read(const std::string &bytes) const {
     return obj;
 }
 
-}  // namespace pcc
+}  // namespace rcc

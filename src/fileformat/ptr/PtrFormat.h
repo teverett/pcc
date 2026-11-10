@@ -2,7 +2,7 @@
 
 #include "fileformat/FileFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 // Same paper-tape packing as rim/RimFormat.h (see ../Pdp7TapePacking.h) but
 // with no trailing bootstrap signature word, so no base address; `read()`
@@ -17,4 +17,4 @@ class PtrFormatReader : public FileFormatReader {
     ObjectFile read(const std::string &bytes) const override;
 };
 
-}  // namespace pcc
+}  // namespace rcc

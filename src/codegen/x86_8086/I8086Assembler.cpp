@@ -11,18 +11,18 @@
 #include "ANTLRInputStream.h"
 #include "BaseErrorListener.h"
 #include "CommonTokenStream.h"
-#include "PccAsmLexer.h"
-#include "PccAsmParser.h"
+#include "RccAsmLexer.h"
+#include "RccAsmParser.h"
 #include "fileformat/coff/CoffFormat.h"
 #include "fileformat/elf/ElfFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("I8086Assembler: " + msg); }
 
-// --- Parsing, via the shared grammar/PccAsm.g4 -----------------------
+// --- Parsing, via the shared grammar/RccAsm.g4 -----------------------
 
 // `Group` is a parenthesized sub-expression (NASM's "510-($-$$)" idiom, used for
 // boot-sector/placement padding). Its syllables evaluate recursively to one combined
@@ -64,7 +64,7 @@ std::string toLower(std::string s) {
     return s;
 }
 
-std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
+std::vector<Syllable> exprToSyllables(RccAsmParser::ExprContext *ctx) {
     std::vector<Syllable> result;
     for (auto *syl : ctx->syllable()) {
         char sign = 0;
@@ -103,7 +103,7 @@ int segRegIndex(const std::string &name) {
 }
 
 // `[...]` and plain-expr operand forms, classified into the shapes codegen emits.
-Operand buildOperand(PccAsmParser::OperandContext *ctx) {
+Operand buildOperand(RccAsmParser::OperandContext *ctx) {
     Operand op;
     if (ctx->LBRACKET()) {
         op.kind = Operand::Mem;
@@ -165,7 +165,7 @@ class ThrowingErrorListener : public antlr4::BaseErrorListener {
     }
 };
 
-Line buildLine(PccAsmParser::LineContext *ctx) {
+Line buildLine(RccAsmParser::LineContext *ctx) {
     Line line;
     for (auto *lbl : ctx->label()) line.labels.push_back(lbl->IDENT()->getText());
 
@@ -174,11 +174,11 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         line.kind = Line::None;
         return line;
     }
-    if (dynamic_cast<PccAsmParser::AssignStmtContext *>(stmt)) {
+    if (dynamic_cast<RccAsmParser::AssignStmtContext *>(stmt)) {
         fail("assignment statements aren't part of 8086's own dialect - placement/padding here always goes "
              "through 'times', see I8086Codegen.cpp");
     }
-    if (auto *times = dynamic_cast<PccAsmParser::TimesStmtContext *>(stmt)) {
+    if (auto *times = dynamic_cast<RccAsmParser::TimesStmtContext *>(stmt)) {
         line.kind = Line::Times;
         line.timesCount = exprToSyllables(times->count);
         line.innerMnemonic = toLower(times->mnemonic->getText());
@@ -188,7 +188,7 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         }
         return line;
     }
-    auto *instr = dynamic_cast<PccAsmParser::InstrStmtContext *>(stmt);
+    auto *instr = dynamic_cast<RccAsmParser::InstrStmtContext *>(stmt);
     if (!instr) fail("internal: unhandled statement alternative");
 
     std::string mnemonic = toLower(instr->mnemonic->getText());
@@ -232,17 +232,17 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
 // the generated Visitor interface.
 std::vector<Line> parseProgram(const std::string &text) {
     antlr4::ANTLRInputStream input(text);
-    PccAsmLexer lexer(&input);
+    RccAsmLexer lexer(&input);
     ThrowingErrorListener errors;
     lexer.removeErrorListeners();
     lexer.addErrorListener(&errors);
 
     antlr4::CommonTokenStream tokens(&lexer);
-    PccAsmParser parser(&tokens);
+    RccAsmParser parser(&tokens);
     parser.removeErrorListeners();
     parser.addErrorListener(&errors);
 
-    PccAsmParser::ProgramContext *prog = parser.program();
+    RccAsmParser::ProgramContext *prog = parser.program();
 
     std::vector<Line> lines;
     for (auto *lineCtx : prog->line()) lines.push_back(buildLine(lineCtx));
@@ -757,4 +757,4 @@ ObjectFile assembleI8086Object(const std::string &asmText) {
     return buildObjectFile(assembler);
 }
 
-}  // namespace pcc
+}  // namespace rcc

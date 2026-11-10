@@ -39,6 +39,6 @@ tree and let the user review and commit them themselves.
 
 ## Project Specific
 
-* Treat pcc as a general purpose multitarget compiler and linker
+* Treat rcc as a general purpose multitarget compiler and linker
 * Do not create boot loaders or boot disks
 

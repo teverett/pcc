@@ -7,7 +7,7 @@
 #include "codegen/pdp7/Pdp7Assembler.h"
 #include "codegen/pdp7/Pdp7Codegen.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -108,4 +108,4 @@ std::unique_ptr<TargetLinker> makePdp7Linker(uint32_t baseAddressWords) {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

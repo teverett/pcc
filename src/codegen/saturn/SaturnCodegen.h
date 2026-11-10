@@ -10,7 +10,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates Saturn-flavored assembly for the IR built by IRBuilder; names are already resolved to
 // Slot/Function, so this is pure instruction selection with no symbol table of its own.
@@ -108,7 +108,7 @@ class SaturnCodegen : public Backend {
     void genWideCompare(const std::string &op, int chunks, bool isUnsigned);
     [[noreturn]] void genWideMulDivErr(int line, const std::string &opName);
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
     // Masks register `a` down to `to`'s value range and, for a signed `char`, re-sign-extends
     // from that range's top bit. `short`/`int`/pointers are already full register width, so this
@@ -178,4 +178,4 @@ class SaturnCodegen : public Backend {
 // software multiply and unsigned-divide/modulo routines, since real Saturn hardware has neither.
 std::string saturnRuntimeAsm();
 
-}  // namespace pcc
+}  // namespace rcc

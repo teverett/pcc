@@ -4,7 +4,7 @@
 
 #include "linker/Linker.h"
 
-namespace pcc {
+namespace rcc {
 
 // Builds a GenericLinker for the MCS-51 family (8051/8052/8031/8032),
 // with a synthesized `_start` entry object assembled like any other
@@ -17,4 +17,4 @@ namespace pcc {
 // in that same file.
 std::unique_ptr<TargetLinker> makeMCS51Linker();
 
-}  // namespace pcc
+}  // namespace rcc

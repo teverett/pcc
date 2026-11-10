@@ -2,7 +2,7 @@
 
 #include "optimizers/Optimizer.h"
 
-namespace pcc {
+namespace rcc {
 
 // Local common-subexpression/redundant-load elimination: purely syntactic
 // (not flow-sensitive) matching of identical Binary/Index subexpressions
@@ -36,4 +36,4 @@ class LocalCSE : public Optimizer {
     bool run(ir::Program &prog, const std::string &sourceFile) const override;
 };
 
-}  // namespace pcc
+}  // namespace rcc

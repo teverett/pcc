@@ -6,7 +6,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -261,4 +261,4 @@ bool IdenticalCodeFolding::run(ir::Program &prog, const std::string &sourceFile)
     return true;
 }
 
-}  // namespace pcc
+}  // namespace rcc

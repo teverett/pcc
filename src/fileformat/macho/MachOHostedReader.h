@@ -8,7 +8,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // Reads real, already-assembled thin 64-bit arm64 Mach-O input (MH_OBJECT object files,
 // MH_DYLIB shared libraries, and Apple's text-based ".tbd" stub libraries) for the hosted
@@ -64,4 +64,4 @@ void collectTbdExports(const std::filesystem::path &path, const std::filesystem:
                        std::unordered_set<std::string> &exports,
                        std::unordered_set<std::string> &seen);
 
-}  // namespace pcc
+}  // namespace rcc

@@ -11,7 +11,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates MCS-51 assembly (standard 8051 mnemonics, see
 // MCS51Assembler.h) from IRBuilder's IR, covering the 8051/8052/8031/
@@ -72,7 +72,7 @@ class MCS51Codegen : public Backend {
    private:
     // Used by genConvert() to tell a char-width conversion (needs
     // masking/sign-extension) apart from other, already-same-width ones.
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
 
     void genFunction(const ir::FunctionBody &fn);
 
@@ -249,4 +249,4 @@ class MCS51Codegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // Custom (unregistered) COFF machine ID for this project's i386 dialect.
 constexpr uint16_t kI386CoffMachine = 0x3386;
@@ -31,4 +31,4 @@ std::string assembleI386(const std::string &asmText);
 // ".." (labels resolve relative to this object's own org 0 until the linker adds its base).
 ObjectFile assembleI386Object(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

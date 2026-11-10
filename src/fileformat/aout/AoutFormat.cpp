@@ -5,7 +5,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -170,4 +170,4 @@ ObjectFile AoutFormatReader::read(const std::string &bytes) const {
     return obj;
 }
 
-}  // namespace pcc
+}  // namespace rcc

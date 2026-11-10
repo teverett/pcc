@@ -3,7 +3,7 @@
 #include "codegen/stm32/STM32Assembler.h"
 #include "linker/GenericLinker.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -108,4 +108,4 @@ std::unique_ptr<TargetLinker> makeSTM32Linker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

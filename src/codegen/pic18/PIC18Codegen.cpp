@@ -6,7 +6,7 @@
 #include "PIC18Assembler.h"
 #include "fileformat/FileFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 [[noreturn]] void err(int line, const std::string &msg) {
@@ -985,4 +985,4 @@ std::optional<std::string> PIC18Codegen::assembleInProcess(const std::string &as
     return std::nullopt;
 }
 
-}  // namespace pcc
+}  // namespace rcc

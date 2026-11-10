@@ -22,7 +22,7 @@ std::string member(const std::string &name, const std::string &data) {
 }
 
 void testShortNamesAndPadding() {
-    auto members = pcc::readArchive("!<arch>\n" + member("/", "index") +
+    auto members = rcc::readArchive("!<arch>\n" + member("/", "index") +
                                     member("first.o/", "abc") + member("second.o/", "defg"));
     require(members.size() == 2, "wrong member count");
     require(members[0].name == "first.o" && members[0].bytes == "abc", "incorrect first member");
@@ -32,7 +32,7 @@ void testShortNamesAndPadding() {
 void testExtendedNames() {
     auto archive = "!<arch>\n" + member("//", "long-object-name.o/\n") +
                    member("/0", "gnu") + member("#1/14", "bsd-longname.oBSD");
-    auto members = pcc::readArchive(archive);
+    auto members = rcc::readArchive(archive);
     require(members.size() == 2, "wrong extended member count");
     require(members[0].name == "long-object-name.o" && members[0].bytes == "gnu",
             "incorrect GNU long name");
@@ -42,7 +42,7 @@ void testExtendedNames() {
 
 void rejects(const std::string &archive) {
     try {
-        pcc::readArchive(archive);
+        rcc::readArchive(archive);
     } catch (const std::runtime_error &) {
         return;
     }
@@ -62,7 +62,7 @@ void testMicrosoftLongNames() {
     std::string first = "first-windows-long-name.obj";
     std::string second = "second-windows-long-name.obj";
     std::string table = first + '\0' + second + '\0';
-    auto members = pcc::readArchive("!<arch>\n" + member("//", table) +
+    auto members = rcc::readArchive("!<arch>\n" + member("//", table) +
                                    member("/0", "first") +
                                    member("/" + std::to_string(first.size() + 1), "second"));
     require(members.size() == 2, "wrong Microsoft member count");
@@ -88,7 +88,7 @@ int main(int argc, char **argv) {
             std::ifstream input(argv[1], std::ios::binary);
             if (!input) throw std::runtime_error("cannot open archive fixture");
             std::string bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-            auto members = pcc::readArchive(bytes);
+            auto members = rcc::readArchive(bytes);
             require(members.size() == 2, "wrong real archive member count");
             require(members[0].name == "short.o" && members[0].bytes == "odd",
                     "incorrect real short member");

@@ -13,14 +13,14 @@ namespace {
 std::string preprocessSource(const std::string &source) {
     auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
     std::filesystem::path path = std::filesystem::temp_directory_path() /
-                                 ("pcc-preprocessor-test-" + std::to_string(suffix) + ".c");
+                                 ("rcc-preprocessor-test-" + std::to_string(suffix) + ".c");
     {
         std::ofstream file(path);
         if (!file) throw std::runtime_error("could not create preprocessor test source");
         file << source;
     }
     try {
-        std::string result = pcc::preprocess(path.string(), {});
+        std::string result = rcc::preprocess(path.string(), {});
         std::filesystem::remove(path);
         return result;
     } catch (...) {
@@ -96,7 +96,7 @@ void testRecursiveMacroTerminates() {
 void testPragmaOnceSkipsSecondInclude() {
     auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
     std::filesystem::path headerPath =
-        std::filesystem::temp_directory_path() / ("pcc-preprocessor-test-header-" + std::to_string(suffix) + ".h");
+        std::filesystem::temp_directory_path() / ("rcc-preprocessor-test-header-" + std::to_string(suffix) + ".h");
     {
         std::ofstream header(headerPath);
         header << "#pragma once\nint shared;\n";

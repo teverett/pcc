@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // Ad-hoc COFF machine ID for this dialect, ASCII "SP" (no real SPARC COFF ID exists).
 constexpr uint16_t kSparcCoffMachine = 0x5350;
@@ -52,4 +52,4 @@ std::string assembleSparc(const std::string &asmText);
 // ObjectFile a codegen backend builds once per compile.
 ObjectFile assembleSparcObject(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

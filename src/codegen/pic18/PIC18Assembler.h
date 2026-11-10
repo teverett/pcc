@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // Custom machine ID for this target (no real one registered); checked by
 // PIC18LinkerFactory.cpp against an input object's embedded machine type.
@@ -77,4 +77,4 @@ std::string assemblePIC18(const std::string &asmText);
 // a byte offset into this object's `dataSize` reservation.
 ObjectFile assemblePIC18Object(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

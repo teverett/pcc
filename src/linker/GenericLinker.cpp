@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("GenericLinker: " + msg); }
@@ -333,4 +333,4 @@ ObjectFile GenericLinker::merge(const std::vector<ObjectFile> &userObjects, bool
     return linked;
 }
 
-}  // namespace pcc
+}  // namespace rcc

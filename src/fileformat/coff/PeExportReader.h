@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace pcc {
+namespace rcc {
 
 struct PeExport {
     std::string name;

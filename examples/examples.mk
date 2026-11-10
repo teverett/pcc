@@ -3,13 +3,13 @@ ROOT := $(abspath $(EXAMPLES_DIR)..)
 
 UNAME_S := $(shell uname -s)
 ifeq ($(OS),Windows_NT)
-PCC_EXE := pcc.exe
+RCC_EXE := rcc.exe
 else ifneq (,$(findstring MINGW,$(UNAME_S)))
-PCC_EXE := pcc.exe
+RCC_EXE := rcc.exe
 else ifneq (,$(findstring MSYS,$(UNAME_S)))
-PCC_EXE := pcc.exe
+RCC_EXE := rcc.exe
 else
-PCC_EXE := pcc
+RCC_EXE := rcc
 endif
 
-PCC ?= $(ROOT)/build/bin/$(PCC_EXE)
+RCC ?= $(ROOT)/build/bin/$(RCC_EXE)

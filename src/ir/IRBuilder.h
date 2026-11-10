@@ -4,7 +4,7 @@
 #include "ast/AST.h"
 #include "IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Lowers the AST into IR.h's resolved form: every Var/Index/Assign gets a
 // direct ir::Slot*, every Call a direct ir::Function*, and all
@@ -27,4 +27,4 @@ ir::Program buildIR(const Program &prog, const TypeWidths &widths, bool allowExt
 // otherwise leave it at frameOffset 0, aliasing an existing slot.
 void recomputeFrameLayout(ir::Program &prog, const TypeWidths &widths);
 
-}  // namespace pcc
+}  // namespace rcc

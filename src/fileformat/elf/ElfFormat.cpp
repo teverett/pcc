@@ -5,7 +5,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -35,10 +35,10 @@ constexpr uint32_t kShfAlloc = 0x2, kShfExecinstr = 0x4, kShfWrite = 0x1;
 constexpr uint8_t kSttSection = 3;
 constexpr uint16_t kEm386 = 3;
 constexpr uint8_t kR386Pc32 = 2;
-constexpr uint16_t kPccI386Machine = 0x3386;
+constexpr uint16_t kRccI386Machine = 0x3386;
 
-bool isPccLocalSymbol(const std::string &name) {
-    return name.compare(0, 12, "__pcc_local_") == 0 || name.compare(0, 10, "__pcc_tmp_") == 0;
+bool isRccLocalSymbol(const std::string &name) {
+    return name.compare(0, 12, "__rcc_local_") == 0 || name.compare(0, 10, "__rcc_tmp_") == 0;
 }
 
 // Fixed section order this writer always produces.
@@ -54,7 +54,7 @@ std::string ElfFormatWriter::write(const ObjectFile &obj) const {
     }
 
     std::string textBytes(obj.textBytes.begin(), obj.textBytes.end());
-    if (obj.machineType == kEm386 || obj.machineType == kPccI386Machine) {
+    if (obj.machineType == kEm386 || obj.machineType == kRccI386Machine) {
         for (const auto &r : obj.relocations) {
             if (r.type != kR386Pc32) continue;
             if (static_cast<size_t>(r.offset) + 4 > textBytes.size()) fail("relocation offset outside .text");
@@ -71,13 +71,13 @@ std::string ElfFormatWriter::write(const ObjectFile &obj) const {
     strtab.push_back('\0');
     std::vector<uint32_t> nameOffsets(obj.symbols.size());
     std::unordered_map<std::string, uint32_t> symIndex;
-    symIndex[".."] = 1;  // the ELF .text section symbol carries pcc's object-base relocations
+    symIndex[".."] = 1;  // the ELF .text section symbol carries rcc's object-base relocations
     std::vector<size_t> symbolOrder;
     std::vector<size_t> globalSymbols;
     for (size_t i = 0; i < obj.symbols.size(); ++i) {
         const auto &sym = obj.symbols[i];
         if (sym.name == "..") continue;
-        if (obj.machineType == kPccI386Machine && isPccLocalSymbol(sym.name)) {
+        if (obj.machineType == kRccI386Machine && isRccLocalSymbol(sym.name)) {
             symbolOrder.push_back(i);
         } else {
             globalSymbols.push_back(i);
@@ -107,7 +107,7 @@ std::string ElfFormatWriter::write(const ObjectFile &obj) const {
         put32(symtab, nameOffsets[i]);                                      // st_name
         put32(symtab, sym.value);                                           // st_value
         put32(symtab, 0);                                                   // st_size
-        bool isLocal = obj.machineType == kPccI386Machine && isPccLocalSymbol(sym.name);
+        bool isLocal = obj.machineType == kRccI386Machine && isRccLocalSymbol(sym.name);
         symtab.push_back(static_cast<char>((isLocal ? 0 : 1) << 4));        // STB_LOCAL/GLOBAL, STT_NOTYPE
         symtab.push_back(static_cast<char>(0));                             // st_other
         // st_shndx: .text or .bss, whichever address space the symbol lives in, or SHN_UNDEF.
@@ -150,7 +150,7 @@ std::string ElfFormatWriter::write(const ObjectFile &obj) const {
     const uint8_t ident[16] = {0x7F, 'E', 'L', 'F', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     putBytes(out, ident, 16);
     put16(out, kEtRel);
-    put16(out, obj.machineType == kPccI386Machine ? kEm386 : obj.machineType);
+    put16(out, obj.machineType == kRccI386Machine ? kEm386 : obj.machineType);
     put32(out, 1);        // e_version
     put32(out, 0);        // e_entry
     put32(out, 0);        // e_phoff
@@ -276,7 +276,7 @@ ObjectFile ElfFormatReader::read(const std::string &bytes) const {
 
     ObjectFile obj;
     obj.machineType = get16(bytes, 18);
-    if (obj.machineType == kEm386) obj.machineType = kPccI386Machine;
+    if (obj.machineType == kEm386) obj.machineType = kRccI386Machine;
     obj.dataSize = dataSize;
     need(bytes, textOff, textSize);
     obj.textBytes.assign(bytes.begin() + textOff, bytes.begin() + textOff + textSize);
@@ -316,4 +316,4 @@ ObjectFile ElfFormatReader::read(const std::string &bytes) const {
     return obj;
 }
 
-}  // namespace pcc
+}  // namespace rcc

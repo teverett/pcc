@@ -2,7 +2,7 @@
 
 #include "fileformat/FileFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 // Classic V7/BSD a.out: 32-byte OMAGIC `struct exec` header, `struct
 // relocation_info` relocations, `struct nlist` symbols, string table with a
@@ -22,4 +22,4 @@ class AoutFormatReader : public FileFormatReader {
     ObjectFile read(const std::string &bytes) const override;
 };
 
-}  // namespace pcc
+}  // namespace rcc

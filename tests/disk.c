@@ -1,6 +1,6 @@
 // Real disk I/O, one shared test, two completely different real
 // hardware mechanisms selected by `#ifdef __PDP7__` / `#ifdef
-// __8086__` (see ../docs/pdp-c-compiler.md's "Preprocessor" and
+// __8086__` (see ../docs/language.md's "Preprocessor" and
 // "Inline asm") - not run by tests/run_tests.sh's normal `// EXPECT:`
 // loop (there's no `// EXPECT:` comment here on purpose: a real
 // round trip needs a disk device actually attached to the simulator,
@@ -30,15 +30,15 @@
 // PDP-7 side: the RB09 fixed-head disk's own raw IOT instructions
 // (../src-assem/sys/sop.s's own opcode-literal definitions - `dscs`/
 // `dslw`/`dslm`/`dsld`/`dsls`/`dssf`/`dsrs`, see
-// ../docs/pdp-c-compiler.md's "Inline asm"), each wrapped by this
+// ../docs/language.md's "Inline asm"), each wrapped by this
 // language's existing `dac`-leaves-AC-unchanged invariant (the same
-// one `x = y = 5` already relies on - see ../docs/pdp-c-compiler.md's
+// one `x = y = 5` already relies on - see ../docs/language.md's
 // "The pdp7 backend"): a bare expression-statement naming a local
 // (e.g. `wordCount;`) loads that value into AC via an ordinary `lac`,
 // with nothing to `dac` it back to - so AC holds exactly that value
 // going into the very next `asm { ... }` block, which is how a raw
 // IOT instruction that "loads from AC" gets the right operand
-// without pcc understanding what's inside the block at all.
+// without rcc understanding what's inside the block at all.
 //
 // This follows ../src-assem/sys/s4.s's own `dsktrans` protocol
 // exactly for the parts that are unambiguous from its source
@@ -91,7 +91,7 @@ int dskio_lowlevel(int wordCount, int bufAddr, int bcdTrackSector, int opCode) {
     // opcode bits in its high end alongside the real address - fine
     // for every other use in this backend (always dereferenced via
     // `i`, which only looks at the low bits - see
-    // ../docs/pdp-c-compiler.md's "The pdp7 backend"), but fed
+    // ../docs/language.md's "The pdp7 backend"), but fed
     // directly to a hardware register expecting a clean address
     // (`dslm`, below) those bits corrupt it outright. The real kernel
     // hits exactly this: `../src-assem/sys/s1.s`'s `.sysloc` masks a
@@ -105,9 +105,9 @@ int dskio_lowlevel(int wordCount, int bufAddr, int bcdTrackSector, int opCode) {
     opCode;
     asm { 0707144 }
     asm {
-PCCDSKWAIT:
+RCCDSKWAIT:
         0707121
-        jmp PCCDSKWAIT
+        jmp RCCDSKWAIT
         0707132
     }
     return 0;
@@ -163,7 +163,7 @@ int main() {
 // `ORG 0x7C00` (where code/data starts and grows upward) and below
 // where the stack (also based at 0x7C00, growing downward) could
 // reach for a program this small - see
-// ../docs/pdp-c-compiler.md's "The 8086 backend".
+// ../docs/language.md's "The 8086 backend".
 //
 // `return;` with no expression, same trick as pdp7's AC-retention
 // but for `ax`: I8086Backend's own `Return` codegen only emits `mov
@@ -184,9 +184,9 @@ int main() {
 // since it can't recognize a bare 512-byte file as any known floppy
 // geometry; this project's own `--format=bin` output is deliberately
 // still just the bare, unpadded boot sector (see
-// ../docs/pdp-c-compiler.md's "The 8086 backend") - padding for a
+// ../docs/language.md's "The 8086 backend") - padding for a
 // real multi-sector disk test is this test's own verification-step
-// concern, not something `pcc` itself needs to do.
+// concern, not something `rcc` itself needs to do.
 //
 // `I8086Assembler` is "not a general x86 encoder: exactly the
 // mnemonic/operand shapes `I8086Backend.cpp` ever emits, nothing

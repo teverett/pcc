@@ -4,7 +4,7 @@
 // anything around it: the value computed right after the block is
 // exactly what it would have been without it. Every other target
 // skips straight to the same computation in plain C - asm text is
-// inherently target-specific (see docs/pdp-c-compiler.md's "Inline
+// inherently target-specific (see docs/language.md's "Inline
 // asm"), so there's no portable instruction to spell here once.
 int main() {
     int x;

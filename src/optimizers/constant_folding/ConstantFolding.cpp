@@ -4,7 +4,7 @@
 #include <optional>
 #include <string>
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -117,4 +117,4 @@ bool ConstantFolding::run(ir::Program &prog, const std::string &sourceFile) cons
     return changed;
 }
 
-}  // namespace pcc
+}  // namespace rcc

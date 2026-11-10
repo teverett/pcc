@@ -6,7 +6,7 @@
 #include "SparcAssembler.h"
 #include "fileformat/FileFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 [[noreturn]] void err(int line, const std::string &msg) {
@@ -1127,4 +1127,4 @@ std::optional<std::string> SparcCodegen::assembleInProcess(const std::string &as
     return std::nullopt;
 }
 
-}  // namespace pcc
+}  // namespace rcc

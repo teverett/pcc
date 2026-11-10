@@ -3,7 +3,7 @@
 #include "linker/GenericLinker.h"
 #include "codegen/m6502/M6502Assembler.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 // sp must be seeded to 0x0200 (kFrameStackBase in M6502Codegen.cpp) before
@@ -49,4 +49,4 @@ std::unique_ptr<TargetLinker> makeM6502Linker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

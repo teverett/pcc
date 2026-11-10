@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-namespace pcc {
+namespace rcc {
 
 // Writes the final linked arm64 macOS executable (a real, loadable, code-signed Mach-O
 // MH_EXECUTE) for the hosted macOS linker (see linker/MacOSLinker.h) - the "target file
@@ -82,4 +82,4 @@ void patchPageoff12(std::string &code, uint32_t site, uint64_t targetAddress);
 // file offset was chosen here), so `image.code` is mutated as a side effect.
 std::string makeMachExecutable(MachOImage &image);
 
-}  // namespace pcc
+}  // namespace rcc

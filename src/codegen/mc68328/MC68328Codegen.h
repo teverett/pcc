@@ -10,7 +10,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates 68000 assembly for the Motorola/Freescale MC68328 "DragonBall" SoC (used in the
 // original Palm Pilot). Its CPU core is a real MC68EC000, bit-for-bit the same instruction set as
@@ -82,7 +82,7 @@ class MC68328Codegen : public Backend {
     // Leaves slot[idxExpr]'s own effective address in `A0`.
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
     // Number of "addl d0,d0" doublings to scale an index by this element type's width
     // (1/2/4/8 bytes -> 0/1/2/3 doublings).
@@ -172,4 +172,4 @@ class MC68328Codegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

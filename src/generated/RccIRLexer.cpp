@@ -1,8 +1,8 @@
 
-// Generated from /Users/tom/projects/pcc/grammar/PccIRLexer.g4 by ANTLR 4.13.2
+// Generated from /Users/tom/projects/pcc/grammar/RccIRLexer.g4 by ANTLR 4.13.2
 
 
-#include "PccIRLexer.h"
+#include "RccIRLexer.h"
 
 
 using namespace antlr4;
@@ -13,8 +13,8 @@ using namespace antlr4;
 
 namespace {
 
-struct PccIRLexerStaticData final {
-  PccIRLexerStaticData(std::vector<std::string> ruleNames,
+struct RccIRLexerStaticData final {
+  RccIRLexerStaticData(std::vector<std::string> ruleNames,
                           std::vector<std::string> channelNames,
                           std::vector<std::string> modeNames,
                           std::vector<std::string> literalNames,
@@ -24,10 +24,10 @@ struct PccIRLexerStaticData final {
         symbolicNames(std::move(symbolicNames)),
         vocabulary(this->literalNames, this->symbolicNames) {}
 
-  PccIRLexerStaticData(const PccIRLexerStaticData&) = delete;
-  PccIRLexerStaticData(PccIRLexerStaticData&&) = delete;
-  PccIRLexerStaticData& operator=(const PccIRLexerStaticData&) = delete;
-  PccIRLexerStaticData& operator=(PccIRLexerStaticData&&) = delete;
+  RccIRLexerStaticData(const RccIRLexerStaticData&) = delete;
+  RccIRLexerStaticData(RccIRLexerStaticData&&) = delete;
+  RccIRLexerStaticData& operator=(const RccIRLexerStaticData&) = delete;
+  RccIRLexerStaticData& operator=(RccIRLexerStaticData&&) = delete;
 
   std::vector<antlr4::dfa::DFA> decisionToDFA;
   antlr4::atn::PredictionContextCache sharedContextCache;
@@ -41,21 +41,21 @@ struct PccIRLexerStaticData final {
   std::unique_ptr<antlr4::atn::ATN> atn;
 };
 
-::antlr4::internal::OnceFlag pccirlexerLexerOnceFlag;
+::antlr4::internal::OnceFlag rccirlexerLexerOnceFlag;
 #if ANTLR4_USE_THREAD_LOCAL_CACHE
 static thread_local
 #endif
-std::unique_ptr<PccIRLexerStaticData> pccirlexerLexerStaticData = nullptr;
+std::unique_ptr<RccIRLexerStaticData> rccirlexerLexerStaticData = nullptr;
 
-void pccirlexerLexerInitialize() {
+void rccirlexerLexerInitialize() {
 #if ANTLR4_USE_THREAD_LOCAL_CACHE
-  if (pccirlexerLexerStaticData != nullptr) {
+  if (rccirlexerLexerStaticData != nullptr) {
     return;
   }
 #else
-  assert(pccirlexerLexerStaticData == nullptr);
+  assert(rccirlexerLexerStaticData == nullptr);
 #endif
-  auto staticData = std::make_unique<PccIRLexerStaticData>(
+  auto staticData = std::make_unique<RccIRLexerStaticData>(
     std::vector<std::string>{
       "GLOBALS_HEADER", "FUNCTIONS_HEADER", "INT_KW", "CHAR_KW", "SHORT_KW", 
       "LONG_KW", "UNSIGNED_KW", "VOID_KW", "LOCAL_KW", "IF_KW", "ELSE_KW", 
@@ -242,55 +242,55 @@ void pccirlexerLexerInitialize() {
   for (size_t i = 0; i < count; i++) { 
     staticData->decisionToDFA.emplace_back(staticData->atn->getDecisionState(i), i);
   }
-  pccirlexerLexerStaticData = std::move(staticData);
+  rccirlexerLexerStaticData = std::move(staticData);
 }
 
 }
 
-PccIRLexer::PccIRLexer(CharStream *input) : Lexer(input) {
-  PccIRLexer::initialize();
-  _interpreter = new atn::LexerATNSimulator(this, *pccirlexerLexerStaticData->atn, pccirlexerLexerStaticData->decisionToDFA, pccirlexerLexerStaticData->sharedContextCache);
+RccIRLexer::RccIRLexer(CharStream *input) : Lexer(input) {
+  RccIRLexer::initialize();
+  _interpreter = new atn::LexerATNSimulator(this, *rccirlexerLexerStaticData->atn, rccirlexerLexerStaticData->decisionToDFA, rccirlexerLexerStaticData->sharedContextCache);
 }
 
-PccIRLexer::~PccIRLexer() {
+RccIRLexer::~RccIRLexer() {
   delete _interpreter;
 }
 
-std::string PccIRLexer::getGrammarFileName() const {
-  return "PccIRLexer.g4";
+std::string RccIRLexer::getGrammarFileName() const {
+  return "RccIRLexer.g4";
 }
 
-const std::vector<std::string>& PccIRLexer::getRuleNames() const {
-  return pccirlexerLexerStaticData->ruleNames;
+const std::vector<std::string>& RccIRLexer::getRuleNames() const {
+  return rccirlexerLexerStaticData->ruleNames;
 }
 
-const std::vector<std::string>& PccIRLexer::getChannelNames() const {
-  return pccirlexerLexerStaticData->channelNames;
+const std::vector<std::string>& RccIRLexer::getChannelNames() const {
+  return rccirlexerLexerStaticData->channelNames;
 }
 
-const std::vector<std::string>& PccIRLexer::getModeNames() const {
-  return pccirlexerLexerStaticData->modeNames;
+const std::vector<std::string>& RccIRLexer::getModeNames() const {
+  return rccirlexerLexerStaticData->modeNames;
 }
 
-const dfa::Vocabulary& PccIRLexer::getVocabulary() const {
-  return pccirlexerLexerStaticData->vocabulary;
+const dfa::Vocabulary& RccIRLexer::getVocabulary() const {
+  return rccirlexerLexerStaticData->vocabulary;
 }
 
-antlr4::atn::SerializedATNView PccIRLexer::getSerializedATN() const {
-  return pccirlexerLexerStaticData->serializedATN;
+antlr4::atn::SerializedATNView RccIRLexer::getSerializedATN() const {
+  return rccirlexerLexerStaticData->serializedATN;
 }
 
-const atn::ATN& PccIRLexer::getATN() const {
-  return *pccirlexerLexerStaticData->atn;
+const atn::ATN& RccIRLexer::getATN() const {
+  return *rccirlexerLexerStaticData->atn;
 }
 
 
 
 
-void PccIRLexer::initialize() {
+void RccIRLexer::initialize() {
 #if ANTLR4_USE_THREAD_LOCAL_CACHE
-  pccirlexerLexerInitialize();
+  rccirlexerLexerInitialize();
 #else
-  ::antlr4::internal::call_once(pccirlexerLexerOnceFlag, pccirlexerLexerInitialize);
+  ::antlr4::internal::call_once(rccirlexerLexerOnceFlag, rccirlexerLexerInitialize);
 #endif
 }

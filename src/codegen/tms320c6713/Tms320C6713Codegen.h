@@ -11,7 +11,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates TMS320C6713 (TI C67x VLIW DSP) assembly for the IR built by IRBuilder. Real C6000
 // hardware packs several instructions into one "execute packet" (VLIW), reads either register
@@ -121,7 +121,7 @@ class Tms320C6713Codegen : public Backend {
     void genCompoundOp(const std::string &op, Type type);
     void genCompoundThroughT2(const ir::Expr &e);
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
     int elemShift(Type t) const {
         switch (widthOfType(t)) {
@@ -211,4 +211,4 @@ class Tms320C6713Codegen : public Backend {
     std::map<int, std::string> irLabels_;
 };
 
-}  // namespace pcc
+}  // namespace rcc

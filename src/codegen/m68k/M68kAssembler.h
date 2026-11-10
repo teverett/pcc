@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // Custom, non-registered COFF machine ID. Distinct from mc68328's despite sharing
 // the 68000 instruction set, since the two use incompatible entry sequences
@@ -37,4 +37,4 @@ std::string assembleM68k(const std::string &asmText);
 // org 0 until the link-time base is added.
 ObjectFile assembleM68kObject(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

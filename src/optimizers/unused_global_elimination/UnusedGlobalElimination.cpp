@@ -5,7 +5,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -86,4 +86,4 @@ bool UnusedGlobalElimination::run(ir::Program &prog, const std::string &) const 
     return changed;
 }
 
-}  // namespace pcc
+}  // namespace rcc

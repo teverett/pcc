@@ -10,7 +10,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates PowerPC assembly (this project's own dialect - see
 // PowerPCAssembler.h) for 32-bit classic PowerPC. `generate()` returns a
@@ -99,7 +99,7 @@ class PowerPCCodegen : public Backend {
     // dedicated push/pop).
     void genCompoundThroughT2(const ir::Expr &e);
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
     int elemShift(Type t) const {
         switch (widthOfType(t)) {
@@ -191,4 +191,4 @@ class PowerPCCodegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

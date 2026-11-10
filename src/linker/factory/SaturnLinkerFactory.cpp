@@ -6,7 +6,7 @@
 #include "codegen/saturn/SaturnCodegen.h"
 #include "linker/GenericLinker.h"
 
-namespace pcc {
+namespace rcc {
 
 std::unique_ptr<TargetLinker> makeSaturnLinker() {
     GenericLinkerConfig config;
@@ -30,4 +30,4 @@ std::unique_ptr<TargetLinker> makeSaturnLinker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

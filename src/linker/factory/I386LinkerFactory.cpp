@@ -6,7 +6,7 @@
 #include "codegen/i386/I386Assembler.h"
 #include "linker/GenericLinker.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 constexpr uint32_t kMbMagic = 0x1BADB002;
@@ -43,4 +43,4 @@ std::unique_ptr<TargetLinker> makeI386Linker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

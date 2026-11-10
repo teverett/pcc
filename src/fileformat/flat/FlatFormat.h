@@ -2,7 +2,7 @@
 
 #include "fileformat/FileFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 // `--format=objraw` (compile) / `--format=flat` (link): writes exactly
 // `obj.textBytes`, nothing else — no symbol/relocation table, no header.
@@ -21,4 +21,4 @@ class FlatFormatReader : public FileFormatReader {
     ObjectFile read(const std::string &bytes) const override;
 };
 
-}  // namespace pcc
+}  // namespace rcc

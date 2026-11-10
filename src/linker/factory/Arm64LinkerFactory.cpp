@@ -3,7 +3,7 @@
 #include "codegen/arm64/Arm64Assembler.h"
 #include "linker/GenericLinker.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -78,4 +78,4 @@ std::unique_ptr<TargetLinker> makeArm64Linker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

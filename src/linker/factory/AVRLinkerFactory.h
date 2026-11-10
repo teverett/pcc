@@ -4,7 +4,7 @@
 
 #include "linker/Linker.h"
 
-namespace pcc {
+namespace rcc {
 
 // Builds a GenericLinker for the avr backend: flash (program memory) objects laid out from
 // address 0 (the real ATmega328P reset vector), SRAM (data memory) objects laid out from 0x0100
@@ -12,4 +12,4 @@ namespace pcc {
 // SPL/SPH to RAMEND, `call fn_main`, spin forever) assembled and linked like any other object.
 std::unique_ptr<TargetLinker> makeAVRLinker();
 
-}  // namespace pcc
+}  // namespace rcc

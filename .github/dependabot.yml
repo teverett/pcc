@@ -1,6 +1,6 @@
 version: 2
 updates:
-  # pcc has no package-manager manifests (pure Makefile/C++), so the
+  # rcc has no package-manager manifests (pure Makefile/C++), so the
   # only dependencies Dependabot can track here are the GitHub Actions
   # used by the CI workflow itself.
   - package-ecosystem: "github-actions"

@@ -4,7 +4,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 ObjectFile readHostedCoff(const std::string &bytes);
 

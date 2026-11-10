@@ -10,7 +10,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates 32-bit SPARC V8 assembly for the IR built by IRBuilder. `generate()` returns
 // a complete, self-contained program loaded at a fixed address (kBaseAddress) with no OS
@@ -122,7 +122,7 @@ class SparcCodegen : public Backend {
     // `e.rhs`'s evaluation and genCompoundOp()'s own call, since either can clobber it.
     void genCompoundThroughT2(const ir::Expr &e);
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
     // log2 of an element type's width (1/2/4/8 bytes -> 0/1/2/3), the shift amount
     // genIndexAddr() scales an index by.
@@ -219,4 +219,4 @@ class SparcCodegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

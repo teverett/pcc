@@ -6,7 +6,7 @@
 
 #include "../Type.h"
 
-namespace pcc {
+namespace rcc {
 
 // --- Expressions ------------------------------------------------------
 
@@ -155,4 +155,4 @@ struct Program {
     std::vector<GlobalVar> globals;
 };
 
-}  // namespace pcc
+}  // namespace rcc

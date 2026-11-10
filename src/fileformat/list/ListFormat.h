@@ -2,7 +2,7 @@
 
 #include "fileformat/FileFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 // Plain octal `name  address` symbol-table dump, sorted by name.
 // `read()` always throws: there's no program text, so this format cannot
@@ -17,4 +17,4 @@ class ListFormatReader : public FileFormatReader {
     ObjectFile read(const std::string &bytes) const override;
 };
 
-}  // namespace pcc
+}  // namespace rcc

@@ -3,7 +3,7 @@
 #include "linker/GenericLinker.h"
 #include "codegen/m16c/M16cAssembler.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 // 57344 (0xE000) must match M16cCodegen.cpp's private kInitialSp.
@@ -26,4 +26,4 @@ std::unique_ptr<TargetLinker> makeM16cLinker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

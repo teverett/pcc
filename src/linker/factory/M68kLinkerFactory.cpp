@@ -3,7 +3,7 @@
 #include "linker/GenericLinker.h"
 #include "codegen/m68k/M68kAssembler.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 // 0x100000 must match M68kCodegen.cpp's private kInitialSP.
@@ -26,4 +26,4 @@ std::unique_ptr<TargetLinker> makeM68kLinker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

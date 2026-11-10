@@ -3,11 +3,11 @@
 #include <cstdint>
 #include <string>
 
-namespace pcc {
+namespace rcc {
 
 // In-process two-pass assembler for the narrow TMS320C6713 (TI C67x) dialect
 // Tms320C6713Codegen.cpp emits, not a general-purpose C6000 assembler. Parses via the shared
-// grammar/PccAsm.g4 (see AlphaAssembler.h's own comment on that grammar). Every encoding below
+// grammar/RccAsm.g4 (see AlphaAssembler.h's own comment on that grammar). Every encoding below
 // is a real, verified TMS320C6713/C62x+ bit-level opcode (extracted from binutils' own
 // include/opcode/tic6x*.h - see Tms320C6713Codegen.h's header comment on why), narrowed to a
 // fixed, always-valid subset: every word's `p` bit is 0 (never packs two instructions into one
@@ -45,4 +45,4 @@ namespace pcc {
 // Throws std::runtime_error on any assembly error.
 std::string assembleTms320C6713(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

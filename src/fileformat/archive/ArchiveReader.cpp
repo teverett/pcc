@@ -4,7 +4,7 @@
 #include <stdexcept>
 #include <string_view>
 
-namespace pcc {
+namespace rcc {
 namespace {
 
 [[noreturn]] void fail(const std::string &message) {
@@ -86,4 +86,4 @@ std::vector<ArchiveMember> readArchive(const std::string &bytes) {
     return members;
 }
 
-}  // namespace pcc
+}  // namespace rcc

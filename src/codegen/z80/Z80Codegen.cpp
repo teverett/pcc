@@ -6,7 +6,7 @@
 #include "Z80Assembler.h"
 #include "fileformat/FileFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 [[noreturn]] void err(int line, const std::string &msg) {
@@ -1445,4 +1445,4 @@ std::optional<std::string> Z80Codegen::assembleInProcess(const std::string &asmT
     return std::nullopt;
 }
 
-}  // namespace pcc
+}  // namespace rcc

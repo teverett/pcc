@@ -6,7 +6,7 @@
 #include "linker/GenericLinker.h"
 #include "codegen/pic16/PIC16Assembler.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -88,4 +88,4 @@ std::unique_ptr<TargetLinker> makePIC16Linker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

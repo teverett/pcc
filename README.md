@@ -1,10 +1,11 @@
-# pcc
+# rcc
 
-`pcc` is a compiler and linker for a small subset of C, targeting real
-retro hardware through pluggable backends. Three targets can also
+`rcc` (the **r**etargetable **C** **c**ompiler) is a compiler and
+linker for a small subset of C, targeting real retro hardware through
+pluggable backends. Three targets can also
 produce real, runnable hosted-OS executables - `i386-linux` (ELF),
 `i386-windows` (PE), and `armv8a-macos` (Mach-O) - linked entirely by
-pcc itself, with no external linker invoked. See
+rcc itself, with no external linker invoked. See
 [`docs/using.md`](docs/using.md) for the `--target=<target>-<host>`
 triple syntax and `--list-triples`.
 
@@ -38,11 +39,11 @@ macros, stringizing, and token pasting. No structs, no floats.
 - The language subset itself (types, pointers, casts, `sizeof`,
   string/char literals), its deliberate scope/limitations, bitwise
   operators, `@addr` placement, `asm { ... }`, the preprocessor, and
-  pcc's own COFF object format: see
-  [`docs/pdp-c-compiler.md`](docs/pdp-c-compiler.md).
+  rcc's own COFF object format: see
+  [`docs/language.md`](docs/language.md).
 - Supported platforms/backends: see
   [`docs/platforms.md`](docs/platforms.md).
-- Building pcc from source: see
+- Building rcc from source: see
   [`docs/building.md`](docs/building.md).
 - Command-line switches (compile mode and link mode): see
   [`docs/using.md`](docs/using.md).

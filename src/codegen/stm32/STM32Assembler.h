@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // This target's custom COFF machine ID; no registered one exists for this STM32/Cortex-M3 dialect.
 constexpr uint16_t kSTM32CoffMachine = 0x3332;
@@ -24,7 +24,7 @@ constexpr uint16_t kSTM32RelocMovTHi = 3;
 constexpr uint16_t kSTM32RelocBranch25 = 4;
 
 // In-process two-pass assembler for the narrow Thumb-2/ARMv7-M dialect STM32Codegen.cpp emits.
-// Parses via the shared grammar/PccAsm.g4 grammar; its `[expr]` bracket operand maps directly
+// Parses via the shared grammar/RccAsm.g4 grammar; its `[expr]` bracket operand maps directly
 // onto ARM's `[Rn]` register-indirect syntax.
 //
 // `mul <Rn>,<Rd>` computes `Rd = Rd * Rn`; `and`/`orr`/`eor`/`mvn <Rd>,<Rm>` compute
@@ -64,4 +64,4 @@ std::string assembleSTM32(const std::string &asmText);
 // Returns the format-neutral ObjectFile a codegen backend builds once per compile.
 ObjectFile assembleSTM32Object(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

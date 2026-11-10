@@ -9,7 +9,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates 6502 assembly (this project's dialect - see M6502Assembler.h)
 // for the IR built by IRBuilder. generate() returns a complete flat binary
@@ -75,7 +75,7 @@ class M6502Codegen : public Backend {
                                                   const std::string &format) const override;
 
    private:
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > 2; }
     int wordCountOf(Type t) const { return widthOfType(t) / 2; }
     // log2 of the element width (1/2/4/8 -> 0/1/2/3): number of left shifts
@@ -250,4 +250,4 @@ class M6502Codegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

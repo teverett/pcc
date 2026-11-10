@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regenerates src/generated/ (checked into git) from grammar/*.g4 with
-# the real ANTLR4 tool. pcc's own build (the Makefile) no longer runs
+# the real ANTLR4 tool. rcc's own build (the Makefile) no longer runs
 # ANTLR at all - it just compiles whatever's already in src/generated/
 # - so the only time this script needs to run is right after editing
 # a .g4 file, by hand, as its own separate step: regenerate, review
@@ -9,7 +9,7 @@
 # This also means the real ANTLR4 *tool* (Java + the jar) is a
 # contributor-machine-only dependency now, not a build or CI one -
 # only the ANTLR4 C++ *runtime* (headers/lib the generated code
-# itself calls into) still needs to be available wherever pcc is
+# itself calls into) still needs to be available wherever rcc is
 # actually built.
 #
 # Usage:
@@ -40,9 +40,9 @@ $ANTLR -Dlanguage=Cpp -visitor -no-listener -o "$GEN_DIR" \
     "$GRAMMAR_DIR/CLexer.g4" "$GRAMMAR_DIR/CParser.g4"
 
 $ANTLR -Dlanguage=Cpp -visitor -no-listener -o "$GEN_DIR" \
-    "$GRAMMAR_DIR/PccAsm.g4"
+    "$GRAMMAR_DIR/RccAsm.g4"
 
 $ANTLR -Dlanguage=Cpp -visitor -no-listener -o "$GEN_DIR" \
-    "$GRAMMAR_DIR/PccIRLexer.g4" "$GRAMMAR_DIR/PccIRParser.g4"
+    "$GRAMMAR_DIR/RccIRLexer.g4" "$GRAMMAR_DIR/RccIRParser.g4"
 
 echo "Regenerated $GEN_DIR - review the diff and commit it along with the .g4 change." >&2

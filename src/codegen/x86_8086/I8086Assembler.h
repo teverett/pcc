@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // A from-scratch, in-process two-pass assembler for the narrow 16-bit real-mode x86
 // dialect I8086Codegen.cpp emits - not general-purpose (no 32-bit operands, only
@@ -42,4 +42,4 @@ constexpr uint16_t kI8086RelocRel16 = 2;
 // round trip when the linker assembles its own synthesized entry object.
 ObjectFile assembleI8086Object(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

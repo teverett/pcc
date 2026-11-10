@@ -3,7 +3,7 @@
 #include "linker/GenericLinker.h"
 #include "codegen/mcs51/MCS51Assembler.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 // Must mirror MCS51Codegen.cpp's own entry sequence exactly, including
@@ -32,4 +32,4 @@ std::unique_ptr<TargetLinker> makeMCS51Linker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

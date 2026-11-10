@@ -13,10 +13,10 @@
 #include "ANTLRInputStream.h"
 #include "BaseErrorListener.h"
 #include "CommonTokenStream.h"
-#include "PccAsmLexer.h"
-#include "PccAsmParser.h"
+#include "RccAsmLexer.h"
+#include "RccAsmParser.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -45,7 +45,7 @@ std::string toLower(std::string s) {
     return s;
 }
 
-std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
+std::vector<Syllable> exprToSyllables(RccAsmParser::ExprContext *ctx) {
     std::vector<Syllable> result;
     for (auto *syl : ctx->syllable()) {
         char sign = 0;
@@ -75,14 +75,14 @@ class ThrowingErrorListener : public antlr4::BaseErrorListener {
     }
 };
 
-std::vector<Syllable> buildOperand(PccAsmParser::OperandContext *ctx) {
+std::vector<Syllable> buildOperand(RccAsmParser::OperandContext *ctx) {
     if (ctx->LBRACKET()) fail("bracketed memory operands aren't part of this target's dialect - PIC18 file-register "
                                "access always names the register directly (optionally via FSR0/INDF0/POSTINC0), "
                                "never a bracketed symbol");
     return exprToSyllables(ctx->expr());
 }
 
-Line buildLine(PccAsmParser::LineContext *ctx) {
+Line buildLine(RccAsmParser::LineContext *ctx) {
     Line line;
     for (auto *lbl : ctx->label()) line.labels.push_back(lbl->IDENT()->getText());
 
@@ -91,16 +91,16 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         line.kind = Line::None;
         return line;
     }
-    if (auto *assign = dynamic_cast<PccAsmParser::AssignStmtContext *>(stmt)) {
+    if (auto *assign = dynamic_cast<RccAsmParser::AssignStmtContext *>(stmt)) {
         line.kind = Line::Equate;
         line.labels.push_back(assign->IDENT()->getText());
         line.rhs = exprToSyllables(assign->expr());
         return line;
     }
-    if (dynamic_cast<PccAsmParser::TimesStmtContext *>(stmt)) {
+    if (dynamic_cast<RccAsmParser::TimesStmtContext *>(stmt)) {
         fail("'times' isn't part of this target's dialect");
     }
-    auto *instr = dynamic_cast<PccAsmParser::InstrStmtContext *>(stmt);
+    auto *instr = dynamic_cast<RccAsmParser::InstrStmtContext *>(stmt);
     if (!instr) fail("internal: unhandled statement alternative");
 
     std::string mnemonic = toLower(instr->mnemonic->getText());
@@ -125,17 +125,17 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
 
 std::vector<Line> parseProgram(const std::string &text) {
     antlr4::ANTLRInputStream input(text);
-    PccAsmLexer lexer(&input);
+    RccAsmLexer lexer(&input);
     ThrowingErrorListener errors;
     lexer.removeErrorListeners();
     lexer.addErrorListener(&errors);
 
     antlr4::CommonTokenStream tokens(&lexer);
-    PccAsmParser parser(&tokens);
+    RccAsmParser parser(&tokens);
     parser.removeErrorListeners();
     parser.addErrorListener(&errors);
 
-    PccAsmParser::ProgramContext *prog = parser.program();
+    RccAsmParser::ProgramContext *prog = parser.program();
 
     std::vector<Line> lines;
     for (auto *lineCtx : prog->line()) lines.push_back(buildLine(lineCtx));
@@ -636,4 +636,4 @@ ObjectFile assemblePIC18Object(const std::string &asmText) {
     return buildObjectFile(assembler);
 }
 
-}  // namespace pcc
+}  // namespace rcc

@@ -7,10 +7,10 @@
 #include "BaseErrorListener.h"
 #include "CommonTokenStream.h"
 #include "IRPrinter.h"
-#include "PccIRLexer.h"
-#include "PccIRParser.h"
+#include "RccIRLexer.h"
+#include "RccIRParser.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -37,12 +37,12 @@ void validateIRSyntax(const ir::Program &prog) {
     CountingErrorListener errors;
 
     antlr4::ANTLRInputStream input(text);
-    PccIRLexer lexer(&input);
+    RccIRLexer lexer(&input);
     lexer.removeErrorListeners();
     lexer.addErrorListener(&errors);
 
     antlr4::CommonTokenStream tokens(&lexer);
-    PccIRParser parser(&tokens);
+    RccIRParser parser(&tokens);
     parser.removeErrorListeners();
     parser.addErrorListener(&errors);
 
@@ -50,11 +50,11 @@ void validateIRSyntax(const ir::Program &prog) {
 
     if (errors.count > 0) {
         throw std::runtime_error(
-            "internal error: pcc's own generated IR does not parse against grammar/PccIRLexer.g4 + "
-            "grammar/PccIRParser.g4 (" +
-            errors.firstMessage + ") - this is a pcc bug (IRPrinter.cpp and the IR grammar have drifted apart), "
+            "internal error: rcc's own generated IR does not parse against grammar/RccIRLexer.g4 + "
+            "grammar/RccIRParser.g4 (" +
+            errors.firstMessage + ") - this is a rcc bug (IRPrinter.cpp and the IR grammar have drifted apart), "
                                    "not a problem with your source file");
     }
 }
 
-}  // namespace pcc
+}  // namespace rcc

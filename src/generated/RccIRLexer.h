@@ -1,5 +1,5 @@
 
-// Generated from /Users/tom/projects/pcc/grammar/PccIRLexer.g4 by ANTLR 4.13.2
+// Generated from /Users/tom/projects/pcc/grammar/RccIRLexer.g4 by ANTLR 4.13.2
 
 #pragma once
 
@@ -9,7 +9,7 @@
 
 
 
-class  PccIRLexer : public antlr4::Lexer {
+class  RccIRLexer : public antlr4::Lexer {
 public:
   enum {
     GLOBALS_HEADER = 1, FUNCTIONS_HEADER = 2, INT_KW = 3, CHAR_KW = 4, SHORT_KW = 5, 
@@ -30,9 +30,9 @@ public:
     ASM_MODE = 1
   };
 
-  explicit PccIRLexer(antlr4::CharStream *input);
+  explicit RccIRLexer(antlr4::CharStream *input);
 
-  ~PccIRLexer() override;
+  ~RccIRLexer() override;
 
 
   std::string getGrammarFileName() const override;

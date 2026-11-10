@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace pcc {
+namespace rcc {
 
 // pdp7 paper-tape packing: 3 bytes per 18-bit word, 6 bits each, high bit always set. If
 // `rimSignature`, appends a trailing "jmp base" word so the bootstrap loader knows where to start
@@ -20,4 +20,4 @@ std::vector<uint32_t> unpackPdp7Tape(const std::string &bytes, bool rimSignature
 std::vector<uint32_t> wordsFromPdp7TextBytes(const std::vector<uint8_t> &textBytes);
 std::vector<uint8_t> pdp7TextBytesFromWords(const std::vector<uint32_t> &words);
 
-}  // namespace pcc
+}  // namespace rcc

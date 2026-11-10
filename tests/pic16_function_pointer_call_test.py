@@ -5,7 +5,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PCC = Path(sys.argv.pop(1) if len(sys.argv) > 1 else ROOT / "build/bin/pcc").resolve()
+RCC = Path(sys.argv.pop(1) if len(sys.argv) > 1 else ROOT / "build/bin/rcc").resolve()
 BUILD = ROOT / "build/pic16-function-pointer-tests"
 
 SOURCE = """
@@ -30,7 +30,7 @@ class PIC16FunctionPointerCallTest(unittest.TestCase):
         # genExpr's switch had no ir::ExprKind::CallPtr case, so this call
         # was silently dropped instead of being rejected.
         result = subprocess.run(
-            [str(PCC), "--target=pic16", "--format=asm", str(self.source_path)],
+            [str(RCC), "--target=pic16", "--format=asm", str(self.source_path)],
             capture_output=True, text=True,
         )
         self.assertNotEqual(result.returncode, 0)
@@ -42,7 +42,7 @@ class PIC16FunctionPointerCallTest(unittest.TestCase):
         # regress the sibling backend that already supports this.
         output_path = BUILD / "fp_call_pic18.s"
         result = subprocess.run(
-            [str(PCC), "--target=pic18", "--format=asm", f"--out={output_path}", str(self.source_path)],
+            [str(RCC), "--target=pic18", "--format=asm", f"--out={output_path}", str(self.source_path)],
             capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)

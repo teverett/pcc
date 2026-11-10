@@ -7,7 +7,7 @@
 #include "ArmMAssembler.h"
 #include "fileformat/FileFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 [[noreturn]] void err(int line, const std::string &msg) {
@@ -1035,4 +1035,4 @@ std::optional<std::string> ArmMCodegen::assembleInProcess(const std::string &asm
     return std::nullopt;
 }
 
-}  // namespace pcc
+}  // namespace rcc

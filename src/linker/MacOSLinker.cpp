@@ -19,7 +19,7 @@
 #include "fileformat/macho/MachOHostedReader.h"
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 namespace {
 
 using Bytes = std::string;
@@ -309,10 +309,10 @@ MachOImage mergeObjects(Inputs inputs) {
         for (const auto &symbol : object.symbols) {
             if (!symbol.isDefined || symbol.name == ".." || symbol.name == "..d") continue;
             std::string name = symbol.name;
-            if (name.rfind("L", 0) == 0 || name.rfind("__pcc_local_", 0) == 0 ||
-                name.rfind("__pcc_tmp_", 0) == 0) {
+            if (name.rfind("L", 0) == 0 || name.rfind("__rcc_local_", 0) == 0 ||
+                name.rfind("__rcc_tmp_", 0) == 0) {
                 std::string original = name;
-                name += "$pcc" + std::to_string(i);
+                name += "$rcc" + std::to_string(i);
                 renamed[i][original] = name;
             }
             uint64_t value = unitBases[i] + symbol.value;
@@ -448,9 +448,9 @@ void writeAtomic(const std::string &path, const Bytes &bytes) {
     std::filesystem::path destination(path);
     std::filesystem::path directory = destination.parent_path();
     if (directory.empty()) directory = ".";
-    std::filesystem::path temporary = directory / (destination.filename().string() + ".pcc-tmp");
+    std::filesystem::path temporary = directory / (destination.filename().string() + ".rcc-tmp");
     for (unsigned suffix = 0; std::filesystem::exists(temporary); ++suffix) {
-        temporary = directory / (destination.filename().string() + ".pcc-tmp-" + std::to_string(suffix));
+        temporary = directory / (destination.filename().string() + ".rcc-tmp-" + std::to_string(suffix));
     }
     try {
         {
@@ -484,4 +484,4 @@ void nativeMacOSLink(const std::vector<std::string> &inputs, const std::string &
     writeAtomic(outputPath, output);
 }
 
-}  // namespace pcc
+}  // namespace rcc

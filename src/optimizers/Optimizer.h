@@ -4,7 +4,7 @@
 
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // A single target-independent IR-to-IR transformation, run between
 // IRBuilder and a Backend's generate().
@@ -21,4 +21,4 @@ class Optimizer {
     virtual bool run(ir::Program &prog, const std::string &sourceFile) const = 0;
 };
 
-}  // namespace pcc
+}  // namespace rcc

@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <unordered_map>
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -488,7 +488,7 @@ class Builder {
         if (isWideType(t)) {
             err(line, std::string(what) +
                           " on a 'long'/'long long' target isn't supported yet - only char/short/int/"
-                          "pointer (see docs/pdp-c-compiler.md's own note on this)");
+                          "pointer (see docs/language.md's own note on this)");
         }
     }
 
@@ -1185,4 +1185,4 @@ void recomputeFrameLayout(ir::Program &prog, const TypeWidths &widths) {
     }
 }
 
-}  // namespace pcc
+}  // namespace rcc

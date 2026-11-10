@@ -6,7 +6,7 @@
 #include "AVRAssembler.h"
 #include "fileformat/FileFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 [[noreturn]] void err(int line, const std::string &msg) {
@@ -1080,4 +1080,4 @@ std::optional<std::string> AVRCodegen::assembleInProcess(const std::string &asmT
     return std::nullopt;
 }
 
-}  // namespace pcc
+}  // namespace rcc

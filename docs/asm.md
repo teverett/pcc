@@ -1,10 +1,10 @@
 # The assembly format
 
-pcc's backends share one textual assembly grammar,
-`grammar/PccAsm.g4` — not a general-purpose assembly syntax, but
-exactly the shape every pcc backend's own in-process assembler ever
+rcc's backends share one textual assembly grammar,
+`grammar/RccAsm.g4` — not a general-purpose assembly syntax, but
+exactly the shape every rcc backend's own in-process assembler ever
 needs to parse: no macros, no section directives, nothing beyond what
-pcc's own codegen is ever observed to emit. Each backend emits its own
+rcc's own codegen is ever observed to emit. Each backend emits its own
 dialect of this shared syntax (different mnemonics, different operand
 conventions) and interprets the parsed operand list according to its
 own target's real semantics.
@@ -85,12 +85,12 @@ This grammar is deliberately not
 `../../pdp-assembler/grammar/Pdp7.g4` (the historical `as.s`/`as7`
 grammar, which handles real kernel sources with packed-char literals,
 numeric relative labels, `@local` directives, and `"`-comments) — this
-one is pcc's own, much narrower, and uses `;` for comments on every
+one is rcc's own, much narrower, and uses `;` for comments on every
 target rather than inventing a third convention.
 
 ## Where it's used
 
-- `grammar/PccAsm.g4` is the single source grammar (lexer + parser
+- `grammar/RccAsm.g4` is the single source grammar (lexer + parser
   combined); generated code lives in `src/generated/` and is checked
   into git (see `docs/building.md` for the regeneration workflow).
 - Every backend's own `src/codegen/<target>/<Target>Assembler.cpp`

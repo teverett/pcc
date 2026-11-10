@@ -1,6 +1,6 @@
 # Supported platforms
 
-`pcc` is a compiler and linker for a small subset of C, targeting real
+`rcc` is a compiler and linker for a small subset of C, targeting real
 retro hardware through pluggable backends. Today it supports:
 
 - **pdp7** — PDP-7 assembly, assembled and linked into real PDP-7 binary

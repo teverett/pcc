@@ -3,7 +3,7 @@
 #include "linker/GenericLinker.h"
 #include "codegen/i8008/I8008Assembler.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 // ac/bc/cx/dx/ptr/sp are the shared pseudo-registers at kPseudoBase (15360/0x3c00) + 0/2/4/6/8/10,
@@ -54,4 +54,4 @@ std::unique_ptr<TargetLinker> makeI8008Linker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

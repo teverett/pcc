@@ -15,7 +15,7 @@ tool fails loudly rather than being silently skipped).
 `tests/run_tests.sh` also has checks for `pdp11`, `pdp10`, `r10000`,
 `powerpc`, `cortex-m3`, `armv7a`, `armv8a`, `8008`, `vax`, `avr`,
 `alpha`, `saturn`, and `tms320c6713` that `make test` doesn't run;
-invoke any of these directly with `tests/run_tests.sh build/bin/pcc
+invoke any of these directly with `tests/run_tests.sh build/bin/rcc
 --target=<name>`. Their software-identical aliases (`r4000`,
 `cortex-m4`/`cortex-m7`, like `8088`'s alias of `8086` above) aren't
 separately runnable here - same backend, provably byte-identical
@@ -26,7 +26,7 @@ output during development instead (see `docs/platforms.md`).
 
 The generated C++ lexer/parser code (`src/generated/`, from
 `grammar/*.g4`) is checked into git - `make` never invokes the real
-ANTLR tool itself, so building pcc needs only the ANTLR4 C++
+ANTLR tool itself, so building rcc needs only the ANTLR4 C++
 *runtime* (headers/lib), not Java or the ANTLR jar. See the
 Makefile's own header comment for how to point it at a non-Homebrew
 runtime install instead.

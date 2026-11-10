@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // This target's own non-registered COFF/object-format machine ID (no real one exists for the
 // 8080 in this scheme). Exported so ../../linker/I8080LinkerFactory.cpp can check an input
@@ -28,7 +28,7 @@ constexpr uint16_t kI8080RelocAbs16 = 1;
 // output is valid input to any accurate 8080 (or object-code-compatible Z80) emulator or
 // disassembler.
 //
-// Parses via the shared grammar ../../../grammar/PccAsm.g4; a register name (`a`, `b`, ..., `h`,
+// Parses via the shared grammar ../../../grammar/RccAsm.g4; a register name (`a`, `b`, ..., `h`,
 // `l`, `m`, `sp`, `psw`) is syntactically just a bare identifier to that grammar, so this file
 // decides, per mnemonic and operand position, whether an identifier names a register or a
 // symbol to resolve against the label table.
@@ -48,4 +48,4 @@ std::string assembleI8080(const std::string &asmText);
 // this function never touches a real COFF/ELF/Mach-O/a.out byte layout itself.
 ObjectFile assembleI8080Object(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

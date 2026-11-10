@@ -10,7 +10,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates ARM Thumb assembly (this project's dialect - see ArmMAssembler.h)
 // targeting ARMv7-M mainline (Cortex-M3/M4/M7); emits only real Thumb/Thumb-2
@@ -123,7 +123,7 @@ class ArmMCodegen : public Backend {
 
     void genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr);  // leaves address in r2
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     // Only long long is wider than this target's 32-bit int/long.
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
     // log2 of an element type's width; the shift genIndexAddr() scales an index by.
@@ -218,4 +218,4 @@ class ArmMCodegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

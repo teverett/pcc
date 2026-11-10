@@ -9,7 +9,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates PIC18 assembly for the IR built by IRBuilder, modeled on the
 // PIC18F2420: Access Bank SFR aliasing (STATUS=0xFD8, FSR0L/FSR0H=
@@ -139,7 +139,7 @@ class PIC18Codegen : public Backend {
     // (called at the top of genExpr()) fails loudly on a wide
     // (long/long long) value. The one exception is `&expr`, whose
     // genAddrOf() call sites never call genExpr() on the operand's value.
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     void requireNarrow(const ir::Expr &e) const;
     // log2 of an element type's width (1/2/4/8 bytes -> 0/1/2/3 left
     // shifts): genIndexAddr()'s scale factor for an index.
@@ -279,4 +279,4 @@ class PIC18Codegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

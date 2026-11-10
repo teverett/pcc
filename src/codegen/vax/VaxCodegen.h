@@ -10,7 +10,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates VAX-11/780 assembly for the IR built by IRBuilder. `generate()` returns a
 // complete, self-contained program loaded at a fixed address (kBaseAddress) with no OS or
@@ -94,7 +94,7 @@ class VaxCodegen : public Backend {
     // `e.rhs`'s evaluation since that can clobber it.
     void genCompoundThroughR2(const ir::Expr &e);
 
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
     // log2 of an element type's width (1/2/4/8 bytes -> 0/1/2/3), the shift amount
     // genIndexAddr() scales an index by.
@@ -168,4 +168,4 @@ class VaxCodegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

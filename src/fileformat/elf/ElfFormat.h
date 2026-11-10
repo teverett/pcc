@@ -2,7 +2,7 @@
 
 #include "fileformat/FileFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 // ELF32 ET_REL object: Elf32_Ehdr, seven sections (.text/.bss/.symtab/.strtab/.rel.text/.shstrtab
 // plus the mandatory null section), Elf32_Sym/Elf32_Rel entries matching the real ELF32 ABI.
@@ -22,4 +22,4 @@ class ElfFormatReader : public FileFormatReader {
     ObjectFile read(const std::string &bytes) const override;
 };
 
-}  // namespace pcc
+}  // namespace rcc

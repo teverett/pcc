@@ -28,22 +28,22 @@ $(BUILD_DIR):
 	mkdir -p "$@"
 
 $(BUILD_DIR)/hello-macos.o: hello.c | $(BUILD_DIR)
-	$(PCC) --target=armv8a-macos --out="$@" "$<"
+	$(RCC) --target=armv8a-macos --out="$@" "$<"
 
 $(BUILD_DIR)/hello-macos: $(BUILD_DIR)/hello-macos.o
-	$(PCC) --link --target=armv8a-macos --out="$@" "$<" -lSystem
+	$(RCC) --link --target=armv8a-macos --out="$@" "$<" -lSystem
 
 $(BUILD_DIR)/hello-linux.o: hello.c | $(BUILD_DIR)
-	$(PCC) --target=i386-linux --out="$@" "$<"
+	$(RCC) --target=i386-linux --out="$@" "$<"
 
 $(BUILD_DIR)/hello-linux: $(BUILD_DIR)/hello-linux.o
-	$(PCC) --link --target=i386-linux --out="$@" "$<" -lc
+	$(RCC) --link --target=i386-linux --out="$@" "$<" -lc
 
 $(BUILD_DIR)/hello-windows.obj: hello.c | $(BUILD_DIR)
-	$(PCC) --target=i386-windows --out="$@" "$<"
+	$(RCC) --target=i386-windows --out="$@" "$<"
 
 $(BUILD_DIR)/hello-windows.exe: $(BUILD_DIR)/hello-windows.obj
-	$(PCC) --link --target=i386-windows --out="$@" "$<" -lmsvcrt
+	$(RCC) --link --target=i386-windows --out="$@" "$<" -lmsvcrt
 
 clean:
 	rm -rf "$(BUILD_DIR)"

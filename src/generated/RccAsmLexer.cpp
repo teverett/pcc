@@ -1,8 +1,8 @@
 
-// Generated from /Users/tom/projects/pcc/grammar/PccAsm.g4 by ANTLR 4.13.2
+// Generated from /Users/tom/projects/pcc/grammar/RccAsm.g4 by ANTLR 4.13.2
 
 
-#include "PccAsmLexer.h"
+#include "RccAsmLexer.h"
 
 
 using namespace antlr4;
@@ -13,8 +13,8 @@ using namespace antlr4;
 
 namespace {
 
-struct PccAsmLexerStaticData final {
-  PccAsmLexerStaticData(std::vector<std::string> ruleNames,
+struct RccAsmLexerStaticData final {
+  RccAsmLexerStaticData(std::vector<std::string> ruleNames,
                           std::vector<std::string> channelNames,
                           std::vector<std::string> modeNames,
                           std::vector<std::string> literalNames,
@@ -24,10 +24,10 @@ struct PccAsmLexerStaticData final {
         symbolicNames(std::move(symbolicNames)),
         vocabulary(this->literalNames, this->symbolicNames) {}
 
-  PccAsmLexerStaticData(const PccAsmLexerStaticData&) = delete;
-  PccAsmLexerStaticData(PccAsmLexerStaticData&&) = delete;
-  PccAsmLexerStaticData& operator=(const PccAsmLexerStaticData&) = delete;
-  PccAsmLexerStaticData& operator=(PccAsmLexerStaticData&&) = delete;
+  RccAsmLexerStaticData(const RccAsmLexerStaticData&) = delete;
+  RccAsmLexerStaticData(RccAsmLexerStaticData&&) = delete;
+  RccAsmLexerStaticData& operator=(const RccAsmLexerStaticData&) = delete;
+  RccAsmLexerStaticData& operator=(RccAsmLexerStaticData&&) = delete;
 
   std::vector<antlr4::dfa::DFA> decisionToDFA;
   antlr4::atn::PredictionContextCache sharedContextCache;
@@ -41,21 +41,21 @@ struct PccAsmLexerStaticData final {
   std::unique_ptr<antlr4::atn::ATN> atn;
 };
 
-::antlr4::internal::OnceFlag pccasmlexerLexerOnceFlag;
+::antlr4::internal::OnceFlag rccasmlexerLexerOnceFlag;
 #if ANTLR4_USE_THREAD_LOCAL_CACHE
 static thread_local
 #endif
-std::unique_ptr<PccAsmLexerStaticData> pccasmlexerLexerStaticData = nullptr;
+std::unique_ptr<RccAsmLexerStaticData> rccasmlexerLexerStaticData = nullptr;
 
-void pccasmlexerLexerInitialize() {
+void rccasmlexerLexerInitialize() {
 #if ANTLR4_USE_THREAD_LOCAL_CACHE
-  if (pccasmlexerLexerStaticData != nullptr) {
+  if (rccasmlexerLexerStaticData != nullptr) {
     return;
   }
 #else
-  assert(pccasmlexerLexerStaticData == nullptr);
+  assert(rccasmlexerLexerStaticData == nullptr);
 #endif
-  auto staticData = std::make_unique<PccAsmLexerStaticData>(
+  auto staticData = std::make_unique<RccAsmLexerStaticData>(
     std::vector<std::string>{
       "T__0", "IDENT", "NUMBER", "COLON", "EQUALS", "COMMA", "PLUS", "MINUS", 
       "LBRACKET", "RBRACKET", "LPAREN", "RPAREN", "COMMENT", "NEWLINE", 
@@ -121,55 +121,55 @@ void pccasmlexerLexerInitialize() {
   for (size_t i = 0; i < count; i++) { 
     staticData->decisionToDFA.emplace_back(staticData->atn->getDecisionState(i), i);
   }
-  pccasmlexerLexerStaticData = std::move(staticData);
+  rccasmlexerLexerStaticData = std::move(staticData);
 }
 
 }
 
-PccAsmLexer::PccAsmLexer(CharStream *input) : Lexer(input) {
-  PccAsmLexer::initialize();
-  _interpreter = new atn::LexerATNSimulator(this, *pccasmlexerLexerStaticData->atn, pccasmlexerLexerStaticData->decisionToDFA, pccasmlexerLexerStaticData->sharedContextCache);
+RccAsmLexer::RccAsmLexer(CharStream *input) : Lexer(input) {
+  RccAsmLexer::initialize();
+  _interpreter = new atn::LexerATNSimulator(this, *rccasmlexerLexerStaticData->atn, rccasmlexerLexerStaticData->decisionToDFA, rccasmlexerLexerStaticData->sharedContextCache);
 }
 
-PccAsmLexer::~PccAsmLexer() {
+RccAsmLexer::~RccAsmLexer() {
   delete _interpreter;
 }
 
-std::string PccAsmLexer::getGrammarFileName() const {
-  return "PccAsm.g4";
+std::string RccAsmLexer::getGrammarFileName() const {
+  return "RccAsm.g4";
 }
 
-const std::vector<std::string>& PccAsmLexer::getRuleNames() const {
-  return pccasmlexerLexerStaticData->ruleNames;
+const std::vector<std::string>& RccAsmLexer::getRuleNames() const {
+  return rccasmlexerLexerStaticData->ruleNames;
 }
 
-const std::vector<std::string>& PccAsmLexer::getChannelNames() const {
-  return pccasmlexerLexerStaticData->channelNames;
+const std::vector<std::string>& RccAsmLexer::getChannelNames() const {
+  return rccasmlexerLexerStaticData->channelNames;
 }
 
-const std::vector<std::string>& PccAsmLexer::getModeNames() const {
-  return pccasmlexerLexerStaticData->modeNames;
+const std::vector<std::string>& RccAsmLexer::getModeNames() const {
+  return rccasmlexerLexerStaticData->modeNames;
 }
 
-const dfa::Vocabulary& PccAsmLexer::getVocabulary() const {
-  return pccasmlexerLexerStaticData->vocabulary;
+const dfa::Vocabulary& RccAsmLexer::getVocabulary() const {
+  return rccasmlexerLexerStaticData->vocabulary;
 }
 
-antlr4::atn::SerializedATNView PccAsmLexer::getSerializedATN() const {
-  return pccasmlexerLexerStaticData->serializedATN;
+antlr4::atn::SerializedATNView RccAsmLexer::getSerializedATN() const {
+  return rccasmlexerLexerStaticData->serializedATN;
 }
 
-const atn::ATN& PccAsmLexer::getATN() const {
-  return *pccasmlexerLexerStaticData->atn;
+const atn::ATN& RccAsmLexer::getATN() const {
+  return *rccasmlexerLexerStaticData->atn;
 }
 
 
 
 
-void PccAsmLexer::initialize() {
+void RccAsmLexer::initialize() {
 #if ANTLR4_USE_THREAD_LOCAL_CACHE
-  pccasmlexerLexerInitialize();
+  rccasmlexerLexerInitialize();
 #else
-  ::antlr4::internal::call_once(pccasmlexerLexerOnceFlag, pccasmlexerLexerInitialize);
+  ::antlr4::internal::call_once(rccasmlexerLexerOnceFlag, rccasmlexerLexerInitialize);
 #endif
 }

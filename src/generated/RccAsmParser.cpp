@@ -1,10 +1,10 @@
 
-// Generated from /Users/tom/projects/pcc/grammar/PccAsm.g4 by ANTLR 4.13.2
+// Generated from /Users/tom/projects/pcc/grammar/RccAsm.g4 by ANTLR 4.13.2
 
 
-#include "PccAsmVisitor.h"
+#include "RccAsmVisitor.h"
 
-#include "PccAsmParser.h"
+#include "RccAsmParser.h"
 
 
 using namespace antlrcpp;
@@ -13,18 +13,18 @@ using namespace antlr4;
 
 namespace {
 
-struct PccAsmParserStaticData final {
-  PccAsmParserStaticData(std::vector<std::string> ruleNames,
+struct RccAsmParserStaticData final {
+  RccAsmParserStaticData(std::vector<std::string> ruleNames,
                         std::vector<std::string> literalNames,
                         std::vector<std::string> symbolicNames)
       : ruleNames(std::move(ruleNames)), literalNames(std::move(literalNames)),
         symbolicNames(std::move(symbolicNames)),
         vocabulary(this->literalNames, this->symbolicNames) {}
 
-  PccAsmParserStaticData(const PccAsmParserStaticData&) = delete;
-  PccAsmParserStaticData(PccAsmParserStaticData&&) = delete;
-  PccAsmParserStaticData& operator=(const PccAsmParserStaticData&) = delete;
-  PccAsmParserStaticData& operator=(PccAsmParserStaticData&&) = delete;
+  RccAsmParserStaticData(const RccAsmParserStaticData&) = delete;
+  RccAsmParserStaticData(RccAsmParserStaticData&&) = delete;
+  RccAsmParserStaticData& operator=(const RccAsmParserStaticData&) = delete;
+  RccAsmParserStaticData& operator=(RccAsmParserStaticData&&) = delete;
 
   std::vector<antlr4::dfa::DFA> decisionToDFA;
   antlr4::atn::PredictionContextCache sharedContextCache;
@@ -36,21 +36,21 @@ struct PccAsmParserStaticData final {
   std::unique_ptr<antlr4::atn::ATN> atn;
 };
 
-::antlr4::internal::OnceFlag pccasmParserOnceFlag;
+::antlr4::internal::OnceFlag rccasmParserOnceFlag;
 #if ANTLR4_USE_THREAD_LOCAL_CACHE
 static thread_local
 #endif
-std::unique_ptr<PccAsmParserStaticData> pccasmParserStaticData = nullptr;
+std::unique_ptr<RccAsmParserStaticData> rccasmParserStaticData = nullptr;
 
-void pccasmParserInitialize() {
+void rccasmParserInitialize() {
 #if ANTLR4_USE_THREAD_LOCAL_CACHE
-  if (pccasmParserStaticData != nullptr) {
+  if (rccasmParserStaticData != nullptr) {
     return;
   }
 #else
-  assert(pccasmParserStaticData == nullptr);
+  assert(rccasmParserStaticData == nullptr);
 #endif
-  auto staticData = std::make_unique<PccAsmParserStaticData>(
+  auto staticData = std::make_unique<RccAsmParserStaticData>(
     std::vector<std::string>{
       "program", "line", "label", "statement", "operand", "expr", "syllable", 
       "sign", "atom"
@@ -108,77 +108,77 @@ void pccasmParserInitialize() {
   for (size_t i = 0; i < count; i++) { 
     staticData->decisionToDFA.emplace_back(staticData->atn->getDecisionState(i), i);
   }
-  pccasmParserStaticData = std::move(staticData);
+  rccasmParserStaticData = std::move(staticData);
 }
 
 }
 
-PccAsmParser::PccAsmParser(TokenStream *input) : PccAsmParser(input, antlr4::atn::ParserATNSimulatorOptions()) {}
+RccAsmParser::RccAsmParser(TokenStream *input) : RccAsmParser(input, antlr4::atn::ParserATNSimulatorOptions()) {}
 
-PccAsmParser::PccAsmParser(TokenStream *input, const antlr4::atn::ParserATNSimulatorOptions &options) : Parser(input) {
-  PccAsmParser::initialize();
-  _interpreter = new atn::ParserATNSimulator(this, *pccasmParserStaticData->atn, pccasmParserStaticData->decisionToDFA, pccasmParserStaticData->sharedContextCache, options);
+RccAsmParser::RccAsmParser(TokenStream *input, const antlr4::atn::ParserATNSimulatorOptions &options) : Parser(input) {
+  RccAsmParser::initialize();
+  _interpreter = new atn::ParserATNSimulator(this, *rccasmParserStaticData->atn, rccasmParserStaticData->decisionToDFA, rccasmParserStaticData->sharedContextCache, options);
 }
 
-PccAsmParser::~PccAsmParser() {
+RccAsmParser::~RccAsmParser() {
   delete _interpreter;
 }
 
-const atn::ATN& PccAsmParser::getATN() const {
-  return *pccasmParserStaticData->atn;
+const atn::ATN& RccAsmParser::getATN() const {
+  return *rccasmParserStaticData->atn;
 }
 
-std::string PccAsmParser::getGrammarFileName() const {
-  return "PccAsm.g4";
+std::string RccAsmParser::getGrammarFileName() const {
+  return "RccAsm.g4";
 }
 
-const std::vector<std::string>& PccAsmParser::getRuleNames() const {
-  return pccasmParserStaticData->ruleNames;
+const std::vector<std::string>& RccAsmParser::getRuleNames() const {
+  return rccasmParserStaticData->ruleNames;
 }
 
-const dfa::Vocabulary& PccAsmParser::getVocabulary() const {
-  return pccasmParserStaticData->vocabulary;
+const dfa::Vocabulary& RccAsmParser::getVocabulary() const {
+  return rccasmParserStaticData->vocabulary;
 }
 
-antlr4::atn::SerializedATNView PccAsmParser::getSerializedATN() const {
-  return pccasmParserStaticData->serializedATN;
+antlr4::atn::SerializedATNView RccAsmParser::getSerializedATN() const {
+  return rccasmParserStaticData->serializedATN;
 }
 
 
 //----------------- ProgramContext ------------------------------------------------------------------
 
-PccAsmParser::ProgramContext::ProgramContext(ParserRuleContext *parent, size_t invokingState)
+RccAsmParser::ProgramContext::ProgramContext(ParserRuleContext *parent, size_t invokingState)
   : ParserRuleContext(parent, invokingState) {
 }
 
-tree::TerminalNode* PccAsmParser::ProgramContext::EOF() {
-  return getToken(PccAsmParser::EOF, 0);
+tree::TerminalNode* RccAsmParser::ProgramContext::EOF() {
+  return getToken(RccAsmParser::EOF, 0);
 }
 
-std::vector<PccAsmParser::LineContext *> PccAsmParser::ProgramContext::line() {
-  return getRuleContexts<PccAsmParser::LineContext>();
+std::vector<RccAsmParser::LineContext *> RccAsmParser::ProgramContext::line() {
+  return getRuleContexts<RccAsmParser::LineContext>();
 }
 
-PccAsmParser::LineContext* PccAsmParser::ProgramContext::line(size_t i) {
-  return getRuleContext<PccAsmParser::LineContext>(i);
-}
-
-
-size_t PccAsmParser::ProgramContext::getRuleIndex() const {
-  return PccAsmParser::RuleProgram;
+RccAsmParser::LineContext* RccAsmParser::ProgramContext::line(size_t i) {
+  return getRuleContext<RccAsmParser::LineContext>(i);
 }
 
 
-std::any PccAsmParser::ProgramContext::accept(tree::ParseTreeVisitor *visitor) {
-  if (auto parserVisitor = dynamic_cast<PccAsmVisitor*>(visitor))
+size_t RccAsmParser::ProgramContext::getRuleIndex() const {
+  return RccAsmParser::RuleProgram;
+}
+
+
+std::any RccAsmParser::ProgramContext::accept(tree::ParseTreeVisitor *visitor) {
+  if (auto parserVisitor = dynamic_cast<RccAsmVisitor*>(visitor))
     return parserVisitor->visitProgram(this);
   else
     return visitor->visitChildren(this);
 }
 
-PccAsmParser::ProgramContext* PccAsmParser::program() {
+RccAsmParser::ProgramContext* RccAsmParser::program() {
   ProgramContext *_localctx = _tracker.createInstance<ProgramContext>(_ctx, getState());
-  enterRule(_localctx, 0, PccAsmParser::RuleProgram);
+  enterRule(_localctx, 0, RccAsmParser::RuleProgram);
   size_t _la = 0;
 
 #if __cplusplus > 201703L
@@ -202,7 +202,7 @@ PccAsmParser::ProgramContext* PccAsmParser::program() {
       _la = _input->LA(1);
     }
     setState(24);
-    match(PccAsmParser::EOF);
+    match(RccAsmParser::EOF);
    
   }
   catch (RecognitionException &e) {
@@ -216,42 +216,42 @@ PccAsmParser::ProgramContext* PccAsmParser::program() {
 
 //----------------- LineContext ------------------------------------------------------------------
 
-PccAsmParser::LineContext::LineContext(ParserRuleContext *parent, size_t invokingState)
+RccAsmParser::LineContext::LineContext(ParserRuleContext *parent, size_t invokingState)
   : ParserRuleContext(parent, invokingState) {
 }
 
-tree::TerminalNode* PccAsmParser::LineContext::NEWLINE() {
-  return getToken(PccAsmParser::NEWLINE, 0);
+tree::TerminalNode* RccAsmParser::LineContext::NEWLINE() {
+  return getToken(RccAsmParser::NEWLINE, 0);
 }
 
-std::vector<PccAsmParser::LabelContext *> PccAsmParser::LineContext::label() {
-  return getRuleContexts<PccAsmParser::LabelContext>();
+std::vector<RccAsmParser::LabelContext *> RccAsmParser::LineContext::label() {
+  return getRuleContexts<RccAsmParser::LabelContext>();
 }
 
-PccAsmParser::LabelContext* PccAsmParser::LineContext::label(size_t i) {
-  return getRuleContext<PccAsmParser::LabelContext>(i);
+RccAsmParser::LabelContext* RccAsmParser::LineContext::label(size_t i) {
+  return getRuleContext<RccAsmParser::LabelContext>(i);
 }
 
-PccAsmParser::StatementContext* PccAsmParser::LineContext::statement() {
-  return getRuleContext<PccAsmParser::StatementContext>(0);
-}
-
-
-size_t PccAsmParser::LineContext::getRuleIndex() const {
-  return PccAsmParser::RuleLine;
+RccAsmParser::StatementContext* RccAsmParser::LineContext::statement() {
+  return getRuleContext<RccAsmParser::StatementContext>(0);
 }
 
 
-std::any PccAsmParser::LineContext::accept(tree::ParseTreeVisitor *visitor) {
-  if (auto parserVisitor = dynamic_cast<PccAsmVisitor*>(visitor))
+size_t RccAsmParser::LineContext::getRuleIndex() const {
+  return RccAsmParser::RuleLine;
+}
+
+
+std::any RccAsmParser::LineContext::accept(tree::ParseTreeVisitor *visitor) {
+  if (auto parserVisitor = dynamic_cast<RccAsmVisitor*>(visitor))
     return parserVisitor->visitLine(this);
   else
     return visitor->visitChildren(this);
 }
 
-PccAsmParser::LineContext* PccAsmParser::line() {
+RccAsmParser::LineContext* RccAsmParser::line() {
   LineContext *_localctx = _tracker.createInstance<LineContext>(_ctx, getState());
-  enterRule(_localctx, 2, PccAsmParser::RuleLine);
+  enterRule(_localctx, 2, RccAsmParser::RuleLine);
   size_t _la = 0;
 
 #if __cplusplus > 201703L
@@ -286,7 +286,7 @@ PccAsmParser::LineContext* PccAsmParser::line() {
       statement();
     }
     setState(35);
-    match(PccAsmParser::NEWLINE);
+    match(RccAsmParser::NEWLINE);
    
   }
   catch (RecognitionException &e) {
@@ -300,34 +300,34 @@ PccAsmParser::LineContext* PccAsmParser::line() {
 
 //----------------- LabelContext ------------------------------------------------------------------
 
-PccAsmParser::LabelContext::LabelContext(ParserRuleContext *parent, size_t invokingState)
+RccAsmParser::LabelContext::LabelContext(ParserRuleContext *parent, size_t invokingState)
   : ParserRuleContext(parent, invokingState) {
 }
 
-tree::TerminalNode* PccAsmParser::LabelContext::IDENT() {
-  return getToken(PccAsmParser::IDENT, 0);
+tree::TerminalNode* RccAsmParser::LabelContext::IDENT() {
+  return getToken(RccAsmParser::IDENT, 0);
 }
 
-tree::TerminalNode* PccAsmParser::LabelContext::COLON() {
-  return getToken(PccAsmParser::COLON, 0);
-}
-
-
-size_t PccAsmParser::LabelContext::getRuleIndex() const {
-  return PccAsmParser::RuleLabel;
+tree::TerminalNode* RccAsmParser::LabelContext::COLON() {
+  return getToken(RccAsmParser::COLON, 0);
 }
 
 
-std::any PccAsmParser::LabelContext::accept(tree::ParseTreeVisitor *visitor) {
-  if (auto parserVisitor = dynamic_cast<PccAsmVisitor*>(visitor))
+size_t RccAsmParser::LabelContext::getRuleIndex() const {
+  return RccAsmParser::RuleLabel;
+}
+
+
+std::any RccAsmParser::LabelContext::accept(tree::ParseTreeVisitor *visitor) {
+  if (auto parserVisitor = dynamic_cast<RccAsmVisitor*>(visitor))
     return parserVisitor->visitLabel(this);
   else
     return visitor->visitChildren(this);
 }
 
-PccAsmParser::LabelContext* PccAsmParser::label() {
+RccAsmParser::LabelContext* RccAsmParser::label() {
   LabelContext *_localctx = _tracker.createInstance<LabelContext>(_ctx, getState());
-  enterRule(_localctx, 4, PccAsmParser::RuleLabel);
+  enterRule(_localctx, 4, RccAsmParser::RuleLabel);
 
 #if __cplusplus > 201703L
   auto onExit = finally([=, this] {
@@ -339,9 +339,9 @@ PccAsmParser::LabelContext* PccAsmParser::label() {
   try {
     enterOuterAlt(_localctx, 1);
     setState(37);
-    match(PccAsmParser::IDENT);
+    match(RccAsmParser::IDENT);
     setState(38);
-    match(PccAsmParser::COLON);
+    match(RccAsmParser::COLON);
    
   }
   catch (RecognitionException &e) {
@@ -355,127 +355,127 @@ PccAsmParser::LabelContext* PccAsmParser::label() {
 
 //----------------- StatementContext ------------------------------------------------------------------
 
-PccAsmParser::StatementContext::StatementContext(ParserRuleContext *parent, size_t invokingState)
+RccAsmParser::StatementContext::StatementContext(ParserRuleContext *parent, size_t invokingState)
   : ParserRuleContext(parent, invokingState) {
 }
 
 
-size_t PccAsmParser::StatementContext::getRuleIndex() const {
-  return PccAsmParser::RuleStatement;
+size_t RccAsmParser::StatementContext::getRuleIndex() const {
+  return RccAsmParser::RuleStatement;
 }
 
-void PccAsmParser::StatementContext::copyFrom(StatementContext *ctx) {
+void RccAsmParser::StatementContext::copyFrom(StatementContext *ctx) {
   ParserRuleContext::copyFrom(ctx);
 }
 
 //----------------- TimesStmtContext ------------------------------------------------------------------
 
-tree::TerminalNode* PccAsmParser::TimesStmtContext::LPAREN() {
-  return getToken(PccAsmParser::LPAREN, 0);
+tree::TerminalNode* RccAsmParser::TimesStmtContext::LPAREN() {
+  return getToken(RccAsmParser::LPAREN, 0);
 }
 
-tree::TerminalNode* PccAsmParser::TimesStmtContext::RPAREN() {
-  return getToken(PccAsmParser::RPAREN, 0);
+tree::TerminalNode* RccAsmParser::TimesStmtContext::RPAREN() {
+  return getToken(RccAsmParser::RPAREN, 0);
 }
 
-PccAsmParser::ExprContext* PccAsmParser::TimesStmtContext::expr() {
-  return getRuleContext<PccAsmParser::ExprContext>(0);
+RccAsmParser::ExprContext* RccAsmParser::TimesStmtContext::expr() {
+  return getRuleContext<RccAsmParser::ExprContext>(0);
 }
 
-tree::TerminalNode* PccAsmParser::TimesStmtContext::IDENT() {
-  return getToken(PccAsmParser::IDENT, 0);
+tree::TerminalNode* RccAsmParser::TimesStmtContext::IDENT() {
+  return getToken(RccAsmParser::IDENT, 0);
 }
 
-tree::TerminalNode* PccAsmParser::TimesStmtContext::NUMBER() {
-  return getToken(PccAsmParser::NUMBER, 0);
+tree::TerminalNode* RccAsmParser::TimesStmtContext::NUMBER() {
+  return getToken(RccAsmParser::NUMBER, 0);
 }
 
-std::vector<PccAsmParser::OperandContext *> PccAsmParser::TimesStmtContext::operand() {
-  return getRuleContexts<PccAsmParser::OperandContext>();
+std::vector<RccAsmParser::OperandContext *> RccAsmParser::TimesStmtContext::operand() {
+  return getRuleContexts<RccAsmParser::OperandContext>();
 }
 
-PccAsmParser::OperandContext* PccAsmParser::TimesStmtContext::operand(size_t i) {
-  return getRuleContext<PccAsmParser::OperandContext>(i);
+RccAsmParser::OperandContext* RccAsmParser::TimesStmtContext::operand(size_t i) {
+  return getRuleContext<RccAsmParser::OperandContext>(i);
 }
 
-std::vector<tree::TerminalNode *> PccAsmParser::TimesStmtContext::COMMA() {
-  return getTokens(PccAsmParser::COMMA);
+std::vector<tree::TerminalNode *> RccAsmParser::TimesStmtContext::COMMA() {
+  return getTokens(RccAsmParser::COMMA);
 }
 
-tree::TerminalNode* PccAsmParser::TimesStmtContext::COMMA(size_t i) {
-  return getToken(PccAsmParser::COMMA, i);
+tree::TerminalNode* RccAsmParser::TimesStmtContext::COMMA(size_t i) {
+  return getToken(RccAsmParser::COMMA, i);
 }
 
-PccAsmParser::TimesStmtContext::TimesStmtContext(StatementContext *ctx) { copyFrom(ctx); }
+RccAsmParser::TimesStmtContext::TimesStmtContext(StatementContext *ctx) { copyFrom(ctx); }
 
 
-std::any PccAsmParser::TimesStmtContext::accept(tree::ParseTreeVisitor *visitor) {
-  if (auto parserVisitor = dynamic_cast<PccAsmVisitor*>(visitor))
+std::any RccAsmParser::TimesStmtContext::accept(tree::ParseTreeVisitor *visitor) {
+  if (auto parserVisitor = dynamic_cast<RccAsmVisitor*>(visitor))
     return parserVisitor->visitTimesStmt(this);
   else
     return visitor->visitChildren(this);
 }
 //----------------- AssignStmtContext ------------------------------------------------------------------
 
-tree::TerminalNode* PccAsmParser::AssignStmtContext::EQUALS() {
-  return getToken(PccAsmParser::EQUALS, 0);
+tree::TerminalNode* RccAsmParser::AssignStmtContext::EQUALS() {
+  return getToken(RccAsmParser::EQUALS, 0);
 }
 
-tree::TerminalNode* PccAsmParser::AssignStmtContext::IDENT() {
-  return getToken(PccAsmParser::IDENT, 0);
+tree::TerminalNode* RccAsmParser::AssignStmtContext::IDENT() {
+  return getToken(RccAsmParser::IDENT, 0);
 }
 
-PccAsmParser::ExprContext* PccAsmParser::AssignStmtContext::expr() {
-  return getRuleContext<PccAsmParser::ExprContext>(0);
+RccAsmParser::ExprContext* RccAsmParser::AssignStmtContext::expr() {
+  return getRuleContext<RccAsmParser::ExprContext>(0);
 }
 
-PccAsmParser::AssignStmtContext::AssignStmtContext(StatementContext *ctx) { copyFrom(ctx); }
+RccAsmParser::AssignStmtContext::AssignStmtContext(StatementContext *ctx) { copyFrom(ctx); }
 
 
-std::any PccAsmParser::AssignStmtContext::accept(tree::ParseTreeVisitor *visitor) {
-  if (auto parserVisitor = dynamic_cast<PccAsmVisitor*>(visitor))
+std::any RccAsmParser::AssignStmtContext::accept(tree::ParseTreeVisitor *visitor) {
+  if (auto parserVisitor = dynamic_cast<RccAsmVisitor*>(visitor))
     return parserVisitor->visitAssignStmt(this);
   else
     return visitor->visitChildren(this);
 }
 //----------------- InstrStmtContext ------------------------------------------------------------------
 
-tree::TerminalNode* PccAsmParser::InstrStmtContext::IDENT() {
-  return getToken(PccAsmParser::IDENT, 0);
+tree::TerminalNode* RccAsmParser::InstrStmtContext::IDENT() {
+  return getToken(RccAsmParser::IDENT, 0);
 }
 
-tree::TerminalNode* PccAsmParser::InstrStmtContext::NUMBER() {
-  return getToken(PccAsmParser::NUMBER, 0);
+tree::TerminalNode* RccAsmParser::InstrStmtContext::NUMBER() {
+  return getToken(RccAsmParser::NUMBER, 0);
 }
 
-std::vector<PccAsmParser::OperandContext *> PccAsmParser::InstrStmtContext::operand() {
-  return getRuleContexts<PccAsmParser::OperandContext>();
+std::vector<RccAsmParser::OperandContext *> RccAsmParser::InstrStmtContext::operand() {
+  return getRuleContexts<RccAsmParser::OperandContext>();
 }
 
-PccAsmParser::OperandContext* PccAsmParser::InstrStmtContext::operand(size_t i) {
-  return getRuleContext<PccAsmParser::OperandContext>(i);
+RccAsmParser::OperandContext* RccAsmParser::InstrStmtContext::operand(size_t i) {
+  return getRuleContext<RccAsmParser::OperandContext>(i);
 }
 
-std::vector<tree::TerminalNode *> PccAsmParser::InstrStmtContext::COMMA() {
-  return getTokens(PccAsmParser::COMMA);
+std::vector<tree::TerminalNode *> RccAsmParser::InstrStmtContext::COMMA() {
+  return getTokens(RccAsmParser::COMMA);
 }
 
-tree::TerminalNode* PccAsmParser::InstrStmtContext::COMMA(size_t i) {
-  return getToken(PccAsmParser::COMMA, i);
+tree::TerminalNode* RccAsmParser::InstrStmtContext::COMMA(size_t i) {
+  return getToken(RccAsmParser::COMMA, i);
 }
 
-PccAsmParser::InstrStmtContext::InstrStmtContext(StatementContext *ctx) { copyFrom(ctx); }
+RccAsmParser::InstrStmtContext::InstrStmtContext(StatementContext *ctx) { copyFrom(ctx); }
 
 
-std::any PccAsmParser::InstrStmtContext::accept(tree::ParseTreeVisitor *visitor) {
-  if (auto parserVisitor = dynamic_cast<PccAsmVisitor*>(visitor))
+std::any RccAsmParser::InstrStmtContext::accept(tree::ParseTreeVisitor *visitor) {
+  if (auto parserVisitor = dynamic_cast<RccAsmVisitor*>(visitor))
     return parserVisitor->visitInstrStmt(this);
   else
     return visitor->visitChildren(this);
 }
-PccAsmParser::StatementContext* PccAsmParser::statement() {
+RccAsmParser::StatementContext* RccAsmParser::statement() {
   StatementContext *_localctx = _tracker.createInstance<StatementContext>(_ctx, getState());
-  enterRule(_localctx, 6, PccAsmParser::RuleStatement);
+  enterRule(_localctx, 6, RccAsmParser::RuleStatement);
   size_t _la = 0;
 
 #if __cplusplus > 201703L
@@ -490,34 +490,34 @@ PccAsmParser::StatementContext* PccAsmParser::statement() {
     _errHandler->sync(this);
     switch (getInterpreter<atn::ParserATNSimulator>()->adaptivePredict(_input, 7, _ctx)) {
     case 1: {
-      _localctx = _tracker.createInstance<PccAsmParser::AssignStmtContext>(_localctx);
+      _localctx = _tracker.createInstance<RccAsmParser::AssignStmtContext>(_localctx);
       enterOuterAlt(_localctx, 1);
       setState(40);
-      antlrcpp::downCast<AssignStmtContext *>(_localctx)->lhs = match(PccAsmParser::IDENT);
+      antlrcpp::downCast<AssignStmtContext *>(_localctx)->lhs = match(RccAsmParser::IDENT);
       setState(41);
-      match(PccAsmParser::EQUALS);
+      match(RccAsmParser::EQUALS);
       setState(42);
       antlrcpp::downCast<AssignStmtContext *>(_localctx)->rhs = expr();
       break;
     }
 
     case 2: {
-      _localctx = _tracker.createInstance<PccAsmParser::TimesStmtContext>(_localctx);
+      _localctx = _tracker.createInstance<RccAsmParser::TimesStmtContext>(_localctx);
       enterOuterAlt(_localctx, 2);
       setState(43);
-      match(PccAsmParser::T__0);
+      match(RccAsmParser::T__0);
       setState(44);
-      match(PccAsmParser::LPAREN);
+      match(RccAsmParser::LPAREN);
       setState(45);
       antlrcpp::downCast<TimesStmtContext *>(_localctx)->count = expr();
       setState(46);
-      match(PccAsmParser::RPAREN);
+      match(RccAsmParser::RPAREN);
       setState(47);
       antlrcpp::downCast<TimesStmtContext *>(_localctx)->mnemonic = _input->LT(1);
       _la = _input->LA(1);
-      if (!(_la == PccAsmParser::IDENT
+      if (!(_la == RccAsmParser::IDENT
 
-      || _la == PccAsmParser::NUMBER)) {
+      || _la == RccAsmParser::NUMBER)) {
         antlrcpp::downCast<TimesStmtContext *>(_localctx)->mnemonic = _errHandler->recoverInline(this);
       }
       else {
@@ -535,9 +535,9 @@ PccAsmParser::StatementContext* PccAsmParser::statement() {
         setState(53);
         _errHandler->sync(this);
         _la = _input->LA(1);
-        while (_la == PccAsmParser::COMMA) {
+        while (_la == RccAsmParser::COMMA) {
           setState(49);
-          match(PccAsmParser::COMMA);
+          match(RccAsmParser::COMMA);
           setState(50);
           operand();
           setState(55);
@@ -549,14 +549,14 @@ PccAsmParser::StatementContext* PccAsmParser::statement() {
     }
 
     case 3: {
-      _localctx = _tracker.createInstance<PccAsmParser::InstrStmtContext>(_localctx);
+      _localctx = _tracker.createInstance<RccAsmParser::InstrStmtContext>(_localctx);
       enterOuterAlt(_localctx, 3);
       setState(58);
       antlrcpp::downCast<InstrStmtContext *>(_localctx)->mnemonic = _input->LT(1);
       _la = _input->LA(1);
-      if (!(_la == PccAsmParser::IDENT
+      if (!(_la == RccAsmParser::IDENT
 
-      || _la == PccAsmParser::NUMBER)) {
+      || _la == RccAsmParser::NUMBER)) {
         antlrcpp::downCast<InstrStmtContext *>(_localctx)->mnemonic = _errHandler->recoverInline(this);
       }
       else {
@@ -574,9 +574,9 @@ PccAsmParser::StatementContext* PccAsmParser::statement() {
         setState(64);
         _errHandler->sync(this);
         _la = _input->LA(1);
-        while (_la == PccAsmParser::COMMA) {
+        while (_la == RccAsmParser::COMMA) {
           setState(60);
-          match(PccAsmParser::COMMA);
+          match(RccAsmParser::COMMA);
           setState(61);
           operand();
           setState(66);
@@ -603,42 +603,42 @@ PccAsmParser::StatementContext* PccAsmParser::statement() {
 
 //----------------- OperandContext ------------------------------------------------------------------
 
-PccAsmParser::OperandContext::OperandContext(ParserRuleContext *parent, size_t invokingState)
+RccAsmParser::OperandContext::OperandContext(ParserRuleContext *parent, size_t invokingState)
   : ParserRuleContext(parent, invokingState) {
 }
 
-tree::TerminalNode* PccAsmParser::OperandContext::LBRACKET() {
-  return getToken(PccAsmParser::LBRACKET, 0);
+tree::TerminalNode* RccAsmParser::OperandContext::LBRACKET() {
+  return getToken(RccAsmParser::LBRACKET, 0);
 }
 
-PccAsmParser::ExprContext* PccAsmParser::OperandContext::expr() {
-  return getRuleContext<PccAsmParser::ExprContext>(0);
+RccAsmParser::ExprContext* RccAsmParser::OperandContext::expr() {
+  return getRuleContext<RccAsmParser::ExprContext>(0);
 }
 
-tree::TerminalNode* PccAsmParser::OperandContext::RBRACKET() {
-  return getToken(PccAsmParser::RBRACKET, 0);
+tree::TerminalNode* RccAsmParser::OperandContext::RBRACKET() {
+  return getToken(RccAsmParser::RBRACKET, 0);
 }
 
-tree::TerminalNode* PccAsmParser::OperandContext::IDENT() {
-  return getToken(PccAsmParser::IDENT, 0);
-}
-
-
-size_t PccAsmParser::OperandContext::getRuleIndex() const {
-  return PccAsmParser::RuleOperand;
+tree::TerminalNode* RccAsmParser::OperandContext::IDENT() {
+  return getToken(RccAsmParser::IDENT, 0);
 }
 
 
-std::any PccAsmParser::OperandContext::accept(tree::ParseTreeVisitor *visitor) {
-  if (auto parserVisitor = dynamic_cast<PccAsmVisitor*>(visitor))
+size_t RccAsmParser::OperandContext::getRuleIndex() const {
+  return RccAsmParser::RuleOperand;
+}
+
+
+std::any RccAsmParser::OperandContext::accept(tree::ParseTreeVisitor *visitor) {
+  if (auto parserVisitor = dynamic_cast<RccAsmVisitor*>(visitor))
     return parserVisitor->visitOperand(this);
   else
     return visitor->visitChildren(this);
 }
 
-PccAsmParser::OperandContext* PccAsmParser::operand() {
+RccAsmParser::OperandContext* RccAsmParser::operand() {
   OperandContext *_localctx = _tracker.createInstance<OperandContext>(_ctx, getState());
-  enterRule(_localctx, 8, PccAsmParser::RuleOperand);
+  enterRule(_localctx, 8, RccAsmParser::RuleOperand);
   size_t _la = 0;
 
 #if __cplusplus > 201703L
@@ -658,16 +658,16 @@ PccAsmParser::OperandContext* PccAsmParser::operand() {
       _errHandler->sync(this);
 
       _la = _input->LA(1);
-      if (_la == PccAsmParser::IDENT) {
+      if (_la == RccAsmParser::IDENT) {
         setState(71);
-        antlrcpp::downCast<OperandContext *>(_localctx)->size = match(PccAsmParser::IDENT);
+        antlrcpp::downCast<OperandContext *>(_localctx)->size = match(RccAsmParser::IDENT);
       }
       setState(74);
-      match(PccAsmParser::LBRACKET);
+      match(RccAsmParser::LBRACKET);
       setState(75);
       expr();
       setState(76);
-      match(PccAsmParser::RBRACKET);
+      match(RccAsmParser::RBRACKET);
       break;
     }
 
@@ -694,34 +694,34 @@ PccAsmParser::OperandContext* PccAsmParser::operand() {
 
 //----------------- ExprContext ------------------------------------------------------------------
 
-PccAsmParser::ExprContext::ExprContext(ParserRuleContext *parent, size_t invokingState)
+RccAsmParser::ExprContext::ExprContext(ParserRuleContext *parent, size_t invokingState)
   : ParserRuleContext(parent, invokingState) {
 }
 
-std::vector<PccAsmParser::SyllableContext *> PccAsmParser::ExprContext::syllable() {
-  return getRuleContexts<PccAsmParser::SyllableContext>();
+std::vector<RccAsmParser::SyllableContext *> RccAsmParser::ExprContext::syllable() {
+  return getRuleContexts<RccAsmParser::SyllableContext>();
 }
 
-PccAsmParser::SyllableContext* PccAsmParser::ExprContext::syllable(size_t i) {
-  return getRuleContext<PccAsmParser::SyllableContext>(i);
-}
-
-
-size_t PccAsmParser::ExprContext::getRuleIndex() const {
-  return PccAsmParser::RuleExpr;
+RccAsmParser::SyllableContext* RccAsmParser::ExprContext::syllable(size_t i) {
+  return getRuleContext<RccAsmParser::SyllableContext>(i);
 }
 
 
-std::any PccAsmParser::ExprContext::accept(tree::ParseTreeVisitor *visitor) {
-  if (auto parserVisitor = dynamic_cast<PccAsmVisitor*>(visitor))
+size_t RccAsmParser::ExprContext::getRuleIndex() const {
+  return RccAsmParser::RuleExpr;
+}
+
+
+std::any RccAsmParser::ExprContext::accept(tree::ParseTreeVisitor *visitor) {
+  if (auto parserVisitor = dynamic_cast<RccAsmVisitor*>(visitor))
     return parserVisitor->visitExpr(this);
   else
     return visitor->visitChildren(this);
 }
 
-PccAsmParser::ExprContext* PccAsmParser::expr() {
+RccAsmParser::ExprContext* RccAsmParser::expr() {
   ExprContext *_localctx = _tracker.createInstance<ExprContext>(_ctx, getState());
-  enterRule(_localctx, 10, PccAsmParser::RuleExpr);
+  enterRule(_localctx, 10, RccAsmParser::RuleExpr);
   size_t _la = 0;
 
 #if __cplusplus > 201703L
@@ -759,34 +759,34 @@ PccAsmParser::ExprContext* PccAsmParser::expr() {
 
 //----------------- SyllableContext ------------------------------------------------------------------
 
-PccAsmParser::SyllableContext::SyllableContext(ParserRuleContext *parent, size_t invokingState)
+RccAsmParser::SyllableContext::SyllableContext(ParserRuleContext *parent, size_t invokingState)
   : ParserRuleContext(parent, invokingState) {
 }
 
-PccAsmParser::AtomContext* PccAsmParser::SyllableContext::atom() {
-  return getRuleContext<PccAsmParser::AtomContext>(0);
+RccAsmParser::AtomContext* RccAsmParser::SyllableContext::atom() {
+  return getRuleContext<RccAsmParser::AtomContext>(0);
 }
 
-PccAsmParser::SignContext* PccAsmParser::SyllableContext::sign() {
-  return getRuleContext<PccAsmParser::SignContext>(0);
-}
-
-
-size_t PccAsmParser::SyllableContext::getRuleIndex() const {
-  return PccAsmParser::RuleSyllable;
+RccAsmParser::SignContext* RccAsmParser::SyllableContext::sign() {
+  return getRuleContext<RccAsmParser::SignContext>(0);
 }
 
 
-std::any PccAsmParser::SyllableContext::accept(tree::ParseTreeVisitor *visitor) {
-  if (auto parserVisitor = dynamic_cast<PccAsmVisitor*>(visitor))
+size_t RccAsmParser::SyllableContext::getRuleIndex() const {
+  return RccAsmParser::RuleSyllable;
+}
+
+
+std::any RccAsmParser::SyllableContext::accept(tree::ParseTreeVisitor *visitor) {
+  if (auto parserVisitor = dynamic_cast<RccAsmVisitor*>(visitor))
     return parserVisitor->visitSyllable(this);
   else
     return visitor->visitChildren(this);
 }
 
-PccAsmParser::SyllableContext* PccAsmParser::syllable() {
+RccAsmParser::SyllableContext* RccAsmParser::syllable() {
   SyllableContext *_localctx = _tracker.createInstance<SyllableContext>(_ctx, getState());
-  enterRule(_localctx, 12, PccAsmParser::RuleSyllable);
+  enterRule(_localctx, 12, RccAsmParser::RuleSyllable);
   size_t _la = 0;
 
 #if __cplusplus > 201703L
@@ -802,9 +802,9 @@ PccAsmParser::SyllableContext* PccAsmParser::syllable() {
     _errHandler->sync(this);
 
     _la = _input->LA(1);
-    if (_la == PccAsmParser::PLUS
+    if (_la == RccAsmParser::PLUS
 
-    || _la == PccAsmParser::MINUS) {
+    || _la == RccAsmParser::MINUS) {
       setState(88);
       sign();
     }
@@ -823,34 +823,34 @@ PccAsmParser::SyllableContext* PccAsmParser::syllable() {
 
 //----------------- SignContext ------------------------------------------------------------------
 
-PccAsmParser::SignContext::SignContext(ParserRuleContext *parent, size_t invokingState)
+RccAsmParser::SignContext::SignContext(ParserRuleContext *parent, size_t invokingState)
   : ParserRuleContext(parent, invokingState) {
 }
 
-tree::TerminalNode* PccAsmParser::SignContext::PLUS() {
-  return getToken(PccAsmParser::PLUS, 0);
+tree::TerminalNode* RccAsmParser::SignContext::PLUS() {
+  return getToken(RccAsmParser::PLUS, 0);
 }
 
-tree::TerminalNode* PccAsmParser::SignContext::MINUS() {
-  return getToken(PccAsmParser::MINUS, 0);
-}
-
-
-size_t PccAsmParser::SignContext::getRuleIndex() const {
-  return PccAsmParser::RuleSign;
+tree::TerminalNode* RccAsmParser::SignContext::MINUS() {
+  return getToken(RccAsmParser::MINUS, 0);
 }
 
 
-std::any PccAsmParser::SignContext::accept(tree::ParseTreeVisitor *visitor) {
-  if (auto parserVisitor = dynamic_cast<PccAsmVisitor*>(visitor))
+size_t RccAsmParser::SignContext::getRuleIndex() const {
+  return RccAsmParser::RuleSign;
+}
+
+
+std::any RccAsmParser::SignContext::accept(tree::ParseTreeVisitor *visitor) {
+  if (auto parserVisitor = dynamic_cast<RccAsmVisitor*>(visitor))
     return parserVisitor->visitSign(this);
   else
     return visitor->visitChildren(this);
 }
 
-PccAsmParser::SignContext* PccAsmParser::sign() {
+RccAsmParser::SignContext* RccAsmParser::sign() {
   SignContext *_localctx = _tracker.createInstance<SignContext>(_ctx, getState());
-  enterRule(_localctx, 14, PccAsmParser::RuleSign);
+  enterRule(_localctx, 14, RccAsmParser::RuleSign);
   size_t _la = 0;
 
 #if __cplusplus > 201703L
@@ -864,9 +864,9 @@ PccAsmParser::SignContext* PccAsmParser::sign() {
     enterOuterAlt(_localctx, 1);
     setState(93);
     _la = _input->LA(1);
-    if (!(_la == PccAsmParser::PLUS
+    if (!(_la == RccAsmParser::PLUS
 
-    || _la == PccAsmParser::MINUS)) {
+    || _la == RccAsmParser::MINUS)) {
     _errHandler->recoverInline(this);
     }
     else {
@@ -886,46 +886,46 @@ PccAsmParser::SignContext* PccAsmParser::sign() {
 
 //----------------- AtomContext ------------------------------------------------------------------
 
-PccAsmParser::AtomContext::AtomContext(ParserRuleContext *parent, size_t invokingState)
+RccAsmParser::AtomContext::AtomContext(ParserRuleContext *parent, size_t invokingState)
   : ParserRuleContext(parent, invokingState) {
 }
 
-tree::TerminalNode* PccAsmParser::AtomContext::IDENT() {
-  return getToken(PccAsmParser::IDENT, 0);
+tree::TerminalNode* RccAsmParser::AtomContext::IDENT() {
+  return getToken(RccAsmParser::IDENT, 0);
 }
 
-tree::TerminalNode* PccAsmParser::AtomContext::NUMBER() {
-  return getToken(PccAsmParser::NUMBER, 0);
+tree::TerminalNode* RccAsmParser::AtomContext::NUMBER() {
+  return getToken(RccAsmParser::NUMBER, 0);
 }
 
-tree::TerminalNode* PccAsmParser::AtomContext::LPAREN() {
-  return getToken(PccAsmParser::LPAREN, 0);
+tree::TerminalNode* RccAsmParser::AtomContext::LPAREN() {
+  return getToken(RccAsmParser::LPAREN, 0);
 }
 
-PccAsmParser::ExprContext* PccAsmParser::AtomContext::expr() {
-  return getRuleContext<PccAsmParser::ExprContext>(0);
+RccAsmParser::ExprContext* RccAsmParser::AtomContext::expr() {
+  return getRuleContext<RccAsmParser::ExprContext>(0);
 }
 
-tree::TerminalNode* PccAsmParser::AtomContext::RPAREN() {
-  return getToken(PccAsmParser::RPAREN, 0);
-}
-
-
-size_t PccAsmParser::AtomContext::getRuleIndex() const {
-  return PccAsmParser::RuleAtom;
+tree::TerminalNode* RccAsmParser::AtomContext::RPAREN() {
+  return getToken(RccAsmParser::RPAREN, 0);
 }
 
 
-std::any PccAsmParser::AtomContext::accept(tree::ParseTreeVisitor *visitor) {
-  if (auto parserVisitor = dynamic_cast<PccAsmVisitor*>(visitor))
+size_t RccAsmParser::AtomContext::getRuleIndex() const {
+  return RccAsmParser::RuleAtom;
+}
+
+
+std::any RccAsmParser::AtomContext::accept(tree::ParseTreeVisitor *visitor) {
+  if (auto parserVisitor = dynamic_cast<RccAsmVisitor*>(visitor))
     return parserVisitor->visitAtom(this);
   else
     return visitor->visitChildren(this);
 }
 
-PccAsmParser::AtomContext* PccAsmParser::atom() {
+RccAsmParser::AtomContext* RccAsmParser::atom() {
   AtomContext *_localctx = _tracker.createInstance<AtomContext>(_ctx, getState());
-  enterRule(_localctx, 16, PccAsmParser::RuleAtom);
+  enterRule(_localctx, 16, RccAsmParser::RuleAtom);
 
 #if __cplusplus > 201703L
   auto onExit = finally([=, this] {
@@ -938,28 +938,28 @@ PccAsmParser::AtomContext* PccAsmParser::atom() {
     setState(101);
     _errHandler->sync(this);
     switch (_input->LA(1)) {
-      case PccAsmParser::IDENT: {
+      case RccAsmParser::IDENT: {
         enterOuterAlt(_localctx, 1);
         setState(95);
-        match(PccAsmParser::IDENT);
+        match(RccAsmParser::IDENT);
         break;
       }
 
-      case PccAsmParser::NUMBER: {
+      case RccAsmParser::NUMBER: {
         enterOuterAlt(_localctx, 2);
         setState(96);
-        match(PccAsmParser::NUMBER);
+        match(RccAsmParser::NUMBER);
         break;
       }
 
-      case PccAsmParser::LPAREN: {
+      case RccAsmParser::LPAREN: {
         enterOuterAlt(_localctx, 3);
         setState(97);
-        match(PccAsmParser::LPAREN);
+        match(RccAsmParser::LPAREN);
         setState(98);
         expr();
         setState(99);
-        match(PccAsmParser::RPAREN);
+        match(RccAsmParser::RPAREN);
         break;
       }
 
@@ -977,10 +977,10 @@ PccAsmParser::AtomContext* PccAsmParser::atom() {
   return _localctx;
 }
 
-void PccAsmParser::initialize() {
+void RccAsmParser::initialize() {
 #if ANTLR4_USE_THREAD_LOCAL_CACHE
-  pccasmParserInitialize();
+  rccasmParserInitialize();
 #else
-  ::antlr4::internal::call_once(pccasmParserOnceFlag, pccasmParserInitialize);
+  ::antlr4::internal::call_once(rccasmParserOnceFlag, rccasmParserInitialize);
 #endif
 }

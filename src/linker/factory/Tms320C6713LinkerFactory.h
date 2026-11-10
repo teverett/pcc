@@ -4,7 +4,7 @@
 
 #include "linker/Linker.h"
 
-namespace pcc {
+namespace rcc {
 
 // This target's first pass only implements whole-program --format=raw (see
 // Tms320C6713Codegen.h's own header comment) - there's no relocatable object format a user can
@@ -14,4 +14,4 @@ namespace pcc {
 // fails with a clear "unknown --format" message instead of silently doing nothing.
 std::unique_ptr<TargetLinker> makeTms320C6713Linker();
 
-}  // namespace pcc
+}  // namespace rcc

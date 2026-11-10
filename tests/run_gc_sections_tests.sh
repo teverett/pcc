@@ -40,16 +40,16 @@
 #       gc-sections has to treat "address taken" as a real use, the same way the entry point's own
 #       `jms FN_main` is.
 #
-# Usage: tests/run_gc_sections_tests.sh [path/to/pcc]
+# Usage: tests/run_gc_sections_tests.sh [path/to/rcc]
 
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PCC="$SCRIPT_DIR/../build/bin/pcc"
-[ $# -ge 1 ] && PCC="$1"
+RCC="$SCRIPT_DIR/../build/bin/rcc"
+[ $# -ge 1 ] && RCC="$1"
 
-if [ ! -x "$PCC" ]; then
-    echo "pcc binary not found at $PCC - build it first ('make')" >&2
+if [ ! -x "$RCC" ]; then
+    echo "rcc binary not found at $RCC - build it first ('make')" >&2
     exit 1
 fi
 if ! command -v pdp7 >/dev/null 2>&1; then
@@ -88,18 +88,18 @@ int unused2(int x) { return x * 3; }
 int unused3(int x) { return x * 4; }
 int unused4(int x) { return x * 5; }
 EOF
-    if ! "$PCC" --target=pdp7 --format=coff --out="$dir/a.o" "$dir/a.c" >"$dir/log" 2>&1 ||
-       ! "$PCC" --target=pdp7 --format=coff --out="$dir/b.o" "$dir/b.c" >>"$dir/log" 2>&1; then
+    if ! "$RCC" --target=pdp7 --format=coff --out="$dir/a.o" "$dir/a.c" >"$dir/log" 2>&1 ||
+       ! "$RCC" --target=pdp7 --format=coff --out="$dir/b.o" "$dir/b.c" >>"$dir/log" 2>&1; then
         echo "FAIL test_dead_function_dropped_and_still_correct: fixture itself failed to compile"
         cat "$dir/log"
         return 1
     fi
-    if ! "$PCC" --link --target=pdp7 --format=rim --out="$dir/nogc.rim" "$dir/a.o" "$dir/b.o" >"$dir/log" 2>&1; then
+    if ! "$RCC" --link --target=pdp7 --format=rim --out="$dir/nogc.rim" "$dir/a.o" "$dir/b.o" >"$dir/log" 2>&1; then
         echo "FAIL test_dead_function_dropped_and_still_correct: plain (non-gc) link unexpectedly failed:"
         cat "$dir/log"
         return 1
     fi
-    if ! "$PCC" --link --target=pdp7 --format=rim --gc-sections --out="$dir/gc.rim" "$dir/a.o" "$dir/b.o" \
+    if ! "$RCC" --link --target=pdp7 --format=rim --gc-sections --out="$dir/gc.rim" "$dir/a.o" "$dir/b.o" \
             >"$dir/log" 2>&1; then
         echo "FAIL test_dead_function_dropped_and_still_correct: --gc-sections link unexpectedly failed:"
         cat "$dir/log"
@@ -151,12 +151,12 @@ int main() {
     return getIt();
 }
 EOF
-    if ! "$PCC" --target=pdp7 --format=coff --out="$dir/c.o" "$dir/c.c" >"$dir/log" 2>&1; then
+    if ! "$RCC" --target=pdp7 --format=coff --out="$dir/c.o" "$dir/c.c" >"$dir/log" 2>&1; then
         echo "FAIL test_cross_function_shared_global_survives_gap: fixture itself failed to compile"
         cat "$dir/log"
         return 1
     fi
-    if ! "$PCC" --link --target=pdp7 --format=rim --gc-sections --out="$dir/gc.rim" "$dir/c.o" \
+    if ! "$RCC" --link --target=pdp7 --format=rim --gc-sections --out="$dir/gc.rim" "$dir/c.o" \
             >"$dir/log" 2>&1; then
         echo "FAIL test_cross_function_shared_global_survives_gap: --gc-sections link unexpectedly failed:"
         cat "$dir/log"
@@ -185,7 +185,7 @@ test_address_taken_not_called_is_kept() {
     local dir="$tmpdir/addr_taken"
     mkdir -p "$dir"
     # `never_called` is never invoked anywhere - its only use is its own address stored into
-    # `dispatch` via a plain bare function name (pcc's own address-of-function convention), the
+    # `dispatch` via a plain bare function name (rcc's own address-of-function convention), the
     # same pattern sys/sysloc.c's own `locsw[]` dispatch table uses for functions like `namei`
     # that sysloc itself never calls directly either.
     cat >"$dir/main.c" <<'EOF'
@@ -199,13 +199,13 @@ EOF
 int never_called() { return 99; }
 int dispatch[1] = {never_called};
 EOF
-    if ! "$PCC" --target=pdp7 --format=coff --out="$dir/main.o" "$dir/main.c" >"$dir/log" 2>&1 ||
-       ! "$PCC" --target=pdp7 --format=coff --out="$dir/funcs.o" "$dir/funcs.c" >>"$dir/log" 2>&1; then
+    if ! "$RCC" --target=pdp7 --format=coff --out="$dir/main.o" "$dir/main.c" >"$dir/log" 2>&1 ||
+       ! "$RCC" --target=pdp7 --format=coff --out="$dir/funcs.o" "$dir/funcs.c" >>"$dir/log" 2>&1; then
         echo "FAIL test_address_taken_not_called_is_kept: fixture itself failed to compile"
         cat "$dir/log"
         return 1
     fi
-    if ! "$PCC" --link --target=pdp7 --format=rim --gc-sections --out="$dir/gc.rim" "$dir/main.o" "$dir/funcs.o" \
+    if ! "$RCC" --link --target=pdp7 --format=rim --gc-sections --out="$dir/gc.rim" "$dir/main.o" "$dir/funcs.o" \
             >"$dir/log" 2>&1; then
         echo "FAIL test_address_taken_not_called_is_kept: --gc-sections link unexpectedly failed:"
         cat "$dir/log"

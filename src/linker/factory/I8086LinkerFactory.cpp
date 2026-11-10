@@ -3,7 +3,7 @@
 #include "linker/GenericLinker.h"
 #include "codegen/x86_8086/I8086Assembler.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 // Stack grows down from 0x7C00, the boot-sector load address.
@@ -35,4 +35,4 @@ std::unique_ptr<TargetLinker> makeI8086Linker() {
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
-}  // namespace pcc
+}  // namespace rcc

@@ -4,7 +4,7 @@
 #include <optional>
 #include <string>
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -140,4 +140,4 @@ bool AlgebraicSimplification::run(ir::Program &prog, const std::string &sourceFi
     return changed;
 }
 
-}  // namespace pcc
+}  // namespace rcc

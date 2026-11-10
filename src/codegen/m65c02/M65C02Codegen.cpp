@@ -7,7 +7,7 @@
 #include "M65C02Assembler.h"
 #include "fileformat/FileFormat.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 [[noreturn]] void err(int line, const std::string &msg) {
@@ -1438,4 +1438,4 @@ std::optional<std::string> M65C02Codegen::assembleInProcess(const std::string &a
     return std::nullopt;
 }
 
-}  // namespace pcc
+}  // namespace rcc

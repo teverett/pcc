@@ -1,6 +1,6 @@
 #pragma once
 
-namespace pcc {
+namespace rcc {
 
 // Fixed ISO C conversion-rank order (char .. long long), used by
 // commonType(), independent of any target's actual storage widths.
@@ -61,4 +61,4 @@ inline Type pointerTo(Type t) {
     return t;
 }
 
-}  // namespace pcc
+}  // namespace rcc

@@ -10,16 +10,16 @@
 #include "ANTLRInputStream.h"
 #include "BaseErrorListener.h"
 #include "CommonTokenStream.h"
-#include "PccAsmLexer.h"
-#include "PccAsmParser.h"
+#include "RccAsmLexer.h"
+#include "RccAsmParser.h"
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error("AlphaAssembler: " + msg); }
 
-// --- Parsing, via the shared grammar/PccAsm.g4 ---------------------------
+// --- Parsing, via the shared grammar/RccAsm.g4 ---------------------------
 enum class SylKind { Number, Symbol, Group };
 struct Syllable {
     char sign = 0;
@@ -51,7 +51,7 @@ std::string toLower(std::string s) {
     return s;
 }
 
-std::vector<Syllable> exprToSyllables(PccAsmParser::ExprContext *ctx) {
+std::vector<Syllable> exprToSyllables(RccAsmParser::ExprContext *ctx) {
     std::vector<Syllable> result;
     for (auto *syl : ctx->syllable()) {
         char sign = 0;
@@ -108,7 +108,7 @@ bool isNumeric(const std::vector<Syllable> &syls) {
     return true;
 }
 
-Operand buildOperand(PccAsmParser::OperandContext *ctx) {
+Operand buildOperand(RccAsmParser::OperandContext *ctx) {
     if (ctx->LBRACKET()) {
         fail("bracketed memory operands aren't part of this target's dialect - every load/store goes through "
              "the dedicated 'ldind*'/'stind*' mnemonics instead (see AlphaAssembler.h)");
@@ -140,7 +140,7 @@ class ThrowingErrorListener : public antlr4::BaseErrorListener {
     }
 };
 
-Line buildLine(PccAsmParser::LineContext *ctx) {
+Line buildLine(RccAsmParser::LineContext *ctx) {
     Line line;
     for (auto *lbl : ctx->label()) line.labels.push_back(lbl->IDENT()->getText());
 
@@ -149,14 +149,14 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
         line.kind = Line::None;
         return line;
     }
-    if (auto *assign = dynamic_cast<PccAsmParser::AssignStmtContext *>(stmt)) {
+    if (auto *assign = dynamic_cast<RccAsmParser::AssignStmtContext *>(stmt)) {
         line.kind = Line::Equate;
         line.equateName = assign->lhs->getText();
         line.exprList.push_back(exprToSyllables(assign->rhs));
         return line;
     }
-    if (dynamic_cast<PccAsmParser::TimesStmtContext *>(stmt)) fail("'times' isn't part of this target's dialect");
-    auto *instr = dynamic_cast<PccAsmParser::InstrStmtContext *>(stmt);
+    if (dynamic_cast<RccAsmParser::TimesStmtContext *>(stmt)) fail("'times' isn't part of this target's dialect");
+    auto *instr = dynamic_cast<RccAsmParser::InstrStmtContext *>(stmt);
     if (!instr) fail("internal: unhandled statement alternative");
 
     std::string mnemonic = toLower(instr->mnemonic->getText());
@@ -183,17 +183,17 @@ Line buildLine(PccAsmParser::LineContext *ctx) {
 
 std::vector<Line> parseProgram(const std::string &text) {
     antlr4::ANTLRInputStream input(text);
-    PccAsmLexer lexer(&input);
+    RccAsmLexer lexer(&input);
     ThrowingErrorListener errors;
     lexer.removeErrorListeners();
     lexer.addErrorListener(&errors);
 
     antlr4::CommonTokenStream tokens(&lexer);
-    PccAsmParser parser(&tokens);
+    RccAsmParser parser(&tokens);
     parser.removeErrorListeners();
     parser.addErrorListener(&errors);
 
-    PccAsmParser::ProgramContext *prog = parser.program();
+    RccAsmParser::ProgramContext *prog = parser.program();
 
     std::vector<Line> lines;
     for (auto *lineCtx : prog->line()) lines.push_back(buildLine(lineCtx));
@@ -534,4 +534,4 @@ ObjectFile assembleAlphaObject(const std::string &asmText) {
     return buildObjectFile(assembler);
 }
 
-}  // namespace pcc
+}  // namespace rcc

@@ -33,7 +33,7 @@
 //   correct since they're substituted from this preprocessor's own
 //   per-physical-line tracking.
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -76,7 +76,7 @@ std::string dirOf(const std::string &path) {
 
 std::string readFileRaw(const std::string &path) {
     std::ifstream in(path);
-    if (!in) throw std::runtime_error("pcc preprocessor: cannot open '" + path + "'");
+    if (!in) throw std::runtime_error("rcc preprocessor: cannot open '" + path + "'");
     std::ostringstream ss;
     ss << in.rdbuf();
     return ss.str();
@@ -249,7 +249,7 @@ std::string substituteFunctionMacro(const Macro &macro, const std::vector<std::s
     size_t fixedCount = macro.parameters.size();
     if ((!macro.variadic && arguments.size() != fixedCount) ||
         (macro.variadic && arguments.size() < fixedCount)) {
-        throw std::runtime_error("pcc preprocessor: wrong number of arguments to function-like macro");
+        throw std::runtime_error("rcc preprocessor: wrong number of arguments to function-like macro");
     }
 
     std::map<std::string, std::string> rawArguments;
@@ -594,7 +594,7 @@ struct CondFrame {
 Macro parseMacroDefinition(const std::string &arg, const std::string &where) {
     size_t nameEnd = 0;
     if (arg.empty() || !isIdentStart(arg[0])) {
-        throw std::runtime_error("pcc preprocessor: #define with invalid name at " + where);
+        throw std::runtime_error("rcc preprocessor: #define with invalid name at " + where);
     }
     while (nameEnd < arg.size() && isIdentChar(arg[nameEnd])) nameEnd++;
 
@@ -614,20 +614,20 @@ Macro parseMacroDefinition(const std::string &arg, const std::string &where) {
                 i += 3;
                 while (i < arg.size() && std::isspace(static_cast<unsigned char>(arg[i]))) i++;
                 if (i >= arg.size() || arg[i] != ')') {
-                    throw std::runtime_error("pcc preprocessor: variadic parameter must be last at " + where);
+                    throw std::runtime_error("rcc preprocessor: variadic parameter must be last at " + where);
                 }
                 replacementStart = i + 1;
                 break;
             }
             if (i >= arg.size() || !isIdentStart(arg[i])) {
-                throw std::runtime_error("pcc preprocessor: malformed parameter list in #define at " + where);
+                throw std::runtime_error("rcc preprocessor: malformed parameter list in #define at " + where);
             }
             size_t parameterStart = i++;
             while (i < arg.size() && isIdentChar(arg[i])) i++;
             std::string parameter = arg.substr(parameterStart, i - parameterStart);
             if (parameter == "__VA_ARGS__" ||
                 std::find(macro.parameters.begin(), macro.parameters.end(), parameter) != macro.parameters.end()) {
-                throw std::runtime_error("pcc preprocessor: duplicate or reserved macro parameter at " + where);
+                throw std::runtime_error("rcc preprocessor: duplicate or reserved macro parameter at " + where);
             }
             macro.parameters.push_back(parameter);
             while (i < arg.size() && std::isspace(static_cast<unsigned char>(arg[i]))) i++;
@@ -639,10 +639,10 @@ Macro parseMacroDefinition(const std::string &arg, const std::string &where) {
                 replacementStart = i + 1;
                 break;
             }
-            throw std::runtime_error("pcc preprocessor: malformed parameter list in #define at " + where);
+            throw std::runtime_error("rcc preprocessor: malformed parameter list in #define at " + where);
         }
         if (replacementStart == nameEnd) {
-            throw std::runtime_error("pcc preprocessor: unterminated parameter list in #define at " + where);
+            throw std::runtime_error("rcc preprocessor: unterminated parameter list in #define at " + where);
         }
     }
     macro.replacement = trim(arg.substr(replacementStart));
@@ -654,10 +654,10 @@ std::string preprocessFile(const std::string &path, MacroMap &macros,
                             const std::string &dateStr, const std::string &timeStr) {
     if (pragmaOnceFiles.count(path)) return "";
     if (std::find(includeStack.begin(), includeStack.end(), path) != includeStack.end()) {
-        throw std::runtime_error("pcc preprocessor: circular #include involving '" + path + "'");
+        throw std::runtime_error("rcc preprocessor: circular #include involving '" + path + "'");
     }
     if (includeStack.size() > 50) {
-        throw std::runtime_error("pcc preprocessor: #include nested too deeply (over 50 levels, likely a cycle)");
+        throw std::runtime_error("rcc preprocessor: #include nested too deeply (over 50 levels, likely a cycle)");
     }
     includeStack.push_back(path);
 
@@ -691,11 +691,11 @@ std::string preprocessFile(const std::string &path, MacroMap &macros,
 
             if (kw == "include") {
                 if (isActive()) {
-                    if (arg.size() < 2) throw std::runtime_error("pcc preprocessor: malformed #include at " + where(lineNo));
+                    if (arg.size() < 2) throw std::runtime_error("rcc preprocessor: malformed #include at " + where(lineNo));
                     char open = arg.front(), close = arg.back();
                     bool quoted = open == '"' && close == '"';
                     bool angled = open == '<' && close == '>';
-                    if (!quoted && !angled) throw std::runtime_error("pcc preprocessor: malformed #include at " + where(lineNo));
+                    if (!quoted && !angled) throw std::runtime_error("rcc preprocessor: malformed #include at " + where(lineNo));
                     std::string incName = arg.substr(1, arg.size() - 2);
                     std::string incPath = dirOf(path) + "/" + incName;
                     {
@@ -712,7 +712,7 @@ std::string preprocessFile(const std::string &path, MacroMap &macros,
                     size_t nameEnd = 0;
                     while (nameEnd < arg.size() && isIdentChar(arg[nameEnd])) nameEnd++;
                     if (nameEnd == 0 || !isIdentStart(arg[0])) {
-                        throw std::runtime_error("pcc preprocessor: #define with invalid name at " + where(lineNo));
+                        throw std::runtime_error("rcc preprocessor: #define with invalid name at " + where(lineNo));
                     }
                     std::string name = arg.substr(0, nameEnd);
                     macros[name] = parseMacroDefinition(arg, where(lineNo));
@@ -741,7 +741,7 @@ std::string preprocessFile(const std::string &path, MacroMap &macros,
                 continue;
             }
             if (kw == "elif") {
-                if (condStack.empty()) throw std::runtime_error("pcc preprocessor: #elif without #if at " + where(lineNo));
+                if (condStack.empty()) throw std::runtime_error("rcc preprocessor: #elif without #if at " + where(lineNo));
                 CondFrame &top = condStack.back();
                 bool cond = top.outerActive && !top.everTaken &&
                             evalCondition(arg, macros, currentFile, effLine(lineNo), dateStr, timeStr);
@@ -751,7 +751,7 @@ std::string preprocessFile(const std::string &path, MacroMap &macros,
                 continue;
             }
             if (kw == "else") {
-                if (condStack.empty()) throw std::runtime_error("pcc preprocessor: #else without #if at " + where(lineNo));
+                if (condStack.empty()) throw std::runtime_error("rcc preprocessor: #else without #if at " + where(lineNo));
                 CondFrame &top = condStack.back();
                 top.branchActive = top.outerActive && !top.everTaken;
                 if (top.branchActive) top.everTaken = true;
@@ -759,7 +759,7 @@ std::string preprocessFile(const std::string &path, MacroMap &macros,
                 continue;
             }
             if (kw == "endif") {
-                if (condStack.empty()) throw std::runtime_error("pcc preprocessor: #endif without #if at " + where(lineNo));
+                if (condStack.empty()) throw std::runtime_error("rcc preprocessor: #endif without #if at " + where(lineNo));
                 condStack.pop_back();
                 out << "\n";
                 continue;
@@ -770,12 +770,12 @@ std::string preprocessFile(const std::string &path, MacroMap &macros,
                 continue;
             }
             if (kw == "error") {
-                if (isActive()) throw std::runtime_error("pcc preprocessor: #error " + arg + " at " + where(lineNo));
+                if (isActive()) throw std::runtime_error("rcc preprocessor: #error " + arg + " at " + where(lineNo));
                 out << "\n";
                 continue;
             }
             if (kw == "warning") {
-                if (isActive()) std::cerr << "pcc preprocessor: warning: " << arg << " at " << where(lineNo) << "\n";
+                if (isActive()) std::cerr << "rcc preprocessor: warning: " << arg << " at " << where(lineNo) << "\n";
                 out << "\n";
                 continue;
             }
@@ -783,12 +783,12 @@ std::string preprocessFile(const std::string &path, MacroMap &macros,
                 if (isActive()) {
                     size_t p = 0;
                     while (p < arg.size() && std::isdigit(static_cast<unsigned char>(arg[p]))) p++;
-                    if (p == 0) throw std::runtime_error("pcc preprocessor: malformed #line at " + where(lineNo));
+                    if (p == 0) throw std::runtime_error("rcc preprocessor: malformed #line at " + where(lineNo));
                     long newLine = std::stol(arg.substr(0, p));
                     std::string fileArg = trim(arg.substr(p));
                     if (!fileArg.empty()) {
                         if (fileArg.size() < 2 || fileArg.front() != '"' || fileArg.back() != '"') {
-                            throw std::runtime_error("pcc preprocessor: malformed #line filename at " + where(lineNo));
+                            throw std::runtime_error("rcc preprocessor: malformed #line filename at " + where(lineNo));
                         }
                         currentFile = fileArg.substr(1, fileArg.size() - 2);
                     }
@@ -797,7 +797,7 @@ std::string preprocessFile(const std::string &path, MacroMap &macros,
                 out << "\n";
                 continue;
             }
-            throw std::runtime_error("pcc preprocessor: unknown directive '#" + kw + "' at " + where(lineNo));
+            throw std::runtime_error("rcc preprocessor: unknown directive '#" + kw + "' at " + where(lineNo));
         }
 
         if (!isActive()) {
@@ -808,7 +808,7 @@ std::string preprocessFile(const std::string &path, MacroMap &macros,
     }
 
     if (!condStack.empty()) {
-        throw std::runtime_error("pcc preprocessor: unterminated #if/#ifdef/#ifndef in '" + path + "'");
+        throw std::runtime_error("rcc preprocessor: unterminated #if/#ifdef/#ifndef in '" + path + "'");
     }
 
     includeStack.pop_back();
@@ -825,4 +825,4 @@ std::string preprocess(const std::string &path, const std::map<std::string, std:
     return preprocessFile(path, macros, includeStack, pragmaOnceFiles, currentDateStr(), currentTimeStr());
 }
 
-}  // namespace pcc
+}  // namespace rcc

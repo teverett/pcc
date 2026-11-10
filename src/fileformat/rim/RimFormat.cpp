@@ -4,7 +4,7 @@
 
 #include "fileformat/Pdp7TapePacking.h"
 
-namespace pcc {
+namespace rcc {
 
 std::string RimFormatWriter::write(const ObjectFile &obj) const {
     if (obj.unitBits != 18) {
@@ -24,4 +24,4 @@ ObjectFile RimFormatReader::read(const std::string &bytes) const {
     return obj;
 }
 
-}  // namespace pcc
+}  // namespace rcc

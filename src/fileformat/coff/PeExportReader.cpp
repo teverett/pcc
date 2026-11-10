@@ -2,7 +2,7 @@
 
 #include <stdexcept>
 
-namespace pcc {
+namespace rcc {
 namespace {
 
 [[noreturn]] void fail(const std::string &message) {

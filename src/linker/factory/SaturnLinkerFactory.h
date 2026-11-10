@@ -4,8 +4,8 @@
 
 #include "linker/Linker.h"
 
-namespace pcc {
+namespace rcc {
 
 std::unique_ptr<TargetLinker> makeSaturnLinker();
 
-}  // namespace pcc
+}  // namespace rcc

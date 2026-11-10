@@ -9,7 +9,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates Intel 8080 assembly (standard mnemonics) for the IR built by IRBuilder.
 // `generate()` emits a flat binary loaded at a fixed address (kBaseAddress), halting in an
@@ -199,4 +199,4 @@ class I8080Codegen : public Backend {
     std::map<int, std::string> irLabels_;  // see irLabel()
 };
 
-}  // namespace pcc
+}  // namespace rcc

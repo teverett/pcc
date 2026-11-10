@@ -2,7 +2,7 @@
 
 #include <sstream>
 
-namespace pcc {
+namespace rcc {
 
 namespace {
 
@@ -10,7 +10,7 @@ std::string slotRef(const ir::Slot *s) { return s->sourceName + "#" + std::to_st
 std::string funcRef(const ir::Function *f) { return f->sourceName + "#" + std::to_string(f->id); }
 
 // One fixed spelling per (base, signedness) pair, matching exactly what
-// grammar/PccIRParser.g4's typeSpec accepts.
+// grammar/RccIRParser.g4's typeSpec accepts.
 std::string typeSpecText(Type t) {
     std::string prefix = t.isUnsigned ? "unsigned " : "";
     std::string base;
@@ -261,4 +261,4 @@ std::string printIR(const ir::Program &prog, const std::string &sourceFile) {
     return out.str();
 }
 
-}  // namespace pcc
+}  // namespace rcc

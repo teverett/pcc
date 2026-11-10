@@ -4,7 +4,7 @@
 #include <map>
 #include <stdexcept>
 
-namespace pcc {
+namespace rcc {
 namespace {
 
 using Bytes = std::string;
@@ -159,4 +159,4 @@ void validateHostedElfObject(const Bytes &bytes) {
     }
 }
 
-}  // namespace pcc
+}  // namespace rcc

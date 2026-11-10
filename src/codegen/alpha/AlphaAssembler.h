@@ -5,7 +5,7 @@
 
 #include "fileformat/ObjectFile.h"
 
-namespace pcc {
+namespace rcc {
 
 // Non-registered COFF machine ID this project uses for the Alpha dialect
 // below; matches the real historical Windows NT/Alpha value (IMAGE_FILE_MACHINE_ALPHA).
@@ -33,7 +33,7 @@ constexpr uint16_t kAlphaRelocLow = 2;
 constexpr uint16_t kAlphaRelocAbs32 = 3;
 
 // In-process two-pass assembler for the narrow Alpha AXP dialect AlphaCodegen.cpp emits, not a
-// general-purpose Alpha assembler. Parses via the shared grammar/PccAsm.g4. Every encoding here
+// general-purpose Alpha assembler. Parses via the shared grammar/RccAsm.g4. Every encoding here
 // is a real, standard Alpha AXP instruction word (little-endian, fixed 4 bytes, no branch-delay
 // slot), bit-for-bit - this dialect only narrows which mnemonics/operand shapes exist:
 //
@@ -72,4 +72,4 @@ std::string assembleAlpha(const std::string &asmText);
 // resolves only to "offset from org 0" until that base is added).
 ObjectFile assembleAlphaObject(const std::string &asmText);
 
-}  // namespace pcc
+}  // namespace rcc

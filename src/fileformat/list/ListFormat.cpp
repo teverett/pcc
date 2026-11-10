@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace pcc {
+namespace rcc {
 
 std::string ListFormatWriter::write(const ObjectFile &obj) const {
     if (obj.unitBits != 18) {
@@ -34,4 +34,4 @@ ObjectFile ListFormatReader::read(const std::string &) const {
         "ListFormat.h's own header comment)");
 }
 
-}  // namespace pcc
+}  // namespace rcc

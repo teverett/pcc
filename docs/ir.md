@@ -8,7 +8,7 @@ assigned once by `IRBuilder`, in declaration order) that every
 backend gives its own fresh storage on every call - so direct and
 indirect/mutual recursion compute correctly, bounded only by whatever
 stack (hardware or software) that backend builds its frames on. The
-same IR works for every target pcc supports.
+same IR works for every target rcc supports.
 
 `src/ir/IRPrinter.{h,cpp}` renders a `Program` as human-readable
 pseudo-code. That text is what `--dump-ir` writes to `build/<name>.ir`,
@@ -16,7 +16,7 @@ and it's also a real, independently parseable language: every compile
 internally re-derives it regardless of `--dump-ir`, and
 `src/ir/IRValidator.h` parses it against the grammar below as a
 standing self-check that the printer and the grammar describing it
-haven't drifted apart — a mismatch throws as an internal pcc bug,
+haven't drifted apart — a mismatch throws as an internal rcc bug,
 never a user source error.
 
 ## Example
@@ -40,13 +40,13 @@ int main#3()
 
 ## Shape
 
-Described by `grammar/PccIRLexer.g4` + `grammar/PccIRParser.g4`:
+Described by `grammar/RccIRLexer.g4` + `grammar/RccIRParser.g4`:
 
 ```
 program    : '; --- globals ---' globalDecl*
              '; --- functions ---' funcDecl* EOF
 
-// The canonical, shortest real-C spelling of a pcc::Type (src/Type.h)
+// The canonical, shortest real-C spelling of a rcc::Type (src/Type.h)
 // - IRPrinter.cpp's typeSpecText(): always this one fixed spelling per
 // (base, signedness) pair, never the source grammar's fuller
 // combinatorial typeSpec (e.g. "short int"/"signed short").

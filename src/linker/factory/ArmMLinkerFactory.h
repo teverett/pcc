@@ -4,7 +4,7 @@
 
 #include "linker/Linker.h"
 
-namespace pcc {
+namespace rcc {
 
 // Builds a GenericLinker for cortex-m3/m4/m7 (ARMv7-M Thumb/Thumb-2): MovWLo/MovTHi for `MOVW`/
 // `MOVT`'s non-contiguous imm4:i:imm3:imm8 split, and Branch for `BL`/wide-`B`'s scrambled
@@ -12,4 +12,4 @@ namespace pcc {
 // RelocKinds.
 std::unique_ptr<TargetLinker> makeArmMLinker();
 
-}  // namespace pcc
+}  // namespace rcc

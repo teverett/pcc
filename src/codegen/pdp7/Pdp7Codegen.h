@@ -9,7 +9,7 @@
 #include "codegen/Codegen.h"
 #include "ir/IR.h"
 
-namespace pcc {
+namespace rcc {
 
 // Generates PDP-7 assembly for the IR built by IRBuilder; names are
 // already resolved to Slot/Function, so this is pure instruction
@@ -82,7 +82,7 @@ class Pdp7Codegen : public Backend {
     // Masks AC down to `to`'s value range and, for a signed type,
     // re-sign-extends from that range's top bit.
     void narrowAC(Type to);
-    int widthOfType(Type t) const { return pcc::widthOf(t, typeWidths()); }
+    int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     // `char`/`short`/`int` are each 1 pdp7 word; only `long` (2 words)
     // and `long long` (4 words) are "wide" on this backend.
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
@@ -388,4 +388,4 @@ class Pdp7Codegen : public Backend {
 // with everything.
 std::string pdp7RuntimeAsm(bool pushPop, bool divMod, bool uDivMod);
 
-}  // namespace pcc
+}  // namespace rcc
