@@ -1,7 +1,7 @@
 EXAMPLE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-ROOT := $(abspath $(EXAMPLE_DIR)/../..)
-PCC ?= $(ROOT)/build/bin/pcc
 BUILD_DIR ?= $(EXAMPLE_DIR)build
+
+include $(EXAMPLE_DIR)../examples.mk
 TARGET := m30626fjpfp
 
 .PHONY: all clean
