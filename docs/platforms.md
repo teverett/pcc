@@ -242,6 +242,29 @@ retro hardware through pluggable backends. Today it supports:
   Every `call`/`retl`/branch synthesizes its own required delay-slot
   `nop`. Verified under `qemu-system-sparc -cpu TI-SuperSparc-II`, both
   whole-program and a real cross-object `--link`; no automated test yet.
+- **vax** — 32-bit VAX-11/780 machine code (own operand dialect;
+  `VaxAssembler.h`): little-endian, variable-length instructions built
+  from an opcode byte plus one operand specifier per operand. The
+  shared assembler grammar only admits identifier/number/parenthesized
+  operands, so addressing modes are spelled `r0`..`r11`/`ap`/`fp`/`sp`,
+  `(rN)`, `-(rN)`, `ai (rN)` (autoincrement), `D(rN)`, `imm V` (a
+  short literal for 0..63, otherwise an operand-sized immediate; a
+  symbol becomes a relocated 32-bit field) and `abs V` (mode `0x9F` plus
+  a 32-bit address). Calls use the hardware `calls`/`ret` pair with a
+  zero entry mask; arguments are pushed right to left and reached
+  through `ap`, locals through `fp`, and results come back in `r0`
+  (`r1:r0` for `long long`). Real VAX conditional branches only reach
+  a signed byte, so `jbr` and `j<cc>` are fixed-size pseudo-branches
+  that hop over a `brw`. There is no `and`, unsigned divide or
+  logical right shift, so those become `mcoml`+`bicl`, a three-path
+  `divl3`/`extzv` sequence and `extzv`; 64-bit arithmetic uses
+  `adwc`/`sbwc`, `emul`, `ashq` and a bit-serial divide, with no
+  helper calls. The link base is `0x4000`, the entry stub sets
+  `sp` to `0x00100000`, and objects use the ad hoc COFF machine ID
+  `0x5641`. Verified under SIMH's `vax780`; `tests/vax/*.c` holds the
+  VAX-only cases, run alongside the shared corpus by
+  `tests/run_tests.sh --target=vax`, and `tests/run_link_tests.sh
+  --target=vax` covers cross-object linking. Not run by `make test`.
 
 Every global variable is a single statically allocated word; every Local
 and Param lives in a per-call frame that each backend builds on whatever
@@ -262,5 +285,5 @@ target's macro and its own): `__PDP7__`, `__8086__` (also for `8088`),
 `__ARMV7A__`, `__ARMV8A__` (also `__aarch64__`), `__CORTEX_M3__` (also
 for `cortex-m4`/`cortex-m7`, plus `__CORTEX_M4__`/`__CORTEX_M7__`),
 `__R10000__` (also for `r4000`, plus `__R4000__`), `__POWERPC__` (also
-`__ppc__`), `__SPARC__` (also `__sparc__`) — see `src/main.cpp`'s
+`__ppc__`), `__SPARC__` (also `__sparc__`), `__VAX__` (also `__vax__`) — see `src/main.cpp`'s
 `makeBackend()` comment.

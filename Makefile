@@ -75,7 +75,7 @@ SPACE +=
 # on every source file before ANTLR ever sees it) - not backend-
 # specific, but still their own subdirectories needing the same vpath
 # treatment.
-BACKEND_DIRS := $(SRC_DIR)/codegen/pdp7 $(SRC_DIR)/codegen/x86_8086 $(SRC_DIR)/codegen/m6502 $(SRC_DIR)/codegen/m65c02 $(SRC_DIR)/codegen/m68k $(SRC_DIR)/codegen/mc68328 $(SRC_DIR)/codegen/pdp11 $(SRC_DIR)/codegen/i8080 $(SRC_DIR)/codegen/pic16 $(SRC_DIR)/codegen/pic18 $(SRC_DIR)/codegen/z80 $(SRC_DIR)/codegen/i8008 $(SRC_DIR)/codegen/stm8 $(SRC_DIR)/codegen/m16c $(SRC_DIR)/codegen/mips $(SRC_DIR)/codegen/mcs51 $(SRC_DIR)/codegen/stm32 $(SRC_DIR)/codegen/i386 $(SRC_DIR)/codegen/armm $(SRC_DIR)/codegen/arm $(SRC_DIR)/codegen/arm64 $(SRC_DIR)/codegen/powerpc $(SRC_DIR)/codegen/sparc
+BACKEND_DIRS := $(SRC_DIR)/codegen/pdp7 $(SRC_DIR)/codegen/x86_8086 $(SRC_DIR)/codegen/m6502 $(SRC_DIR)/codegen/m65c02 $(SRC_DIR)/codegen/m68k $(SRC_DIR)/codegen/mc68328 $(SRC_DIR)/codegen/pdp11 $(SRC_DIR)/codegen/i8080 $(SRC_DIR)/codegen/pic16 $(SRC_DIR)/codegen/pic18 $(SRC_DIR)/codegen/z80 $(SRC_DIR)/codegen/i8008 $(SRC_DIR)/codegen/stm8 $(SRC_DIR)/codegen/m16c $(SRC_DIR)/codegen/mips $(SRC_DIR)/codegen/mcs51 $(SRC_DIR)/codegen/stm32 $(SRC_DIR)/codegen/i386 $(SRC_DIR)/codegen/armm $(SRC_DIR)/codegen/arm $(SRC_DIR)/codegen/arm64 $(SRC_DIR)/codegen/powerpc $(SRC_DIR)/codegen/sparc $(SRC_DIR)/codegen/vax
 AST_DIR      := $(SRC_DIR)/ast
 IR_DIR       := $(SRC_DIR)/ir
 LINKER_DIR   := $(SRC_DIR)/linker
@@ -138,6 +138,7 @@ HAND_SRCS := \
     $(FACTORY_DIR)/MipsLinkerFactory.cpp \
     $(FACTORY_DIR)/PowerPCLinkerFactory.cpp \
     $(FACTORY_DIR)/SparcLinkerFactory.cpp \
+    $(FACTORY_DIR)/VaxLinkerFactory.cpp \
     $(FACTORY_DIR)/Arm64LinkerFactory.cpp \
     $(FACTORY_DIR)/MCS51LinkerFactory.cpp \
     $(FACTORY_DIR)/PIC16LinkerFactory.cpp \
@@ -202,7 +203,9 @@ HAND_SRCS := \
     $(SRC_DIR)/codegen/powerpc/PowerPCCodegen.cpp \
     $(SRC_DIR)/codegen/powerpc/PowerPCAssembler.cpp \
     $(SRC_DIR)/codegen/sparc/SparcCodegen.cpp \
-    $(SRC_DIR)/codegen/sparc/SparcAssembler.cpp
+    $(SRC_DIR)/codegen/sparc/SparcAssembler.cpp \
+    $(SRC_DIR)/codegen/vax/VaxCodegen.cpp \
+    $(SRC_DIR)/codegen/vax/VaxAssembler.cpp
 
 ALL_SRCS := $(GENERATED_SRCS) $(HAND_SRCS)
 OBJS     := $(patsubst %,$(OBJ_DIR)/%.o,$(notdir $(ALL_SRCS)))
