@@ -395,6 +395,42 @@ retro hardware through pluggable backends. Today it supports:
   invention anyway - so `tests/run_tests.sh --target=saturn` drives a
   small from-scratch interpreter written just for it, the same idea as
   `8008`'s/`alpha`'s own. Not run by `make test`.
+- **tms320c6713** — TMS320C6713 (TI C67x VLIW DSP) machine code (own
+  operand dialect; `Tms320C6713Assembler.h`), deliberately using none of
+  the real chip's VLIW packing or dual-register-file/cross-path reads:
+  every instruction ends its own execute packet and only ever touches
+  the B register file (B0..B15), the same kind of always-correct
+  simplification `SparcCodegen`/`PowerPCCodegen` already make for their
+  own targets, not an invented encoding. B0 is `genExpr()`'s result and
+  also the sole predicate register for every conditional branch; B1/B2/
+  B4..B12 are further scratch; B13 permanently holds 0 (materialized
+  once at entry, matching Alpha's own hardwired `zero` idiom); B14 is
+  the frame pointer, B15 the hardware stack pointer (the real TI C6000
+  ABI's own role for both), and B3 the link/return-address register
+  (also the real ABI's own role). Real pipeline hazards are modeled with
+  explicit NOP padding rather than any instruction scheduling - every
+  branch is followed by 5 NOPs, every load by 4, every multiply by 1 -
+  since there's no native 32x32->32 multiply (only 16x16->32 `MPY`/
+  `MPYH`/`MPYHL`/`MPYLH`) or divide instruction either, so both `long`
+  arithmetic and `/`/`%` run software sequences. This is a first pass
+  with no relocatable object format at all (`Tms320C6713LinkerFactory`
+  produces no output formats) - only a whole-program flat `raw` binary,
+  so there's no `--link`/separate-compilation support and no
+  `tests/run_link_tests.sh --target=tms320c6713`. The link base is
+  `0x00020000`, the entry stub sets `B15` to `0x00100000`, and objects
+  use the ad hoc COFF machine ID `0x6713` (moot today, since nothing
+  ever reads a tms320c6713 object back in). No mainstream standalone
+  C6713 simulator suits headless, scriptable register checks (TI's own
+  Code Composer Studio simulator is a full interactive IDE, not a
+  scriptable bare core), and this backend's instruction stream depends
+  on those same real pipeline hazards no generic tool would model the
+  way this project's own codegen expects anyway, so
+  `tests/run_tests.sh --target=tms320c6713` instead drives a small
+  from-scratch C67x core written just for this, decoding exactly the
+  instruction words `Tms320C6713Assembler.cpp` ever emits and modeling
+  the branch/load/multiply delay slots faithfully; `tests/tms320c6713/
+  *.c` holds the C6713-only cases. Standard library only, nothing to
+  install. Not run by `make test`.
 
 Every global variable is a single statically allocated word; every Local
 and Param lives in a per-call frame that each backend builds on whatever

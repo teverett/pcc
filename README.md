@@ -11,10 +11,11 @@ triple syntax and `--list-triples`.
 # platforms
 
 Supported `--target` values: `pdp7`, `8086`/`8088`, `6502`/`65c02`,
-`68000`, `mc68328`, `pdp11`, `stm8`, `m16c`/`m30626fjpfp`, `8080`, `z80`, `8008`,
+`68000`, `mc68328`, `pdp11`, `pdp10`, `stm8`, `m16c`/`m30626fjpfp`, `8080`, `z80`, `8008`,
 `8051`/`8052`/`8031`/`8032`, `pic16`, `pic18`, `stm32`, `i386`,
 `armv7a`, `armv8a`, `cortex-m3`/`cortex-m4`/`cortex-m7`,
-`r10000`/`r4000`, `powerpc`, `sparc`, `vax`, `avr`, `alpha` — see
+`r10000`/`r4000`, `powerpc`, `sparc`, `vax`, `avr`, `alpha`, `saturn`,
+`tms320c6713` — see
 [`docs/platforms.md`](docs/platforms.md) for what each target's real
 hardware is and how it's tested.
 
@@ -22,7 +23,9 @@ hardware is and how it's tested.
 
 A small subset of C: `char`/`short`/`int`/`long`/`long long`, each
 signed or unsigned, pointers (`T*`, with real pointee-typed arithmetic
-and dereference), arrays, casts, and `sizeof`. String literals
+and dereference), arrays, casts, and `sizeof`. A function's return
+type can also be `void` (no other use of `void` - no `void*`, no
+`void` parameter - is supported). String literals
 (`"like this"`) are supported - each one lowers to the address of an
 anonymous, NUL-terminated `char` array holding its decoded bytes, the
 same as a hand-declared `char` array would. A text-level preprocessor
