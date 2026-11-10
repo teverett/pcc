@@ -271,7 +271,7 @@ jobs:
       - name: Build and run Windows hello example
         run: |
           export PATH="/opt/bin:$PATH"
-          mingw32-make -C examples/example1 windows PCC=../build/bin/pcc.exe
+          mingw32-make -C examples/example1 windows
           python3 - <<'PY'
           import subprocess
           output = subprocess.check_output(["examples/example1/build/hello-windows.exe"])
