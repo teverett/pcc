@@ -73,7 +73,11 @@ stmt : block
      | expr ';'
 
 ref  : IDENT '#' NUMBER        // "name#id" - a Slot or Function reference
+compoundOp : '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '^=' | '|=' | '<<=' | '>>='
 expr : NUMBER                                    // int literal
+     | 'oldval'? ref '[' expr ']' compoundOp expr  // CompoundAssign, indexed
+     | 'oldval'? ref compoundOp expr               // CompoundAssign
+     | 'oldval'? '*' '(' expr ')' compoundOp expr  // CompoundDerefAssign
      | ref '[' expr ']' ('=' expr)?              // index, or indexed assign
      | ref '=' expr                              // assign
      | '*' '(' expr ')' ('=' expr)?               // deref read, or deref assign
@@ -85,6 +89,10 @@ expr : NUMBER                                    // int literal
      | IDENT '(' ')'                               // intrinsic, e.g. _ion()
      | ref                                        // variable reference
 ```
+
+- `'oldval'` prefixes a `CompoundAssign`/`CompoundDerefAssign` only
+  when `yieldOld` is set (a postfix `++`/`--`), selecting the
+  pre-update value as the expression's own result.
 
 - `ref` (`name#id`) names a `Slot` or `Function` — the `#id` suffix
   disambiguates locals that shadow across scopes or share a name with

@@ -8,7 +8,20 @@ backend is selected — since every backend-specific decision
 after the IR exists, an optimizer written once benefits every target
 (see `docs/platforms.md` for the full list).
 
-Today there are five, run in this order (`src/main.cpp`):
+Today there are eight, run in this order (`src/main.cpp`):
+
+- **`ConstantPropagation`**
+  (`src/optimizers/constant_propagation/ConstantPropagation.cpp`) —
+  intraprocedural: walking one function body in source order, tracks
+  which scalar Local/Param currently holds a known literal and
+  replaces a later read with it directly, feeding `ConstantFolding`
+  new foldable expressions and `DeadCodeElimination` more unused
+  declarations. Restricted to a scalar whose address is never taken
+  (so only a direct write to it can invalidate the tracked value, with
+  no need to conservatively drop everything at a `Call`). An `If`
+  keeps a value only when both branches agree on it; a `While`
+  conservatively forgets every slot the loop could write, both before
+  and after. Runs first, feeding every later pass.
 
 - **`ConstantFolding`** (`src/optimizers/constant_folding/ConstantFolding.cpp`) —
   bottom-up folds any unary or binary expression whose operand(s) are
@@ -16,9 +29,7 @@ Today there are five, run in this order (`src/main.cpp`):
   `20`). Leaves an op unfolded when evaluating it on the host would
   require undefined behavior the real target's own instruction
   handles fine instead — division/modulo by a constant zero, or a
-  shift by an out-of-range amount. Runs first because it often turns
-  a once-variable initializer or condition into a literal that
-  `DeadCodeElimination` can then reason about.
+  shift by an out-of-range amount.
 
 - **`AlgebraicSimplification`**
   (`src/optimizers/algebraic_simplification/AlgebraicSimplification.cpp`) — strength reduction:
@@ -68,6 +79,18 @@ Today there are five, run in this order (`src/main.cpp`):
   subexpression's `--dump-ir` text can read ambiguously, though the
   real tree - and so the actual compiled program - is unaffected).
 
+- **`DeadStoreElimination`**
+  (`src/optimizers/dead_store_elimination/DeadStoreElimination.cpp`) —
+  removes a store to a scalar Local/Param whose value is never read
+  again, closing the gap `ConstantPropagation` leaves open. Same
+  address-never-taken restriction. Two cases, neither run to a
+  fixpoint: a candidate written but never read has every store to it
+  dropped; within one straight-line run of statements, a plain
+  `slot = expr;` immediately followed (no intervening read) by another
+  store to the same slot is dropped too. Runs before
+  `DeadCodeElimination` so a `LocalDecl` it strips down to a bare,
+  unread declaration looks unused to that pass too.
+
 - **`DeadCodeElimination`** (`src/optimizers/dead_code_elimination/DeadCodeElimination.cpp`)
   — removes statements that can never run (anything after a `return`
   in the same block, bare `;` statements) and local variables that
@@ -76,37 +99,34 @@ Today there are five, run in this order (`src/main.cpp`):
   side effect (a call), in which case it's kept as a bare expression
   statement instead.
 
+- **`IdenticalCodeFolding`**
+  (`src/optimizers/identical_code_folding/IdenticalCodeFolding.cpp`) —
+  merges functions with structurally identical bodies (up to
+  alpha-renaming of Params/Locals) into one definition, redirecting
+  every `Call`/`&fn` reference to a kept survivor. Changes which
+  function a merged pair's `&fn` resolves to, so code comparing two
+  originally-distinct function pointers for equality can observe the
+  merge — the same tradeoff other compilers accept under `-Os`. Only
+  a function with a body and no `@addr` pin participates, and only
+  when `!allowExternal`: a separately compiled file might still
+  reference a losing definition by name.
+
 - **`UnusedGlobalElimination`**
   (`src/optimizers/unused_global_elimination/UnusedGlobalElimination.cpp`)
   — `DeadCodeElimination`'s own local-variable removal, extended to
   globals: drops a global `Slot` nothing reads, writes, or takes the
   address of, directly or (the dispatch-table idiom) through another
-  still-live global's own array initializer. Globals need one extra
-  safety check locals never do — this subset has no `static`, so a
-  global is implicitly external and another, separately compiled file
-  could `extern` it — so `main.cpp` only ever runs this pass when
-  `!allowExternal` (never under real separate compilation,
-  `--format=coff`). Also never removes an explicitly `@addr`-pinned
-  global (the pin is itself a statement of intent this pass has no
-  way to know is safe to undo) or a `Function`, even an uncalled one
-  (see `UnusedGlobalElimination.h`'s own comment on why that's a
-  separate, larger feature). Runs last, after `DeadCodeElimination`,
-  so a global touched only from now-unreachable code correctly looks
-  unused too.
+  still-live global's own array initializer. Same `!allowExternal`
+  restriction as `IdenticalCodeFolding` — this subset has no `static`,
+  so a global is implicitly external and another, separately compiled
+  file could `extern` it. Also never removes an explicitly
+  `@addr`-pinned global or a `Function`, even an uncalled one. Runs
+  last, after `DeadCodeElimination`, so a global touched only from
+  now-unreachable code correctly looks unused too.
 
-Not yet attempted, because they'd need a real control-flow graph
-first: dead-*store* elimination, constant-condition `if`/`while`
-removal, and a flow-sensitive (cross-block) CSE.
+Not yet attempted, because it'd need a real control-flow graph:
+constant-condition `if`/`while` removal, and a flow-sensitive
+(cross-block) CSE.
 
-## IR grammar
-
-The IR's own printed text (what `--dump-ir` writes, and what every
-compile internally re-derives regardless of `--dump-ir` — see
-`src/ir/IRPrinter.h`) is a real, independently parseable language,
-described by `grammar/PccIRLexer.g4` + `grammar/PccIRParser.g4` (generated
-via ANTLR, same as the C frontend and the `PccAsm` grammar every
-backend's in-process assembler shares). `src/ir/IRValidator.h` parses
-every program's own printed IR against that generated parser on
-*every* compile — optimized or not — as a standing self-check that
-`IRPrinter.cpp` and the grammar describing it haven't drifted apart;
-a mismatch throws as an internal pcc bug, never a user source error.
+See `docs/ir.md` for the IR these passes operate on, its printed-text
+grammar, and `IRValidator`'s self-check.

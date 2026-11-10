@@ -22,7 +22,7 @@ pcc [--target=<name>] [--format=asm|<target-specific>] [--out=file]
 
 | Switch | Meaning |
 | --- | --- |
-| `--target=<name>[-<host>]` | Which backend to compile for, and optionally which real OS the produced executable will run on. `<name>` default: `pdp7`. One of `pdp7`, `8086`, `8088`, `6502`, `65c02`, `68000`, `mc68328`, `pdp11`, `stm8`, `m16c`, `8080`, `z80`, `8008`, `8051`, `8052`, `8031`, `8032`, `stm32`, `i386`, `pic16`, `pic18`, `r10000`, `r4000`, `cortex-m3`, `cortex-m4`, `cortex-m7`, `armv7a`, `armv8a`, `powerpc`, `sparc` — see `docs/platforms.md`. Several of these are deliberate, software-identical aliases for a sibling target rather than separate backends (`8088`→`8086`, `8052`/`8031`/`8032`→`8051`, `r4000`→`r10000`, `cortex-m4`/`cortex-m7`→`cortex-m3`) - see each one's own entry in `docs/platforms.md` and `src/main.cpp`'s own `makeBackend()` comment. `<host>` defaults to `none` (freestanding/bare metal) and is otherwise `linux`/`windows` (`i386` only) or `macos` (`armv8a` only) - see "Hosted executables" below. Run `pcc --list-triples` for every `<name>-<host>` combination actually supported. `--hosted`/`--hosted=windows`/`--hosted=macos` remain accepted as older synonyms for `-linux`/`-windows`/`-macos`. |
+| `--target=<name>[-<host>]` | Which backend to compile for, and optionally which real OS the produced executable will run on. `<name>` default: `pdp7`. One of `pdp7`, `8086`, `8088`, `6502`, `65c02`, `68000`, `mc68328`, `pdp11`, `stm8`, `m16c`, `8080`, `z80`, `8008`, `8051`, `8052`, `8031`, `8032`, `stm32`, `i386`, `pic16`, `pic18`, `r10000`, `r4000`, `cortex-m3`, `cortex-m4`, `cortex-m7`, `armv7a`, `armv8a`, `powerpc`, `sparc` — see `docs/platforms.md`. Several of these are deliberate, software-identical aliases for a sibling target rather than separate backends (`8088`→`8086`, `8052`/`8031`/`8032`→`8051`, `r4000`→`r10000`, `cortex-m4`/`cortex-m7`→`cortex-m3`) - see each one's own entry in `docs/platforms.md` and `src/main.cpp`'s own `makeBackend()` comment. `<host>` defaults to `none` (freestanding/bare metal) and is otherwise `linux`/`windows` (`i386` only) or `macos` (`armv8a` only) - see "Hosted executables" below. Run `pcc --list-triples` for every `<name>-<host>` combination actually supported. |
 | `--list-triples` | Print every supported `<name>-<host>` triple, one per line, and exit. |
 | `--format=<fmt>` | What to produce. `asm` (the default) means "just the generated assembly text, don't assemble it". Every target supports the same uniform set of real formats, each handed to that target's own in-process assembler - no external assembler tool needed for any of them: `raw` (a complete, directly-loadable/bootable whole program - `hex` instead, for `pic16`/`pic18`'s own Intel-HEX convention), and the five real object-file formats real separate compilation uses - `coff`, `elf`, `macho`, `aout` (each a genuine relocatable object with symbols/relocations, for a future `--link` step), and `objraw` (a bare, symbol-less dump of the assembled bytes, for inspection only - it can never be `--link`ed, since it has thrown away the very `fn_main` symbol every target's linker needs). The two oldest targets keep their own historical format names instead: `pdp7` supports `a7out`, `list`, `ptr`, `rim`, `coff` (word-oriented paper-tape/listing formats, from before the format-neutral object model existed); `8086`/`8088` support `bin`, `coff`, `elf`. A non-object format (`raw`/`hex`/`bin`/`asm`, or `pdp7`'s own `a7out`/`list`/`ptr`/`rim`) takes exactly one `.c` file - only the real object formats support combining multiple independently-compiled files, via `--link` afterward. |
 | `--out=file` | Where to write the result. Omit it to write to stdout; with an object format and no `--out`, output instead goes to `build/<name>.o` (one per input file). |
@@ -38,6 +38,8 @@ Real separate compilation is the only way to combine more than one
 files, each compiled completely independently, one `build/<name>.o`
 per file), then combine every `.o` with `--link` into the final
 program.
+
+### Hosted executables
 
 For an i386 Linux executable, compile with the `i386-linux` triple so
 external symbols and calls use the i386 C ABI (`--format` is then implied
@@ -135,13 +137,13 @@ require an external system linker.
 ## Link mode
 
 ```
-pcc --link [--target=<name>] --format=<target-native> [--out=file] file1.o [file2.o ...]
+pcc --link [--target=<name>[-<host>]] --format=<target-native> [--gc-sections] [--out=file] file1.o [file2.o ...]
 ```
 
 | Switch | Meaning |
 | --- | --- |
 | `--link` | Switches from compile mode to link mode. |
-| `--target=<name>` | Which target's linker to use. Default: `pdp7`. Every target listed above supports `--link`; none is limited to single-file whole-program compiles. |
+| `--target=<name>[-<host>]` | Which target's linker to use. Default: `pdp7`. Every target listed above supports `--link`; none is limited to single-file whole-program compiles. A hosted triple (`i386-linux`, `i386-windows`, `armv8a-macos`) links internally instead - see "Hosted executables" above; `--format` is then implied and `--gc-sections` doesn't apply. |
 | `--format=<fmt>` | Final linked output format. Every target except `pdp7`/`8086`/`8088` supports the same uniform set: `flat` (just the final bytes, no container at all), `coff`, `elf`, `aout`. `pdp7` supports its own historical set instead - `a7out`, `list`, `ptr`, `rim`, `coff`, `aout`; `8086`/`8088` support `raw` (a real, directly-bootable 512-byte boot sector) in place of `flat`, plus `coff`, `elf`, `aout`. |
 | `--out=file` | Where to write the linked result. Omit it to write to stdout. |
 | `--gc-sections` | Drops any input object's own function/global that's never reached from the entry point's own call graph (a real `extern` reference used purely to take a function's address, not to call it, still counts as reached), instead of linking every object in full. Only valid with a non-hosted `--target` (e.g. `pdp7`): each object's own cross-file-visible names (`g_`/`p_`/`fn_`, pdp7's own `G_`/`P_`/`FN_`) mark where one function/global ends and the next begins, so dropping one never removes part of another still in use - an object whose own backend gives no way to tell a same-object address reference's real target apart from any other symbol in it is linked in full regardless, the same as without this flag. |

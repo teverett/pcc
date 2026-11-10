@@ -14,13 +14,13 @@ tree and let the user review and commit them themselves.
 * Do not write historical documentation explaining changes or bug fixes. Only write documentation that explains how code works.
 * Remove any history or bug-fix comments from code. Only leave comments that explain how the code works.
 * Do not write docstrings, JSDoc, or inline comments unless logic is non-obvious.
-* Documentation in code should be limited to explaining what a method or fucntion does and should only be written if
+* Documentation in code should be limited to explaining what a method or function does and should only be written if
   it is non-obvious
 
 ## CI
 
 * Every github project should have a dependabot configuration
-* Every githi ub project should have a CI configuration that runs tests on every push and pull request
+* Every github project should have a CI configuration that runs tests on every push and pull request
 * The CI configuration should run on Windows, Linux, and MacOS
 
 ## Lumpy
@@ -31,6 +31,4 @@ tree and let the user review and commit them themselves.
 
 * Treat pcc as a general purpose multitarget compiler and linker
 * Do not create boot loaders or boot disks
-
-
 

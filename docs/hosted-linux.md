@@ -1,8 +1,8 @@
 # Internal Linux hosted linking
 
 The hosted Linux target emits ELF32/i386 executables directly. It never invokes
-a system linker. Compile with `--target=i386 --hosted --format=elf`; link the
-resulting objects with the same target options and `--link`.
+a system linker. Compile with `--target=i386-linux`; link the resulting
+objects with the same `--target` and `--link`.
 
 `-lc` selects the actual i386 C library. Install its development files (for
 example Debian's `libc6-dev:i386`) or provide their directories with `-L`.

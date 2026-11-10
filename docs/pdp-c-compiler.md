@@ -17,15 +17,17 @@ as a prototype, resolved by name against whichever file actually
 defines it regardless of textual order.
 
 Expressions: the usual arithmetic/comparison/logical/bitwise operators
-(see "Bitwise operators" below for that group specifically), `=`
-assignment, `&`/`*` (address-of/dereference), `arr[i]` indexing,
-`f(...)` calls (including a call through a computed address,
-`(expr)()` — see `IR.h`'s `ExprKind::CallPtr`), an explicit
-`(type)expr` cast, `sizeof(type)`/`sizeof(expr)`, and the three
-literal forms: a `NUMBER` (with an optional `u`/`U`/`l`/`L`/`ll`/`LL`
-integer suffix picking its type, same spelling as ISO C), a `CHARLIT`
-(`'x'`), and a `STRINGLIT` (`"..."`) — see "Scope and limitations"
-below for what each literal form does and doesn't support.
+(see "Bitwise operators" below for that group specifically), `=` and
+the ten compound-assignment operators (`+= -= *= /= %= &= ^= |= <<=
+>>=`), prefix/postfix `++`/`--`, the ternary operator (`cond ? then :
+els`), `&`/`*` (address-of/dereference), `arr[i]` indexing, `f(...)`
+calls (including a call through a computed address, `(expr)()` — see
+`IR.h`'s `ExprKind::CallPtr`), an explicit `(type)expr` cast,
+`sizeof(type)`/`sizeof(expr)`, and the three literal forms: a `NUMBER`
+(with an optional `u`/`U`/`l`/`L`/`ll`/`LL` integer suffix picking its
+type, same spelling as ISO C), a `CHARLIT` (`'x'`), and a `STRINGLIT`
+(`"..."`) — see "Scope and limitations" below for what each literal
+form does and doesn't support.
 
 Statements: `{ }` blocks, `if`/`else`, `while`, `for` (desugared into
 a block containing a `while`, with the post-statement kept separate so
@@ -35,9 +37,7 @@ optionally initialized), a bare expression statement, and
 `asm { ... }` (see "Inline asm" below).
 
 Not in this subset: `struct`/`union`/`enum`/`typedef`, floating point,
-variadic functions, `switch`/
-`goto`, the ternary operator, compound-assignment operators (`+=` and
-friends), `++`/`--`, and designated initializers.
+variadic functions, `switch`/`goto`, and designated initializers.
 
 ## Scope and limitations
 
@@ -71,8 +71,8 @@ Deliberate simplifications, not bugs:
   or an explicit `&arr[0]`/`&arr` is required to get its address; a
   bare array name used anywhere else is a compile error.
 - An array's initializer is always a literal list (`{1, -2, 3}`; each
-  literal may be negated), or a
-  bare symbol name standing for that symbol's own address — the
+  literal may be negated), or a bare symbol name standing for that
+  symbol's own address — the
   dispatch-table idiom a jump table needs (`int t[] = {f, g};`) — never
   a general expression. Under real separate compilation, a bare name
   here (or after `&`) that isn't defined, called, or declared `extern`

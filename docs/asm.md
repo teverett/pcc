@@ -22,11 +22,17 @@ label      : IDENT ':'
 statement  : IDENT '=' expr                                   // assignStmt
            | 'times' '(' expr ')' (IDENT | NUMBER) operand*   // timesStmt
            | (IDENT | NUMBER) operand*                        // instrStmt
-operand    : '[' expr ']' | expr
+operand    : IDENT? '[' expr ']' | expr
 expr       : syllable syllable*
 syllable   : ('+' | '-')? atom
 atom       : IDENT | NUMBER | '(' expr ')'
 ```
+
+- A bracketed memory operand may carry a leading bare size word
+  (`byte`/`word`, e.g. i386's `mov byte [ebp-4],al`) distinguishing how
+  many bytes it addresses from the register operand's own width;
+  purely additive syntax, unused by any target with no
+  narrower-than-native-int load/store.
 
 - Exactly one statement per physical line — a multi-word data
   declaration is just several consecutive lines, never a `;`-joined
