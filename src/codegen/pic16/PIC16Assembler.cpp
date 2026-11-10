@@ -452,16 +452,27 @@ class Assembler {
         // MOVLW with the low/high byte of a code-space label's word
         // address, splitting a function's program-memory address across
         // two literal loads since no single instruction loads it as data.
-        // Object-mode relocation of a split code-space address isn't
-        // implemented, so this is a loud compile error under separate
-        // compilation instead of a silently wrong value.
+        // An extern (cross-file) symbol gets a relocation instead of a
+        // hard error, same as controlAddr()'s GOTO/CALL case - its field
+        // is 0 pre-link (resolveSyllable() never resolves it locally), so
+        // the relocation's additive patch has nothing to carry into.
+        // Taking the address of a function defined in THIS SAME file
+        // under separate compilation still isn't supported: that would
+        // need the field's own non-zero pre-link byte plus this object's
+        // base to add correctly across the independent lo/hi instruction
+        // words, which isn't implemented, so it stays a loud compile
+        // error instead of a silently wrong value.
         if (mnemonic == "movlwcl" || mnemonic == "movlwch") {
             std::string externalName;
             bool needsBaseShift = false;
             uint32_t v = evalExpr(operandAt(ops, 0, mnemonic, 1), &externalName, &needsBaseShift);
-            if (stage_ == 2 && (needsBaseShift || !externalName.empty())) {
-                fail("'" + mnemonic + "': taking a function's address isn't supported under separate compilation "
-                     "on this target");
+            if (stage_ == 2 && needsBaseShift) {
+                fail("'" + mnemonic + "': taking the address of a function defined in this same file isn't "
+                     "supported under separate compilation on this target");
+            }
+            if (stage_ == 2 && !externalName.empty()) {
+                relocations_.push_back({byteOffset(), externalName,
+                                        mnemonic == "movlwcl" ? kPIC16RelocCodeLo : kPIC16RelocCodeHi});
             }
             uint8_t k = mnemonic == "movlwcl" ? static_cast<uint8_t>(v & 0xFF) : static_cast<uint8_t>((v >> 8) & 0xFF);
             emitWord(static_cast<uint16_t>(0x3000 | k));

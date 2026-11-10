@@ -44,6 +44,13 @@ constexpr uint16_t kPIC18RelocGotoCallHiNibble = 3;
 // touching. PIC18LinkerFactory.cpp's `patchDataAbs8` bound-checks this.
 constexpr uint16_t kPIC18RelocDataAbs8 = 4;
 
+// Patches MOVLW's 8-bit literal field with the low/next-8-bits byte of an
+// extern function's code-space byte address (genAddrOf()'s MOVLWCL/MOVLWCH
+// pair above). Already byte-addressed like kPIC18RelocDataAbs8, unlike
+// GOTO/CALL's word-address field - no halving needed in the patch.
+constexpr uint16_t kPIC18RelocCodeLo = 5;
+constexpr uint16_t kPIC18RelocCodeHi = 6;
+
 // In-process two-pass assembler for the PIC18 subset PIC18Codegen.cpp
 // emits - not general purpose (no macros, no conditional assembly, no
 // `--format=coff`). Produces real PIC18 machine code (16-bit words,

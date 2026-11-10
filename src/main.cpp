@@ -119,7 +119,7 @@ void usage(const char *argv0) {
               << " [--target=<target>[-<host>]] [--format=asm|<target-specific>] [--out file] [--assembler path]\n"
                  "       [--optimize] [--dump-ir] [--dump-asm] file.c [file2.c ...]\n"
                  "   or: " << argv0
-              << " --link [--target=<target>[-<host>]] --format=<target-native> [--out file] file1.o [file2.o ...]\n"
+              << " --link [--target=<target>[-<host>]] --format=<target-native> [--gc-sections] [--out file] file1.o [file2.o ...]\n"
                  "\n"
                  "<target> is a backend name (e.g. pdp7, i386, armv8a) and <host> is the real OS\n"
                  "the produced executable runs on - 'none' (the default, meaning freestanding/\n"
@@ -469,6 +469,7 @@ int main(int argc, char **argv) {
     bool dumpIr = false;
     bool dumpAsm = false;
     bool link = false;
+    bool gcSections = false;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -515,6 +516,8 @@ int main(int argc, char **argv) {
             dumpAsm = true;
         } else if (arg == "--link") {
             link = true;
+        } else if (arg == "--gc-sections") {
+            gcSections = true;
         } else if (arg == "-h" || arg == "--help") {
             usage(argv[0]);
             return 0;
@@ -589,6 +592,14 @@ int main(int argc, char **argv) {
         std::cerr << "-L/-l/--linker require --link and a hosted --target (e.g. --target=i386-linux)\n";
         return 1;
     }
+    if (gcSections && !link) {
+        std::cerr << "--gc-sections requires --link\n";
+        return 1;
+    }
+    if (gcSections && hosted) {
+        std::cerr << "--gc-sections is only valid with --link and a non-hosted --target (e.g. --target=pdp7)\n";
+        return 1;
+    }
 
     // --link mode: merging .o files (TargetLinker) and writing the result
     // in a given format (FileFormatWriter) are decoupled; `target` picks
@@ -645,7 +656,7 @@ int main(int argc, char **argv) {
                 pcc::FileFormatKind kind = pcc::detectFileFormat(bytes);
                 objects.push_back(pcc::makeFileFormatReader(kind)->read(bytes));
             }
-            pcc::ObjectFile linked = linker->merge(objects);
+            pcc::ObjectFile linked = linker->merge(objects, gcSections);
             writeResult(outPath, writer->write(linked));
         } catch (const std::exception &e) {
             std::cerr << e.what() << "\n";

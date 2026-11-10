@@ -55,6 +55,13 @@ constexpr uint16_t kPIC16RelocGotoCall = 1;
 // since the whole GPR bank (0x0C-0x4F) fits in 7 bits. No word/byte
 // scaling needed; file-register space is already byte-addressed 1:1.
 constexpr uint16_t kPIC16RelocData = 2;
+// Patches movlwcl/movlwch's 8-bit literal field with the low/high byte of
+// a function's code-space byte address (the same value genAddrOf's
+// same-file case already splits locally - see PIC16Codegen.cpp's
+// ir::ExprKind::Func case). No word/byte scaling: movlwcl/movlwch always
+// operate on the full byte address, unlike GOTO/CALL's word-address field.
+constexpr uint16_t kPIC16RelocCodeLo = 3;
+constexpr uint16_t kPIC16RelocCodeHi = 4;
 
 // In-process two-pass assembler for the PIC16 mid-range (14-bit core)
 // subset PIC16Codegen.cpp emits - not general purpose (no macros, no

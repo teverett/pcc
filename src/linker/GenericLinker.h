@@ -12,6 +12,15 @@ namespace pcc {
 using RelocPatchFn = std::function<void(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value,
                                          uint32_t siteFinalAddr)>;
 
+// Reads back a relocation site's own pre-patch embedded address field (whatever a matching
+// RelocPatchFn would otherwise combine `value` into) - only needed for `gcSections`, to find which
+// of *this object's own* other symbols a "..": a reference baked as a raw same-object offset
+// rather than a named symbol (see GenericLinker.h's own class comment) - actually targets, since
+// that target's name isn't preserved past assembly. A relocation type with no entry here is
+// assumed capable of targeting any other symbol in its own object with no way to tell which, so
+// `gcSections` never splits an object that uses it - correctness over precision.
+using AddrFieldExtractFn = std::function<uint32_t(const std::vector<uint8_t> &image, uint32_t siteOffset)>;
+
 // Reusable patch kinds for plain 16/32-bit absolute and relative fields. A split hi/lo address
 // load or a non-contiguous branch field needs its own dedicated kind instead.
 namespace RelocKinds {
@@ -40,6 +49,9 @@ struct GenericLinkerConfig {
     // itself never assembles anything, only merges already-assembled bytes.
     ObjectFile entryObject;
     std::unordered_map<uint16_t, RelocPatchFn> relocPatchers;
+    // Only consulted when `merge(objects, /*gcSections=*/true)` needs to resolve a "..".-typed
+    // relocation's own real target (see AddrFieldExtractFn's own comment).
+    std::unordered_map<uint16_t, AddrFieldExtractFn> addrFieldExtractors;
     std::vector<std::string> outputFormats;
 
     // How many packed .textBytes bytes make up one addressable/relocatable unit. `1` for a
@@ -73,7 +85,7 @@ class GenericLinker : public TargetLinker {
    public:
     explicit GenericLinker(GenericLinkerConfig config) : config_(std::move(config)) {}
 
-    ObjectFile merge(const std::vector<ObjectFile> &objects) const override;
+    ObjectFile merge(const std::vector<ObjectFile> &objects, bool gcSections = false) const override;
     std::vector<std::string> outputFormats() const override { return config_.outputFormats; }
 
    private:

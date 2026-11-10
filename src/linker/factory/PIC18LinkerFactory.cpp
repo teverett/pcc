@@ -76,6 +76,20 @@ void patchDataAbs8(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t va
     }
     image[siteOffset] = static_cast<uint8_t>(sum);
 }
+
+// Masked add into MOVLW's 8-bit literal field with the low/next-8-bits
+// byte of an extern function's resolved byte address - already
+// byte-addressed like patchDataAbs8, unlike GOTO/CALL's word-address
+// field. The field is always 0 pre-link for this relocation kind (only
+// an extern symbol uses it - see PIC18Assembler.cpp's movlwcl/movlwch
+// case), so there's no carry to lose by patching the lo/hi byte
+// independently.
+void patchCodeLo(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t) {
+    image[siteOffset] = static_cast<uint8_t>(image[siteOffset] + (value & 0xFF));
+}
+void patchCodeHi(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t) {
+    image[siteOffset] = static_cast<uint8_t>(image[siteOffset] + ((value >> 8) & 0xFF));
+}
 }  // namespace
 
 std::unique_ptr<TargetLinker> makePIC18Linker() {
@@ -87,6 +101,8 @@ std::unique_ptr<TargetLinker> makePIC18Linker() {
     config.relocPatchers[kPIC18RelocGotoCallMid] = patchGotoCallMid;
     config.relocPatchers[kPIC18RelocGotoCallLo] = patchGotoCallLo;
     config.relocPatchers[kPIC18RelocDataAbs8] = patchDataAbs8;
+    config.relocPatchers[kPIC18RelocCodeLo] = patchCodeLo;
+    config.relocPatchers[kPIC18RelocCodeHi] = patchCodeHi;
     config.outputFormats = {"flat", "coff", "elf", "aout"};
     // Data-space linking begins at 0x22, right after the fixed
     // pseudo-register equate region (0x00-0x21).

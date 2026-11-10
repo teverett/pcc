@@ -37,6 +37,23 @@ void patchPIC16Data(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t v
     put16(image, siteOffset, static_cast<uint16_t>((word & ~0x7Fu) | addr));
 }
 
+// Masked add into MOVLW's 8-bit literal field (bits [7:0]) with an extern
+// function's resolved word address (`value` is a byte address, halved
+// here, matching patchPIC16GotoCall). The field is always 0 pre-link for
+// this relocation kind (only an extern symbol uses it - see
+// PIC16Assembler.cpp's movlwcl/movlwch case), so there's no carry to lose
+// by patching the lo/hi byte independently.
+void patchPIC16CodeLo(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t) {
+    uint16_t word = get16(image, siteOffset);
+    uint16_t lo = static_cast<uint16_t>(((word & 0xFF) + (value / 2)) & 0xFF);
+    put16(image, siteOffset, static_cast<uint16_t>((word & ~0xFFu) | lo));
+}
+void patchPIC16CodeHi(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t) {
+    uint16_t word = get16(image, siteOffset);
+    uint16_t hi = static_cast<uint16_t>(((word & 0xFF) + ((value / 2) >> 8)) & 0xFF);
+    put16(image, siteOffset, static_cast<uint16_t>((word & ~0xFFu) | hi));
+}
+
 // Must mirror PIC16Codegen.cpp's own declareRam() pseudo-register
 // equates exactly, then points SP at SSTACK before calling fn_main.
 const std::string kEntryAsm = "org 0\n"
@@ -65,6 +82,8 @@ std::unique_ptr<TargetLinker> makePIC16Linker() {
     config.entryObject = assemblePIC16Object(kEntryAsm);
     config.relocPatchers[kPIC16RelocGotoCall] = patchPIC16GotoCall;
     config.relocPatchers[kPIC16RelocData] = patchPIC16Data;
+    config.relocPatchers[kPIC16RelocCodeLo] = patchPIC16CodeLo;
+    config.relocPatchers[kPIC16RelocCodeHi] = patchPIC16CodeHi;
     config.outputFormats = {"flat", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }

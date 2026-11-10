@@ -278,6 +278,7 @@ test: all $(BIN_DIR)/preprocessor_test $(BIN_DIR)/archive_reader_test $(BIN_DIR)
 	python3 tests/hosted_internal_linker_test.py $(TARGET)
 	python3 tests/hosted_linux_linker_test.py $(TARGET)
 	python3 tests/pic16_function_pointer_call_test.py $(TARGET)
+	python3 tests/pic16_pic18_extern_function_address_test.py $(TARGET)
 	./tests/run_tests.sh $(TARGET) --target=pdp7
 	./tests/run_tests.sh $(TARGET) --target=8086
 	./tests/run_tests.sh $(TARGET) --target=6502

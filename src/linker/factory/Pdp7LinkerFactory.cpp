@@ -92,6 +92,16 @@ std::unique_ptr<TargetLinker> makePdp7Linker() {
     config.relocPatchers[kPdp7RelocOr] = patchPdp7Or;
     config.relocPatchers[kPdp7RelocAdd] = patchPdp7Add;
     config.relocPatchers[kPdp7RelocSub] = patchPdp7Sub;
+    // Only "+"-combined relocations ever use the pseudo-symbol ".." (Pdp7Assembler.cpp's own
+    // `needsBaseShift` always pushes '+'), so this is the only extractor `--gc-sections` needs.
+    // The low 13 bits already sitting at the site - the same field patchPdp7Add's own `addrPart`
+    // reads before adding to it - are that same-object target's own pre-link address in word
+    // units, the same scale `patchPdp7Add`'s own `value` argument arrives in; GenericLinker's own
+    // section math is all in packed-byte units (`addressUnitBytes = 3` below), so this converts
+    // before returning, the same conversion GenericLinker itself undoes for every RelocPatchFn.
+    config.addrFieldExtractors[kPdp7RelocAdd] = [](const std::vector<uint8_t> &image, uint32_t siteOffset) {
+        return (read18(image, siteOffset) & (kAddressFieldLimit - 1)) * 3;
+    };
     config.outputFormats = {"a7out", "list", "ptr", "rim", "coff", "aout"};
     config.addressUnitBytes = 3;
     config.outputUnitBits = 18;
