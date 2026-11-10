@@ -19,6 +19,8 @@ bool hasSideEffect(const ir::Expr *e) {
         case ir::ExprKind::Intrinsic:
         case ir::ExprKind::Assign:
         case ir::ExprKind::DerefAssign:
+        case ir::ExprKind::CompoundAssign:
+        case ir::ExprKind::CompoundDerefAssign:
             return true;
         default:
             break;
@@ -43,13 +45,16 @@ void collectDeps(const ir::Expr *e, std::unordered_set<ir::Slot *> &deps) {
     if (e->slot) deps.insert(e->slot);
     collectDeps(e->lhs.get(), deps);
     collectDeps(e->rhs.get(), deps);
+    collectDeps(e->elseExpr.get(), deps);
     for (const auto &arg : e->args) collectDeps(arg.get(), deps);
 }
 
 // Canonical key for `e`'s shape: two subtrees match iff textually identical
-// (no commutative-operand normalization, no alias reasoning). Only called
-// on an eligible subtree, so the side-effecting cases below can't occur;
-// their fallback just avoids a silent false match if that invariant breaks.
+// (no commutative-operand normalization, no alias reasoning). isEligible
+// only calls this on subtrees free of side effects, so the side-effecting
+// cases below can't occur in practice; their fallback (keyed by address,
+// so it never matches another subtree) just avoids a silent false match if
+// that invariant ever breaks.
 std::string exprKey(const ir::Expr *e) {
     if (!e) return "_";
     switch (e->kind) {
@@ -65,8 +70,17 @@ std::string exprKey(const ir::Expr *e) {
             return "B" + e->op + "(" + exprKey(e->lhs.get()) + "," + exprKey(e->rhs.get()) + ")";
         case ir::ExprKind::Func:
             return "F" + std::to_string(e->func->id);
+        case ir::ExprKind::Convert:
+            return "C" + std::to_string(static_cast<int>(e->type.base)) + "_" +
+                   std::to_string(e->type.isUnsigned) + "_" + std::to_string(e->type.ptrDepth) +
+                   "(" + exprKey(e->lhs.get()) + ")";
+        case ir::ExprKind::Ternary:
+            return "T(" + exprKey(e->lhs.get()) + "," + exprKey(e->rhs.get()) + "," +
+                   exprKey(e->elseExpr.get()) + ")";
         case ir::ExprKind::Assign:
         case ir::ExprKind::DerefAssign:
+        case ir::ExprKind::CompoundAssign:
+        case ir::ExprKind::CompoundDerefAssign:
         case ir::ExprKind::Call:
         case ir::ExprKind::CallPtr:
         case ir::ExprKind::Intrinsic:

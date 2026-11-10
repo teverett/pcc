@@ -216,7 +216,7 @@ bool IdenticalCodeFolding::run(ir::Program &prog, const std::string &sourceFile)
     for (size_t i = 0; i < prog.functionBodies.size(); i++) {
         ir::Function *f = prog.functionBodies[i].func;
         if (f->isExternal || f->hasAddress) continue;
-        CanonCtx ctx{f};
+        CanonCtx ctx{f, {}, 0};
         groups[signatureOf(f, prog.functionBodies[i].body.get(), ctx)].push_back(i);
     }
 

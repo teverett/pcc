@@ -6,6 +6,8 @@ tree and let the user review and commit them themselves.
 
 ## Bug Fixes
 
+* Every bug that is discovered should be logged in docs/known-bugs.md
+* When a bug is fixed, the corresponding entry in docs/known-bugs.md should be removed
 * For every bug fix we make in this project, add a minimum of two tests to verify it
 * For every new feature we write in this project, add a minimum of two tests to verify it
 
@@ -16,6 +18,10 @@ tree and let the user review and commit them themselves.
 * Do not write docstrings, JSDoc, or inline comments unless logic is non-obvious.
 * Documentation in code should be limited to explaining what a method or function does and should only be written if
   it is non-obvious
+* Do not write documentation that explains bug fixes or changes
+* Do not write documentation that explains how to use a method or function
+* Do not write documentation that explains how to use a class or module
+* Existing documentation that explains how to use a method or function or explains a bug fix should be removed
 
 ## CI
 
@@ -26,6 +32,10 @@ tree and let the user review and commit them themselves.
 ## Lumpy
 
 * Sync to lumpy at the end of every turn
+
+## C and C++
+
+* Always fix all warnings in C and C++ code. Do not ignore warnings.
 
 ## Project Specific
 

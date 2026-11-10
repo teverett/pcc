@@ -479,6 +479,8 @@ void SparcCodegen::genExpr(const ir::Expr &e) {
             (void)e;
             return;
         }
+        case ir::ExprKind::Func:
+            err(e.line, "internal: Func reached genExpr - should only ever appear as '&'s operand");
     }
 }
 
