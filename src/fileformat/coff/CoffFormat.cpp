@@ -182,7 +182,10 @@ std::string CoffFormatWriter::write(const ObjectFile &obj) const {
         put32(out, sectionSymbol ? 0 : sym.value);  // Value
         // SectionNumber: 0 (undefined), 1 (.text), or 2 (.bss).
         put16(out, sectionSymbol ? 1 : (!sym.isDefined ? 0 : (sym.isData ? 2 : 1)));
-        put16(out, 0);                                        // Type
+        // Type: unused by any real COFF consumer here, so bit 0 carries ObjSymbol::isRoot across
+        // the round trip through disk (GenericLinker.cpp's --gc-sections needs it on the read-back
+        // side, same as every other ObjSymbol field).
+        put16(out, sym.isRoot ? 1 : 0);
         const bool local = windowsI386 && (sectionSymbol || isRccLocalSymbol(sym.name));
         out.push_back(static_cast<char>(local ? 3 : 2));  // C_STAT or C_EXT
         out.push_back(static_cast<char>(sectionSymbol ? 1 : 0));  // NumberOfAuxSymbols
@@ -251,6 +254,7 @@ ObjectFile CoffFormatReader::read(const std::string &bytes) const {
         std::string name = getSymbolName(bytes, symOffset, stringTable);
         uint32_t value = get32(bytes, symOffset + 8);
         uint16_t sectionNumber = get16(bytes, symOffset + 12);
+        uint16_t type = get16(bytes, symOffset + 14);
         uint8_t storageClass = static_cast<uint8_t>(bytes[symOffset + 16]);
         uint8_t auxiliaryCount = static_cast<uint8_t>(bytes[symOffset + 17]);
         if (auxiliaryCount > numSymbols - i - 1) fail("symbol auxiliary count exceeds symbol table");
@@ -259,7 +263,8 @@ ObjectFile CoffFormatReader::read(const std::string &bytes) const {
             value = 0;
         }
         symbolIndices[i] = static_cast<uint32_t>(obj.symbols.size());
-        obj.symbols.push_back({name, value, /*isDefined=*/sectionNumber != 0, /*isData=*/sectionNumber == 2});
+        obj.symbols.push_back({name, value, /*isDefined=*/sectionNumber != 0, /*isData=*/sectionNumber == 2,
+                                /*isBss=*/false, /*isRoot=*/(type & 1) != 0});
         i += static_cast<uint32_t>(auxiliaryCount) + 1;
     }
 

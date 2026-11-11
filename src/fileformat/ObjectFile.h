@@ -14,12 +14,16 @@ namespace rcc {
 // the data-space reservation (`ObjectFile::dataSize`); Mach-O uses an offset into `dataBytes`, or
 // into `dataSize` when `isBss` is set. `isBss` distinguishes zero-fill storage from initialized
 // bytes. Once linked, Harvard data-symbol values are already absolute.
+// `isRoot` marks a symbol `--gc-sections` must keep even if nothing in the kept call graph
+// references it - e.g. a function placed at a fixed address (`@addr`) to be entered solely from
+// outside rcc's own compiled output, such as a hand-assembled vector table jumping to it.
 struct ObjSymbol {
     std::string name;
     uint32_t value = 0;
     bool isDefined = true;
     bool isData = false;
     bool isBss = false;
+    bool isRoot = false;
 };
 
 // A place in `.text` needing a patch once `symbolName`'s address is known. `type` is a

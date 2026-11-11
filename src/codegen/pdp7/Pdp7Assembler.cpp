@@ -7,6 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ANTLRInputStream.h"
@@ -90,9 +91,10 @@ struct Syllable {
 
 struct Segment {
     std::vector<std::string> labels;
-    enum Kind { None, Assign, Expr } kind = None;
+    enum Kind { None, Assign, Expr, Root } kind = None;
     std::string lhs;                  // valid when kind == Assign
     std::vector<Syllable> syllables;  // rhs of an assignment, or a bare expression
+    std::string rootSymbol;           // valid when kind == Root
 };
 
 struct Line {
@@ -143,6 +145,21 @@ Segment buildSegment(RccAsmParser::LineContext *ctx) {
     }
     auto *instr = dynamic_cast<RccAsmParser::InstrStmtContext *>(stmt);
     if (!instr) fail("internal: unhandled statement alternative");
+
+    // "__root NAME" is a linker-only pseudo-op - not a real pdp7 instruction, so it's intercepted
+    // here rather than added to the shared grammar. It marks NAME (an `@addr`-placed function/
+    // global; see Pdp7Codegen.cpp's Placement comment) as a forced `--gc-sections` root: see
+    // ObjSymbol::isRoot.
+    if (instr->mnemonic->getType() == RccAsmParser::IDENT && instr->mnemonic->getText() == "__root") {
+        std::vector<Syllable> syls;
+        for (auto *op : instr->operand()) appendOperandSyllables(op, syls);
+        if (syls.size() != 1 || syls[0].kind != SylKind::Symbol || syls[0].sign != 0) {
+            fail("__root takes exactly one bare symbol name");
+        }
+        seg.kind = Segment::Root;
+        seg.rootSymbol = syls[0].text;
+        return seg;
+    }
 
     seg.kind = Segment::Expr;
     SylKind mnemonicKind = (instr->mnemonic->getType() == RccAsmParser::NUMBER) ? SylKind::Number : SylKind::Symbol;
@@ -237,6 +254,7 @@ class Assembler {
     const std::vector<std::string> &mline() const { return mline_; }
     const std::unordered_map<std::string, uint32_t> &labels() const { return labels_; }
     const std::vector<Relocation> &relocations() const { return relocations_; }
+    const std::unordered_set<std::string> &rootSymbols() const { return rootSymbols_; }
     // Masked off: in object mode `..` itself now carries the same
     // RELATIVE marker `.` does (see the constructor's own comment), so
     // every caller here that wants the plain numeric base - not "is
@@ -251,6 +269,8 @@ class Assembler {
             for (const auto &lbl : seg.labels) setLabel(lbl, symbols_["."]);
             if (seg.kind == Segment::Assign) {
                 symbols_[seg.lhs] = evalExpr(seg.syllables, nullptr);
+            } else if (seg.kind == Segment::Root) {
+                if (stage_ == 2) rootSymbols_.insert(seg.rootSymbol);
             } else if (seg.kind == Segment::Expr) {
                 std::vector<std::pair<char, std::string>> pending;
                 uint32_t word = evalExpr(seg.syllables, &pending);
@@ -395,6 +415,7 @@ class Assembler {
     std::vector<std::optional<uint32_t>> mem_;
     std::vector<std::string> mline_;
     std::vector<Relocation> relocations_;
+    std::unordered_set<std::string> rootSymbols_;
     bool allowExternal_;
     int stage_ = 1;
 };
@@ -482,11 +503,13 @@ ObjectFile buildObjectFile(const Assembler &a) {
         obj.textBytes.push_back(static_cast<uint8_t>(w & 0xFF));
     }
 
+    const auto &roots = a.rootSymbols();
     for (const auto &kv : a.labels()) {
         uint32_t addr = kv.second;
         if (addr & RELATIVE) addr = (addr & MASK18) + base;
         if (addr < base) continue;  // not part of the emitted .text section
-        obj.symbols.push_back({kv.first, (addr - base) * 3, /*isDefined=*/true});
+        obj.symbols.push_back({kv.first, (addr - base) * 3, /*isDefined=*/true, /*isData=*/false,
+                                /*isBss=*/false, /*isRoot=*/roots.count(kv.first) != 0});
     }
     std::sort(obj.symbols.begin(), obj.symbols.end(),
               [](const ObjSymbol &x, const ObjSymbol &y) { return x.name < y.name; });

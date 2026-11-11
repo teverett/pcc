@@ -181,7 +181,10 @@ std::string Pdp7Codegen::generate(const ir::Program &prog, bool objectMode) {
             code_ << ". = ..+" << fb.func->address << "\n";
         }
         genFunction(fb);
-        if (fb.func->hasAddress) code_ << ". = __saveloc\n";
+        if (fb.func->hasAddress) {
+            code_ << ". = __saveloc\n";
+            code_ << "__root " << label(fb.func) << "\n";
+        }
         codeRanges.push_back({fb.func->sourceFile, fCodeStart, static_cast<size_t>(code_.tellp())});
         trailerRanges.push_back({fb.func->sourceFile, fTrailerStart, trailer_.size()});
     }
@@ -227,7 +230,10 @@ std::string Pdp7Codegen::generate(const ir::Program &prog, bool objectMode) {
                                     (j == 0 ? "  ; " + slot->sourceName : ""));
             }
         }
-        if (slot->hasAddress) trailer_.push_back(". = __saveloc");
+        if (slot->hasAddress) {
+            trailer_.push_back(". = __saveloc");
+            trailer_.push_back("__root " + label(slot.get()));
+        }
         trailerRanges.push_back({slot->sourceFile, gTrailerStart, trailer_.size()});
     }
 

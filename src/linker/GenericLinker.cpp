@@ -193,6 +193,18 @@ ObjectFile GenericLinker::merge(const std::vector<ObjectFile> &userObjects, bool
     if (gcSections) {
         std::vector<std::pair<size_t, size_t>> worklist;
         for (size_t s = 0; s < sections[0].size(); s++) worklist.push_back({0, s});
+        // A symbol marked isRoot (e.g. an `@addr`-placed function meant to be entered only from
+        // outside rcc's own compiled output) is a root in its own right, whether or not anything
+        // in the kept call graph ever references it.
+        for (size_t i = 0; i < objects.size(); i++) {
+            for (const auto &sym : objects[i].symbols) {
+                if (!sym.isRoot || !sym.isDefined || sym.isData) continue;
+                size_t s = sectionContaining(sections[i], sym.value);
+                if (s >= sections[i].size() || included[i][s]) continue;
+                included[i][s] = true;
+                worklist.push_back({i, s});
+            }
+        }
         while (!worklist.empty()) {
             auto [obj, sec] = worklist.back();
             worklist.pop_back();

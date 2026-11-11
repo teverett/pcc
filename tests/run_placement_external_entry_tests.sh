@@ -36,11 +36,16 @@
 #       low-memory hardware vector table built with `pdp-assembler`, jumping into a `--link`ed C
 #       kernel at a known fixed address). Confirms the placed function's own body runs and its own
 #       return correctly resumes right after that `jms`, not back inside some unrelated caller.
-#       Linked WITHOUT `--gc-sections`, deliberately: nothing in this fixture's own C code ever
-#       calls `placed()` by name (the raw `jms` is the only thing that reaches it, and it isn't a
-#       symbolic reference `--gc-sections` can see at all) - that's the still-open, separate
-#       "`--gc-sections` drops an `@addr`-placed function with no caller in the kept call graph"
-#       gap (docs/known-bugs.md), not the bug this test file is about.
+#       Linked WITHOUT `--gc-sections` (see the two tests below for that combination).
+#   test_placed_function_kept_by_gc_sections_with_no_reference_at_all - an `@addr`-placed function
+#       that NOTHING in the compiled program references at all (no call, no raw `jms`, no address
+#       taken) must still survive `--link --gc-sections`: ObjSymbol::isRoot (set for every `@addr`-
+#       placed symbol by Pdp7Codegen's `__root` pseudo-op, see Pdp7Assembler.cpp) seeds
+#       GenericLinker's mark/sweep worklist directly, independent of the ordinary call-graph BFS.
+#   test_placed_function_entered_externally_with_gc_sections - same shape as
+#       test_placed_function_entered_externally, but linked WITH `--gc-sections`: confirms the
+#       placed function is not just present in the symbol table but still runs and returns
+#       correctly when entered the same way a hand-assembled external caller would.
 #
 # Usage: tests/run_placement_external_entry_tests.sh [path/to/rcc]
 
@@ -214,7 +219,128 @@ SIMH
     return 0
 }
 
+test_placed_function_kept_by_gc_sections_with_no_reference_at_all() {
+    local dir="$tmpdir/kept_with_no_reference"
+    mkdir -p "$dir"
+    cat >"$dir/t.c" <<'EOF'
+int placed() @ 2000 {
+    return 99;
+}
+int main() {
+    return 0;
+}
+EOF
+    if ! "$RCC" --target=pdp7 --format=coff --out="$dir/t.o" "$dir/t.c" >"$dir/log" 2>&1; then
+        echo "FAIL test_placed_function_kept_by_gc_sections_with_no_reference_at_all:" \
+             "fixture itself failed to compile"
+        cat "$dir/log"
+        return 1
+    fi
+    if ! "$RCC" --link --target=pdp7 --format=list --gc-sections --out="$dir/t.lst" "$dir/t.o" \
+            >"$dir/log" 2>&1; then
+        echo "FAIL test_placed_function_kept_by_gc_sections_with_no_reference_at_all:" \
+             "--gc-sections link unexpectedly failed:"
+        cat "$dir/log"
+        return 1
+    fi
+    if ! grep -q '^FN_place[[:space:]]' "$dir/t.lst"; then
+        echo "FAIL test_placed_function_kept_by_gc_sections_with_no_reference_at_all:" \
+             "FN_place missing from the linked image (an @addr-placed function with no caller" \
+             "at all must still be kept as a forced root)"
+        return 1
+    fi
+
+    echo "PASS test_placed_function_kept_by_gc_sections_with_no_reference_at_all"
+    return 0
+}
+
+test_placed_function_entered_externally_with_gc_sections() {
+    local dir="$tmpdir/entered_externally_gc"
+    mkdir -p "$dir"
+    cat >"$dir/t.c" <<'EOF'
+int placed() @ 2000 {
+    return 99;
+}
+int rawresult;
+int enteredExternally() {
+    asm {
+        jms PLACED_ADDR_PLACEHOLDER
+        dac G_rawresult
+    }
+    return 0;
+}
+int main() {
+    enteredExternally();
+    return rawresult;
+}
+EOF
+    sed "s/PLACED_ADDR_PLACEHOLDER/0/" "$dir/t.c" >"$dir/t1.c"
+    if ! "$RCC" --target=pdp7 --format=coff --out="$dir/t1.o" "$dir/t1.c" >"$dir/log" 2>&1; then
+        echo "FAIL test_placed_function_entered_externally_with_gc_sections:" \
+             "address-discovery fixture failed to compile"
+        cat "$dir/log"
+        return 1
+    fi
+    if ! "$RCC" --link --target=pdp7 --format=list --gc-sections --out="$dir/t1.lst" "$dir/t1.o" \
+            >"$dir/log" 2>&1; then
+        echo "FAIL test_placed_function_entered_externally_with_gc_sections:" \
+             "address-discovery --gc-sections link unexpectedly failed:"
+        cat "$dir/log"
+        return 1
+    fi
+    local placedAddrOctal
+    placedAddrOctal="$(awk '/^FN_place[[:space:]]/{print $2}' "$dir/t1.lst")"
+    if [ -z "$placedAddrOctal" ]; then
+        echo "FAIL test_placed_function_entered_externally_with_gc_sections:" \
+             "FN_place missing from the --gc-sections linked image"
+        return 1
+    fi
+
+    sed "s/PLACED_ADDR_PLACEHOLDER/0${placedAddrOctal}/" "$dir/t.c" >"$dir/t2.c"
+    if ! "$RCC" --target=pdp7 --format=coff --out="$dir/t2.o" "$dir/t2.c" >"$dir/log" 2>&1; then
+        echo "FAIL test_placed_function_entered_externally_with_gc_sections:" \
+             "fixture with the real address failed to compile"
+        cat "$dir/log"
+        return 1
+    fi
+    if ! "$RCC" --link --target=pdp7 --format=rim --gc-sections --out="$dir/t2.rim" "$dir/t2.o" \
+            >"$dir/log" 2>&1; then
+        echo "FAIL test_placed_function_entered_externally_with_gc_sections:" \
+             "--gc-sections rim link unexpectedly failed:"
+        cat "$dir/log"
+        return 1
+    fi
+    local simfile="$dir/run.simh" outfile="$dir/run.out"
+    cat >"$simfile" <<SIMH
+load $dir/t2.rim 10000
+go 10000
+e ac
+exit
+SIMH
+    pdp7 <"$simfile" >"$outfile" 2>/dev/null
+
+    local acOctal
+    acOctal="$(grep '^AC:' "$outfile" | awk '{print $2}')"
+    if [ -z "$acOctal" ]; then
+        echo "FAIL test_placed_function_entered_externally_with_gc_sections:" \
+             "simulator produced no AC (timed out or crashed)"
+        return 1
+    fi
+    local acDec=$((8#$acOctal))
+    if [ "$acDec" -ne 99 ]; then
+        echo "FAIL test_placed_function_entered_externally_with_gc_sections: expected AC=99" \
+             "(the placed function's own body ran and returned correctly to right after the" \
+             "raw jms, even under --gc-sections), got AC=$acDec"
+        return 1
+    fi
+
+    echo "PASS test_placed_function_entered_externally_with_gc_sections (AC=$acDec)"
+    return 0
+}
+
 test_placed_function_called_normally || fail=1
 test_placed_function_entered_externally || fail=1
+test_placed_function_kept_by_gc_sections_with_no_reference_at_all || fail=1
+test_placed_function_entered_externally_with_gc_sections || fail=1
 
 exit $fail
