@@ -312,35 +312,51 @@ class Assembler {
         }
         emit8(static_cast<uint8_t>((v >> 8) & 0xFF));
     }
-    // ldaind/staind's operand: zero-page indirect-indexed addressing is
-    // only legal for an address that fits in zero page.
+    // A single-byte zero-page address operand: ldaind/staind's own operand
+    // (zero-page indirect-indexed addressing is only legal for an address
+    // that fits in zero page), and rmb0-7/smb0-7/bbr0-7/bbs0-7's own bit-
+    // addressed byte (zero-page-only on real 65C02 hardware too).
     void emitZpOperand(const std::vector<Syllable> &e) {
         uint32_t v = evalExpr(e);
-        if (stage_ == 2 && v > 0xFF) fail("indirect-indexed operand must be a zero-page address");
+        if (stage_ == 2 && v > 0xFF) fail("operand must be a zero-page address");
         emit8(static_cast<uint8_t>(v & 0xFF));
     }
-    // A branch's signed rel8 operand. safeBranch() in M65C02Codegen.cpp
-    // guarantees every branch targets the very next instruction, so an
-    // out-of-range target here means a bug in that guarantee.
+    // A branch's signed rel8 operand, relative to the address right after
+    // this field (the real 65C02 convention, also correct for bbr0-7/
+    // bbs0-7's own trailing branch operand - callers emit any earlier
+    // operand byte(s) first, so `offset_` is already past them here).
+    // safeBranch() in M65C02Codegen.cpp guarantees every codegen-emitted
+    // branch targets the very next instruction; a hand-written `asm { }`
+    // bbr/bbs/beq/etc. branch has no such guarantee and can legitimately
+    // fail this range check.
     void emitBranchOperand(const std::vector<Syllable> &target) {
         uint32_t endAddr = orgBase_ + offset_ + 1;  // 1-byte field, right after the opcode
         uint32_t targetAddr = evalExpr(target);
         int32_t rel = static_cast<int32_t>(targetAddr) - static_cast<int32_t>(endAddr);
         if (stage_ == 2 && (rel < -128 || rel > 127)) {
-            fail("internal: branch target out of range - safeBranch() should have prevented this");
+            fail("branch target out of range (more than 127 bytes away)");
         }
         emit8(static_cast<uint8_t>(static_cast<int8_t>(rel)));
     }
 
     // Not a general 65C02 encoder: only the mnemonic/operand-shape
-    // combinations M65C02Codegen.cpp emits.
+    // combinations M65C02Codegen.cpp emits, plus (rmb0-7/smb0-7/bbr0-7/
+    // bbs0-7/wai/stp) real WDC 65C02 instructions no C-level construct maps
+    // to - these are never emitted by M65C02Codegen.cpp itself, only
+    // reachable by a user's own `asm { }` block (see docs/language.md's
+    // "Inline asm" - exactly the escape hatch that comment describes).
     void encodeInstr(const std::string &mnemonic, const std::vector<std::vector<Syllable>> &ops) {
         auto one = [&]() -> const std::vector<Syllable> & {
             if (ops.size() != 1) fail("'" + mnemonic + "' needs exactly one operand");
             return ops[0];
         };
+        auto two = [&]() -> const std::vector<std::vector<Syllable>> & {
+            if (ops.size() != 2) fail("'" + mnemonic + "' needs exactly two operands");
+            return ops;
+        };
         static const std::unordered_map<std::string, uint8_t> implied = {
             {"rts", 0x60}, {"clc", 0x18}, {"sec", 0x38}, {"pha", 0x48}, {"pla", 0x68}, {"cli", 0x58}, {"sei", 0x78},
+            {"wai", 0xCB}, {"stp", 0xDB},
         };
         if (auto it = implied.find(mnemonic); it != implied.end()) {
             if (!ops.empty()) fail("'" + mnemonic + "' takes no operand");
@@ -407,6 +423,39 @@ class Assembler {
         if (mnemonic == "stz") {
             emit8(0x9C);
             emitAbsOperand(one());
+            return;
+        }
+        // rmb0-7/smb0-7: reset/set bit n of a zero-page byte directly, no
+        // register involved - a single two-byte instruction, opcode plus
+        // the zero-page address.
+        static const std::unordered_map<std::string, uint8_t> bitZp = {
+            {"rmb0", 0x07}, {"rmb1", 0x17}, {"rmb2", 0x27}, {"rmb3", 0x37},
+            {"rmb4", 0x47}, {"rmb5", 0x57}, {"rmb6", 0x67}, {"rmb7", 0x77},
+            {"smb0", 0x87}, {"smb1", 0x97}, {"smb2", 0xA7}, {"smb3", 0xB7},
+            {"smb4", 0xC7}, {"smb5", 0xD7}, {"smb6", 0xE7}, {"smb7", 0xF7},
+        };
+        if (auto it = bitZp.find(mnemonic); it != bitZp.end()) {
+            emit8(it->second);
+            emitZpOperand(one());
+            return;
+        }
+        // bbr0-7/bbs0-7: branch if bit n of a zero-page byte is reset/set -
+        // a three-byte instruction (opcode, zero-page address, signed rel8
+        // branch displacement); emitBranchOperand() computes that
+        // displacement relative to the end of this instruction regardless
+        // of how many bytes already preceded it in this call, so it's
+        // correct here exactly as it is for an ordinary two-byte branch.
+        static const std::unordered_map<std::string, uint8_t> bitBranch = {
+            {"bbr0", 0x0F}, {"bbr1", 0x1F}, {"bbr2", 0x2F}, {"bbr3", 0x3F},
+            {"bbr4", 0x4F}, {"bbr5", 0x5F}, {"bbr6", 0x6F}, {"bbr7", 0x7F},
+            {"bbs0", 0x8F}, {"bbs1", 0x9F}, {"bbs2", 0xAF}, {"bbs3", 0xBF},
+            {"bbs4", 0xCF}, {"bbs5", 0xDF}, {"bbs6", 0xEF}, {"bbs7", 0xFF},
+        };
+        if (auto it = bitBranch.find(mnemonic); it != bitBranch.end()) {
+            const auto &operands = two();
+            emit8(it->second);
+            emitZpOperand(operands[0]);
+            emitBranchOperand(operands[1]);
             return;
         }
         fail("unsupported instruction '" + mnemonic + "'");

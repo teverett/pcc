@@ -6,7 +6,7 @@ make test           # the preprocessor/archive/Mach-O/hosted-linker/pic16+pic18 
                      # tests, then tests/run_tests.sh against every target that has one
 ```
 
-`make test` runs `tests/run_tests.sh` against `pdp7`, `8086`, `6502`,
+`make test` runs `tests/run_tests.sh` against `pdp1`, `pdp7`, `8086`, `6502`,
 `65c02`, `68000`, `mc68328`, `8080`, `z80`, `8051`, `stm32`, and
 `i386` (each one's own tool, where it needs a separate one, is
 documented in `docs/platforms.md`'s own per-target entry - a missing

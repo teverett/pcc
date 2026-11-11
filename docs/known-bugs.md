@@ -22,33 +22,6 @@ destination last, so this writes `t1` and leaves `t0` holding only the
 low word. A wide value whose low word is zero but whose high word is
 not (for example `1LL << 32`) tests false.
 
-## pdp7: an `@addr`-placed function's own return-address reload breaks when entered from outside the normal call graph
-
-Affects the `pdp7` target (`src/codegen/pdp7/Pdp7Codegen.cpp`).
-
-A function declared with `@addr` (e.g. `int f() @ 2000 { ... }`) is
-pinned to that address, but its compiler-generated prologue reloads
-its own return address relative to its own entry label the same way
-every ordinary rcc-emitted call site sets it up beforehand. When the
-only thing that ever transfers control to it is hand-written assembly
-outside that call graph (e.g. a `jms`/`jmp` from a separately
-assembled low-memory vector table, built with `pdp-assembler` and
-combined with a `rcc --link`ed image), that reload reads stale/wrong
-data and the function's own first real instructions never run:
-execution instead jumps back to the address the external caller's own
-sequence started at, re-running it in a loop. Confirmed directly on
-the real `pdp7` simulator by single-stepping: PC correctly lands one
-word past the placed function's entry (real compiled content is
-there, not corrupted), but the next few instructions divert control
-back into the external caller instead of continuing into the
-function's own body.
-
-Workaround: make the `@addr`-placed function's entire body a single
-unconditional `asm { }` jump to a separate, ordinarily rcc-linked
-(non-`@addr`) function that does the real work — only the jump
-target's address needs to be fixed, so the broken self-reference is
-never exercised.
-
 ## pdp7: `--gc-sections` drops an `@addr`-placed function with no caller in the kept call graph
 
 Affects the `pdp7` target in combination with `--link --gc-sections`.

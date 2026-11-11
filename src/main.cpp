@@ -49,6 +49,7 @@
 #include "optimizers/local_cse/LocalCSE.h"
 #include "optimizers/unused_global_elimination/UnusedGlobalElimination.h"
 #include "preprocessor/Preprocessor.h"
+#include "codegen/pdp1/Pdp1Codegen.h"
 #include "codegen/pdp7/Pdp7Codegen.h"
 #include "codegen/x86_8086/I8086Codegen.h"
 #include "codegen/m6502/M6502Codegen.h"
@@ -184,7 +185,7 @@ void writeToBuildDir(const std::string &name, const std::string &content, bool b
 // independently valid on the command line). Used both for "unknown
 // --target" error messages and for --list-triples.
 const std::vector<std::string> kTargetNames = {
-    "pdp7", "8086", "8088", "6502", "65c02", "68000", "mc68328", "pdp11", "pdp10", "8080", "z80", "8008",
+    "pdp1", "pdp7", "8086", "8088", "6502", "65c02", "68000", "mc68328", "pdp11", "pdp10", "8080", "z80", "8008",
     "stm8", "stm32", "i386", "m16c", "m30626fjpfp", "pic16", "pic18", "r10000", "r4000", "cortex-m3",
     "cortex-m4", "cortex-m7", "8051", "8052", "8031", "8032", "armv7a", "armv8a", "powerpc", "sparc",
     "vax", "avr", "alpha", "saturn", "tms320c6713",
@@ -244,6 +245,7 @@ void listTriples() {
 // instruction this compiler emits, so there's nothing for a separate
 // Codegen to do differently.
 std::unique_ptr<rcc::Backend> makeBackend(const std::string &target) {
+    if (target == "pdp1") return std::make_unique<rcc::Pdp1Codegen>();
     if (target == "pdp7") return std::make_unique<rcc::Pdp7Codegen>();
     if (target == "8086" || target == "8088") return std::make_unique<rcc::I8086Codegen>();
     if (target == "6502") return std::make_unique<rcc::M6502Codegen>();
@@ -711,7 +713,9 @@ int main(int argc, char **argv) {
     // defines both its base target's macro and its own, so source gated
     // on either the generic or the specific name keeps working.
     std::map<std::string, std::string> predefinedMacros;
-    if (target == "pdp7") {
+    if (target == "pdp1") {
+        predefinedMacros["__PDP1__"] = "1";
+    } else if (target == "pdp7") {
         predefinedMacros["__PDP7__"] = "1";
     } else if (target == "8086") {
         predefinedMacros["__8086__"] = "1";

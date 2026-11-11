@@ -75,7 +75,7 @@ SPACE +=
 # on every source file before ANTLR ever sees it) - not backend-
 # specific, but still their own subdirectories needing the same vpath
 # treatment.
-BACKEND_DIRS := $(SRC_DIR)/codegen/pdp7 $(SRC_DIR)/codegen/x86_8086 $(SRC_DIR)/codegen/m6502 $(SRC_DIR)/codegen/m65c02 $(SRC_DIR)/codegen/m68k $(SRC_DIR)/codegen/mc68328 $(SRC_DIR)/codegen/pdp11 $(SRC_DIR)/codegen/pdp10 $(SRC_DIR)/codegen/i8080 $(SRC_DIR)/codegen/pic16 $(SRC_DIR)/codegen/pic18 $(SRC_DIR)/codegen/z80 $(SRC_DIR)/codegen/i8008 $(SRC_DIR)/codegen/stm8 $(SRC_DIR)/codegen/m16c $(SRC_DIR)/codegen/mips $(SRC_DIR)/codegen/mcs51 $(SRC_DIR)/codegen/stm32 $(SRC_DIR)/codegen/i386 $(SRC_DIR)/codegen/armm $(SRC_DIR)/codegen/arm $(SRC_DIR)/codegen/arm64 $(SRC_DIR)/codegen/powerpc $(SRC_DIR)/codegen/sparc $(SRC_DIR)/codegen/vax $(SRC_DIR)/codegen/avr $(SRC_DIR)/codegen/alpha $(SRC_DIR)/codegen/saturn $(SRC_DIR)/codegen/tms320c6713
+BACKEND_DIRS := $(SRC_DIR)/codegen/pdp1 $(SRC_DIR)/codegen/pdp7 $(SRC_DIR)/codegen/x86_8086 $(SRC_DIR)/codegen/m6502 $(SRC_DIR)/codegen/m65c02 $(SRC_DIR)/codegen/m68k $(SRC_DIR)/codegen/mc68328 $(SRC_DIR)/codegen/pdp11 $(SRC_DIR)/codegen/pdp10 $(SRC_DIR)/codegen/i8080 $(SRC_DIR)/codegen/pic16 $(SRC_DIR)/codegen/pic18 $(SRC_DIR)/codegen/z80 $(SRC_DIR)/codegen/i8008 $(SRC_DIR)/codegen/stm8 $(SRC_DIR)/codegen/m16c $(SRC_DIR)/codegen/mips $(SRC_DIR)/codegen/mcs51 $(SRC_DIR)/codegen/stm32 $(SRC_DIR)/codegen/i386 $(SRC_DIR)/codegen/armm $(SRC_DIR)/codegen/arm $(SRC_DIR)/codegen/arm64 $(SRC_DIR)/codegen/powerpc $(SRC_DIR)/codegen/sparc $(SRC_DIR)/codegen/vax $(SRC_DIR)/codegen/avr $(SRC_DIR)/codegen/alpha $(SRC_DIR)/codegen/saturn $(SRC_DIR)/codegen/tms320c6713
 AST_DIR      := $(SRC_DIR)/ast
 IR_DIR       := $(SRC_DIR)/ir
 LINKER_DIR   := $(SRC_DIR)/linker
@@ -163,6 +163,8 @@ HAND_SRCS := \
     $(OPTIMIZERS_DIR)/dead_store_elimination/DeadStoreElimination.cpp \
     $(OPTIMIZERS_DIR)/unused_global_elimination/UnusedGlobalElimination.cpp \
     $(OPTIMIZERS_DIR)/identical_code_folding/IdenticalCodeFolding.cpp \
+    $(SRC_DIR)/codegen/pdp1/Pdp1Codegen.cpp \
+    $(SRC_DIR)/codegen/pdp1/Pdp1Assembler.cpp \
     $(SRC_DIR)/codegen/pdp7/Pdp7Codegen.cpp \
     $(SRC_DIR)/codegen/pdp7/Pdp7Assembler.cpp \
     $(SRC_DIR)/codegen/x86_8086/I8086Codegen.cpp \
@@ -298,6 +300,7 @@ test: all $(BIN_DIR)/preprocessor_test $(BIN_DIR)/archive_reader_test $(BIN_DIR)
 	python3 tests/pic16_function_pointer_call_test.py $(TARGET)
 	python3 tests/pic16_pic18_extern_function_address_test.py $(TARGET)
 	python3 tests/m30626fjpfp_alias_test.py $(TARGET)
+	./tests/run_tests.sh $(TARGET) --target=pdp1
 	./tests/run_tests.sh $(TARGET) --target=pdp7
 	./tests/run_tests.sh $(TARGET) --target=8086
 	./tests/run_tests.sh $(TARGET) --target=6502

@@ -6,7 +6,7 @@
 # on every target (see ../src/Backend.h: a .c file means the same
 # thing regardless of --target).
 #
-# Usage: tests/run_tests.sh [path/to/rcc] [--target=pdp7|pdp11|pdp10|vax|avr|alpha|saturn|tms320c6713|r10000|powerpc|cortex-m3|8086|8088|6502|65c02|68000|mc68328|8080|z80|8008|8051|stm32|i386|armv7a|armv8a] [--optimize]
+# Usage: tests/run_tests.sh [path/to/rcc] [--target=pdp1|pdp7|pdp11|pdp10|vax|avr|alpha|saturn|tms320c6713|r10000|powerpc|cortex-m3|8086|8088|6502|65c02|68000|mc68328|8080|z80|8008|8051|stm32|i386|armv7a|armv8a] [--optimize]
 #
 # --optimize passes rcc's own --optimize straight through to every
 # compile below, so the exact same checks also confirm the IR
@@ -34,6 +34,12 @@ if [ ! -x "$RCC" ]; then
 fi
 
 case "$TARGET" in
+    pdp1)
+        if ! command -v pdp1 >/dev/null 2>&1; then
+            echo "pdp1 (open-simh) not found on PATH - install it (e.g. 'brew install open-simh')" >&2
+            exit 1
+        fi
+        ;;
     pdp7)
         if ! command -v pdp7 >/dev/null 2>&1; then
             echo "pdp7 (open-simh) not found on PATH - install it (e.g. 'brew install open-simh')" >&2
@@ -375,6 +381,48 @@ to_signed() {
     else
         echo "$value"
     fi
+}
+
+check_pdp1() {
+    local src="$1" name="$2"
+    local rimfile="$tmpdir/$name.rim"
+
+    if ! "$RCC" --target=pdp1 --format=rim \
+            $OPTFLAGS --dump-ir --out="$rimfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+        echo "FAIL $name: compile error"
+        sed 's/^/    /' "$tmpdir/$name.log"
+        return 1
+    fi
+
+    # Unlike pdp7's own `load <file> <addr>` + `go`, a pdp1 RIM tape is a
+    # real bootstrap-loader image (dac-address/data pairs ending in a jmp
+    # to the program's own entry - see ../src/codegen/pdp1/Pdp1Assembler.cpp's
+    # writeRim()) - it's read via the paper-tape-reader bootstrap itself
+    # (`attach ptr` + `boot ptr`), not deposited at a fixed address.
+    local simfile="$tmpdir/$name.simh" outfile="$tmpdir/$name.out"
+    cat >"$simfile" <<SIMH
+attach ptr $rimfile
+boot ptr
+e ac
+SIMH
+
+    run_with_timeout 10 bash -c "pdp1 '$simfile' </dev/null >'$outfile' 2>/dev/null"
+
+    local ac_octal
+    ac_octal="$(grep '^AC:' "$outfile" | awk '{print $2}')"
+    if [ -z "$ac_octal" ]; then
+        echo "FAIL $name: simulator produced no AC (timed out or crashed)"
+        return 1
+    fi
+
+    local ac_dec=$((8#$ac_octal))
+    ac_dec="$(to_signed "$ac_dec" 18)"
+    if [ "$ac_dec" -eq "$expect" ]; then
+        echo "PASS $name (AC=$ac_dec)"
+        return 0
+    fi
+    echo "FAIL $name: expected $expect, got $ac_dec (AC octal: $ac_octal)"
+    return 1
 }
 
 check_pdp7() {
@@ -1924,6 +1972,49 @@ mpu = MPU()
 mpu.memory[base:base + len(data)] = data
 mpu.pc = base
 
+# py65's own CMOS core (py65.devices.mpu65c02.MPU) implements rmb0-7/smb0-7/
+# wai directly (confirmed in its own source), but not bbr0-7/bbs0-7/stp at
+# all - those three fall through to whatever mpu6502's NMOS table happens to
+# define for the same opcode byte (illegal/undefined there), same gap this
+# file's own comment above already explains for stz/stzp before this backend
+# existed. Patched in here, the same "small from-scratch core for whatever a
+# mainstream tool doesn't model" idea this project's alpha/saturn/tms320c6713
+# targets already use for their own from-scratch interpreters - these three
+# are real WDC 65C02 opcodes (see ../src/codegen/m65c02/M65C02Assembler.cpp),
+# just not ones py65 happens to implement yet.
+def make_bbr_or_bbs(bit, branchOnZero):
+    mask = 1 << bit
+
+    def op(self):
+        zp = self.ByteAt(self.pc)
+        self.pc += 1
+        bitSet = (self.memory[zp] & mask) != 0
+        if bitSet != branchOnZero:
+            self.BranchRelAddr()
+        else:
+            self.pc += 1
+
+    return op
+
+
+for bit in range(8):
+    # mpu.instruct holds plain functions taking `self` explicitly (dispatch
+    # calls `self.instruct[opcode](self)` itself - see mpu6502.py's own
+    # step()), not bound methods - a types.MethodType here would make the
+    # dispatcher's own `self` argument land as an unwanted extra positional.
+    mpu.instruct[0x0F + bit * 0x10] = make_bbr_or_bbs(bit, True)  # bbr<bit>
+    mpu.instruct[0x8F + bit * 0x10] = make_bbr_or_bbs(bit, False)  # bbs<bit>
+    mpu.cycletime[0x0F + bit * 0x10] = 5
+    mpu.cycletime[0x8F + bit * 0x10] = 5
+
+
+def inst_stp(self):
+    self.waiting = True  # same permanent-stall convention WAI already uses
+
+
+mpu.instruct[0xDB] = inst_stp
+mpu.cycletime[0xDB] = 3
+
 for _ in range(2_000_000):
     pc_before = mpu.pc
     mpu.step()
@@ -2631,6 +2722,41 @@ check_stm32() {
 # unaffected.
 is_known_unsupported() {
     case "$TARGET:$1" in
+        # pdp1 has no 'long'/'long long' support at all (no link/carry bit
+        # to build a multi-word carry chain on - see
+        # ../src/codegen/pdp1/Pdp1Codegen.h's class comment), unlike pdp7
+        # which only lacks wide multiply/divide.
+        pdp1:convert_int_to_longlong.c) return 0 ;;
+        pdp1:literal_promotes_to_long.c) return 0 ;;
+        pdp1:longlong_add_carry_chain.c) return 0 ;;
+        pdp1:longlong_sub_borrow_chain.c) return 0 ;;
+        pdp1:test_long_arith.c) return 0 ;;
+        pdp1:test_unsigned_long_arith.c) return 0 ;;
+        pdp1:types_longlong_arith.c) return 0 ;;
+        pdp1:types_longlong_divmod.c) return 0 ;;
+        pdp1:types_longlong_divmod_repeated.c) return 0 ;;
+        pdp1:types_longlong_equality_repeated.c) return 0 ;;
+        pdp1:types_longlong_signed_cmp.c) return 0 ;;
+        pdp1:types_arrays.c) return 0 ;;
+        pdp1:types_params_return.c) return 0 ;;
+        pdp1:wide_compare_in_expression.c) return 0 ;;
+        pdp1:wide_loop_stack.c) return 0 ;;
+        pdp1:literal_promotion_arith.c) return 0 ;;
+        pdp1:local_mixed_width_layout.c) return 0 ;;
+        pdp1:local_wide_scalar_layout.c) return 0 ;;
+        # pdp1's hardware is a one's-complement ALU, so an `unsigned` value
+        # whose own bit pattern would have its sign bit set (the top half
+        # of the range, 2^17..2^18-1) isn't reliably distinguishable from
+        # a negative signed value by this backend's own comparison/shift/
+        # divide code - see Pdp1Codegen.h's class comment on this
+        # documented range ceiling. Every test below specifically
+        # exercises that top-of-range corner (UINT_MAX, UINT_MAX-N, or
+        # `~` on an unsigned value).
+        pdp1:shift_const.c) return 0 ;;
+        pdp1:types_shift_signedness.c) return 0 ;;
+        pdp1:unsigned_compound_div.c) return 0 ;;
+        pdp1:unsigned_div_edges.c) return 0 ;;
+        pdp1:unsigned_div_mod.c) return 0 ;;
         pdp7:types_longlong_divmod.c) return 0 ;;          # no verified wide multiply/divide routine
         pdp7:types_longlong_divmod_repeated.c) return 0 ;; # same - no verified wide multiply/divide routine
         saturn:types_longlong_divmod.c) return 0 ;;          # no verified multi-chunk multiply/divide routine
@@ -2742,6 +2868,7 @@ for src in "$SCRIPT_DIR"/*.c "${target_sources[@]}"; do
     fi
 
     case "$TARGET" in
+        pdp1) check_pdp1 "$src" "$name" || fail=1 ;;
         pdp7) check_pdp7 "$src" "$name" || fail=1 ;;
         pdp11) check_pdp11 "$src" "$name" || fail=1 ;;
         pdp10) check_pdp10 "$src" "$name" || fail=1 ;;

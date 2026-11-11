@@ -3,6 +3,18 @@
 `rcc` is a compiler and linker for a small subset of C, targeting real
 retro hardware through pluggable backends. Today it supports:
 
+- **pdp1** — PDP-1 assembly (`src/codegen/pdp1/Pdp1Codegen.h`), a genuine
+  one's-complement machine with no link/carry bit and no hardware
+  multiply/divide, 4096 words of address space (half of pdp7's), producing
+  a bootable RIM-format paper tape runnable under the `open-simh` PDP-1
+  simulator. `char`/`short`/`int` are fully supported, including software
+  multiply/divide (sign-magnitude shift-add/shift-subtract); `long`/`long
+  long` are not (a correct multi-word carry chain needs its own
+  independently-verified algorithm on a machine with no link bit at all);
+  `unsigned` is reliable up to 2^17-1, not the full 2^18-1 (the top half of
+  the range isn't reliably distinguishable from a negative signed value on
+  this one's-complement ALU) - all documented in `Pdp1Codegen.h`'s own
+  class comment. No separate-compilation/`--link` support.
 - **pdp7** — PDP-7 assembly, assembled and linked into real PDP-7 binary
   formats (bootable paper tape, etc.), runnable under the `open-simh`
   PDP-7 simulator.
@@ -25,11 +37,26 @@ retro hardware through pluggable backends. Today it supports:
   for `JSR`/`RTS`; every Local/Param lives in a software frame reached
   through a zero-page frame pointer). `tests/run_tests.sh --target=6502`
   runs against a real 6502 core via `py65` (`pip install py65`).
-- **65c02** — WDC 65C02, same dialect/platform choices as `6502` plus one
-  real CMOS-only instruction: zeroing a zero-page pseudo-register uses
-  `STZ` directly instead of `LDA #0`/`STA` (NMOS 6502 has no "store zero").
-  Tested against `py65`'s separate CMOS core
-  (`py65.devices.mpu65c02.MPU`).
+- **65c02** — WDC 65C02, same dialect/platform choices as `6502` plus the
+  real CMOS-only instructions `M65C02Codegen.cpp`/`M65C02Assembler.cpp`
+  support: `STZ`, used automatically by codegen itself to zero a zero-page
+  pseudo-register (`stzp`/`stz`) instead of the NMOS `LDA #0`/`STA` idiom
+  (NMOS 6502 has no "store zero"); and `rmb0`-`rmb7`/`smb0`-`smb7` (reset/
+  set bit n of a zero-page byte directly), `bbr0`-`bbr7`/`bbs0`-`bbs7`
+  (branch if bit n of a zero-page byte is reset/set), and `wai`/`stp`
+  (wait for interrupt/stop the clock) - none of which any C-level
+  construct maps to, so (unlike `STZ`) codegen never emits these itself;
+  they're only reachable through a program's own `asm { }` escape hatch
+  (see `docs/language.md`'s "Inline asm"; `tests/65c02/*.c` holds
+  worked examples of each). Tested against `py65`'s separate CMOS core
+  (`py65.devices.mpu65c02.MPU`), which implements `rmb0`-`7`/`smb0`-`7`/
+  `wai` itself; `bbr0`-`7`/`bbs0`-`7`/`stp` aren't modeled by that core at
+  all, so `tests/run_tests.sh`'s own `check_65c02()` patches those three
+  opcodes into the simulator instance directly before stepping - the same
+  "small core for whatever a mainstream tool doesn't model" idea `alpha`/
+  `saturn`/`tms320c6713`'s own from-scratch interpreters already use, just
+  patching three opcodes onto an otherwise-real core instead of writing a
+  whole one.
 - **68000** — 68000 assembly (own dialect; `M68kAssembler.h`), a bare flat
   binary loaded/entered at `$1000` with no boot ROM/vector table (the
   test harness sets PC directly). Rich enough that almost everything maps
