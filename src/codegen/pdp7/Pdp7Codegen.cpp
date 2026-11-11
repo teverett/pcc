@@ -376,12 +376,19 @@ void Pdp7Codegen::emitLeafReturn(bool hasValue) {
 }
 
 void Pdp7Codegen::emitLoadSlotAddress(const ir::Slot *slot) {
+    // `law <symbol>` loads AC with its own raw encoded instruction word
+    // (0760000 | address), not a decoded address - masking to the low
+    // 13-bit address field (every valid address is already < that limit,
+    // enforced by Pdp7Assembler.cpp's checkAddressSafe) strips the opcode
+    // bits back off.
     if (slot->kind == ir::SlotKind::Global) {
         code_ << "   law " << label(slot) << "\n";
+        code_ << "   and " << literalLabel(kAddressFieldLimit - 1) << "\n";
         return;
     }
     if (currentFunctionIsLeaf_) {
         code_ << "   law " << leafLabel(slot) << "\n";
+        code_ << "   and " << literalLabel(kAddressFieldLimit - 1) << "\n";
         return;
     }
     long offset = (slot->kind == ir::SlotKind::Param) ? static_cast<long>(slot->frameOffset)
@@ -454,7 +461,10 @@ void Pdp7Codegen::emitLocalArrayInit(const ir::Slot *slot) {
             } else if (elem.slot) {
                 emitLoadSlotAddress(elem.slot);
             } else {
+                // See emitLoadSlotAddress's comment: law bakes its own
+                // opcode bits into the result.
                 code_ << "   law " << label(elem.func) << "\n";
+                code_ << "   and " << literalLabel(kAddressFieldLimit - 1) << "\n";
             }
             code_ << "   dac __stmp\n";
             code_ << "   lac __fp\n";
@@ -1479,7 +1489,10 @@ void Pdp7Codegen::genAddrOf(const ir::Expr &operand) {
         return;
     }
     if (operand.kind == ir::ExprKind::Func) {
+        // See emitLoadSlotAddress's comment: law bakes its own opcode bits
+        // into the result.
         code_ << "   law " << label(operand.func) << "\n";
+        code_ << "   and " << literalLabel(kAddressFieldLimit - 1) << "\n";
         return;
     }
     err(operand.line, "internal: unhandled addressable-operand kind");

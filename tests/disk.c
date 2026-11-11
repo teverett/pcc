@@ -87,17 +87,6 @@ int dskio_lowlevel(int wordCount, int bufAddr, int bcdTrackSector, int opCode) {
     asm { 0707141 }
     wordCount;
     asm { 0707124 }
-    // `&arr[0]`/`&x` compiles to `law`, whose result carries real
-    // opcode bits in its high end alongside the real address - fine
-    // for every other use in this backend (always dereferenced via
-    // `i`, which only looks at the low bits - see
-    // ../docs/language.md's "The pdp7 backend"), but fed
-    // directly to a hardware register expecting a clean address
-    // (`dslm`, below) those bits corrupt it outright. The real kernel
-    // hits exactly this: `../src-assem/sys/s1.s`'s `.sysloc` masks a
-    // raw address with `and o17777` before using it the same way -
-    // 8191 decimal here (this language has no octal literals).
-    bufAddr = bufAddr & 8191;
     bufAddr;
     asm { 0707142 }
     bcdTrackSector;
