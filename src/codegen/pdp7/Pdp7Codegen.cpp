@@ -1130,16 +1130,18 @@ void Pdp7Codegen::genStmt(const ir::Stmt &s) {
                 popWideToAddress(s.declSlot->type);
             } else {
                 // A leaf function's Local gets a static cell the one
-                // time its declaration is generated.
+                // time its declaration is generated; the assembler
+                // already zero-initializes it (": 0"), so an
+                // uninitialized scalar's cell needs no store here -
+                // same as a non-leaf's frame slot, which simply isn't
+                // written until something actually assigns it.
                 if (currentFunctionIsLeaf_) {
                     trailer_.push_back(leafLabel(s.declSlot) + ": 0");
                 }
                 if (s.initOrReturnOrExpr) {
                     genExpr(*s.initOrReturnOrExpr);
-                } else {
-                    code_ << "   lac __zero\n";
+                    emitStoreSlot(s.declSlot);
                 }
-                emitStoreSlot(s.declSlot);
             }
             return;
         }
