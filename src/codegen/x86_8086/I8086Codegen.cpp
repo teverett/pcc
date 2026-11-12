@@ -118,6 +118,12 @@ std::string I8086Codegen::generate(const ir::Program &prog, bool objectMode) {
             }
             line << "  ; " << slot->sourceName;
             trailer_.push_back(line.str());
+        } else if (slot->type.base == BaseType::Struct) {
+            // No struct initializer exists in this subset, so this is
+            // always zero-filled; reuses declareArray's own element-list
+            // emission (byte-exact for any size) rather than the
+            // word-pair logic below, which assumes an even width.
+            declareArray(lbl, std::vector<ir::ArrayInitElem>(slot->type.structSize), Type{BaseType::Char, false});
         } else if (w > 2) {
             auto v = static_cast<uint64_t>(slot->hasInit ? slot->initValue : 0);
             std::ostringstream line;

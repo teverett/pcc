@@ -149,6 +149,14 @@ std::string ArmMCodegen::generate(const ir::Program &prog, bool objectMode) {
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit, slot->type);
             dataOffset += static_cast<size_t>(widthOfType(slot->type)) * static_cast<size_t>(slot->arraySize);
+        } else if (slot->type.base == BaseType::Struct) {
+            // No struct initializer exists in this subset, so this is
+            // always zero-filled; reuses declareArray's own element-list
+            // emission (one zero "db" per byte) rather than a new
+            // directive, since this assembler dialect has no "reserve N
+            // zero bytes" form of its own.
+            declareArray(lbl, std::vector<ir::ArrayInitElem>(slot->type.structSize), Type{BaseType::Char, false});
+            dataOffset += static_cast<size_t>(slot->type.structSize);
         } else {
             long v = slot->hasInit ? slot->initValue : 0;
             int w = widthOfType(slot->type);
@@ -443,7 +451,14 @@ void ArmMCodegen::genExpr(const ir::Expr &e) {
 void ArmMCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // r0 = index
     int shift = elemShift(slot->type);
-    if (shift > 0) code_ << "    lsli r0,r0," << shift << "\n";  // r0 *= element width
+    if (shift > 0) {
+        code_ << "    lsli r0,r0," << shift << "\n";  // r0 *= element width
+    } else if (shift < 0) {
+        // Non-power-of-two element width (a struct's): `muls` is two-operand (r0 *= r1), so
+        // the width has to go through a register first.
+        code_ << "    movs r1," << widthOfType(slot->type) << "\n";
+        code_ << "    muls r0,r1\n";
+    }
     if (slot->arraySize > 0) {
         if (slot->kind == ir::SlotKind::Global) {
             loadAddress("r2", label(slot));

@@ -162,6 +162,13 @@ std::string AlphaCodegen::generate(const ir::Program &prog, bool objectMode) {
         dataOffset += totalBytes;
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit, slot->type);
+        } else if (slot->type.base == BaseType::Struct) {
+            // No struct initializer exists in this subset, so this is
+            // always zero-filled; reuses declareArray's own element-list
+            // emission (one zero "db" per byte) rather than a new
+            // directive, since this assembler dialect has no "reserve N
+            // zero bytes" form of its own.
+            declareArray(lbl, std::vector<ir::ArrayInitElem>(slot->type.structSize), Type{BaseType::Char, false});
         } else {
             long v = slot->hasInit ? slot->initValue : 0;
             if (elemW == 8) {

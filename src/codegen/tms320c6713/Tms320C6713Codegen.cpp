@@ -210,6 +210,12 @@ std::string Tms320C6713Codegen::generate(const ir::Program &prog, bool objectMod
         dataOffset += totalBytes;
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit, slot->type);
+        } else if (slot->type.base == BaseType::Struct) {
+            // No struct initializer exists in this subset, so this is
+            // always zero-filled; reuses declareArray's own element-list
+            // emission rather than the width-bucketed logic below, which
+            // only handles 1/2/4/8-byte widths.
+            declareArray(lbl, std::vector<ir::ArrayInitElem>(slot->type.structSize), Type{BaseType::Char, false});
         } else {
             long v = slot->hasInit ? slot->initValue : 0;
             if (elemW == 8) {

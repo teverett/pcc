@@ -177,6 +177,13 @@ std::string VaxCodegen::generate(const ir::Program &prog, bool objectMode) {
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit, slot->type);
+        } else if (slot->type.base == BaseType::Struct) {
+            // No struct initializer exists in this subset, so this is
+            // always zero-filled; reuses declareArray's own element-list
+            // emission rather than a new directive, since this
+            // assembler dialect has no "reserve N zero bytes" form of
+            // its own.
+            declareArray(lbl, std::vector<ir::ArrayInitElem>(slot->type.structSize), Type{BaseType::Char, false});
         } else {
             long v = slot->hasInit ? slot->initValue : 0;
             int w = widthOfType(slot->type);
@@ -467,7 +474,13 @@ void VaxCodegen::genExpr(const ir::Expr &e) {
 void VaxCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // r0 = index
     int shift = elemShift(slot->type);
-    if (shift > 0) code_ << "    ashl imm " << shift << ",r0,r0\n";
+    if (shift > 0) {
+        code_ << "    ashl imm " << shift << ",r0,r0\n";
+    } else if (shift < 0) {
+        // Non-power-of-two element width (a struct's): `mull2` takes a real multiplicand
+        // directly, immediate or not, so no shift-based scaling is needed at all here.
+        code_ << "    mull2 imm " << widthOfType(slot->type) << ",r0\n";
+    }
     if (slot->arraySize > 0) {
         if (slot->kind == ir::SlotKind::Global) {
             code_ << "    addl3 imm " << label(slot) << ",r0,r2\n";

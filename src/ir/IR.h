@@ -93,7 +93,13 @@ inline int localLowOffset(const Slot &slot, const TypeWidths &widths) {
 // uses for `slot`, frameOffset for such a wide scalar and the lowest
 // address (localLowOffset()) for every other Local.
 inline int localOffsetDescendingWide(const Slot &slot, const TypeWidths &widths) {
-    if (slot.arraySize == 0 && widthOf(slot.type, widths) > widths.intUnits) return slot.frameOffset;
+    // A struct's size is usually > an int's too, but it's addressed
+    // ascending from its lowest byte like an array (see
+    // assignFrameOffsets()'s own Struct case), never via this
+    // descending-from-frameOffset convention.
+    if (slot.type.base != BaseType::Struct && slot.arraySize == 0 && widthOf(slot.type, widths) > widths.intUnits) {
+        return slot.frameOffset;
+    }
     return localLowOffset(slot, widths);
 }
 

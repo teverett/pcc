@@ -486,6 +486,13 @@ std::string I8080Codegen::generate(const ir::Program &prog, bool objectMode) {
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit, slot->type);
+        } else if (slot->type.base == BaseType::Struct) {
+            // No struct initializer exists in this subset, so this is
+            // always zero-filled; reuses declareArray's own element-list
+            // emission (one zero "db" per byte) rather than a new
+            // directive, since this assembler dialect has no "reserve N
+            // zero bytes" form of its own.
+            declareArray(lbl, std::vector<ir::ArrayInitElem>(slot->type.structSize), Type{BaseType::Char, false});
         } else {
             long v = slot->hasInit ? slot->initValue : 0;
             int w = widthOfType(slot->type);

@@ -7,9 +7,11 @@ options { tokenVocab = CLexer; }
 // the lexer half, and ../README.md for exactly what's in and out of
 // scope: char/short/int/long/long long, each signed or unsigned, each
 // optionally pointer-typed (typeSpec's own trailing '*'s - see
-// ../src/Type.h's Type::ptrDepth), no structs or floats, no
-// preprocessor; an array's initializer is always a literal list, never
-// a general expression). This is a from-scratch grammar sized for that
+// ../src/Type.h's Type::ptrDepth), plus a narrower form of `struct`
+// (see ../docs/language.md's own "Structs" section) - no unions/enums/
+// typedefs or floats, no preprocessor; an array's initializer is
+// always a literal list, never a general expression). This is a
+// from-scratch grammar sized for that
 // subset, not a full ISO C grammar - the same approach ../../pdp-assembler
 // takes for as.s with grammar/Pdp7.g4. Keyword/punctuation literals (`'if'`,
 // `'('`, ...) are written directly here rather than named in
@@ -46,11 +48,36 @@ baseTypeSpec
     | ('signed' | 'unsigned')? 'long' 'long' 'int'?           # longLongType
     | ('signed' | 'unsigned')? 'long' 'int'?                  # longType
     | ('signed' | 'unsigned')                                  # signedOrUnsignedType
+    // 'struct' is a fixed keyword, so this introduces no lookup-based
+    // "is this identifier a type name" ambiguity - same disambiguation
+    // invariant the other alternatives above already rely on.
+    | 'struct' IDENT                                          # structType
     ;
 
 topLevelDecl
     : functionDecl
     | globalDecl
+    | structDecl
+    ;
+
+// A struct must be fully defined (tag + member list) before any use of
+// its tag - no forward declaration, matching this subset's general
+// define-before-use approach elsewhere (e.g. functionDecl's own
+// same-file forward declaration is explicit, not implicit).
+// An optional '@packed' disables inter-member padding and forces
+// alignment to 1 - see StructLayout.cpp's own packed branch for what
+// this changes and docs/language.md's "Structs" section for the
+// exact surface (all-or-nothing byte packing, no per-member control).
+// The word after '@' is a plain IDENT, not a reserved keyword, so
+// 'packed' stays usable as an ordinary identifier everywhere else
+// (e.g. a variable named `packed`) - BuildAst.cpp's buildStructDecl
+// checks its text is exactly "packed" and rejects anything else.
+structDecl
+    : 'struct' IDENT ('@' packedTag=IDENT)? LBRACE structMember+ RBRACE ';'
+    ;
+
+structMember
+    : typeSpec IDENT ('[' size=NUMBER ']')? ';'
     ;
 
 // A trailing ';' instead of a block, with no leading 'extern', is a
@@ -188,6 +215,14 @@ expr
     : '*' ptr=condExpr op=assignOp val=expr         # assignDerefExpr
     | IDENT '[' idx=expr ']' op=assignOp val=expr   # assignIndexExpr
     | IDENT op=assignOp val=expr                     # assignExpr
+    // base.name = val / base.name[idx] = val (and '->' likewise). `base`
+    // is a general condExpr (not just IDENT) so this also covers an
+    // array-of-structs element (`pts[i].x = v`) and a chained member
+    // (`a.b.c = v`) - see condExpr's own memberAccessExpr/
+    // memberAccessPtrExpr alternatives below, which this mirrors for the
+    // assignment-target position.
+    | base=condExpr '.' name=IDENT ('[' idx=expr ']')? op=assignOp val=expr    # assignMemberExpr
+    | base=condExpr '->' name=IDENT ('[' idx=expr ']')? op=assignOp val=expr  # assignMemberPtrExpr
     | condExpr                                        # exprCond
     ;
 
@@ -242,6 +277,18 @@ condExpr
     | 'sizeof' '(' expr ')'                           # sizeofExprExpr
     | '*' condExpr                                    # derefExpr
     | '&' condExpr                                    # addrOfExpr
+    // base.name / base.name[idx] (and '->' likewise); '[idx]' only
+    // applies when the member itself is an array, indexed in the same
+    // step (`buf.data[2]`), not a general "index anything" form - plain
+    // array indexing stays IDENT-only (indexExpr above), so there's no
+    // overlap/ambiguity between the two. Placed at this tier (same as
+    // derefExpr/addrOfExpr) rather than alongside the postfix-tier
+    // primaries above: `base` being a full condExpr (not just IDENT)
+    // means this alternative is naturally left-recursive, which ANTLR4
+    // only allows for a rule referencing itself - condExpr, not the
+    // flatter primaries.
+    | base=condExpr '.' name=IDENT ('[' idx=expr ']')?   # memberAccessExpr
+    | base=condExpr '->' name=IDENT ('[' idx=expr ']')?  # memberAccessPtrExpr
     | op=('-'|'!'|'~') condExpr                        # unaryExpr
     // Prefix '++'/'--' - same three assignable-target shapes as the
     // postfix form above, operator first; sits at this same tier as

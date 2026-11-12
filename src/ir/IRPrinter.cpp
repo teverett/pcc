@@ -30,6 +30,9 @@ std::string typeSpecText(Type t) {
         case BaseType::LongLong:
             base = "long long";
             break;
+        case BaseType::Struct:
+            base = "struct " + t.structTag;
+            break;
     }
     return prefix + base + std::string(t.ptrDepth, '*');
 }

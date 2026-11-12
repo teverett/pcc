@@ -30,6 +30,15 @@ enum class ExprKind {
     Sizeof,       // sizeof(type) or sizeof(rhs), per sizeofIsType
     StringLit,    // decoded bytes stored in `name`
     Ternary,      // lhs ? rhs : elseExpr
+    // lhs.name, lhs->name (viaPointer selects which), or lhs.name[memberIndex]
+    // / lhs->name[memberIndex] when memberIndex is set (a member that's
+    // itself an array, indexed in the same step).
+    MemberAccess,
+    // Assignment-target counterparts of MemberAccess: lhs.name = rhs (or
+    // lhs.name[memberIndex] = rhs), kept distinct from CompoundMemberAssign
+    // the same way Assign/CompoundAssign already are.
+    MemberAssign,
+    CompoundMemberAssign,  // lhs.name op= rhs (or indexed); `op` as CompoundAssign.
 };
 
 struct Expr {
@@ -40,13 +49,20 @@ struct Expr {
     Type type;                 // IntLit's suffix type; Cast/Sizeof's operand/measured type
     bool sizeofIsType = false;  // Sizeof: true -> `type` is measured, false -> `rhs` is (unevaluated)
     bool yieldOld = false;      // CompoundAssign(DerefAssign): true only for postfix '++'/'--'
-    std::string name;         // Var / Index / Assign target / Call callee / StringLit bytes
-    std::string op;           // Unary / Binary / CompoundAssign(DerefAssign) operator text
+    bool viaPointer = false;    // MemberAccess/MemberAssign(CompoundMemberAssign): '->' vs '.'
+    std::string name;         // Var / Index / Assign target / Call callee / StringLit bytes /
+                                // MemberAccess/MemberAssign(CompoundMemberAssign) member name
+    std::string op;           // Unary / Binary / CompoundAssign(DerefAssign/MemberAssign) operator text
     std::unique_ptr<Expr> lhs;  // Binary lhs, Index/Assign(CompoundAssign) subscript, DerefAssign
-                                 // (CompoundDerefAssign) pointer, CallPtr callee, Ternary condition
+                                 // (CompoundDerefAssign) pointer, CallPtr callee, Ternary condition,
+                                 // MemberAccess/MemberAssign(CompoundMemberAssign) base expression
     std::unique_ptr<Expr> rhs;                  // Binary rhs, Assign(DerefAssign/CompoundAssign) value,
-                                                  // Unary/Cast operand, Sizeof expression, Ternary then-branch
+                                                  // Unary/Cast operand, Sizeof expression, Ternary then-branch,
+                                                  // MemberAssign/CompoundMemberAssign value
     std::unique_ptr<Expr> elseExpr;              // Ternary else-branch
+    // MemberAccess/MemberAssign(CompoundMemberAssign): set only when the
+    // member itself is indexed in the same step (`s.arr[i]`/`p->arr[i]`).
+    std::unique_ptr<Expr> memberIndex;
     std::vector<std::unique_ptr<Expr>> args;    // Call / CallPtr arguments
 };
 
@@ -150,9 +166,28 @@ struct GlobalVar {
     bool isExternDecl = false;  // 'extern': data defined in another file
 };
 
+// One field of a struct definition, in declaration order; `type` carries
+// only `structTag` when it's itself a struct (BuildAst has no TypeWidths,
+// so size/alignment resolution happens later, in IRBuilder).
+struct StructMemberDecl {
+    std::string name;
+    Type type;
+    int arraySize = 0;  // 0 = scalar member
+    int line = 0;
+};
+
+struct StructDecl {
+    std::string tag;
+    std::vector<StructMemberDecl> members;
+    bool packed = false;  // '@packed': no inter-member padding, align = 1
+    int line = 0;
+    std::string sourceFile;
+};
+
 struct Program {
     std::vector<FunctionDecl> functions;
     std::vector<GlobalVar> globals;
+    std::vector<StructDecl> structs;
 };
 
 }  // namespace rcc

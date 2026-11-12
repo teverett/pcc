@@ -32,6 +32,7 @@ BREAK_KW : 'break' ;
 CONTINUE_KW: 'continue' ;
 GOTO_KW  : 'goto' ;
 EXTERN_KW: 'extern' ;
+STRUCT_KW: 'struct' ;
 LPAREN   : '(' ;
 RPAREN   : ')' ;
 LBRACK   : '[' ;
@@ -81,6 +82,8 @@ INC       : '++' ;
 DEC       : '--' ;
 QUESTION  : '?' ;
 COLON     : ':' ;
+DOT       : '.' ;
+ARROW     : '->' ;
 
 IDENT   : [a-zA-Z_][a-zA-Z_0-9]* ;
 // An optional u/l suffix picks the literal's type (unsigned/long/long

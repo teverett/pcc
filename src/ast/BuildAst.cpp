@@ -173,6 +173,14 @@ Type buildBaseType(CParser::BaseTypeSpecContext *ctx) {
         isUnsigned = c->UNSIGNED_KW() != nullptr;
         return Type{BaseType::Int, isUnsigned};
     }
+    if (auto *c = dynamic_cast<CParser::StructTypeContext *>(ctx)) {
+        // Only the tag is recorded here - this layer has no TypeWidths, so
+        // size/alignment resolution (and checking the tag is actually
+        // defined) happens later, in IRBuilder's resolveStructType().
+        Type t(BaseType::Struct);
+        t.structTag = c->IDENT()->getText();
+        return t;
+    }
     err(ctx, "internal: unhandled baseTypeSpec alternative");
 }
 
@@ -390,6 +398,26 @@ ExprPtr buildCondExpr(CParser::CondExprContext *ctx) {
         e->rhs = buildCondExpr(c->condExpr());
         return e;
     }
+    if (auto *c = dynamic_cast<CParser::MemberAccessExprContext *>(ctx)) {
+        auto e = std::make_unique<Expr>();
+        e->kind = ExprKind::MemberAccess;
+        e->line = c->getStart()->getLine();
+        e->viaPointer = false;
+        e->name = c->name->getText();
+        e->lhs = buildCondExpr(c->base);
+        if (c->idx) e->memberIndex = buildExpr(c->idx);
+        return e;
+    }
+    if (auto *c = dynamic_cast<CParser::MemberAccessPtrExprContext *>(ctx)) {
+        auto e = std::make_unique<Expr>();
+        e->kind = ExprKind::MemberAccess;
+        e->line = c->getStart()->getLine();
+        e->viaPointer = true;
+        e->name = c->name->getText();
+        e->lhs = buildCondExpr(c->base);
+        if (c->idx) e->memberIndex = buildExpr(c->idx);
+        return e;
+    }
     if (auto *c = dynamic_cast<CParser::MulExprContext *>(ctx)) {
         return makeBinary(c, c->op->getText(), buildCondExpr(c->condExpr(0)), buildCondExpr(c->condExpr(1)));
     }
@@ -459,6 +487,32 @@ ExprPtr buildExpr(CParser::ExprContext *ctx) {
         e->line = c->getStart()->getLine();
         e->op = op;
         e->name = c->IDENT()->getText();
+        e->rhs = buildExpr(c->val);
+        return e;
+    }
+    if (auto *c = dynamic_cast<CParser::AssignMemberExprContext *>(ctx)) {
+        std::string op = stripAssignEq(c->op->getText());
+        auto e = std::make_unique<Expr>();
+        e->kind = op.empty() ? ExprKind::MemberAssign : ExprKind::CompoundMemberAssign;
+        e->line = c->getStart()->getLine();
+        e->op = op;
+        e->viaPointer = false;
+        e->name = c->name->getText();
+        e->lhs = buildCondExpr(c->base);
+        if (c->idx) e->memberIndex = buildExpr(c->idx);
+        e->rhs = buildExpr(c->val);
+        return e;
+    }
+    if (auto *c = dynamic_cast<CParser::AssignMemberPtrExprContext *>(ctx)) {
+        std::string op = stripAssignEq(c->op->getText());
+        auto e = std::make_unique<Expr>();
+        e->kind = op.empty() ? ExprKind::MemberAssign : ExprKind::CompoundMemberAssign;
+        e->line = c->getStart()->getLine();
+        e->op = op;
+        e->viaPointer = true;
+        e->name = c->name->getText();
+        e->lhs = buildCondExpr(c->base);
+        if (c->idx) e->memberIndex = buildExpr(c->idx);
         e->rhs = buildExpr(c->val);
         return e;
     }
@@ -668,12 +722,39 @@ StmtPtr buildStmt(CParser::StatementContext *ctx) {
     err(ctx, "internal: unhandled statement alternative");
 }
 
+StructDecl buildStructDecl(CParser::StructDeclContext *ctx) {
+    StructDecl decl;
+    decl.tag = ctx->IDENT(0)->getText();
+    decl.line = ctx->getStart()->getLine();
+    if (ctx->packedTag) {
+        if (ctx->packedTag->getText() != "packed") {
+            err(ctx, "unknown struct attribute '@" + ctx->packedTag->getText() +
+                          "' - only '@packed' is supported");
+        }
+        decl.packed = true;
+    }
+    for (auto *m : ctx->structMember()) {
+        StructMemberDecl member;
+        member.name = m->IDENT()->getText();
+        member.line = m->getStart()->getLine();
+        member.type = buildType(m->typeSpec());
+        if (m->size) {
+            member.arraySize = static_cast<int>(parsePlainNumber(m->size, m, "a struct member's array size"));
+            if (member.arraySize <= 0) err(m, "array size must be a positive integer");
+        }
+        decl.members.push_back(std::move(member));
+    }
+    return decl;
+}
+
 }  // namespace
 
 Program buildProgram(CParser::ProgramContext *ctx) {
     Program prog;
     for (auto *top : ctx->topLevelDecl()) {
-        if (auto *fd = top->functionDecl()) {
+        if (auto *sd = top->structDecl()) {
+            prog.structs.push_back(buildStructDecl(sd));
+        } else if (auto *fd = top->functionDecl()) {
             if (auto *ext = dynamic_cast<CParser::ExternFunctionDeclContext *>(fd)) {
                 FunctionDecl fn;
                 fn.name = ext->IDENT()->getText();

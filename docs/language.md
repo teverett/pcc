@@ -49,8 +49,9 @@ IRBuilder's `collectLabels`), a local declaration (scalar or array,
 optionally initialized), a bare expression statement, and
 `asm { ... }` (see "Inline asm" below).
 
-Not in this subset: `struct`/`union`/`enum`/`typedef`, floating point,
-variadic functions, and designated initializers.
+Not in this subset: `union`/`enum`/`typedef`, floating point, variadic
+functions, and designated initializers. `struct` is supported, in the
+narrower form described in "Structs" below.
 
 ## Scope and limitations
 
@@ -110,6 +111,37 @@ Deliberate simplifications, not bugs:
   (see `IRBuilder.cpp`'s own `buildExpr` case for `ExprKind::
   StringLit`), so no backend needs its own string-literal codegen at
   all.
+
+## Structs
+
+`struct Tag { member; ... };` at file scope only (no nested, local, or
+anonymous struct definitions, and no forward declaration — a tag must
+be fully defined, textually, before any use of it). A member is any
+type this subset otherwise supports (including another already-defined
+struct, or a fixed-size array of one), laid out in declaration order
+with each member aligned to its own width and the struct's own overall
+size padded up to its widest member's alignment (so an array of a
+struct, or a struct nested inside another, always starts aligned).
+`sizeof(struct Tag)` and `struct Tag *` (any depth) both work the same
+as for any other type.
+
+Member access is `expr.name` or `expr->name` (indexing straight into
+an array member in the same step, e.g. `buf.data[2]`, is allowed too),
+chainable (`a.b.c`), and works as both a read and an assignment target
+(`=` and the compound-assignment operators). `.` requires a struct
+value on its left (a variable, an array element, a dereferenced
+pointer, or another member); `->` requires a pointer to one.
+
+Not supported: passing or returning a struct by value (only a pointer
+to one, as a parameter or return type), whole-struct assignment
+(`a = b` where both are struct-typed), a struct initializer (`= {...}`
+on a struct-typed declaration, including an array of structs — a
+struct variable starts uninitialized, like any other local with no
+initializer, or implicitly zero-filled as a global, like any other
+global), and an array of structs at file scope (a local array of
+structs works; see `IRBuilder.cpp`'s own comment on why only the global
+case is excluded). Each of these is a compile error, not a silent
+miscompile.
 
 ## Bitwise operators
 

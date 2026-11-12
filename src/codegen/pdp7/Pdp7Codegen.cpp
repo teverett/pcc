@@ -43,8 +43,15 @@ bool slotIsWide(const ir::Slot *s) {
 
 bool stmtRulesOutLeaf(const ir::Stmt *s) {
     if (!s) return false;
+    // A struct Local also disqualifies the leaf path: its member
+    // accesses lower to real address arithmetic (&local + byte
+    // offset), which needs a frame-pointer-relative address like any
+    // other addressed Local/Param, not the leaf scheme's single
+    // static cell per slot (and a struct's size is usually more than
+    // one word anyway).
     if (s->kind == ir::StmtKind::LocalDecl && s->declSlot &&
-        (s->declSlot->arraySize > 0 || slotIsWide(s->declSlot))) {
+        (s->declSlot->arraySize > 0 || slotIsWide(s->declSlot) ||
+         s->declSlot->type.base == BaseType::Struct)) {
         return true;
     }
     // An `asm{...}` block references Param/Local only via ordinary
@@ -66,7 +73,7 @@ bool stmtRulesOutLeaf(const ir::Stmt *s) {
 
 bool Pdp7Codegen::computeIsLeaf(const ir::Function *fn, const ir::Stmt *body) {
     for (const ir::Slot *p : fn->params) {
-        if (p->arraySize > 0 || slotIsWide(p)) return false;
+        if (p->arraySize > 0 || slotIsWide(p) || p->type.base == BaseType::Struct) return false;
     }
     return !stmtRulesOutLeaf(body);
 }

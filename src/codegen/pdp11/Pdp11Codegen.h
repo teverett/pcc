@@ -95,15 +95,18 @@ class Pdp11Codegen : public Backend {
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
     // How many native 16-bit words `t` occupies - 1 up to `int`, 2 for `long`, 4 for `long long`.
     int wordCountOf(Type t) const { return widthOfType(t) / 2; }
-    // log2 of the element width (1/2/4/8 bytes -> 0/1/2/3), the shift amount genIndexAddr()
-    // scales an index by. Note: a `long`/`long long` array element still only moves one
+    // log2 of the element width, for the common power-of-two widths (1/2/4/8 bytes) -
+    // genIndexAddr() scales an index by this many `asl`s when it applies. Returns -1 for
+    // any other width (e.g. a packed struct's), telling genIndexAddr() to fall back to a
+    // real multiply instead. Note: a `long`/`long long` array element still only moves one
     // native word (see genIndex()).
     int elemShift(Type t) const {
         switch (widthOfType(t)) {
             case 1: return 0;
             case 2: return 1;
             case 4: return 2;
-            default: return 3;
+            case 8: return 3;
+            default: return -1;
         }
     }
 

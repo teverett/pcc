@@ -47,7 +47,19 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitStructType(CParser::StructTypeContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitTopLevelDecl(CParser::TopLevelDeclContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitStructDecl(CParser::StructDeclContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitStructMember(CParser::StructMemberContext *ctx) override {
     return visitChildren(ctx);
   }
 
@@ -191,6 +203,14 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitAssignMemberExpr(CParser::AssignMemberExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitAssignMemberPtrExpr(CParser::AssignMemberPtrExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitExprCond(CParser::ExprCondContext *ctx) override {
     return visitChildren(ctx);
   }
@@ -247,6 +267,10 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitMemberAccessExpr(CParser::MemberAccessExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitCallExpr(CParser::CallExprContext *ctx) override {
     return visitChildren(ctx);
   }
@@ -272,6 +296,10 @@ public:
   }
 
   virtual std::any visitOrExpr(CParser::OrExprContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitMemberAccessPtrExpr(CParser::MemberAccessPtrExprContext *ctx) override {
     return visitChildren(ctx);
   }
 

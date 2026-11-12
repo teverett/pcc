@@ -5,6 +5,8 @@
 #include <stdexcept>
 #include <unordered_map>
 
+#include "../StructLayout.h"
+
 namespace rcc {
 
 namespace {
@@ -31,6 +33,9 @@ std::string typeText(Type t) {
             break;
         case BaseType::LongLong:
             base = "long long";
+            break;
+        case BaseType::Struct:
+            base = "struct " + t.structTag;
             break;
     }
     return prefix + base + std::string(t.ptrDepth, '*');
@@ -73,6 +78,20 @@ int assignFrameOffsets(ir::Stmt *s, int nextOffset, const TypeWidths &widths) {
             nextOffset = assignFrameOffsets(s->loopBody.get(), nextOffset, widths);
             return assignFrameOffsets(s->postStmt.get(), nextOffset, widths);
         case ir::StmtKind::LocalDecl: {
+            // A struct local (scalar or array) aligns to its own
+            // structAlign (the widest member's alignment, not the whole
+            // struct's size) and is addressed ascending from its lowest
+            // byte like an array - see ir::localOffsetDescendingWide()'s
+            // own Struct exclusion - so it never takes the wide-scalar
+            // branch below, even though its size is usually > an int's.
+            if (s->declSlot->type.base == BaseType::Struct) {
+                int align = s->declSlot->type.structAlign;
+                int size = s->declSlot->type.structSize;
+                nextOffset = alignUp(nextOffset, align);
+                s->declSlot->frameOffset = nextOffset;
+                int count = s->declSlot->arraySize > 0 ? s->declSlot->arraySize : 1;
+                return nextOffset + size * count;
+            }
             // A Local's lowest address is frameOffset + size - one int
             // (see ir::localLowOffset()), so a type wider than an int is
             // aligned by that address rather than by frameOffset itself.
@@ -122,6 +141,7 @@ class Builder {
     Builder(bool allowExternal, const TypeWidths &widths) : allowExternal_(allowExternal), widths_(widths) {}
 
     ir::Program build(const Program &prog) {
+        registerStructs(prog);
         registerGlobalsAndFunctions(prog);
         for (const auto &fn : prog.functions) {
             if (!fn.body) continue;  // prototype only
@@ -152,11 +172,88 @@ class Builder {
     }
 
    private:
+    // Resolves every struct tag's member offsets/size/alignment once,
+    // up front - every other type boundary (globals, locals, params,
+    // casts, sizeof) just looks a tag up here via resolveStructType(),
+    // never recomputes a layout itself. Struct definitions must be
+    // textually self-contained (a member naming another struct tag
+    // requires that tag already registered), matching this subset's
+    // define-before-use rule elsewhere (see grammar/CParser.g4's own
+    // structDecl comment).
+    void registerStructs(const Program &prog) {
+        for (const auto &sd : prog.structs) {
+            if (structsByTag_.count(sd.tag)) err(sd.line, "redefinition of 'struct " + sd.tag + "'");
+            std::vector<StructMember> members;
+            members.reserve(sd.members.size());
+            for (const auto &m : sd.members) {
+                StructMember sm;
+                sm.name = m.name;
+                sm.type = resolveStructType(m.type, m.line);
+                sm.arraySize = m.arraySize;
+                members.push_back(std::move(sm));
+            }
+            StructLayout layout = computeStructLayout(sd.tag, members, widths_, sd.packed);
+            if (sd.packed) checkPackedAlignmentSafety(layout, sd.line);
+            structsByTag_[sd.tag] = std::move(layout);
+        }
+    }
+
+    // '@packed' drops inter-member padding on every backend alike, but whether a backend's
+    // hardware (or this codegen's own wide-load/store sequences) tolerates a misaligned
+    // multi-byte access varies - several of rcc's targets (word-addressed machines, several
+    // RISC load/store ISAs) fault or misbehave on one. Rather than special-case per backend,
+    // this rejects any packed layout that would need one, on every backend alike: a loud
+    // compile error instead of a silent miscompile on whichever backend actually can't do it.
+    // A member with alignment 1 (a `char`, or an array of `char`) can never be misaligned, so
+    // this only ever fires for a multi-byte scalar/array/nested-struct member.
+    void checkPackedAlignmentSafety(const StructLayout &layout, int line) {
+        for (const auto &m : layout.members) {
+            int align = m.type.base == BaseType::Struct ? m.type.structAlign : widthOf(m.type, widths_);
+            if (align > 1 && m.byteOffset % align != 0) {
+                err(line, "'struct " + layout.tag + "' member '" + m.name + "' would sit at byte offset " +
+                              std::to_string(m.byteOffset) + " under '@packed', which isn't a multiple of its " +
+                              "own " + std::to_string(align) +
+                              "-byte alignment - some backends can't access a misaligned multi-byte value; "
+                              "reorder this struct's members so every multi-byte member lands on its own "
+                              "alignment boundary");
+            }
+        }
+    }
+
+    // Fills in structSize/structAlign for a struct-typed Type (any
+    // ptrDepth - base/structTag always describe the pointee, so a
+    // pointer-to-struct's pointee is resolved the same way). A no-op for
+    // every non-struct Type, so every call site below is safe to apply
+    // unconditionally.
+    Type resolveStructType(Type t, int line) {
+        if (t.base != BaseType::Struct) return t;
+        auto it = structsByTag_.find(t.structTag);
+        if (it == structsByTag_.end()) {
+            err(line, "'struct " + t.structTag +
+                          "' is used before it's defined (or never defined) - this subset requires a struct's "
+                          "full definition, textually earlier, before any use of its tag");
+        }
+        t.structSize = it->second.size;
+        t.structAlign = it->second.align;
+        return t;
+    }
+
+    // By-value struct parameters/returns need their own calling-convention
+    // support, which this subset doesn't implement - only a pointer to a
+    // struct is allowed in either position.
+    void rejectStructByValue(Type t, int line, const char *what) {
+        if (t.base == BaseType::Struct && t.ptrDepth == 0) {
+            err(line, std::string(what) + " can't be a struct by value - use a pointer to it instead (e.g. "
+                                            "'struct " +
+                          t.structTag + " *')");
+        }
+    }
+
     void registerGlobalsAndFunctions(const Program &prog) {
         for (const auto &g : prog.globals) {
             if (globalByName_.count(g.name)) err(g.line, "redeclaration of global '" + g.name + "'");
             ir::Slot *slot = allocSlot(ir::SlotKind::Global, g.name, g.arraySize);
-            slot->type = g.type;
+            slot->type = resolveStructType(g.type, g.line);
             // Registers an 'extern' global's kind (data) before any
             // '&name'/array-init element elsewhere in this file is resolved.
             if (g.isExternDecl) {
@@ -164,6 +261,15 @@ class Builder {
                 slot->sourceFile = g.sourceFile;
                 globalByName_[g.name] = slot;
                 continue;
+            }
+            if (slot->type.base == BaseType::Struct && g.arraySize > 0) {
+                err(g.line, "an array of 'struct " + slot->type.structTag +
+                                 "' isn't supported yet as a global (only a single struct variable, or a "
+                                 "local array of struct, is) - see docs/language.md's \"Structs\" section");
+            }
+            if (slot->type.base == BaseType::Struct && g.hasInit) {
+                err(g.line, "a struct global can't have an initializer yet - set its fields after "
+                             "declaration instead");
             }
             slot->hasInit = g.hasInit;
             slot->initValue = g.initValue;
@@ -179,15 +285,20 @@ class Builder {
             auto irFn = std::make_unique<ir::Function>();
             irFn->id = nextFuncId_++;
             irFn->sourceName = fn.name;
-            irFn->returnType = fn.returnType;
+            irFn->returnType = resolveStructType(fn.returnType, fn.line);
             irFn->isVoid = fn.isVoid;
             irFn->sourceFile = fn.sourceFile;
+            if (!fn.isVoid) rejectStructByValue(irFn->returnType, fn.line, "a function's return type");
             // Registers an 'extern' function's name before any '&name'/
             // array-init element referring to it is resolved.
             if (fn.isExternDecl) {
                 irFn->isExternal = true;
                 irFn->hasPrototype = true;
-                for (const auto &p : fn.params) irFn->prototypeParams.push_back(p.type);
+                for (const auto &p : fn.params) {
+                    Type pt = resolveStructType(p.type, fn.line);
+                    rejectStructByValue(pt, fn.line, "a function parameter");
+                    irFn->prototypeParams.push_back(pt);
+                }
                 funcByName_[fn.name] = irFn.get();
                 prog_.functions.push_back(std::move(irFn));
                 continue;
@@ -202,7 +313,8 @@ class Builder {
             int paramOffset = 2 * intWidth;
             for (size_t i = 0; i < fn.params.size(); i++) {
                 ir::Slot *p = allocSlot(ir::SlotKind::Param, fn.params[i].name);
-                p->type = fn.params[i].type;
+                p->type = resolveStructType(fn.params[i].type, fn.line);
+                rejectStructByValue(p->type, fn.line, "a function parameter");
                 p->ownerFunctionName = fn.name;
                 p->paramIndex = static_cast<int>(i);
                 // No alignUp: the caller's push sequence lays params
@@ -404,6 +516,147 @@ class Builder {
         err(e.line, "'&' requires a plain variable, array element, or function name, e.g. &x, &arr[i], or &f");
     }
 
+    ir::ExprPtr makeIntLit(long value, Type type, int line) {
+        auto lit = std::make_unique<ir::Expr>();
+        lit->kind = ir::ExprKind::IntLit;
+        lit->line = line;
+        lit->type = type;
+        lit->intValue = value;
+        return lit;
+    }
+
+    // Resolves `baseAst`'s own address, as a char*-typed pointer
+    // expression (so a later +offset step is byte-exact, unscaled), and
+    // its value's own Type (needed to look its struct tag up) - used by
+    // buildMemberAddr for '.' (never for '->', which already holds a
+    // pointer value with no address-of step needed). Mirrors
+    // buildAddressableOperand's own Var/Index/pointer-indexing handling
+    // for '&', since a struct value reached through '.' is addressable in
+    // exactly the same shapes: a plain variable, a real array element, a
+    // pointer variable indexed as an array (*(p+i), not a real element),
+    // a dereferenced pointer, or another member access to recurse into.
+    std::pair<ir::ExprPtr, Type> addressableStructValue(const Expr &baseAst) {
+        Type charPtr(BaseType::Char, false, 1);
+        if (baseAst.kind == ExprKind::Index) {
+            if (ir::Slot *slot = resolveVar(baseAst.name, baseAst.line);
+                slot->arraySize == 0 && isPointer(slot->type)) {
+                // p[i] on a pointer-to-struct variable is *(p+i): the
+                // pointee is the struct value, not a real array element.
+                ir::ExprPtr sum = buildPointerIndexAddr(slot, *baseAst.lhs, baseAst.line);
+                Type pointee = pointeeOf(sum->type);
+                return {wrapConvert(std::move(sum), charPtr, baseAst.line), pointee};
+            }
+        }
+        if (baseAst.kind == ExprKind::Var || baseAst.kind == ExprKind::Index) {
+            ir::ExprPtr operand = buildAddressableOperand(baseAst);
+            Type t = operand->type;
+            auto addr = std::make_unique<ir::Expr>();
+            addr->kind = ir::ExprKind::Unary;
+            addr->op = "&";
+            addr->line = baseAst.line;
+            addr->type = charPtr;
+            addr->rhs = std::move(operand);
+            return {std::move(addr), t};
+        }
+        if (baseAst.kind == ExprKind::Unary && baseAst.op == "*") {
+            ir::ExprPtr inner = buildExpr(*baseAst.rhs);
+            if (!isPointer(inner->type)) err(baseAst.line, "'*' here must dereference a pointer to struct");
+            Type pointee = pointeeOf(inner->type);
+            return {wrapConvert(std::move(inner), charPtr, baseAst.line), pointee};
+        }
+        if (baseAst.kind == ExprKind::MemberAccess || baseAst.kind == ExprKind::MemberAssign ||
+            baseAst.kind == ExprKind::CompoundMemberAssign) {
+            Type memberType;
+            ir::ExprPtr addr = buildMemberAddr(baseAst, memberType);
+            return {std::move(addr), memberType};
+        }
+        err(baseAst.line, "'.' requires an addressable struct value (a variable, array element, pointer "
+                            "dereference, or another member)");
+    }
+
+    // Resolves a MemberAccess/MemberAssign/CompoundMemberAssign AST node
+    // (all three share the same lhs/name/viaPointer/memberIndex shape -
+    // see AST.h) to the byte address of its named member, as a
+    // char*-typed pointer expression - never dereferenced; callers wrap
+    // the result in Unary"*" for a read or DerefAssign/
+    // CompoundDerefAssign for a write, both of which key their load/
+    // store width off their own node's `type`, not this pointer's,
+    // exactly the way plain pointer dereference already does on every
+    // backend. `outMemberType` receives the member's own resolved Type.
+    // `e.memberIndex`, when set, indexes into a member that's itself an
+    // array (e.g. buf.data[2]) in the same step; `outMemberType` becomes
+    // the array's element type in that case.
+    ir::ExprPtr buildMemberAddr(const Expr &e, Type &outMemberType) {
+        ir::ExprPtr basePtr;
+        std::string structTag;
+        Type charPtr(BaseType::Char, false, 1);
+        if (e.viaPointer) {
+            ir::ExprPtr base = buildExpr(*e.lhs);
+            if (!isPointer(base->type) || base->type.ptrDepth != 1 || base->type.base != BaseType::Struct) {
+                err(e.line, "'->' requires a pointer to a struct");
+            }
+            structTag = base->type.structTag;
+            basePtr = wrapConvert(std::move(base), charPtr, e.line);
+        } else {
+            auto [addr, valueType] = addressableStructValue(*e.lhs);
+            if (valueType.base != BaseType::Struct || valueType.ptrDepth != 0) {
+                err(e.line, "'.' requires a struct value - use '->' on a pointer instead");
+            }
+            structTag = valueType.structTag;
+            basePtr = std::move(addr);
+        }
+
+        auto tagIt = structsByTag_.find(structTag);
+        if (tagIt == structsByTag_.end()) err(e.line, "internal: unresolved struct tag '" + structTag + "'");
+        const StructMember *member = nullptr;
+        for (auto &m : tagIt->second.members) {
+            if (m.name == e.name) {
+                member = &m;
+                break;
+            }
+        }
+        if (!member) err(e.line, "'struct " + structTag + "' has no member named '" + e.name + "'");
+
+        Type nativeInt(BaseType::Int, false);
+        ir::ExprPtr offset = makeIntLit(member->byteOffset, nativeInt, e.line);
+        if (e.memberIndex) {
+            if (member->arraySize <= 0) err(e.line, "'" + e.name + "' isn't an array member - remove the '[...]'");
+            ir::ExprPtr idx = promote(buildExpr(*e.memberIndex), e.line);
+            int elemWidth = widthOf(member->type, widths_);
+            if (elemWidth != 1) {
+                auto scaled = std::make_unique<ir::Expr>();
+                scaled->kind = ir::ExprKind::Binary;
+                scaled->line = e.line;
+                scaled->op = "*";
+                scaled->type = nativeInt;
+                scaled->lhs = std::move(idx);
+                scaled->rhs = makeIntLit(elemWidth, nativeInt, e.line);
+                idx = std::move(scaled);
+            }
+            auto sum = std::make_unique<ir::Expr>();
+            sum->kind = ir::ExprKind::Binary;
+            sum->line = e.line;
+            sum->op = "+";
+            sum->type = nativeInt;
+            sum->lhs = std::move(offset);
+            sum->rhs = std::move(idx);
+            offset = std::move(sum);
+        } else if (member->arraySize > 0) {
+            err(e.line, "'" + e.name + "' is an array member - use '" + e.name + "[i]'");
+        }
+
+        outMemberType = member->type;
+
+        auto addrOut = std::make_unique<ir::Expr>();
+        addrOut->kind = ir::ExprKind::Binary;
+        addrOut->line = e.line;
+        addrOut->op = "+";
+        addrOut->type = charPtr;
+        addrOut->lhs = std::move(basePtr);
+        addrOut->rhs = std::move(offset);
+        return addrOut;
+    }
+
     // Pointer arithmetic/comparison, called once either operand is a real
     // pointer: ptr +/- int (scaled by pointee width), ptr - ptr of the same
     // type (scaled address difference), and comparisons (unsigned
@@ -568,6 +821,7 @@ class Builder {
                     err(e.line, "array '" + e.name + "' used without a subscript - use " + e.name +
                                     "[i], or &" + e.name + " for its address");
                 }
+                rejectStructByValue(slot->type, e.line, "a struct variable read as a value (not through '.'/'->')");
                 out->kind = ir::ExprKind::Var;
                 out->slot = slot;
                 out->type = slot->type;
@@ -581,9 +835,11 @@ class Builder {
                     out->kind = ir::ExprKind::Unary;
                     out->op = "*";
                     out->type = pointeeOf(sum->type);
+                    rejectStructByValue(out->type, e.line, "a pointer dereference read as a value");
                     out->rhs = std::move(sum);
                     return out;
                 }
+                rejectStructByValue(slot->type, e.line, "a struct array element read as a value (not through '.')");
                 out->kind = ir::ExprKind::Index;
                 out->slot = slot;
                 out->type = slot->type;
@@ -598,6 +854,7 @@ class Builder {
                     ir::ExprPtr sum = buildPointerIndexAddr(slot, *e.lhs, e.line);
                     out->kind = ir::ExprKind::DerefAssign;
                     Type pointee = pointeeOf(sum->type);
+                    rejectStructByValue(pointee, e.line, "a whole-struct assignment through a pointer");
                     out->type = pointee;
                     out->lhs = std::move(sum);
                     out->rhs = wrapConvert(buildExpr(*e.rhs), pointee, e.line);
@@ -610,6 +867,7 @@ class Builder {
                     out->lhs = buildExpr(*e.lhs);
                 }
                 out->type = out->slot->type;
+                rejectStructByValue(out->type, e.line, "a whole-struct assignment ('a = b;')");
                 out->rhs = wrapConvert(buildExpr(*e.rhs), out->type, e.line);
                 return out;
             }
@@ -620,6 +878,7 @@ class Builder {
                     ir::ExprPtr sum = buildPointerIndexAddr(slot, *e.lhs, e.line);
                     out->kind = ir::ExprKind::CompoundDerefAssign;
                     Type pointee = pointeeOf(sum->type);
+                    rejectStructByValue(pointee, e.line, "a compound assignment through a pointer to struct");
                     out->type = pointee;
                     out->op = e.op;
                     out->yieldOld = e.yieldOld;
@@ -637,6 +896,7 @@ class Builder {
                     out->lhs = buildExpr(*e.lhs);
                 }
                 out->type = out->slot->type;
+                rejectStructByValue(out->type, e.line, "a compound assignment on a struct");
                 rejectIfWide(out->type, e.line, "compound assignment/'++'/'--'");
                 out->rhs = buildCompoundRhs(out->type, e.op, *e.rhs, e.line);
                 return out;
@@ -648,6 +908,7 @@ class Builder {
                 out->lhs = buildExpr(*e.lhs);
                 Type pointee =
                     isPointer(out->lhs->type) ? pointeeOf(out->lhs->type) : Type{BaseType::Int, false};
+                rejectStructByValue(pointee, e.line, "a compound assignment through a pointer to struct");
                 out->type = pointee;
                 rejectIfWide(out->type, e.line, "compound assignment/'++'/'--'");
                 out->rhs = buildCompoundRhs(pointee, e.op, *e.rhs, e.line);
@@ -658,6 +919,7 @@ class Builder {
                 out->lhs = buildExpr(*e.lhs);
                 if (isPointer(out->lhs->type)) {
                     Type pointee = pointeeOf(out->lhs->type);
+                    rejectStructByValue(pointee, e.line, "a whole-struct assignment through a pointer");
                     out->type = pointee;
                     out->rhs = wrapConvert(buildExpr(*e.rhs), pointee, e.line);
                 } else {
@@ -666,6 +928,48 @@ class Builder {
                     out->type = Type{BaseType::Int, false};
                     out->rhs = buildExpr(*e.rhs);
                 }
+                return out;
+            }
+            case ExprKind::MemberAccess: {
+                Type memberType;
+                ir::ExprPtr addr = buildMemberAddr(e, memberType);
+                if (memberType.base == BaseType::Struct && memberType.ptrDepth == 0) {
+                    err(e.line, "can't read '" + e.name +
+                                     "' by value - it's a struct; access its own fields instead");
+                }
+                out->kind = ir::ExprKind::Unary;
+                out->op = "*";
+                out->type = memberType;
+                out->rhs = std::move(addr);
+                return out;
+            }
+            case ExprKind::MemberAssign: {
+                Type memberType;
+                ir::ExprPtr addr = buildMemberAddr(e, memberType);
+                if (memberType.base == BaseType::Struct && memberType.ptrDepth == 0) {
+                    err(e.line, "can't assign to '" + e.name +
+                                     "' as a whole - it's a struct; set its own fields instead");
+                }
+                out->kind = ir::ExprKind::DerefAssign;
+                out->type = memberType;
+                out->lhs = std::move(addr);
+                out->rhs = wrapConvert(buildExpr(*e.rhs), memberType, e.line);
+                return out;
+            }
+            case ExprKind::CompoundMemberAssign: {
+                Type memberType;
+                ir::ExprPtr addr = buildMemberAddr(e, memberType);
+                if (memberType.base == BaseType::Struct && memberType.ptrDepth == 0) {
+                    err(e.line, "can't compound-assign to '" + e.name +
+                                     "' as a whole - it's a struct; operate on its own fields instead");
+                }
+                out->kind = ir::ExprKind::CompoundDerefAssign;
+                out->type = memberType;
+                out->op = e.op;
+                out->yieldOld = e.yieldOld;
+                out->lhs = std::move(addr);
+                rejectIfWide(out->type, e.line, "compound assignment/'++'/'--'");
+                out->rhs = buildCompoundRhs(memberType, e.op, *e.rhs, e.line);
                 return out;
             }
             case ExprKind::Unary: {
@@ -690,6 +994,7 @@ class Builder {
                     // native word.
                     out->type =
                         isPointer(operand->type) ? pointeeOf(operand->type) : Type{BaseType::Int, false};
+                    rejectStructByValue(out->type, e.line, "a plain pointer dereference ('*p') read as a value");
                     out->rhs = std::move(operand);
                     return out;
                 }
@@ -834,14 +1139,16 @@ class Builder {
                 return out;
             case ExprKind::Cast: {
                 ir::ExprPtr inner = buildExpr(*e.rhs);
-                warnRiskyCast(inner->type, e.type, e.line, widths_);
-                return wrapConvert(std::move(inner), e.type, e.line);
+                Type target = resolveStructType(e.type, e.line);
+                rejectStructByValue(target, e.line, "a cast target type");
+                warnRiskyCast(inner->type, target, e.line, widths_);
+                return wrapConvert(std::move(inner), target, e.line);
             }
             case ExprKind::Sizeof: {
                 // sizeof(expr) builds expr only to learn its static type
                 // (still raising any unrelated semantic error) and discards
                 // it; only `.type` is kept.
-                Type measured = e.sizeofIsType ? e.type : buildExpr(*e.rhs)->type;
+                Type measured = e.sizeofIsType ? resolveStructType(e.type, e.line) : buildExpr(*e.rhs)->type;
                 out->kind = ir::ExprKind::IntLit;
                 out->type = Type{BaseType::Long, true};
                 out->intValue = widthOf(measured, widths_);
@@ -987,8 +1294,22 @@ class Builder {
             case StmtKind::LocalDecl: {
                 out->kind = ir::StmtKind::LocalDecl;
                 ir::Slot *slot = allocSlot(ir::SlotKind::Local, s.declName, s.arraySize);
-                slot->type = s.type;
-                slot->arrayInit = resolveArrayInit(s.arrayInit, s.line);
+                slot->type = resolveStructType(s.type, s.line);
+                if (slot->type.base == BaseType::Struct) {
+                    // A struct local (scalar or array) starts uninitialized,
+                    // same as any other local with no initializer - skip
+                    // resolveArrayInit's generic literal-list handling
+                    // entirely (it assumes one scalar value per array
+                    // element, at the element's own width, which doesn't
+                    // apply to a struct element). Fields are set via '.'/
+                    // '->' assignment after declaration instead.
+                    if (s.initOrReturnOrExpr) {
+                        err(s.line, "a struct local can't have an initializer yet - set its fields after "
+                                     "declaration instead");
+                    }
+                } else {
+                    slot->arrayInit = resolveArrayInit(s.arrayInit, s.line);
+                }
                 declareLocal(s.declName, slot, s.line);
                 out->declSlot = slot;
                 if (s.arraySize == 0 && s.initOrReturnOrExpr) {
@@ -1169,6 +1490,8 @@ class Builder {
     Type currentReturnType_;  // the function currently being built - see StmtKind::Return
     bool currentFunctionIsVoid_ = false;  // the function currently being built returns no value
     std::string currentSourceFile_;  // ditto - stamped onto a StringLit's own synthetic global
+    // tag -> resolved layout, for this compile only - see registerStructs()/resolveStructType().
+    std::unordered_map<std::string, StructLayout> structsByTag_;
 };
 
 }  // namespace

@@ -76,14 +76,17 @@ class I386Codegen : public Backend {
 
     int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
-    // log2 of an element type's width (1/2/4/8 bytes -> 0/1/2/3), the shift amount an index
-    // is scaled by.
+    // log2 of an element type's width, for the common power-of-two widths (1/2/4/8 bytes) -
+    // an index is scaled by this many shifts when it applies. Returns -1 for any other width
+    // (e.g. a struct's, packed or not - a struct size is only a power of two by coincidence),
+    // telling the caller to fall back to a real `imul` instead.
     int elemShift(Type t) const {
         switch (widthOfType(t)) {
             case 1: return 0;
             case 2: return 1;
             case 4: return 2;
-            default: return 3;
+            case 8: return 3;
+            default: return -1;
         }
     }
 

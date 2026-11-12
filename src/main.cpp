@@ -351,6 +351,10 @@ void parseAndMergeFile(const std::string &srcPath, const std::string &source, rc
         g.sourceFile = srcPath;
         combined.globals.push_back(std::move(g));
     }
+    for (auto &s : fileProg.structs) {
+        s.sourceFile = srcPath;
+        combined.structs.push_back(std::move(s));
+    }
 }
 
 // Compiles exactly one source file with no visibility into any other file

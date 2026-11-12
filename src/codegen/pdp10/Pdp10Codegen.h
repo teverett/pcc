@@ -195,6 +195,11 @@ class Pdp10Codegen : public Backend {
         if (slot->kind == ir::SlotKind::Param) {
             return "[14-" + std::to_string(slot->frameOffset) + "]";
         }
+        // A struct Local's base, like an array's own (see localArrayBase()),
+        // is `frameOffset` directly on this upward-growing frame - never
+        // ir::localOffsetDescendingWide()'s downward-growing-frame formula,
+        // which would only coincidentally match for a same-width scalar.
+        if (slot->type.base == BaseType::Struct) return "[14+" + std::to_string(slot->frameOffset) + "]";
         return "[14+" + std::to_string(ir::localOffsetDescendingWide(*slot, typeWidths())) + "]";
     }
 

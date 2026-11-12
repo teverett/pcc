@@ -97,6 +97,7 @@ FILEFORMAT_DIRS := $(FILEFORMAT_DIR) $(FILEFORMAT_DIR)/archive $(FILEFORMAT_DIR)
 HAND_SRCS := \
     $(SRC_DIR)/main.cpp \
     $(SRC_DIR)/Type.cpp \
+    $(SRC_DIR)/StructLayout.cpp \
     $(FILEFORMAT_DIR)/FileFormat.cpp \
     $(FILEFORMAT_DIR)/Pdp7TapePacking.cpp \
     $(FILEFORMAT_DIR)/coff/CoffFormat.cpp \

@@ -2744,6 +2744,13 @@ is_known_unsupported() {
         pdp1:literal_promotion_arith.c) return 0 ;;
         pdp1:local_mixed_width_layout.c) return 0 ;;
         pdp1:local_wide_scalar_layout.c) return 0 ;;
+        # sizeof() always yields a 'long'-typed literal; any arithmetic on
+        # it hits the same "no long/long long arithmetic at all" gap as
+        # the longlong_*/wide_*/types_longlong_* entries above.
+        pdp1:unsigned_literal_above_long_max.c) return 0 ;;
+        pdp1:struct_alignment_size.c) return 0 ;;
+        pdp1:struct_packed_basic.c) return 0 ;;
+        pdp1:struct_packed_array.c) return 0 ;;
         # pdp1's hardware is a one's-complement ALU, so an `unsigned` value
         # whose own bit pattern would have its sign bit set (the top half
         # of the range, 2^17..2^18-1) isn't reliably distinguishable from

@@ -1,23 +1,44 @@
 #pragma once
 
+#include <string>
+
 namespace rcc {
 
 // Fixed ISO C conversion-rank order (char .. long long), used by
-// commonType(), independent of any target's actual storage widths.
-enum class BaseType { Char, Short, Int, Long, LongLong };
+// commonType(), independent of any target's actual storage widths. Struct
+// is never an arithmetic operand (buildExpr rejects that before rank() or
+// commonType() would see it), so its placement in the rank order is
+// otherwise unused.
+enum class BaseType { Char, Short, Int, Long, LongLong, Struct };
 
 // A pointer is the same Type as its ultimate pointee, with `ptrDepth`
 // counting levels of pointer-to (char* = {Char, false, 1}, int** =
 // {Int, false, 2}); base/isUnsigned always describe the pointee, never the
 // pointer itself (whose own storage is always one native int's width).
 // ptrDepth == 0 means an ordinary, non-pointer value.
+//
+// base == Struct: structTag names the struct; structSize/structAlign are
+// the resolved, target-specific storage size and required alignment (in
+// this target's storage units). BuildAst.cpp sets only structTag, since it
+// runs with no TypeWidths in scope; IRBuilder fills structSize/structAlign
+// in via resolveStructType() once the target's widths are known.
 struct Type {
     BaseType base = BaseType::Int;
     bool isUnsigned = false;
     int ptrDepth = 0;
+    std::string structTag;
+    int structSize = 0;
+    int structAlign = 0;
+
+    // A constructor (rather than plain aggregate init) so every existing
+    // `Type{base, isUnsigned}` call site - none of which know or care about
+    // structTag/structSize/structAlign - keeps compiling warning-free.
+    Type() = default;
+    Type(BaseType b, bool u = false, int depth = 0) : base(b), isUnsigned(u), ptrDepth(depth) {}
 
     bool operator==(const Type &other) const {
-        return base == other.base && isUnsigned == other.isUnsigned && ptrDepth == other.ptrDepth;
+        return base == other.base && isUnsigned == other.isUnsigned && ptrDepth == other.ptrDepth &&
+               structTag == other.structTag;
     }
     bool operator!=(const Type &other) const { return !(*this == other); }
 };

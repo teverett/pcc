@@ -108,6 +108,13 @@ std::string Pdp11Codegen::generate(const ir::Program &prog, bool objectMode) {
         globalByteOffset += totalBytes;
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit, slot->type);
+        } else if (slot->type.base == BaseType::Struct) {
+            // No struct initializer exists in this subset, so this is
+            // always zero-filled; reuses declareArray's own element-list
+            // emission (one zero "db" per byte - byte-exact even when
+            // structSize is odd, unlike the word-pair loop below) rather
+            // than a new directive.
+            declareArray(lbl, std::vector<ir::ArrayInitElem>(slot->type.structSize), Type{BaseType::Char, false});
         } else {
             long v = slot->hasInit ? slot->initValue : 0;
             int w = widthOfType(slot->type);
@@ -758,7 +765,20 @@ int Pdp11Codegen::localArrayBase(const ir::Slot *slot) { return ir::localLowOffs
 void Pdp11Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // r0 = index
     int shift = elemShift(slot->type);
-    if (shift > 0) code_ << "    asl r0\n";  // r0 *= widthOf(slot->type) (a power of two - see elemShift())
+    if (shift >= 0) {
+        // r0 *= widthOf(slot->type) (a power of two): one "asl" per shift
+        // level doubles r0 each time, e.g. shift=2 (a 4-byte element)
+        // needs two, not one.
+        for (int i = 0; i < shift; i++) code_ << "    asl r0\n";
+    } else {
+        // A non-power-of-two element width (e.g. a packed struct's) has
+        // no shift-based scaling, so multiply by the real width via EIS
+        // MUL instead; only the low word of the 32-bit product is kept,
+        // same convention as genMul().
+        code_ << "    mov " << widthOfType(slot->type) << ",r1\n";
+        code_ << "    mul r1,r0\n";
+        code_ << "    mov r1,r0\n";
+    }
     if (slot->arraySize > 0) {
         if (slot->kind == ir::SlotKind::Global) {
             code_ << "    lea " << label(slot) << ",r2\n";

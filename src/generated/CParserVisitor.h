@@ -35,7 +35,13 @@ public:
 
     virtual std::any visitSignedOrUnsignedType(CParser::SignedOrUnsignedTypeContext *context) = 0;
 
+    virtual std::any visitStructType(CParser::StructTypeContext *context) = 0;
+
     virtual std::any visitTopLevelDecl(CParser::TopLevelDeclContext *context) = 0;
+
+    virtual std::any visitStructDecl(CParser::StructDeclContext *context) = 0;
+
+    virtual std::any visitStructMember(CParser::StructMemberContext *context) = 0;
 
     virtual std::any visitExternFunctionDecl(CParser::ExternFunctionDeclContext *context) = 0;
 
@@ -107,6 +113,10 @@ public:
 
     virtual std::any visitAssignExpr(CParser::AssignExprContext *context) = 0;
 
+    virtual std::any visitAssignMemberExpr(CParser::AssignMemberExprContext *context) = 0;
+
+    virtual std::any visitAssignMemberPtrExpr(CParser::AssignMemberPtrExprContext *context) = 0;
+
     virtual std::any visitExprCond(CParser::ExprCondContext *context) = 0;
 
     virtual std::any visitSizeofExprExpr(CParser::SizeofExprExprContext *context) = 0;
@@ -135,6 +145,8 @@ public:
 
     virtual std::any visitMulExpr(CParser::MulExprContext *context) = 0;
 
+    virtual std::any visitMemberAccessExpr(CParser::MemberAccessExprContext *context) = 0;
+
     virtual std::any visitCallExpr(CParser::CallExprContext *context) = 0;
 
     virtual std::any visitRelExpr(CParser::RelExprContext *context) = 0;
@@ -148,6 +160,8 @@ public:
     virtual std::any visitAddrOfExpr(CParser::AddrOfExprContext *context) = 0;
 
     virtual std::any visitOrExpr(CParser::OrExprContext *context) = 0;
+
+    virtual std::any visitMemberAccessPtrExpr(CParser::MemberAccessPtrExprContext *context) = 0;
 
     virtual std::any visitCallPtrExpr(CParser::CallPtrExprContext *context) = 0;
 

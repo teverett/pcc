@@ -68,6 +68,12 @@ std::string Pdp10Codegen::generate(const ir::Program &prog, bool objectMode) {
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit, slot->type);
+        } else if (slot->type.base == BaseType::Struct) {
+            // No struct initializer exists in this subset, so this is
+            // always zero-filled; reuses declareArray's own element-list
+            // emission (one zero word per unit) instead of a new
+            // directive.
+            declareArray(lbl, std::vector<ir::ArrayInitElem>(slot->type.structSize), Type{BaseType::Char, false});
         } else {
             long v = slot->hasInit ? slot->initValue : 0;
             trailer_.push_back(lbl + ": dw " + std::to_string(trunc36(v)) + "  ; " + slot->sourceName);
@@ -768,7 +774,16 @@ int Pdp10Codegen::localArrayBase(const ir::Slot *slot) { return slot->frameOffse
 // header comment; or a Local's frame-relative address, computed off AC16); a plain pointer
 // variable's base instead comes from reading its stored value.
 void Pdp10Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
-    genExpr(idxExpr);  // AC1 = index (every element is one word - see elemWordsOf())
+    genExpr(idxExpr);  // AC1 = index
+    // Every scalar element type this subset supported until now (char/
+    // short/int/pointer) is exactly one native word, so this was always
+    // a no-op; a struct element can be several words, so the index is
+    // scaled by the element's own width before use.
+    int elemW = widthOfType(slot->type);
+    if (elemW != 1) {
+        code_ << "    movei 2," << elemW << "\n";
+        code_ << "    mul 1,2\n    move 1,2\n";
+    }
     if (slot->arraySize > 0) {
         if (slot->kind == ir::SlotKind::Global) {
             code_ << "    movei 3," << label(slot) << "\n";
@@ -826,6 +841,12 @@ void Pdp10Codegen::genAddrOf(const ir::Expr &operand) {
         code_ << "    move 1,14\n";
         if (operand.slot->kind == ir::SlotKind::Param) {
             code_ << "    subi 1," << operand.slot->frameOffset << "\n";
+        } else if (operand.slot->type.base == BaseType::Struct) {
+            // See addr()'s own comment: a struct Local's base is
+            // frameOffset directly, the same as localArrayBase() uses
+            // for an array, not localOffsetDescendingWide()'s
+            // downward-growing-frame formula.
+            code_ << "    addi 1," << operand.slot->frameOffset << "\n";
         } else {
             code_ << "    addi 1," << ir::localOffsetDescendingWide(*operand.slot, typeWidths()) << "\n";
         }

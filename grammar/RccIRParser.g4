@@ -31,6 +31,7 @@ typeSpec
       | UNSIGNED_KW? INT_KW
       | UNSIGNED_KW? LONG_KW LONG_KW
       | UNSIGNED_KW? LONG_KW
+      | STRUCT_KW IDENT
       ) STAR*
     ;
 

@@ -75,6 +75,67 @@ pattern - uninitialized scalar locals being zeroed twice - has also been
 fixed, by deleting `Pdp7Codegen.cpp`'s own defensive zero-store, which was
 PDP-7-codegen-specific, not an IR/optimizer gap.)
 
+## Most backends mis-scale an array index for an element whose width isn't 1/2/4/8 bytes
+
+Affects `src/codegen/{mips,powerpc,sparc,alpha,stm8,m16c,tms320c6713,
+x86_8086,pic16,pic18,stm32,avr,mcs51,i8080,z80,i8008,m6502,m65c02}/*Codegen.{h,cpp}`
+(every backend with this `elemShift()`/doubling-count pattern other than
+`i386`, `vax`, `pdp7`, `pdp10`, `pdp11`, `armv7a`/`armv8a`/`arm64`, and
+`armv7a-m`/`cortex-m`, which are fixed - see below).
+
+Each affected backend's array-index address computation (`genIndexAddr()`
+or equivalent) scales the index by the element's byte width via a
+shift/doubling count derived from `widthOf()`, with a fallback for any
+width other than 1/2/4/8 bytes that's simply wrong: it treats the width
+as if it were 8 regardless of what it actually is (one extra
+shift/doubling step past the `4` case), silently computing the wrong
+element address - confirmed via a direct pointer-arithmetic check
+(`&arr[1] - &arr[0]` comes back 8 regardless of the element's real
+width), not just a read-back-the-value check: the two are not the same
+test. A read-back-the-value check can pass even though the address is
+wrong, because the same wrong address is used consistently for both the
+write and the read-back within one compiled program, and the extra
+bytes it strays into are usually still this same local array's own
+otherwise-unused frame slop or another dead stack slot, not something
+that gets overwritten before the mismatched read-back happens; this is
+exactly why `tests/struct_mixed_width_fields.c` and
+`tests/struct_packed_array.c` (both read-back-the-value checks) falsely
+appeared to pass on `m6502`/`m65c02`/`i8008` before the pointer check
+below was written - their 2-byte `int` happened to make those two
+tests' particular struct size a coincidental power of two (4), even
+though the bug is just as present there.
+`MCS51Codegen::genIndexAddr()` is worse still - it doubles the index
+exactly once for *any* width other than 1, which already mis-scales a
+plain `long`/`long long` array (width 4/8) even without a struct
+anywhere involved.
+
+Before `@packed`/struct-array support, every element type's width was
+always exactly 1/2/4/8 (`char`/`short`/`int`/`long`/`long long`), so this
+never fired. A struct array now can: a packed struct's size is whatever
+its members add up to, and even an *unpacked* struct's size only
+happens to be a power of two by coincidence (e.g. three `int` members
+packs to 12 bytes unpacked too); a struct of 1/2/3 `char` members is a
+reliable repro on every target regardless of its own `int` width, which
+is why `tests/struct_nonpow2_array_stride.c` (new, a 3-`char` struct)
+uses that shape and checks the real pointer stride directly, not just a
+value read back.
+
+Confirmed and fixed, with a real multiply (or - on `pdp11` only, which
+has no native multiply wired into this codegen's own index-scaling path
+- the registers it already uses for a scalar `*`) in place of the shift,
+each verified via that target's own qemu or `open-simh` simulator
+against `tests/struct_nonpow2_array_stride.c` and the rest of
+`tests/struct_*.c`, on: `i386`, `vax`, `pdp7`, `pdp10`, `pdp11`,
+`armv7a`, `armv8a`/`arm64`, `armv7a-m`/`cortex-m3`. `powerpc`, `alpha`,
+`saturn`, `tms320c6713`, `r10000`/`mips`, `8086`/`8088`, and `8051` were
+confirmed still affected (same qemu/`open-simh` simulators, same test)
+but not yet fixed - each needs its own per-ISA scaling fix verified the
+same way, which is a substantial separate undertaking given how many
+backends are involved; `sparc`, `m16c`, `pic16`, `pic18` have no working
+simulator wired into `tests/run_tests.sh` at all, and `8080`/`z80` need
+the `z80-python` package (not installed in this environment) to run
+theirs.
+
 ## `tests/run_tests.sh` never runs in CI
 
 Affects `.github/workflows/ci.yml`.

@@ -296,6 +296,14 @@ std::string Arm64Codegen::generate(const ir::Program &prog, bool objectMode) {
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit, slot->type);
             dataOffset += static_cast<size_t>(widthOfType(slot->type)) * static_cast<size_t>(slot->arraySize);
+        } else if (slot->type.base == BaseType::Struct) {
+            // No struct initializer exists in this subset, so this is
+            // always zero-filled; reuses declareArray's own element-list
+            // emission (one zero "db" per byte) rather than a new
+            // directive, since this assembler dialect has no "reserve N
+            // zero bytes" form of its own.
+            declareArray(lbl, std::vector<ir::ArrayInitElem>(slot->type.structSize), Type{BaseType::Char, false});
+            dataOffset += static_cast<size_t>(slot->type.structSize);
         } else {
             long v = slot->hasInit ? slot->initValue : 0;
             int w = widthOfType(slot->type);
@@ -669,8 +677,12 @@ void Arm64Codegen::genExpr(const ir::Expr &e) {
 void Arm64Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // w0 = index
     int shift = elemShift(slot->type);
-    if (shift > 0) {
-        code_ << "    movz w1," << (1 << shift) << "\n    mul w0,w0,w1\n";  // w0 *= the element type's own width
+    if (shift != 0) {
+        // shift > 0: a power-of-two width, loaded as 1<<shift. shift < 0: a non-power-of-two
+        // width (a struct's) - loaded directly, since this always goes through a real `mul`
+        // regardless.
+        int width = shift > 0 ? (1 << shift) : widthOfType(slot->type);
+        code_ << "    movz w1," << width << "\n    mul w0,w0,w1\n";  // w0 *= the element type's own width
     }
     if (slot->arraySize > 0) {
         loadSlotAddr("x2", slot);

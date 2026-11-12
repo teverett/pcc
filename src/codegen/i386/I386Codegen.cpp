@@ -91,6 +91,13 @@ std::string I386Codegen::generate(const ir::Program &prog, bool objectMode) {
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit, slot->type);
+        } else if (slot->type.base == BaseType::Struct) {
+            // No struct initializer exists in this subset, so this is
+            // always zero-filled; reuses declareArray's own element-list
+            // emission (one zero "db" per byte) rather than a new
+            // directive, since this assembler dialect has no "reserve N
+            // zero bytes" form of its own.
+            declareArray(lbl, std::vector<ir::ArrayInitElem>(slot->type.structSize), Type{BaseType::Char, false});
         } else {
             long v = slot->hasInit ? slot->initValue : 0;
             int w = widthOfType(slot->type);
@@ -371,7 +378,15 @@ void I386Codegen::genExpr(const ir::Expr &e) {
 std::string I386Codegen::computeElementAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);
     int shift = elemShift(slot->type);
-    if (shift > 0) code_ << "    shl eax," << shift << "\n";
+    if (shift > 0) {
+        code_ << "    shl eax," << shift << "\n";
+    } else if (shift < 0) {
+        // Non-power-of-two element width (a struct's): scale by a real multiply instead -
+        // this assembler's own `imul` is one-operand only (edx:eax = eax*reg), so the width
+        // has to go through a register, not an immediate.
+        code_ << "    mov ebx," << widthOfType(slot->type) << "\n";
+        code_ << "    imul ebx\n";
+    }
     code_ << "    mov ebx,eax\n";
     if (slot->arraySize > 0) {
         if (slot->kind == ir::SlotKind::Global) {
@@ -735,7 +750,14 @@ void I386Codegen::genAddrOf(const ir::Expr &operand) {
     if (operand.kind == ir::ExprKind::Index) {
         genExpr(*operand.lhs);
         int shift = elemShift(operand.slot->type);
-        if (shift > 0) code_ << "    shl eax," << shift << "\n";
+        if (shift > 0) {
+            code_ << "    shl eax," << shift << "\n";
+        } else if (shift < 0) {
+            // Non-power-of-two element width (a struct's) - see computeElementAddr()'s own
+            // comment on why this goes through a register, not an immediate.
+            code_ << "    mov ebx," << widthOfType(operand.slot->type) << "\n";
+            code_ << "    imul ebx\n";
+        }
         if (operand.slot->kind != ir::SlotKind::Global) {
             code_ << "    mov ebx,eax\n    lea eax," << localArrayAddr(operand.slot) << "\n    add eax,ebx\n";
             return;
