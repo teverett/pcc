@@ -67,15 +67,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libc6-dev-i386
 
-      # Only `make` is needed here (not gcc) - rcc.exe does its own
-      # codegen/linking, and the i386-windows hello example only pulls in
-      # msvcrt.dll/kernel32.dll, both present on any Windows machine.
+      # Only `make` and `python` are needed here (not gcc) - rcc.exe does
+      # its own codegen/linking, and the i386-windows hello example only
+      # pulls in msvcrt.dll/kernel32.dll, both present on any Windows
+      # machine. `python` is MSYS2's own package (providing the `python3`
+      # this job's assertion scripts below run under this shell) - the
+      # windows-latest runner's own system Python isn't on PATH inside
+      # the `msys2 {0}` shell.
       - uses: msys2/setup-msys2@v2
         if: matrix.name == 'windows'
         with:
           msystem: UCRT64
           update: true
-          install: mingw-w64-ucrt-x86_64-make
+          install: >-
+            python
+            mingw-w64-ucrt-x86_64-make
 
       - name: Install py65 (6502 emulator)
         if: matrix.name == 'macos'
