@@ -384,6 +384,12 @@ class Pdp7Codegen : public Backend {
     bool needDivMod_ = false;
     bool needUDivMod_ = false;
     bool needPushPop_ = false;
+    // Set the first time emitSignedLtCells() hits the both-signs-unknown
+    // case - see that function's own comment on why that case alone
+    // (not the cheaper known-sign ones) is worth routing through one
+    // shared `__cmp_lt` subroutine (pdp7RuntimeAsm()) instead of
+    // inlining it again at every such comparison.
+    bool needGenericLt_ = false;
 
     // (continueLabel, breakLabel) for the innermost active loop.
     std::vector<std::pair<std::string, std::string>> loopLabels_;
@@ -395,6 +401,6 @@ class Pdp7Codegen : public Backend {
 // routines are asked for. A whole program gets it in its trailer; under
 // separate compilation the linker's entry object supplies one copy
 // with everything.
-std::string pdp7RuntimeAsm(bool pushPop, bool divMod, bool uDivMod);
+std::string pdp7RuntimeAsm(bool pushPop, bool divMod, bool uDivMod, bool genericLt);
 
 }  // namespace rcc

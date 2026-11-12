@@ -1697,6 +1697,25 @@ void Pdp7Codegen::emitEq(const ir::Expr &lhs, const ir::Expr &rhs, bool negate) 
 
 void Pdp7Codegen::emitSignedLtCells(const std::string &A, const std::string &B, const std::string &Ltrue,
                                      const std::string &Lfalse, int signA, int signB, const std::string &negB) {
+    // Neither operand's sign is known: the inline sequence below would
+    // need both of signA's dispatch arms *and* B's own sign dispatch on
+    // each of them (branchOnB() can't shortcut when signB == -1 either)
+    // - 21 words, all duplicated at every such call site with no sharing
+    // between them. Past the first use anywhere in the program, routing
+    // through one shared `__cmp_lt` subroutine (pdp7RuntimeAsm()) is
+    // smaller: ~8 words here (move A/B into its fixed operand cells,
+    // `jms`, branch on the 0/1 result) against a one-time ~25-word
+    // subroutine body, instead of 21 words inlined again at every site.
+    // Not worth it when either sign IS known (those dispatches are
+    // already cheap - see below - and would need their own subroutine
+    // variants to still skip the now-unneeded sign test).
+    if (signA == -1 && signB == -1) {
+        needGenericLt_ = true;
+        code_ << "   lac " << A << "\n   dac __cmpA\n   lac " << B << "\n   dac __cmpB\n";
+        code_ << "   jms __cmp_lt\n";
+        code_ << "   sna\n   jmp " << Lfalse << "\n   jmp " << Ltrue << "\n";
+        return;
+    }
     std::string Lsub = newLabel();
     bool subUsed = false;
     // Jumps to `ifNonNeg`/`ifNeg` on B's sign.
@@ -1934,7 +1953,7 @@ void Pdp7Codegen::genMul(const ir::Expr &lhs, const ir::Expr &rhs) {
 
 // Division/modulo via shared routines (see pdp7RuntimeAsm()).
 void Pdp7Codegen::ensureRuntimeRoutines() {
-    std::istringstream lines(pdp7RuntimeAsm(needPushPop_, needDivMod_, needUDivMod_));
+    std::istringstream lines(pdp7RuntimeAsm(needPushPop_, needDivMod_, needUDivMod_, needGenericLt_));
     for (std::string line; std::getline(lines, line);) trailer_.push_back(line);
 }
 
@@ -2039,7 +2058,7 @@ std::optional<std::string> Pdp7Codegen::assembleInProcess(const std::string &asm
     return std::nullopt;
 }
 
-std::string pdp7RuntimeAsm(bool pushPop, bool divMod, bool uDivMod) {
+std::string pdp7RuntimeAsm(bool pushPop, bool divMod, bool uDivMod, bool genericLt) {
     std::ostringstream o;
     // `__sp` starts at 8191 (017777 octal), the highest word the 13-bit
     // direct-addressing field can reach, and grows downward toward
@@ -2059,6 +2078,31 @@ std::string pdp7RuntimeAsm(bool pushPop, bool divMod, bool uDivMod) {
              "__pop: 0\n"
              "   lac __sp i\n   dac __stmp\n   lac __sp\n   tad __one\n   dac __sp\n"
              "   lac __stmp\n   jmp i __pop\n";
+    }
+    if (genericLt) {
+        // __cmp_lt: signed `__cmpA < __cmpB`, neither operand's sign
+        // known at compile time - the one case emitSignedLtCells() (see
+        // its own comment) routes through a shared subroutine instead
+        // of inlining this same dispatch-then-subtract sequence again
+        // at every such comparison. Same structure as the inline
+        // version: differing signs decided directly, same-sign operands
+        // fall through to subtract-and-test-sign (safe: same-sign
+        // 18-bit values can't differ by more than the representable
+        // range).
+        o << "__cmpA: 0\n__cmpB: 0\n"
+             "__cmp_lt: 0\n"
+             "   lac __cmpA\n   sma\n   jmp J_cl_apos\n   jmp J_cl_aneg\n"
+             "J_cl_aneg:\n"
+             "   lac __cmpB\n   sma\n   jmp J_cl_true\n   jmp J_cl_sub\n"
+             "J_cl_apos:\n"
+             "   lac __cmpB\n   sma\n   jmp J_cl_sub\n   jmp J_cl_false\n"
+             "J_cl_sub:\n"
+             "   lac __cmpB\n   cma\n   tad __one\n   dac __stmp2\n"
+             "   lac __cmpA\n   tad __stmp2\n   sma\n   jmp J_cl_false\n   jmp J_cl_true\n"
+             "J_cl_true:\n"
+             "   lac __one\n   jmp i __cmp_lt\n"
+             "J_cl_false:\n"
+             "   lac __zero\n   jmp i __cmp_lt\n";
     }
     if (divMod || uDivMod) o << "__dm_a: 0\n__dm_b: 0\n";
     if (divMod || uDivMod) {

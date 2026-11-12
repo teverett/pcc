@@ -91,7 +91,11 @@ EOF
         return 1
     fi
     local mainAddrDec=$((8#$mainAddrOctal))
-    if [ "$mainAddrDec" -ge 116 ]; then
+    # Generous headroom (not a tight bound on this fixture's own exact
+    # size): the real thing this guards against is falling back to the
+    # ordinary 4096 base, not the shared runtime's own size growing as
+    # routines are added to it (e.g. __cmp_lt, pdp7RuntimeAsm()).
+    if [ "$mainAddrDec" -ge 1000 ]; then
         echo "FAIL test_base_runs_correctly: FN_main resolved to $mainAddrDec, too far from word" \
              "address 16 for a --base=16 link (still looks like the ordinary 4096 base was used)"
         return 1

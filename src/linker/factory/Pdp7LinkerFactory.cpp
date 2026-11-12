@@ -87,8 +87,9 @@ std::unique_ptr<TargetLinker> makePdp7Linker(uint32_t baseAddressWords) {
     // leaves it as external references rather than defining its own
     // copy. Every routine is included, since this object has no
     // visibility into what the input files need.
-    config.entryObject = assemblePdp7Object("jms FN_main\nhlt\n" +
-                                            pdp7RuntimeAsm(/*pushPop=*/true, /*divMod=*/true, /*uDivMod=*/true));
+    config.entryObject = assemblePdp7Object(
+        "jms FN_main\nhlt\n" +
+        pdp7RuntimeAsm(/*pushPop=*/true, /*divMod=*/true, /*uDivMod=*/true, /*genericLt=*/true));
     config.relocPatchers[kPdp7RelocOr] = patchPdp7Or;
     config.relocPatchers[kPdp7RelocAdd] = patchPdp7Add;
     config.relocPatchers[kPdp7RelocSub] = patchPdp7Sub;
