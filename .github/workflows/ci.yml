@@ -88,16 +88,6 @@ jobs:
       - name: Test internal hosted linkers and macOS runtime
         run: bash tests/run_hosted_macos_link_tests.sh build/bin/rcc
 
-      - name: Build and run macOS hello example
-        run: |
-          make -C examples/example1 macos
-          python3 - <<'PY'
-          import subprocess
-          result = subprocess.run(["examples/example1/build/hello-macos"], capture_output=True)
-          assert result.stdout == b"hello rcc\n", (result.stdout, result.stderr)
-          assert result.returncode == 0, result.returncode
-          PY
-
       # `rcc` is dynamically linked against Homebrew's own
       # libantlr4-runtime.dylib, at that formula's own absolute
       # install path (confirmed directly via `otool -L` - unlike
@@ -182,16 +172,6 @@ jobs:
         shell: bash -el {0}
         run: make build/bin/archive_reader_test build/bin/macho_data_test && build/bin/archive_reader_test && build/bin/macho_data_test
 
-      - name: Build and run Linux hello example
-        shell: bash -el {0}
-        run: |
-          make -C examples/example1 linux
-          python3 - <<'PY'
-          import subprocess
-          output = subprocess.check_output(["examples/example1/build/hello-linux"])
-          assert output == b"hello rcc\n", repr(output)
-          PY
-
       - name: Test hosted ELF library linking
         shell: bash -el {0}
         run: bash tests/run_hosted_link_tests.sh build/bin/rcc
@@ -267,16 +247,6 @@ jobs:
 
       - name: Test internal hosted linkers and Windows runtime
         run: bash tests/run_hosted_windows_link_tests.sh build/bin/rcc.exe
-
-      - name: Build and run Windows hello example
-        run: |
-          export PATH="/opt/bin:$PATH"
-          mingw32-make -C examples/example1 windows
-          python3 - <<'PY'
-          import subprocess
-          output = subprocess.check_output(["examples/example1/build/hello-windows.exe"])
-          assert output in (b"hello rcc\n", b"hello rcc\r\n"), repr(output)
-          PY
 
       # Full simulator-backed suites run in the macOS job.
 

@@ -244,7 +244,7 @@ void SparcCodegen::genStmt(const ir::Stmt &s) {
         }
         case ir::StmtKind::If: {
             genExpr(*s.cond);
-            if (isWide(s.cond->type)) code_ << "    or t0,t0,t1\n";
+            if (isWide(s.cond->type)) code_ << "    or t0,t1,t0\n";
             std::string Lelse = newLabel();
             std::string Ldone = newLabel();
             code_ << "    cmp t0,0\n";
@@ -264,7 +264,7 @@ void SparcCodegen::genStmt(const ir::Stmt &s) {
             std::string Lcont = s.postStmt ? newLabel() : Lstart;
             code_ << Lstart << ":\n";
             genExpr(*s.cond);
-            if (isWide(s.cond->type)) code_ << "    or t0,t0,t1\n";
+            if (isWide(s.cond->type)) code_ << "    or t0,t1,t0\n";
             code_ << "    cmp t0,0\n";
             code_ << "    beq " << Lend << "\n";
             loopLabels_.push_back({Lcont, Lend});
@@ -396,7 +396,7 @@ void SparcCodegen::genExpr(const ir::Expr &e) {
         }
         case ir::ExprKind::Ternary: {
             genExpr(*e.lhs);
-            if (isWide(e.lhs->type)) code_ << "    or t0,t0,t1\n";
+            if (isWide(e.lhs->type)) code_ << "    or t0,t1,t0\n";
             code_ << "    cmp t0,0\n";
             std::string Lelse = newLabel();
             std::string Ldone = newLabel();
@@ -1079,11 +1079,11 @@ void SparcCodegen::genCompare(const std::string &op, const ir::Expr &lhs, const 
 
 void SparcCodegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
-    if (isWide(lhs.type)) code_ << "    or t0,t0,t1\n";
+    if (isWide(lhs.type)) code_ << "    or t0,t1,t0\n";
     std::string Lfalse = newLabel(), Ltrue = newLabel(), Ldone = newLabel();
     code_ << "    cmp t0,0\n    beq " << Lfalse << "\n";
     genExpr(rhs);
-    if (isWide(rhs.type)) code_ << "    or t0,t0,t1\n";
+    if (isWide(rhs.type)) code_ << "    or t0,t1,t0\n";
     code_ << "    cmp t0,0\n    beq " << Lfalse << "\n";
     code_ << "    ba " << Ltrue << "\n";
     code_ << Lfalse << ":\n    or g0,0,t0\n    ba " << Ldone << "\n";
@@ -1093,11 +1093,11 @@ void SparcCodegen::genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs) {
 
 void SparcCodegen::genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs) {
     genExpr(lhs);
-    if (isWide(lhs.type)) code_ << "    or t0,t0,t1\n";
+    if (isWide(lhs.type)) code_ << "    or t0,t1,t0\n";
     std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
     code_ << "    cmp t0,0\n    bne " << Ltrue << "\n";
     genExpr(rhs);
-    if (isWide(rhs.type)) code_ << "    or t0,t0,t1\n";
+    if (isWide(rhs.type)) code_ << "    or t0,t1,t0\n";
     code_ << "    cmp t0,0\n    bne " << Ltrue << "\n";
     code_ << "    ba " << Lfalse << "\n";
     code_ << Ltrue << ":\n    or g0,1,t0\n    ba " << Ldone << "\n";
@@ -1107,7 +1107,7 @@ void SparcCodegen::genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs) {
 
 void SparcCodegen::genLogicalNot(const ir::Expr &rhs) {
     genExpr(rhs);
-    if (isWide(rhs.type)) code_ << "    or t0,t0,t1\n";
+    if (isWide(rhs.type)) code_ << "    or t0,t1,t0\n";
     std::string Lfalse = newLabel(), Ldone = newLabel();
     code_ << "    cmp t0,0\n    bne " << Lfalse << "\n";
     code_ << "    or g0,1,t0\n    ba " << Ldone << "\n";

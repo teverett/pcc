@@ -1,0 +1,152 @@
+name: Platform Tests
+
+# Runs after CI (ci.yml) finishes building rcc, so this workflow never
+# builds rcc itself - it only downloads the already-built, already-
+# bundled-with-its-own-runtime-libs artifact each of CI's macos/linux/
+# windows jobs uploaded (rcc-macos/rcc-linux/rcc-windows) and exercises it
+# as a compiler/linker against the example programs.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  platformtests:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos
+            os: macos-latest
+            artifact: rcc-macos
+            shell: bash
+          - name: linux
+            os: ubuntu-latest
+            artifact: rcc-linux
+            shell: bash
+          - name: windows
+            os: windows-latest
+            artifact: rcc-windows
+            shell: "msys2 {0}"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      # examples.mk's default RCC path is build/bin/rcc(.exe), so
+      # downloading straight into that directory (same filenames the
+      # macos/linux/windows jobs in ci.yml uploaded) needs no override.
+      # `run-id` pulls the artifact from the CI run that triggered this
+      # workflow, since artifacts don't cross workflows on their own.
+      - name: Download rcc binary
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: build/bin
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      # actions/download-artifact doesn't preserve the executable bit.
+      - name: Restore executable bit
+        if: matrix.name != 'windows'
+        shell: ${{ matrix.shell }}
+        run: chmod +x build/bin/rcc
+
+      # Only the i386-linux hello example needs this: rcc's hosted linker
+      # resolves `-lc` against the real on-disk 32-bit libc (see
+      # WindowsLinuxLinker.cpp's search paths), which Ubuntu doesn't ship
+      # by default.
+      - name: Install 32-bit libc (Linux target)
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libc6-dev-i386
+
+      # Only `make` is needed here (not gcc) - rcc.exe does its own
+      # codegen/linking, and the i386-windows hello example only pulls in
+      # msvcrt.dll/kernel32.dll, both present on any Windows machine.
+      - uses: msys2/setup-msys2@v2
+        if: matrix.name == 'windows'
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-make
+
+      - name: Install py65 (6502 emulator)
+        if: matrix.name == 'macos'
+        run: pip3 install --break-system-packages py65
+
+      - name: Build and run hello example
+        shell: ${{ matrix.shell }}
+        run: |
+          case "${{ matrix.name }}" in
+            macos)
+              make -C examples/example1 macos
+              python3 - <<'PY'
+          import subprocess
+          result = subprocess.run(["examples/example1/build/hello-macos"], capture_output=True)
+          assert result.stdout == b"hello rcc\n", (result.stdout, result.stderr)
+          assert result.returncode == 0, result.returncode
+          PY
+              ;;
+            linux)
+              make -C examples/example1 linux
+              python3 - <<'PY'
+          import subprocess
+          output = subprocess.check_output(["examples/example1/build/hello-linux"])
+          assert output == b"hello rcc\n", repr(output)
+          PY
+              ;;
+            windows)
+              mingw32-make -C examples/example1 windows
+              python3 - <<'PY'
+          import subprocess
+          output = subprocess.check_output(["examples/example1/build/hello-windows.exe"])
+          assert output in (b"hello rcc\n", b"hello rcc\r\n"), repr(output)
+          PY
+              ;;
+          esac
+
+      # example3 is a freestanding 6502 binary (no OS to exec it on), so
+      # it's verified with py65's MPU core instead of actually running it
+      # - same self-jump halt detection and zero-page return-value
+      # convention (`ac` at addresses 2/3) as tests/run_tests.sh's own
+      # check_6502(), since the linker's _start stub for `--format=flat`
+      # is the same one M6502Codegen.cpp emits for the raw pipeline.
+      - name: Build and run 6502 example3 in py65 emulator
+        if: matrix.name == 'macos'
+        shell: ${{ matrix.shell }}
+        run: |
+          make -C examples/example3
+          python3 - <<'PY'
+          from py65.devices.mpu6502 import MPU
+
+          with open("examples/example3/build/main.bin", "rb") as f:
+              data = f.read()
+
+          base = 0x0600
+          mpu = MPU()
+          mpu.memory[base:base + len(data)] = data
+          mpu.pc = base
+
+          for _ in range(2_000_000):
+              pc_before = mpu.pc
+              mpu.step()
+              if mpu.pc == pc_before:  # "halt: jmp halt"
+                  break
+          else:
+              raise SystemExit("simulator never reached the halt loop (step limit exceeded)")
+
+          lo = mpu.memory[2]
+          hi = mpu.memory[3]
+          val = lo | (hi << 8)
+          if val >= 0x8000:
+              val -= 0x10000
+          assert val == 45, val
+          PY

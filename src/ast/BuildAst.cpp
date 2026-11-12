@@ -56,6 +56,19 @@ void checkAsmSyntax(const std::string &asmText, int sourceLine) {
 
 ExprPtr buildExpr(CParser::ExprContext *ctx);
 
+// A decimal digit string's value as the raw 64-bit pattern `Expr::intValue`/callers store it
+// in - parsed unsigned so a literal up to 2^64-1 (e.g. an `ULL` one past `LONG_MAX`) wraps the
+// same way C itself defines it, instead of `std::stol`'s signed range rejecting it outright.
+long parseDigits(const std::string &text, antlr4::ParserRuleContext *ctx, const char *what) {
+    unsigned long long v = 0;
+    try {
+        v = std::stoull(text);
+    } catch (const std::out_of_range &) {
+        err(ctx, std::string(what) + " '" + text + "' is too large to represent in 64 bits");
+    }
+    return static_cast<long>(v);
+}
+
 // `size=`/`addr=`/array-initializer NUMBERs are untyped compiler-internal
 // integers and reject an integer suffix, unlike a general NUMBER token.
 long parsePlainNumber(antlr4::Token *tok, antlr4::ParserRuleContext *ctx, const char *what) {
@@ -63,7 +76,7 @@ long parsePlainNumber(antlr4::Token *tok, antlr4::ParserRuleContext *ctx, const 
     for (char ch : text) {
         if (ch < '0' || ch > '9') err(ctx, std::string(what) + " may not have a 'u'/'l' integer suffix");
     }
-    return std::stol(text);
+    return parseDigits(text, ctx, what);
 }
 
 // Parses a NUMBER token's integer suffix (ISO C spelling: u/U once, l/L
@@ -96,7 +109,7 @@ Type parseNumberSuffix(const std::string &suffix, antlr4::ParserRuleContext *ctx
 void parseIntLiteral(const std::string &text, antlr4::ParserRuleContext *ctx, long &value, Type &type) {
     size_t digitsEnd = 0;
     while (digitsEnd < text.size() && text[digitsEnd] >= '0' && text[digitsEnd] <= '9') digitsEnd++;
-    value = std::stol(text.substr(0, digitsEnd));
+    value = parseDigits(text.substr(0, digitsEnd), ctx, "an integer literal");
     type = parseNumberSuffix(text.substr(digitsEnd), ctx);
 }
 

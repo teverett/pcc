@@ -3,22 +3,14 @@
 Defects that are understood but not yet fixed. Each entry gives the
 affected code, the trigger, and the wrong behavior.
 
-## Integer literals at or above 2^63 fail to parse
+## `tests/run_tests.sh` never runs in CI
 
-Affects every target (`src/ast/BuildAst.cpp`).
+Affects `.github/workflows/ci.yml`.
 
-Literal text is converted with `std::stol`, so a value such as
-`18446744065119617025ULL` aborts compilation with a `stol` error
-instead of wrapping to its unsigned value. Values built from smaller
-constants (`4611686018427387904ULL + 4611686018427387904ULL`) work.
-
-## sparc: wide truthiness test never combines the two words
-
-Affects the `sparc` target (`src/codegen/sparc/SparcCodegen.cpp`).
-
-For a `long long` condition in `if`, `while`, `?:` and the logical
-operators, the backend emits `or t0,t0,t1`. SPARC assembly puts the
-destination last, so this writes `t1` and leaves `t0` holding only the
-low word. A wide value whose low word is zero but whose high word is
-not (for example `1LL << 32`) tests false.
+The `macos` job's "Install Python simulator packages (py65, z80-python)"
+step has a comment saying "`make test` (below) drives real, independent
+CPU cores for the 6502/65c02 (py65) and 8080/z80 (z80-python) targets",
+but no job invokes `make test` or `tests/run_tests.sh` anywhere in the
+workflow, so that suite - and the py65/z80-python packages installed for
+it - never actually run in CI.
 
