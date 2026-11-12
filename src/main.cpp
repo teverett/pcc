@@ -40,6 +40,7 @@
 #include "ir/IRBuilder.h"
 #include "ir/IRPrinter.h"
 #include "ir/IRValidator.h"
+#include "optimizers/address_hoisting/AddressHoisting.h"
 #include "optimizers/algebraic_simplification/AlgebraicSimplification.h"
 #include "optimizers/constant_folding/ConstantFolding.h"
 #include "optimizers/constant_propagation/ConstantPropagation.h"
@@ -382,6 +383,12 @@ std::string compileOneFile(const std::string &srcPath, const std::map<std::strin
         // form (e.g. a strength-reduced `x << 1`, not the original `x * 2`).
         rcc::LocalCSE cse;
         cse.run(irProg, srcPath);
+        // After LocalCSE for the same canonicalization reason. Needs
+        // backend.typeWidths() (to scale a hoisted index by the array's
+        // element width), so unlike the passes above it isn't an
+        // Optimizer - see AddressHoisting.h.
+        rcc::AddressHoisting addrHoist;
+        addrHoist.run(irProg, backend.typeWidths(), srcPath);
         // Before DeadCodeElimination, so a LocalDecl this pass strips down
         // to a bare, unread declaration looks unused to it too.
         rcc::DeadStoreElimination dse;
