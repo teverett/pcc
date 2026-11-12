@@ -1696,7 +1696,7 @@ void Pdp7Codegen::emitEq(const ir::Expr &lhs, const ir::Expr &rhs, bool negate) 
 }
 
 void Pdp7Codegen::emitSignedLtCells(const std::string &A, const std::string &B, const std::string &Ltrue,
-                                     const std::string &Lfalse, int signA, int signB) {
+                                     const std::string &Lfalse, int signA, int signB, const std::string &negB) {
     std::string Lsub = newLabel();
     bool subUsed = false;
     // Jumps to `ifNonNeg`/`ifNeg` on B's sign.
@@ -1725,14 +1725,33 @@ void Pdp7Codegen::emitSignedLtCells(const std::string &A, const std::string &B, 
     }
     if (!subUsed) return;
     code_ << Lsub << ":\n";
-    code_ << "   lac " << B << "\n   cma\n   tad __one\n   dac __stmp2\n";
-    code_ << "   lac " << A << "\n   tad __stmp2\n";  // AC = A-B, safe: same sign, can't overflow
+    if (!negB.empty()) {
+        // B's negation is already a precomputed literal (B is itself a
+        // compile-time constant) - add it directly instead of negating
+        // B's cell at runtime.
+        code_ << "   lac " << A << "\n   tad " << negB << "\n";
+    } else {
+        code_ << "   lac " << B << "\n   cma\n   tad __one\n   dac __stmp2\n";
+        code_ << "   lac " << A << "\n   tad __stmp2\n";  // AC = A-B, safe: same sign, can't overflow
+    }
     code_ << "   sma\n   jmp " << Lfalse << "\n   jmp " << Ltrue << "\n";
 }
 
 void Pdp7Codegen::genCompareCells(const ir::Expr &a, const ir::Expr &b, bool unsignedCmp, std::string &A,
-                                  std::string &B, int &signA, int &signB) {
+                                  std::string &B, int &signA, int &signB, std::string *negB) {
     signA = signB = -1;
+    // B ends up as a literal cell (below) exactly when `b` is itself a
+    // compile-time constant - precompute its negation the same way, so
+    // emitSignedLtCells()'s same-sign subtract can add it directly
+    // instead of negating B's cell at runtime.
+    if (negB) {
+        negB->clear();
+        if (b.kind == ir::ExprKind::IntLit) {
+            long w = pdp7Word(b.intValue);
+            if (unsignedCmp) w ^= 0400000L;
+            *negB = literalLabel(-w);
+        }
+    }
     auto flip = [&]() {
         if (unsignedCmp) code_ << "   xor " << literalLabel(0400000L) << "\n";
     };
@@ -1798,11 +1817,11 @@ void Pdp7Codegen::emitLt(const ir::Expr &lhs, const ir::Expr &rhs, bool negate) 
     // signed order. Delegates to emitSignedLtCells() rather than a
     // plain subtract-and-test-sign, since the flip routinely produces
     // operands at opposite extremes, which a naive subtract overflows.
-    std::string A, B;
+    std::string A, B, negB;
     int signA, signB;
-    genCompareCells(lhs, rhs, lhs.type.isUnsigned, A, B, signA, signB);
+    genCompareCells(lhs, rhs, lhs.type.isUnsigned, A, B, signA, signB, &negB);
     std::string Ltrue = newLabel(), Lfalse = newLabel(), Ldone = newLabel();
-    emitSignedLtCells(A, B, Ltrue, Lfalse, signA, signB);
+    emitSignedLtCells(A, B, Ltrue, Lfalse, signA, signB, negB);
     code_ << Ltrue << ":\n   lac __one\n   jmp " << Ldone << "\n";
     code_ << Lfalse << ":\n   lac __zero\n";
     code_ << Ldone << ":\n";
@@ -1838,17 +1857,17 @@ void Pdp7Codegen::genCondBranch(const ir::Expr &cond, const std::string &Lfalse)
             const ir::Expr *b = cond.rhs.get();
             bool negate = (op == ">=" || op == "<=");
             if (op == ">" || op == "<=") std::swap(a, b);
-            std::string A, B;
+            std::string A, B, negB;
             int signA, signB;
-            genCompareCells(*a, *b, a->type.isUnsigned, A, B, signA, signB);
+            genCompareCells(*a, *b, a->type.isUnsigned, A, B, signA, signB, &negB);
             // emitSignedLtCells() tests A<B directly; negate just
             // picks which outcome continues to Lfalse.
             std::string Ltrue = newLabel();
             if (!negate) {
-                emitSignedLtCells(A, B, Ltrue, Lfalse, signA, signB);
+                emitSignedLtCells(A, B, Ltrue, Lfalse, signA, signB, negB);
                 code_ << Ltrue << ":\n";
             } else {
-                emitSignedLtCells(A, B, Lfalse, Ltrue, signA, signB);
+                emitSignedLtCells(A, B, Lfalse, Ltrue, signA, signB, negB);
                 code_ << Ltrue << ":\n";
             }
             return;

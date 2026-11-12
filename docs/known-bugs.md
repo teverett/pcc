@@ -3,42 +3,46 @@
 Defects that are understood but not yet fixed. Each entry gives the
 affected code, the trigger, and the wrong behavior.
 
-## PDP-7 codegen lowers small-constant comparisons generically, inflating code size
+## PDP-7 codegen still dispatches on a variable operand's sign at runtime even when it's provably non-negative
 
-Affects `src/codegen/pdp7/Pdp7Codegen.cpp`.
+Affects `src/codegen/pdp7/Pdp7Codegen.cpp`'s `emitSignedLtCells()`/
+`genCompareCells()`.
 
-Measured directly: comparing real assembled word counts for the same
-functions, hand-written PDP-7 assembly (UnixV0-C's own original Unix V0
-kernel, `src-assem/`) vs. `rcc`-compiled C ports of those same functions
-(`src-c/`), using `rcc --link --format=list` to get real linked addresses
-and computing sizes from consecutive-address deltas. The generated code is
-consistently larger than the original for the same logic - not one or two
-bad translations, a systemic pattern across unrelated functions.
+Originally filed as a wider "lowers small-constant comparisons
+generically" entry (`i < 10` in a `for` loop costing 15 words against a
+hand-written original's much smaller equivalent - see UnixV0-C's own
+`awake()` comparison). Since then, the part of that cost which was purely
+mechanical - the same-sign subtract step re-negating a *compile-time
+constant* operand at runtime (`lac B`/`cma`/`tad __one`/`dac`, 4 words)
+instead of just adding its already-known negation (`tad <literal>`, 1
+word) - has been fixed: `genCompareCells()` now precomputes that negated
+literal (the same "add a negative literal directly" idiom
+`narrowAC()`/etc. already use elsewhere in this file) and
+`emitSignedLtCells()` uses it instead, whenever the comparison's `B` side
+is an `ir::ExprKind::IntLit` (see `tests/run_pdp7_compare_constant_tests.sh`,
+which checks the runtime negation - a `cma` - is gone for that case and
+still present for a plain variable-vs-variable comparison). This cuts
+`i < 10`'s own cost from 15 words to 11.
 
-Root-caused by reading `awake()`'s full generated assembly line-by-line
-(a 10-iteration loop with one array-indexed comparison) against the
-hand-written original: **a comparison against a small, provably-safe
-constant (`i < 10` in a `for` loop with `i` known non-negative) lowers via
-the fully general signed-comparison sequence** - a separate "is the
-variable itself negative" check, then a full two's-complement subtract
-with its own sign check, stitched together with several unconditional
-jumps - 15 words, where a specialized "compare against a known-small
-non-negative constant" form could do it in 2-3.
+What's left, and why it's a different, harder problem: the remaining 11
+words are mostly the "is the variable operand itself negative" dispatch
+(`emitSignedLtCells`'s `signA == -1` branch) - necessary in general, since
+a plain `int` can be negative, but wasted work for a loop induction
+variable like `i` above, which a human reader can see never actually goes
+negative here. Eliminating that dispatch would need the compiler to prove
+a variable's value range at a given program point (e.g., tracking that a
+`for` loop's own `i = 0; ...; i++` keeps `i` non-negative until the loop
+exits) - a value-range-analysis pass that doesn't exist anywhere in this
+codebase (confirmed by inspection: no `nonNeg`/`ValueRange`/range-tracking
+code anywhere in `src/ir` or `src/codegen`), not a small addition. Still
+PDP-7-specific either way: the PDP-7 has no condition-code/flags register,
+so every signed `<` needs this sign-based machinery at all, unlike i386/
+6502 which get a correct comparison for free from one native compare
+instruction regardless of either operand's sign.
 
-This is PDP-7-specific, not an IR/optimizer gap other backends also hit:
-the PDP-7 has no condition-code/flags register, so every signed `<` is
-synthesized from sign-bit tests plus a two's-complement subtract
-regardless of operand size, unlike i386/6502 which get this for free from
-a native compare instruction. `rcc` also has no cross-call-site code
-sharing (each call site gets its own fully inlined copy, unlike
-hand-written code that factors shared sequences into subroutines), so this
-waste multiplies rather than amortizing across a real program - a
-contributing reason UnixV0-C's own ported kernel struggles to fit the
-PDP-7's 8192-word address space in one link even with `--gc-sections`.
-
-(Two other patterns originally filed here - every array reference
-re-deriving its own base address from scratch at each use, and
-uninitialized scalar locals being zeroed twice - have since been fixed:
+(Two other patterns originally filed alongside this one - every array
+reference re-deriving its own base address from scratch at each use, and
+uninitialized scalar locals being zeroed twice - have been fixed in full:
 the first by the `AddressHoisting` optimizer pass
 (`src/optimizers/address_hoisting/`, see `tests/run_pdp7_address_hoisting_tests.sh`),
 which now computes a repeatedly-accessed array's base address once per

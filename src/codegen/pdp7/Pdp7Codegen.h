@@ -66,15 +66,24 @@ class Pdp7Codegen : public Backend {
     // `signA`/`signB` give an operand's sign when it's known at compile
     // time (0 non-negative, 1 negative; -1 unknown), which removes
     // that operand's sign test.
+    // `negB`, when non-empty, is a literal cell already holding -B
+    // (computed at compile time by the caller, since B is itself a
+    // constant) - the same-sign subtract then uses it directly instead
+    // of negating B's cell at runtime (`cma`/`tad __one`/`dac`), the
+    // same "add a precomputed negative literal" idiom narrowAC() etc.
+    // already use elsewhere in this file.
     void emitSignedLtCells(const std::string &A, const std::string &B, const std::string &Ltrue,
-                            const std::string &Lfalse, int signA = -1, int signB = -1);
+                            const std::string &Lfalse, int signA = -1, int signB = -1,
+                            const std::string &negB = "");
     // Evaluates both sides of a relational comparison into cells for
     // emitSignedLtCells() (sign bits flipped first for an unsigned
     // comparison, mapping unsigned order onto signed order), setting
     // `A`/`B` to the cells and `signA`/`signB` to any sign known at
-    // compile time.
+    // compile time. `negB`, when non-null, is set to a literal cell
+    // holding -B when B is itself a compile-time constant (see
+    // emitSignedLtCells's own comment), left empty otherwise.
     void genCompareCells(const ir::Expr &a, const ir::Expr &b, bool unsignedCmp, std::string &A,
-                         std::string &B, int &signA, int &signB);
+                         std::string &B, int &signA, int &signB, std::string *negB = nullptr);
     void genLogicalAnd(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalOr(const ir::Expr &lhs, const ir::Expr &rhs);
     void genLogicalNot(const ir::Expr &rhs);
