@@ -96,14 +96,6 @@ void I8080Codegen::shiftOneBit(const std::string &lbl, bool isLeft) {
 int I8080Codegen::widthOfType(Type t) const { return widthOf(t, typeWidths()); }
 bool I8080Codegen::isWide(Type t) const { return widthOfType(t) > 2; }
 int I8080Codegen::wordCountOf(Type t) const { return widthOfType(t) / 2; }
-int I8080Codegen::elemShift(Type t) const {
-    switch (widthOfType(t)) {
-        case 1: return 0;
-        case 2: return 1;
-        case 4: return 2;
-        default: return 3;  // 8
-    }
-}
 
 // HL must hold the operand's address. Sign-extension idiom: `ral` rotates L's bit 7 into carry,
 // then `sbb a` (A-A-CY) yields 0x00 or 0xFF - the sign-extension byte, in three instructions
@@ -909,12 +901,23 @@ void I8080Codegen::genExpr(const ir::Expr &e) {
 // array's element 0, its lowest address.
 void I8080Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
-    // HL = index * widthOfType(slot->type), via `dad h` (doubling) repeated elemShift() times.
-    // Stashed in `ptr` immediately since loading the base below goes through HL too.
-    code_ << "    lhld ac\n";
-    int shift = elemShift(slot->type);
-    for (int i = 0; i < shift; i++) code_ << "    dad h\n";
-    code_ << "    shld ptr\n";
+    // ptr = index * widthOfType(slot->type): the width is a compile-time constant, so this is a
+    // fully unrolled shift-and-add multiply (double `bc`, add into `ac` for each set bit of the
+    // width) rather than a runtime loop - see Z80Codegen.cpp's own genIndexAddr() for the same
+    // idea on that backend, including why this replaced a plain doubling count derived from
+    // log2(width) that was only ever correct for a width of exactly 1/2/4/8 bytes. Stashed in
+    // `ptr` immediately since loading the base below goes through HL too.
+    code_ << "    lhld ac\n    shld bc\n";  // bc = index (current doubling value)
+    code_ << "    lxi h, 0\n    shld ac\n";  // ac = running product, starts at 0
+    for (int w = widthOfType(slot->type); w > 0; w >>= 1) {
+        if (w & 1) {
+            code_ << "    lhld bc\n    xchg\n    lhld ac\n    dad d\n    shld ac\n";
+        }
+        if (w >> 1) {
+            code_ << "    lhld bc\n    dad h\n    shld bc\n";
+        }
+    }
+    code_ << "    lhld ac\n    shld ptr\n";
     const bool isGlobal = slot->kind == ir::SlotKind::Global;
     if (isGlobal) {
         if (slot->arraySize > 0) {

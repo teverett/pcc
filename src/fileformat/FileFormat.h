@@ -31,9 +31,9 @@ class FileFormatReader {
 // `Raw` answers to two `--format` names: `raw` when compiling a whole program or linking (same,
 // on an already-resolved ObjectFile), and `objraw` when compiling (drops the symbol table,
 // inspection-only) — one implementation, two names.
-// `Rim`/`Ptr`/`A7out`/`List`/`Dos33`/`ProDos` are link-output-only conventions, never a
-// per-file compile format.
-enum class FileFormatKind { Coff, Elf, MachO, Aout, Raw, Rim, Ptr, A7out, List, Dos33, ProDos };
+// `Rim`/`Ptr`/`A7out`/`List`/`Dos33`/`ProDos`/`Cmd`/`ColecoRom`/`Decb` are link-output-only
+// conventions, never a per-file compile format.
+enum class FileFormatKind { Coff, Elf, MachO, Aout, Raw, Rim, Ptr, A7out, List, Dos33, ProDos, Cmd, ColecoRom, Decb };
 
 std::unique_ptr<FileFormatWriter> makeFileFormatWriter(FileFormatKind kind);
 std::unique_ptr<FileFormatReader> makeFileFormatReader(FileFormatKind kind);
@@ -46,8 +46,8 @@ std::string fileFormatName(FileFormatKind kind);
 
 // Sniffs a file's leading bytes to identify its format, for `--link` merging inputs compiled with
 // different `--format`s. Only returns Coff/Elf/MachO/Aout/Raw (link-output-only formats,
-// including Dos33/ProDos, are never `--link` input); `Raw` has no magic number, so it's the
-// last-resort fallback.
+// including Dos33/ProDos/Cmd/ColecoRom, are never `--link` input); `Raw` has no magic number, so
+// it's the last-resort fallback.
 FileFormatKind detectFileFormat(const std::string &bytes);
 
 }  // namespace rcc

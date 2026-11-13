@@ -6,7 +6,7 @@
 # on every target (see ../src/Backend.h: a .c file means the same
 # thing regardless of --target).
 #
-# Usage: tests/run_tests.sh [path/to/rcc] [--target=pdp1|pdp7|pdp11|pdp10|vax|avr|alpha|saturn|tms320c6713|r10000|powerpc|cortex-m3|8086|8088|6502|65c02|68000|mc68328|8080|z80|8008|8051|stm32|i386|armv7a|armv8a] [--optimize]
+# Usage: tests/run_tests.sh [path/to/rcc] [--target=pdp1|pdp7|pdp11|pdp10|vax|avr|alpha|saturn|tms320c6713|r10000|powerpc|cortex-m3|8086|8088|6502|65c02|68000|mc68328|8080|z80|6809|8008|8051|stm32|i386|armv7a|armv8a] [--optimize]
 #
 # --optimize passes rcc's own --optimize straight through to every
 # compile below, so the exact same checks also confirm the IR
@@ -196,6 +196,16 @@ case "$TARGET" in
             exit 1
         fi
         ;;
+    6809)
+        # No verified pure-Python 6809 core has been identified for
+        # this project yet (unlike z80-python/py65 for the Z80/6502
+        # families above) - see ../docs/known-bugs.md. check_6809()
+        # below is ready to wire one in once found; until then this
+        # target can only be exercised by hand (an emulator run
+        # outside this script) or left unexecuted.
+        echo "no verified Python 6809 emulator package is wired in yet - see docs/known-bugs.md; --target=6809 compiles only, verify execution manually" >&2
+        exit 1
+        ;;
     8008)
         # No PyPI package exists for this one (the 8008 isn't object-
         # code compatible with anything later - see
@@ -325,7 +335,7 @@ case "$TARGET" in
         # check_saturn(). Standard library only, nothing to install.
         ;;
     *)
-        echo "unknown --target '$TARGET' (known: pdp7, pdp11, pdp10, vax, avr, alpha, saturn, tms320c6713, r10000, powerpc, cortex-m3, 8086, 8088, 6502, 65c02, 68000, mc68328, 8080, z80, 8008, 8051, stm32, i386, armv7a, armv8a)" >&2
+        echo "unknown --target '$TARGET' (known: pdp7, pdp11, pdp10, vax, avr, alpha, saturn, tms320c6713, r10000, powerpc, cortex-m3, 8086, 8088, 6502, 65c02, 68000, mc68328, 8080, z80, 6809, 8008, 8051, stm32, i386, armv7a, armv8a)" >&2
         exit 1
         ;;
 esac
@@ -2175,6 +2185,71 @@ PY
     return 1
 }
 
+# Inert scaffolding, not yet called from the dispatch case below: no
+# verified pure-Python 6809 core has been identified for this project
+# (see the `6809)` tool-check arm above and ../docs/known-bugs.md), so
+# this function can't actually run yet - `import m6809_python` here is
+# a placeholder for whatever real package name eventually gets wired
+# in. Shaped the same way as check_z80()/check_8080() once it is: this
+# backend's own entry sequence (../src/linker/factory/
+# M6809LinkerFactory.cpp's kEntryAsm) halts in a `halt: jmp halt`
+# self-loop at $3000, and the 6809 is big-endian, so the result is
+# read out of D as (A<<8)|B rather than Z80's little-endian H/L pair.
+check_6809() {
+    local src="$1" name="$2"
+    local binfile="$tmpdir/$name.bin"
+
+    if ! "$RCC" --target=6809 --format=raw \
+            $OPTFLAGS --dump-ir --out="$binfile" "$src" >"$tmpdir/$name.log" 2>&1; then
+        echo "FAIL $name: compile error"
+        sed 's/^/    /' "$tmpdir/$name.log"
+        return 1
+    fi
+
+    local outfile="$tmpdir/$name.sim.out"
+    python3 - "$binfile" > "$outfile" <<'PY'
+import sys
+from m6809_python import M6809CPU  # TODO: not a real package yet - placeholder
+
+path = sys.argv[1]
+with open(path, "rb") as f:
+    data = f.read()
+
+base = 0x3000
+memory = bytearray(0x10000)
+memory[base:base + len(data)] = data
+
+cpu = M6809CPU(memory.__getitem__, memory.__setitem__)
+cpu.pc = base
+
+for _ in range(2_000_000):
+    pc_before = cpu.pc
+    cpu.step()
+    if cpu.pc == pc_before:  # "halt: jmp halt" - a JMP targeting itself
+        break
+else:
+    print("TIMEOUT")
+    sys.exit(0)
+
+val = (cpu.a << 8) | cpu.b  # D = A:B, big-endian
+if val >= 0x8000:
+    val -= 0x10000
+print(val)
+PY
+    local result
+    result="$(cat "$outfile")"
+    if [ "$result" = "TIMEOUT" ]; then
+        echo "FAIL $name: simulator never reached the halt loop (step limit exceeded)"
+        return 1
+    fi
+    if [ "$result" -eq "$expect" ] 2>/dev/null; then
+        echo "PASS $name (d=$result)"
+        return 0
+    fi
+    echo "FAIL $name: expected $expect, got $result"
+    return 1
+}
+
 # No real 8008 simulator and no PyPI package exists for one (the
 # 8008 isn't object-code compatible with anything later, unlike the
 # 8080/Z80 pairing above - see ../src/codegen/i8008/I8008Codegen.h's
@@ -2809,6 +2884,8 @@ is_known_unsupported() {
         8080:types_longlong_divmod_repeated.c) return 0 ;; # same - no verified wide multiply/divide routine
         z80:types_longlong_divmod.c) return 0 ;;
         z80:types_longlong_divmod_repeated.c) return 0 ;;  # same - no verified wide multiply/divide routine
+        6809:types_longlong_divmod.c) return 0 ;;          # no verified wide multiply/divide routine
+        6809:types_longlong_divmod_repeated.c) return 0 ;; # same - no verified wide multiply/divide routine
         8051:types_arrays.c) return 0 ;;                   # wide (long/long long) values unsupported at all
         8051:struct_alignment_size.c) return 0 ;;          # same - sizeof() always yields a 'long'-typed literal
         8051:struct_packed_array.c) return 0 ;;

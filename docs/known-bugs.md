@@ -3,6 +3,46 @@
 Defects that are understood but not yet fixed. Each entry gives the
 affected code, the trigger, and the wrong behavior.
 
+## `--target=z80-coleco` programs that multiply/divide/modulo/shift-by-variable, or deref through a pointer that spills, write through compiler-internal scratch cells placed in the same ROM-mapped cartridge image as code
+
+Affects `src/codegen/z80/Z80Codegen.cpp`'s `declareTemp()`-based scratch
+cells (`ac`/`_bc`/`cx`/`dx`/`ptr`, plus `wideScratch()`'s `a*`/`b*`/
+`ret*`/`wacc` - see `genWideMul()`/`genWideDivMod()`/`genWideLoad()`/
+`genWideStore()`, all of which read/write these), and
+`src/linker/factory/ColecoLinkerFactory.cpp`'s/`Z80LinkerFactory.cpp`'s
+shared "lay everything out in one address space starting at
+`baseAddress`" model (`GenericLinker.cpp`'s `merge()`, no Harvard
+code/data split wired up for this backend - contrast
+`GenericLinkerConfig::dataBaseAddress`, which `pic16`/`pic18`/`avr` do
+use).
+
+Every Z80 C object - `Z80Assembler.cpp`'s `declareTemp()` emits each
+scratch cell as an ordinary `lbl: db 0, 0` inside that same object's own
+assembled bytes, not a separately-addressed data segment - gets linked
+into the cartridge image at `$8000` and up, same as its own code. On a
+real TRS-80 (`z80` target) that's fine: `$8000` is ordinary, writable
+RAM there. On a real ColecoVision, `$8000`-`$FFFF` is the cartridge's
+own read-only ROM - a write through one of these scratch cells (any
+16-bit multiply/divide/modulo/shift-by-a-variable-amount, or a spilled
+pointer dereference - see the `Z80Codegen.cpp` function references above)
+is a no-op on real hardware instead of actually updating the value,
+silently producing a wrong result rather than a crash. `tests/
+run_coleco_rt_tests.sh`'s own z80-python-based harness can't catch this
+either: its synthetic memory array has no concept of read-only regions,
+so a scratch-cell write there "succeeds" even though the same write
+would do nothing on real hardware.
+
+Not yet fixed - would need either a real Harvard code(ROM)/data(RAM)
+split for this backend (wiring `dataBaseAddress` through
+`Z80Codegen.cpp`'s own global/temp placement the way `pic16`/`pic18`/
+`avr` already do for their own Flash/RAM split) or some other way to
+keep these specific scratch cells out of the cartridge image, neither
+of which this change attempts. `src/rt/coleco/coleco.c`'s own functions
+avoid every operation that would trigger this (no multiply/divide/
+modulo/variable-shift, and no pointer spills past a single array
+index), so they're themselves unaffected - this only bites a *caller's*
+own C code once it does any of those things.
+
 ## PDP-7 codegen can't prove a variable comparison operand is non-negative, so it still pays the full sign-dispatch cost inline
 
 Affects `src/codegen/pdp7/Pdp7Codegen.cpp`'s `emitSignedLtCells()`/
@@ -116,7 +156,7 @@ rather than left as an unexplained failure.
 ## Most backends mis-scaled an array index for an element whose width isn't 1/2/4/8 bytes
 
 Affected `src/codegen/{mips,powerpc,alpha,tms320c6713,x86_8086,avr,mcs51,
-i8008,m6502,m65c02}/*Codegen.{h,cpp}` - every backend with this
+i8008,m6502,m65c02,i8080,z80}/*Codegen.{h,cpp}` - every backend with this
 `elemShift()`/doubling-count pattern other than `i386`, `vax`, `pdp7`,
 `pdp10`, `pdp11`, `armv7a`/`armv8a`/`arm64`, and `armv7a-m`/`cortex-m`,
 which this subset's earlier work already covered.
@@ -158,17 +198,24 @@ repro on every target regardless of its own `int` width, which is why
 shape and checks the real pointer stride directly, not just a value
 read back.
 
-Fixed, with a real multiply (`mullw`/`mulq`/`mul`/`imul`/the shared
-software multiply-by-register routine each of these backends already
-had for a scalar `*`, as appropriate per target) in place of the shift,
-on every backend listed above - each verified via its own qemu or
-`open-simh` simulator against `tests/struct_nonpow2_array_stride.c` and
-the rest of `tests/struct_*.c`. `sparc`, `m16c`, `pic16`, `pic18` still
-have no working simulator wired into `tests/run_tests.sh` at all to
-verify a fix against, and `8080`/`z80` need the `z80-python` package
-(not installed in this environment) to run theirs; these four remain
-unverified (not necessarily unfixed - their `elemShift()` has the same
-shape as the others, just never confirmed against real execution).
+Fixed, with a real multiply in place of the shift - `mullw`/`mulq`/`mul`/
+`imul`/the shared software multiply-by-register routine each backend
+already had for a scalar `*`, as appropriate per target, except
+`i8080`/`z80`: there, the second multiplicand (the element width) is
+always a compile-time constant, so `I8080Codegen.cpp`'s and
+`Z80Codegen.cpp`'s own `genIndexAddr()` instead emit a fully unrolled
+compile-time shift-and-add (double a scratch pseudo-register, add it in
+for each set bit of the width) rather than reuse the runtime
+bit-serial `genMul()` built for two operands that are both unknown
+until runtime. Verified via each backend's own qemu/`open-simh`/
+`z80-python` simulator against `tests/struct_nonpow2_array_stride.c` and
+the rest of `tests/struct_*.c`, including `i8080`/`z80` (the
+`z80-python` package wasn't installed when this was first written up,
+leaving those two unverified; it now is). `sparc`, `m16c`, `pic16`,
+`pic18` still have no working simulator wired into `tests/run_tests.sh`
+at all to verify a fix against, and remain unverified (not necessarily
+unfixed - their `elemShift()` has the same shape as the others, just
+never confirmed against real execution).
 
 ## `tests/run_tests.sh --target=8086`/`8088` has no working test execution
 
@@ -208,3 +255,43 @@ but no job invokes `make test` or `tests/run_tests.sh` anywhere in the
 workflow, so that suite - and the py65/z80-python packages installed for
 it - never actually run in CI.
 
+
+## `pic16`/`pic18`'s `tests/pic16_pic18_extern_function_address_test.py` links with `--format=flat`, which neither target's linker factory supports
+
+Affects `tests/pic16_pic18_extern_function_address_test.py`'s
+`compileAndLink()` helper, which calls `--link --target=pic16`/`pic18`
+with `--format=flat`. Both `src/linker/factory/PIC16LinkerFactory.cpp`
+and `PIC18LinkerFactory.cpp` set `config.outputFormats = {"raw", "coff",
+"elf", "aout"}` - `flat` isn't one of them, so every one of this test's
+three cases fails immediately with `unknown --format 'flat' for --link
+--target=pic16/pic18 (valid: raw coff elf aout)`, before ever reaching
+the dispatch-table/extern-address behavior the test means to check.
+
+Pre-existing; unrelated to any 6809/CoCo work. Either the test should use
+one of the four formats actually supported (most likely `raw`, matching
+every other bare-metal target's own convention), or `flat` needs adding
+to both factories' `outputFormats` if it's meant to be a real distinct
+format for these targets. Not yet fixed.
+
+## `--target=6809` and its CoCo runtime have no automated execution test
+
+Affects the whole `6809` backend (`src/codegen/m6809/M6809Codegen.cpp`,
+`M6809Assembler.cpp`) and `src/rt/coco/`: no verified pure-Python 6809
+CPU core has been found on PyPI (unlike `z80-python`/`py65` for the
+Z80/6502 families - see `tests/run_tests.sh`'s own `z80`/`6502` tool-
+check arms), so `tests/run_tests.sh --target=6809` deliberately fails
+loudly with a clear message instead of silently skipping or faking a
+pass - see its `6809)` tool-check arm. `check_6809()` in that script is
+scaffolded (same shape as `check_z80()`, reading the result out of `D`
+instead of `HL` since the 6809 is big-endian) but not wired into the
+dispatch `case` below it, since it can't actually run yet.
+
+Everything else about this target has been verified as far as possible
+without execution: `make build`'s own build is clean, `tests/
+m6809_assembler_test.cpp` asserts exact opcode bytes against the real
+MC6809 instruction encoding, `tests/m6809_link_test.py` covers object-
+mode linking, and the generated assembly for the shared `tests/*.c`
+battery has been read by hand and looks correct - but none of this is
+the same as running real 6809 machine code. Remove this entry once a
+suitable Python 6809 emulator package is found and `check_6809()` is
+wired into the dispatch.

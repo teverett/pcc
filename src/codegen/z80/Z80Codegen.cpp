@@ -142,15 +142,6 @@ void Z80Codegen::shiftOneBit(const std::string &lbl, bool isLeft) {
 int Z80Codegen::widthOfType(Type t) const { return widthOf(t, typeWidths()); }
 bool Z80Codegen::isWide(Type t) const { return widthOfType(t) > 2; }
 int Z80Codegen::wordCountOf(Type t) const { return widthOfType(t) / 2; }
-int Z80Codegen::elemShift(Type t) const {
-    switch (widthOfType(t)) {
-        case 1: return 0;
-        case 2: return 1;
-        case 4: return 2;
-        default: return 3;  // 8
-    }
-}
-
 // HL holds the operand's address. `rla` rotates the loaded byte (in L)
 // left through carry, leaving carry = the byte's sign bit; `sbc a,a`
 // (a - a - carry) then yields exactly 0x00 or 0xFF - the sign-extension
@@ -943,17 +934,29 @@ void Z80Codegen::genExpr(const ir::Expr &e) {
 // is read from its stored value via a single real instruction, unlike the
 // 8080's stack round-trip.
 void Z80Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
-    // elemShift() already scales by the element's full width, so this is
-    // valid for a wide element too; only callers reading/writing through
-    // `ptr` need their own wide-aware path.
+    // The product computed below already scales by the element's full width, so this is valid
+    // for a wide element too; only callers reading/writing through `ptr` need their own
+    // wide-aware path.
     genExpr(idxExpr);  // ac = index
-    // HL = index * widthOfType(slot->type): ADD HL,HL doubles HL in one
-    // instruction, repeated elemShift() times. Stashed in `ptr` since
-    // loadFrameAddr() below needs HL/DE itself.
-    code_ << "    ld hl, [ac]\n";
-    int shift = elemShift(slot->type);
-    for (int i = 0; i < shift; i++) code_ << "    add hl, hl\n";
-    code_ << "    ld [ptr], hl\n";
+    // ptr = index * widthOfType(slot->type): the width is a compile-time constant, so this is a
+    // fully unrolled shift-and-add multiply (double `_bc`, add into `ac` for each set bit of the
+    // width) rather than a runtime loop - genMul()'s own bit-serial loop exists because *both*
+    // operands there are only known at runtime; one side here never is. This replaced a plain
+    // doubling count derived from log2(width) that was only ever correct for a width of exactly
+    // 1/2/4/8 bytes - see docs/known-bugs.md's former "Most backends mis-scaled an array index
+    // for an element whose width isn't 1/2/4/8 bytes" entry for the element-width-3 (a 3-`char`
+    // struct) repro that caught it.
+    code_ << "    ld hl, [ac]\n    ld [_bc], hl\n";  // _bc = index (current doubling value)
+    code_ << "    ld hl, 0\n    ld [ac], hl\n";      // ac = running product, starts at 0
+    for (int w = widthOfType(slot->type); w > 0; w >>= 1) {
+        if (w & 1) {
+            code_ << "    ld hl, [ac]\n    ld de, [_bc]\n    add hl, de\n    ld [ac], hl\n";
+        }
+        if (w >> 1) {
+            code_ << "    ld hl, [_bc]\n    add hl, hl\n    ld [_bc], hl\n";
+        }
+    }
+    code_ << "    ld hl, [ac]\n    ld [ptr], hl\n";
     if (slot->arraySize > 0) {
         if (slot->kind == ir::SlotKind::Global) {
             code_ << "    ld de, " << label(slot) << "\n";

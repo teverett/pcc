@@ -203,7 +203,47 @@ retro hardware through pluggable backends. Today it supports:
   Z80-only instructions: real 16-bit `ADD HL,rr`/`SBC HL,rr`, direct
   `LD rr,(nn)` for BC/DE/SP, and register-targeted `RL r`/`RR r`. Same
   `z80-python` test setup as `8080`, run directly instead of as a
-  stand-in.
+  stand-in. Also supports `--format=cmd` (see `docs/using.md`'s own
+  `--format` row and `src/rt/trs80/` for a TRS-80 Model I/III runtime
+  that writes straight to video RAM - no ROM/DOS call needed, since
+  this backend's full `T*` pointer support reaches an absolute address
+  directly). `--target=z80-coleco` is the same backend under a
+  different `--target` name (same "one ISA, several platform
+  conventions" pattern as `8086-dos`): a ColecoVision cartridge instead
+  of a TRS-80 `/CMD` load module, linked by
+  `src/linker/factory/ColecoLinkerFactory.cpp` against a BIOS-readable
+  cartridge header (a `$55AA`/`$AA55` signature and pointer table, not
+  a plain `call fn_main`) and written out via `--format=colecorom`
+  (see `docs/using.md`'s own `--format` row and
+  `src/fileformat/colecorom/ColecoRomFormat.h`). Its VDP/controller/
+  sound hardware is entirely port-mapped (`IN`/`OUT`, not a memory
+  address), which this backend's assembler didn't support until
+  `src/rt/coleco/`'s own runtime library needed it - see
+  `Z80Assembler.h`'s own header comment.
+- **6809** — real Motorola 6809 assembly/machine code (`M6809Assembler.h`),
+  a bare flat binary loaded/entered at `$3000` (12288). Big-endian, unlike
+  every other target documented so far on this page. Values live in the
+  same fixed memory cells (`ac`/`_bc`/`cx`/`dx`/`ptr`) as `z80`/`8080`,
+  but a Local/Param's frame address is one `LEAX <off>,U` (`U` copied
+  from `S` once per call) instead of `z80`'s multi-instruction push/pop-
+  `ix` dance, since this chip has real indexed addressing `z80`/`8080`
+  don't. Real `N`/`V` flags on `SUBD`/`CMPD` mean signed `<`/`<=`/`>`/`>=`
+  need no sign-bit-bias trick either (unlike `z80`/`8080`). The real
+  hardware `MUL` instruction is used directly for an
+  `unsigned char * unsigned char` multiply; every other `*` still falls
+  back to a shift-and-add loop (no 16x16 hardware multiply exists), and
+  `/`/`%` are still repeated subtraction - no hardware divide, same as
+  `z80`/`8080`. `long`/`long long` `*`/`/`/`%` are unsupported, same
+  reasoning as `z80`/`8080`. Also supports `--format=decb` (see
+  `docs/using.md`'s own `--format` row), the real CoCo `LOADM`/`CLOADM`
+  binary-file convention, and `src/rt/coco/` is a TRS-80 Color Computer
+  runtime that writes straight to the VDG's text-mode video RAM - unlike
+  `z80`'s TRS-80 runtime, the VDG's character ROM doesn't use plain
+  ASCII, so `coco_putc()` masks each code to 6 bits (`c & 0x3F`);
+  lowercase and codes above `$5F` aren't supported by this runtime as a
+  deliberate scope limitation, not a bug. No automated emulator-based
+  test exists yet for this target or its CoCo runtime - see
+  `docs/known-bugs.md`.
 - **8008** — Intel's first microprocessor, the most primitive target
   here: no stack pointer or PUSH/POP (`CALL`/`RET` use a real but
   internal 7-level return stack — a hardware ceiling on call-nesting

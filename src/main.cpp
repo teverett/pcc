@@ -60,6 +60,7 @@
 #include "codegen/pdp11/Pdp11Codegen.h"
 #include "codegen/pdp10/Pdp10Codegen.h"
 #include "codegen/i8080/I8080Codegen.h"
+#include "codegen/m6809/M6809Codegen.h"
 #include "codegen/z80/Z80Codegen.h"
 #include "codegen/i8008/I8008Codegen.h"
 #include "codegen/m16c/M16cCodegen.h"
@@ -87,6 +88,8 @@
 #include "linker/factory/I8086LinkerFactory.h"
 #include "linker/factory/Pdp7LinkerFactory.h"
 #include "linker/factory/Z80LinkerFactory.h"
+#include "linker/factory/ColecoLinkerFactory.h"
+#include "linker/factory/M6809LinkerFactory.h"
 #include "linker/factory/M6502LinkerFactory.h"
 #include "linker/factory/M65C02LinkerFactory.h"
 #include "linker/factory/I8080LinkerFactory.h"
@@ -186,7 +189,7 @@ void writeToBuildDir(const std::string &name, const std::string &content, bool b
 // independently valid on the command line). Used both for "unknown
 // --target" error messages and for --list-triples.
 const std::vector<std::string> kTargetNames = {
-    "pdp1", "pdp7", "8086", "8088", "8086-dos", "6502", "65c02", "68000", "mc68328", "pdp11", "pdp10", "8080", "z80", "8008",
+    "pdp1", "pdp7", "8086", "8088", "8086-dos", "6502", "65c02", "68000", "mc68328", "pdp11", "pdp10", "8080", "z80", "z80-coleco", "6809", "8008",
     "stm8", "stm32", "i386", "m16c", "m30626fjpfp", "pic16", "pic18", "r10000", "r4000", "cortex-m3",
     "cortex-m4", "cortex-m7", "8051", "8052", "8031", "8032", "armv7a", "armv8a", "powerpc", "sparc",
     "vax", "avr", "alpha", "saturn", "tms320c6713",
@@ -257,7 +260,8 @@ std::unique_ptr<rcc::Backend> makeBackend(const std::string &target) {
     if (target == "pdp11") return std::make_unique<rcc::Pdp11Codegen>();
     if (target == "pdp10") return std::make_unique<rcc::Pdp10Codegen>();
     if (target == "8080") return std::make_unique<rcc::I8080Codegen>();
-    if (target == "z80") return std::make_unique<rcc::Z80Codegen>();
+    if (target == "z80" || target == "z80-coleco") return std::make_unique<rcc::Z80Codegen>();
+    if (target == "6809") return std::make_unique<rcc::M6809Codegen>();
     if (target == "8008") return std::make_unique<rcc::I8008Codegen>();
     if (target == "stm8") return std::make_unique<rcc::STM8Codegen>();
     if (target == "stm32") return std::make_unique<rcc::STM32Codegen>();
@@ -294,6 +298,8 @@ std::unique_ptr<rcc::TargetLinker> makeLinker(const std::string &target,
     if (target == "8086" || target == "8088") return rcc::makeI8086Linker();
     if (target == "8086-dos") return rcc::makeI8086DosLinker();
     if (target == "z80") return rcc::makeZ80Linker();
+    if (target == "z80-coleco") return rcc::makeColecoLinker();
+    if (target == "6809") return rcc::makeM6809Linker();
     if (target == "6502") {
         return baseAddressWords ? rcc::makeM6502Linker(*baseAddressWords) : rcc::makeM6502Linker();
     }
@@ -760,6 +766,11 @@ int main(int argc, char **argv) {
         predefinedMacros["__8080__"] = "1";
     } else if (target == "z80") {
         predefinedMacros["__Z80__"] = "1";
+    } else if (target == "z80-coleco") {
+        predefinedMacros["__Z80__"] = "1";
+        predefinedMacros["__COLECO__"] = "1";
+    } else if (target == "6809") {
+        predefinedMacros["__6809__"] = "1";
     } else if (target == "8008") {
         predefinedMacros["__8008__"] = "1";
     } else if (target == "stm8") {

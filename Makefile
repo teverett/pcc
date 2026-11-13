@@ -75,7 +75,7 @@ SPACE +=
 # on every source file before ANTLR ever sees it) - not backend-
 # specific, but still their own subdirectories needing the same vpath
 # treatment.
-BACKEND_DIRS := $(SRC_DIR)/codegen/pdp1 $(SRC_DIR)/codegen/pdp7 $(SRC_DIR)/codegen/x86_8086 $(SRC_DIR)/codegen/m6502 $(SRC_DIR)/codegen/m65c02 $(SRC_DIR)/codegen/m68k $(SRC_DIR)/codegen/mc68328 $(SRC_DIR)/codegen/pdp11 $(SRC_DIR)/codegen/pdp10 $(SRC_DIR)/codegen/i8080 $(SRC_DIR)/codegen/pic16 $(SRC_DIR)/codegen/pic18 $(SRC_DIR)/codegen/z80 $(SRC_DIR)/codegen/i8008 $(SRC_DIR)/codegen/stm8 $(SRC_DIR)/codegen/m16c $(SRC_DIR)/codegen/mips $(SRC_DIR)/codegen/mcs51 $(SRC_DIR)/codegen/stm32 $(SRC_DIR)/codegen/i386 $(SRC_DIR)/codegen/armm $(SRC_DIR)/codegen/arm $(SRC_DIR)/codegen/arm64 $(SRC_DIR)/codegen/powerpc $(SRC_DIR)/codegen/sparc $(SRC_DIR)/codegen/vax $(SRC_DIR)/codegen/avr $(SRC_DIR)/codegen/alpha $(SRC_DIR)/codegen/saturn $(SRC_DIR)/codegen/tms320c6713
+BACKEND_DIRS := $(SRC_DIR)/codegen/pdp1 $(SRC_DIR)/codegen/pdp7 $(SRC_DIR)/codegen/x86_8086 $(SRC_DIR)/codegen/m6502 $(SRC_DIR)/codegen/m65c02 $(SRC_DIR)/codegen/m68k $(SRC_DIR)/codegen/mc68328 $(SRC_DIR)/codegen/pdp11 $(SRC_DIR)/codegen/pdp10 $(SRC_DIR)/codegen/i8080 $(SRC_DIR)/codegen/pic16 $(SRC_DIR)/codegen/pic18 $(SRC_DIR)/codegen/z80 $(SRC_DIR)/codegen/i8008 $(SRC_DIR)/codegen/stm8 $(SRC_DIR)/codegen/m16c $(SRC_DIR)/codegen/mips $(SRC_DIR)/codegen/mcs51 $(SRC_DIR)/codegen/stm32 $(SRC_DIR)/codegen/i386 $(SRC_DIR)/codegen/armm $(SRC_DIR)/codegen/arm $(SRC_DIR)/codegen/arm64 $(SRC_DIR)/codegen/powerpc $(SRC_DIR)/codegen/sparc $(SRC_DIR)/codegen/vax $(SRC_DIR)/codegen/avr $(SRC_DIR)/codegen/alpha $(SRC_DIR)/codegen/saturn $(SRC_DIR)/codegen/tms320c6713 $(SRC_DIR)/codegen/m6809
 AST_DIR      := $(SRC_DIR)/ast
 IR_DIR       := $(SRC_DIR)/ir
 LINKER_DIR   := $(SRC_DIR)/linker
@@ -92,7 +92,7 @@ OPTIMIZERS_DIRS   := $(OPTIMIZERS_DIR)/constant_folding $(OPTIMIZERS_DIR)/consta
 # header comment - instead of being split across src/coff/, src/elf/,
 # src/objectformat/ and src/linker/format/ the way it used to be.
 FILEFORMAT_DIR  := $(SRC_DIR)/fileformat
-FILEFORMAT_DIRS := $(FILEFORMAT_DIR) $(FILEFORMAT_DIR)/archive $(FILEFORMAT_DIR)/coff $(FILEFORMAT_DIR)/elf $(FILEFORMAT_DIR)/macho $(FILEFORMAT_DIR)/aout $(FILEFORMAT_DIR)/raw $(FILEFORMAT_DIR)/rim $(FILEFORMAT_DIR)/ptr $(FILEFORMAT_DIR)/a7out $(FILEFORMAT_DIR)/list $(FILEFORMAT_DIR)/dos33 $(FILEFORMAT_DIR)/prodos
+FILEFORMAT_DIRS := $(FILEFORMAT_DIR) $(FILEFORMAT_DIR)/archive $(FILEFORMAT_DIR)/coff $(FILEFORMAT_DIR)/elf $(FILEFORMAT_DIR)/macho $(FILEFORMAT_DIR)/aout $(FILEFORMAT_DIR)/raw $(FILEFORMAT_DIR)/rim $(FILEFORMAT_DIR)/ptr $(FILEFORMAT_DIR)/a7out $(FILEFORMAT_DIR)/list $(FILEFORMAT_DIR)/dos33 $(FILEFORMAT_DIR)/prodos $(FILEFORMAT_DIR)/cmd $(FILEFORMAT_DIR)/colecorom $(FILEFORMAT_DIR)/decb
 
 HAND_SRCS := \
     $(SRC_DIR)/main.cpp \
@@ -111,6 +111,9 @@ HAND_SRCS := \
     $(FILEFORMAT_DIR)/list/ListFormat.cpp \
     $(FILEFORMAT_DIR)/dos33/Dos33Format.cpp \
     $(FILEFORMAT_DIR)/prodos/ProDosFormat.cpp \
+    $(FILEFORMAT_DIR)/cmd/CmdFormat.cpp \
+    $(FILEFORMAT_DIR)/colecorom/ColecoRomFormat.cpp \
+    $(FILEFORMAT_DIR)/decb/DecbFormat.cpp \
     $(FILEFORMAT_DIR)/archive/ArchiveReader.cpp \
     $(FILEFORMAT_DIR)/coff/PeExportReader.cpp \
     $(FILEFORMAT_DIR)/coff/HostedCoffReader.cpp \
@@ -124,6 +127,8 @@ HAND_SRCS := \
     $(LINKER_DIR)/WindowsLinuxLinker.cpp \
     $(LINKER_DIR)/GenericLinker.cpp \
     $(FACTORY_DIR)/Z80LinkerFactory.cpp \
+    $(FACTORY_DIR)/ColecoLinkerFactory.cpp \
+    $(FACTORY_DIR)/M6809LinkerFactory.cpp \
     $(FACTORY_DIR)/M6502LinkerFactory.cpp \
     $(FACTORY_DIR)/M65C02LinkerFactory.cpp \
     $(FACTORY_DIR)/I8080LinkerFactory.cpp \
@@ -225,7 +230,9 @@ HAND_SRCS := \
     $(SRC_DIR)/codegen/saturn/SaturnCodegen.cpp \
     $(SRC_DIR)/codegen/saturn/SaturnAssembler.cpp \
     $(SRC_DIR)/codegen/tms320c6713/Tms320C6713Codegen.cpp \
-    $(SRC_DIR)/codegen/tms320c6713/Tms320C6713Assembler.cpp
+    $(SRC_DIR)/codegen/tms320c6713/Tms320C6713Assembler.cpp \
+    $(SRC_DIR)/codegen/m6809/M6809Assembler.cpp \
+    $(SRC_DIR)/codegen/m6809/M6809Codegen.cpp
 
 ALL_SRCS := $(GENERATED_SRCS) $(HAND_SRCS)
 OBJS     := $(patsubst %,$(OBJ_DIR)/%.o,$(notdir $(ALL_SRCS)))
@@ -294,17 +301,46 @@ $(BIN_DIR)/macho_data_test: tests/macho_data_test.cpp $(SRC_DIR)/fileformat/mach
 	@mkdir -p $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) tests/macho_data_test.cpp $(SRC_DIR)/fileformat/macho/MachOFormat.cpp -o $@
 
-test-hosted-internal: all $(BIN_DIR)/archive_reader_test $(BIN_DIR)/macho_data_test
+$(BIN_DIR)/cmd_format_test: tests/cmd_format_test.cpp $(FILEFORMAT_DIR)/cmd/CmdFormat.cpp $(FILEFORMAT_DIR)/cmd/CmdFormat.h $(FILEFORMAT_DIR)/ObjectFile.h
+	@mkdir -p $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) tests/cmd_format_test.cpp $(FILEFORMAT_DIR)/cmd/CmdFormat.cpp -o $@
+
+$(BIN_DIR)/colecorom_format_test: tests/colecorom_format_test.cpp $(FILEFORMAT_DIR)/colecorom/ColecoRomFormat.cpp $(FILEFORMAT_DIR)/colecorom/ColecoRomFormat.h $(FILEFORMAT_DIR)/ObjectFile.h
+	@mkdir -p $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) tests/colecorom_format_test.cpp $(FILEFORMAT_DIR)/colecorom/ColecoRomFormat.cpp -o $@
+
+$(BIN_DIR)/decb_format_test: tests/decb_format_test.cpp $(FILEFORMAT_DIR)/decb/DecbFormat.cpp $(FILEFORMAT_DIR)/decb/DecbFormat.h $(FILEFORMAT_DIR)/ObjectFile.h
+	@mkdir -p $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) tests/decb_format_test.cpp $(FILEFORMAT_DIR)/decb/DecbFormat.cpp -o $@
+
+# Unlike the file-format tests above, this links against the generated
+# ANTLR grammar (M6809Assembler.cpp parses via grammar/RccAsm.g4), so it
+# needs the same $(CPPFLAGS)/$(LDFLAGS)/$(LDLIBS) the main binary does.
+$(BIN_DIR)/m6809_assembler_test: tests/m6809_assembler_test.cpp $(SRC_DIR)/codegen/m6809/M6809Assembler.cpp $(SRC_DIR)/codegen/m6809/M6809Assembler.h $(GEN_DIR)/RccAsmLexer.cpp $(GEN_DIR)/RccAsmParser.cpp $(GEN_DIR)/RccAsmBaseVisitor.cpp $(GEN_DIR)/RccAsmVisitor.cpp
+	@mkdir -p $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/m6809_assembler_test.cpp $(SRC_DIR)/codegen/m6809/M6809Assembler.cpp $(GEN_DIR)/RccAsmLexer.cpp $(GEN_DIR)/RccAsmParser.cpp $(GEN_DIR)/RccAsmBaseVisitor.cpp $(GEN_DIR)/RccAsmVisitor.cpp $(LDFLAGS) $(LDLIBS) -o $@
+
+test-hosted-internal: all $(BIN_DIR)/archive_reader_test $(BIN_DIR)/macho_data_test $(BIN_DIR)/cmd_format_test $(BIN_DIR)/colecorom_format_test $(BIN_DIR)/decb_format_test $(BIN_DIR)/m6809_assembler_test
 	$(BIN_DIR)/archive_reader_test
 	$(BIN_DIR)/macho_data_test
+	$(BIN_DIR)/cmd_format_test
+	$(BIN_DIR)/colecorom_format_test
+	$(BIN_DIR)/decb_format_test
+	$(BIN_DIR)/m6809_assembler_test
+	python3 tests/m6809_link_test.py $(TARGET)
 	python3 tests/hosted_internal_linker_test.py $(TARGET)
 	python3 tests/hosted_linux_linker_test.py $(TARGET)
 
-test: all $(BIN_DIR)/preprocessor_test $(BIN_DIR)/archive_reader_test $(BIN_DIR)/macho_data_test
+test: all $(BIN_DIR)/preprocessor_test $(BIN_DIR)/archive_reader_test $(BIN_DIR)/macho_data_test $(BIN_DIR)/cmd_format_test $(BIN_DIR)/colecorom_format_test $(BIN_DIR)/decb_format_test $(BIN_DIR)/m6809_assembler_test
 	$(BIN_DIR)/preprocessor_test
 	$(BIN_DIR)/archive_reader_test
 	$(BIN_DIR)/macho_data_test
+	$(BIN_DIR)/cmd_format_test
+	$(BIN_DIR)/colecorom_format_test
+	$(BIN_DIR)/decb_format_test
+	$(BIN_DIR)/m6809_assembler_test
 	python3 tests/qemu_wait_test.py
+	python3 tests/m6809_link_test.py $(TARGET)
 	python3 tests/hosted_internal_linker_test.py $(TARGET)
 	python3 tests/hosted_linux_linker_test.py $(TARGET)
 	python3 tests/pic16_function_pointer_call_test.py $(TARGET)
@@ -319,8 +355,12 @@ test: all $(BIN_DIR)/preprocessor_test $(BIN_DIR)/archive_reader_test $(BIN_DIR)
 	./tests/run_tests.sh $(TARGET) --target=mc68328
 	./tests/run_tests.sh $(TARGET) --target=8080
 	./tests/run_tests.sh $(TARGET) --target=z80
+	# --target=6809 intentionally not run here yet: no verified Python 6809
+	# emulator is wired into tests/run_tests.sh's check_6809() (see docs/known-bugs.md).
 	./tests/run_tests.sh $(TARGET) --target=8051
 	./tests/run_tests.sh $(TARGET) --target=stm32
 	./tests/run_tests.sh $(TARGET) --target=i386
 	./tests/run_apple2_format_tests.sh $(TARGET)
 	./tests/run_apple2_rom_wrapper_tests.sh $(TARGET)
+	./tests/run_trs80_rt_tests.sh $(TARGET)
+	./tests/run_coleco_rt_tests.sh $(TARGET)

@@ -99,12 +99,10 @@ class I8080Codegen : public Backend {
 
     // `widthOfType`: byte width of `t`. `isWide`: true for `long`/`long long` (wider than this
     // backend's native 16-bit word), represented as `wordCountOf` (2 or 4) 16-bit words, least
-    // significant word pushed last. `elemShift`: log2(widthOfType(t)), the `dad h` repeat count
-    // that scales an array index into a byte offset in genIndexAddr().
+    // significant word pushed last.
     int widthOfType(Type t) const;
     bool isWide(Type t) const;
     int wordCountOf(Type t) const;
-    int elemShift(Type t) const;
 
     // HL must hold the operand's address. A `char` is sign- or zero-extended into `ac`'s 16
     // bits; anything else is a plain 16-bit load.

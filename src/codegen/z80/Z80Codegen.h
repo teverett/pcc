@@ -71,11 +71,9 @@ class Z80Codegen : public Backend {
 
     // isWide(t) is widthOfType(t) > 2 (long/long long); represented as
     // wordCountOf(t) (2 or 4) 16-bit words on the real stack, LSW on top.
-    // elemShift(t) = log2(widthOfType(t)), used to scale an array index.
     int widthOfType(Type t) const;
     bool isWide(Type t) const;
     int wordCountOf(Type t) const;
-    int elemShift(Type t) const;
 
     // Assumes HL holds the operand's address. A `char` is sign/zero-extended
     // into ac's 16 bits via the `rla`/`sbc a,a` idiom; anything else is a

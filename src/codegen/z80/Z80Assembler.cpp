@@ -603,6 +603,27 @@ class Assembler {
             emit16(operandAt(ops, 0, mnemonic, 1));
             return;
         }
+        if (mnemonic == "in") {
+            // IN A,[n] -- the only form this backend's RT libraries need
+            // (an 8-bit port read); no codegen emits this, only asm{}
+            // blocks reaching port-mapped hardware (e.g. src/rt/coleco/).
+            requireA(operandAt(ops, 0, mnemonic, 2), mnemonic);
+            const Operand &port = operandAt(ops, 1, mnemonic, 2);
+            requireMemory(port, mnemonic);
+            emit8(0xDB);
+            emitImm8(port);
+            return;
+        }
+        if (mnemonic == "out") {
+            // OUT [n],A -- the only form this backend's RT libraries need
+            // (an 8-bit port write).
+            const Operand &port = operandAt(ops, 0, mnemonic, 2);
+            requireMemory(port, mnemonic);
+            requireA(operandAt(ops, 1, mnemonic, 2), mnemonic);
+            emit8(0xD3);
+            emitImm8(port);
+            return;
+        }
 
         fail("unsupported instruction '" + mnemonic + "'");
     }

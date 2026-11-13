@@ -14,6 +14,9 @@
 #include "fileformat/list/ListFormat.h"
 #include "fileformat/dos33/Dos33Format.h"
 #include "fileformat/prodos/ProDosFormat.h"
+#include "fileformat/cmd/CmdFormat.h"
+#include "fileformat/colecorom/ColecoRomFormat.h"
+#include "fileformat/decb/DecbFormat.h"
 
 namespace rcc {
 
@@ -41,6 +44,12 @@ std::unique_ptr<FileFormatWriter> makeFileFormatWriter(FileFormatKind kind) {
             return std::make_unique<Dos33FormatWriter>();
         case FileFormatKind::ProDos:
             return std::make_unique<ProDosFormatWriter>();
+        case FileFormatKind::Cmd:
+            return std::make_unique<CmdFormatWriter>();
+        case FileFormatKind::ColecoRom:
+            return std::make_unique<ColecoRomFormatWriter>();
+        case FileFormatKind::Decb:
+            return std::make_unique<DecbFormatWriter>();
     }
     return nullptr;
 }
@@ -69,6 +78,12 @@ std::unique_ptr<FileFormatReader> makeFileFormatReader(FileFormatKind kind) {
             return std::make_unique<Dos33FormatReader>();
         case FileFormatKind::ProDos:
             return std::make_unique<ProDosFormatReader>();
+        case FileFormatKind::Cmd:
+            return std::make_unique<CmdFormatReader>();
+        case FileFormatKind::ColecoRom:
+            return std::make_unique<ColecoRomFormatReader>();
+        case FileFormatKind::Decb:
+            return std::make_unique<DecbFormatReader>();
     }
     return nullptr;
 }
@@ -86,6 +101,9 @@ std::optional<FileFormatKind> fileFormatKindFromName(const std::string &name) {
     if (name == "list") return FileFormatKind::List;
     if (name == "dos33") return FileFormatKind::Dos33;
     if (name == "prodos") return FileFormatKind::ProDos;
+    if (name == "cmd") return FileFormatKind::Cmd;
+    if (name == "colecorom") return FileFormatKind::ColecoRom;
+    if (name == "decb") return FileFormatKind::Decb;
     return std::nullopt;
 }
 
@@ -113,6 +131,12 @@ std::string fileFormatName(FileFormatKind kind) {
             return "dos33";
         case FileFormatKind::ProDos:
             return "prodos";
+        case FileFormatKind::Cmd:
+            return "cmd";
+        case FileFormatKind::ColecoRom:
+            return "colecorom";
+        case FileFormatKind::Decb:
+            return "decb";
     }
     return "";
 }
@@ -144,6 +168,7 @@ FileFormatKind detectFileFormat(const std::string &bytes) {
         0x0086,  // 8086/8088
         0x0D86,  // 8086-dos
         0x5A38,  // z80
+        0x6809,  // 6809
         0x6502,  // 6502
         0xC502,  // 65c02
         0x8080,  // 8080
