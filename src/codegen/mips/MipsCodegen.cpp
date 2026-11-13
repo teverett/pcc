@@ -429,7 +429,13 @@ void MipsCodegen::genExpr(const ir::Expr &e) {
 void MipsCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // t0 = index
     int shift = elemShift(slot->type);
-    if (shift > 0) code_ << "    sll t0,t0," << shift << "\n";
+    if (shift > 0) {
+        code_ << "    sll t0,t0," << shift << "\n";
+    } else if (shift < 0) {
+        // Non-power-of-two element width (a struct's): scale by a real multiply instead.
+        loadImm32("t3", widthOfType(slot->type));
+        code_ << "    multu t0,t3\n    mflo t0\n";
+    }
     if (slot->arraySize > 0) {
         if (slot->kind == ir::SlotKind::Global) {
             loadAddress("t2", label(slot));

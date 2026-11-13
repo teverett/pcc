@@ -303,12 +303,17 @@ void SaturnCodegen::emitLocalArrayInit(const ir::Slot *slot) {
 
 // --- Element addressing -----------------------------------------------------
 
-// Every element width this type system ever produces (1/2/4 words - char/short/int collapse to
-// 1, long to 2, long long to 4) is a power of two, so scaling an index by the element's real
-// byte stride (4 bytes per word) is always a `shl`, never a call to the software multiply
-// routine.
+// Every scalar element width this type system ever produces on its own (1/2/4 words -
+// char/short/int collapse to 1, long to 2, long long to 4) is a power of two, so scaling an
+// index by the element's real byte stride is usually just a `shl`. A struct element's width is
+// whatever its members add up to, though, and isn't always a power of two (e.g. three `char`
+// members), so this falls back to the software `__mul32` routine - see genMul() - for any width
+// `log2ElemWidth()` can't represent exactly.
 namespace {
+// Returns -1 (not a valid shift) for a width that isn't exactly a power of two, instead of
+// silently rounding it down via the shift-right loop losing its low bits.
 int log2ElemWidth(int bytesPerElem) {
+    if (bytesPerElem <= 0 || (bytesPerElem & (bytesPerElem - 1)) != 0) return -1;
     int shiftAmt = 0;
     for (int w = bytesPerElem; w > 1; w >>= 1) shiftAmt++;
     return shiftAmt;
@@ -321,6 +326,18 @@ void SaturnCodegen::computeElementAddressA(const ir::Slot *slot, const ir::Expr 
     if (exprIsCallFree(idxExpr)) {
         genExpr(idxExpr);  // index in `a`
         code_ << "    mov c, a\n";
+        if (shiftAmt < 0) {
+            // Non-power-of-two width: scale via __mul32 first (it clobbers `a`), then compute
+            // the base address afterward, once `a` is free again.
+            code_ << "    st [__mul_a], c\n";
+            code_ << "    mov a, " << bytesPerElem << "\n";
+            code_ << "    st [__mul_b], a\n";
+            code_ << "    gosbvl __mul32\n";
+            code_ << "    mov c, a\n";
+            emitSlotBaseAddress(slot);  // base in `a`
+            code_ << "    add a, c\n";
+            return;
+        }
         emitSlotBaseAddress(slot);  // base in `a`
         if (shiftAmt != 0) code_ << "    shl c, " << shiftAmt << "\n";
         code_ << "    add a, c\n";
@@ -332,6 +349,16 @@ void SaturnCodegen::computeElementAddressA(const ir::Slot *slot, const ir::Expr 
     code_ << "    push a\n";
     genExpr(idxExpr);
     code_ << "    mov c, a\n";
+    if (shiftAmt < 0) {
+        code_ << "    st [__mul_a], c\n";
+        code_ << "    mov a, " << bytesPerElem << "\n";
+        code_ << "    st [__mul_b], a\n";
+        code_ << "    gosbvl __mul32\n";
+        code_ << "    mov c, a\n";
+        code_ << "    pop a\n";
+        code_ << "    add a, c\n";
+        return;
+    }
     if (shiftAmt != 0) code_ << "    shl c, " << shiftAmt << "\n";
     code_ << "    pop a\n";
     code_ << "    add a, c\n";

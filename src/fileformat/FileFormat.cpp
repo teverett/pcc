@@ -13,6 +13,8 @@
 #include "fileformat/ptr/PtrFormat.h"
 #include "fileformat/a7out/A7outFormat.h"
 #include "fileformat/list/ListFormat.h"
+#include "fileformat/dos33/Dos33Format.h"
+#include "fileformat/prodos/ProDosFormat.h"
 
 namespace rcc {
 
@@ -38,6 +40,10 @@ std::unique_ptr<FileFormatWriter> makeFileFormatWriter(FileFormatKind kind) {
             return std::make_unique<A7outFormatWriter>();
         case FileFormatKind::List:
             return std::make_unique<ListFormatWriter>();
+        case FileFormatKind::Dos33:
+            return std::make_unique<Dos33FormatWriter>();
+        case FileFormatKind::ProDos:
+            return std::make_unique<ProDosFormatWriter>();
     }
     return nullptr;
 }
@@ -64,6 +70,10 @@ std::unique_ptr<FileFormatReader> makeFileFormatReader(FileFormatKind kind) {
             return std::make_unique<A7outFormatReader>();
         case FileFormatKind::List:
             return std::make_unique<ListFormatReader>();
+        case FileFormatKind::Dos33:
+            return std::make_unique<Dos33FormatReader>();
+        case FileFormatKind::ProDos:
+            return std::make_unique<ProDosFormatReader>();
     }
     return nullptr;
 }
@@ -80,6 +90,8 @@ std::optional<FileFormatKind> fileFormatKindFromName(const std::string &name) {
     if (name == "ptr") return FileFormatKind::Ptr;
     if (name == "a7out") return FileFormatKind::A7out;
     if (name == "list") return FileFormatKind::List;
+    if (name == "dos33") return FileFormatKind::Dos33;
+    if (name == "prodos") return FileFormatKind::ProDos;
     return std::nullopt;
 }
 
@@ -105,6 +117,10 @@ std::string fileFormatName(FileFormatKind kind) {
             return "a7out";
         case FileFormatKind::List:
             return "list";
+        case FileFormatKind::Dos33:
+            return "dos33";
+        case FileFormatKind::ProDos:
+            return "prodos";
     }
     return "";
 }

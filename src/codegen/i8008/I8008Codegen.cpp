@@ -871,19 +871,29 @@ void I8008Codegen::genExpr(const ir::Expr &e) {
 // high. `fp` is the start, not the middle, of each frame, so every Local/Param offset here is non-negative.
 void I8008Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
-    // ptr = index * widthOf(slot->type), via repeated doubling (elemShift()).
-    copy16("ptr", "ac");
-    for (int s = 0; s < elemShift(slot->type); s++) {
-        pointAt("ptr");
-        code_ << "    mov a, m\n    mov b, a\n";  // b = ptr_lo
-        pointAt("ptr+1");
-        code_ << "    mov a, m\n    mov c, a\n";  // c = ptr_hi
-        code_ << "    mov a, b\n    add b\n    mov d, a\n";  // d = ptr_lo + ptr_lo
-        code_ << "    mov a, c\n    adc c\n    mov e, a\n";  // e = ptr_hi + ptr_hi + carry
-        pointAt("ptr");
-        code_ << "    mov a, d\n    mov m, a\n";
-        pointAt("ptr+1");
-        code_ << "    mov a, e\n    mov m, a\n";
+    // ptr = index * widthOf(slot->type), via repeated doubling (elemShift()) when the width
+    // is a power of two, or the shared software multiply routine (genMulCore(): bc * dx ->
+    // ac) otherwise - a struct's width isn't always a power of two.
+    int shift = elemShift(slot->type);
+    if (shift < 0) {
+        copy16("bc", "ac");
+        storeImmediate16("dx", std::to_string(widthOfType(slot->type)));
+        genMulCore();
+        copy16("ptr", "ac");
+    } else {
+        copy16("ptr", "ac");
+        for (int s = 0; s < shift; s++) {
+            pointAt("ptr");
+            code_ << "    mov a, m\n    mov b, a\n";  // b = ptr_lo
+            pointAt("ptr+1");
+            code_ << "    mov a, m\n    mov c, a\n";  // c = ptr_hi
+            code_ << "    mov a, b\n    add b\n    mov d, a\n";  // d = ptr_lo + ptr_lo
+            code_ << "    mov a, c\n    adc c\n    mov e, a\n";  // e = ptr_hi + ptr_hi + carry
+            pointAt("ptr");
+            code_ << "    mov a, d\n    mov m, a\n";
+            pointAt("ptr+1");
+            code_ << "    mov a, e\n    mov m, a\n";
+        }
     }
 
     if (slot->arraySize > 0 && slot->kind == ir::SlotKind::Global) {

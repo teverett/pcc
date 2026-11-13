@@ -85,7 +85,8 @@ class M6502Codegen : public Backend {
             case 1: return 0;
             case 2: return 1;
             case 4: return 2;
-            default: return 3;
+            case 8: return 3;
+            default: return -1;
         }
     }
 

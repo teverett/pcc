@@ -75,22 +75,60 @@ pattern - uninitialized scalar locals being zeroed twice - has also been
 fixed, by deleting `Pdp7Codegen.cpp`'s own defensive zero-store, which was
 PDP-7-codegen-specific, not an IR/optimizer gap.)
 
-## Most backends mis-scale an array index for an element whose width isn't 1/2/4/8 bytes
+## A packed struct can still land at a misaligned absolute address on `mips`/`r10000`
 
-Affects `src/codegen/{mips,powerpc,sparc,alpha,stm8,m16c,tms320c6713,
-x86_8086,pic16,pic18,stm32,avr,mcs51,i8080,z80,i8008,m6502,m65c02}/*Codegen.{h,cpp}`
-(every backend with this `elemShift()`/doubling-count pattern other than
-`i386`, `vax`, `pdp7`, `pdp10`, `pdp11`, `armv7a`/`armv8a`/`arm64`, and
-`armv7a-m`/`cortex-m`, which are fixed - see below).
+Affects `src/codegen/mips/MipsCodegen.cpp`'s frame-offset/global-placement
+handling of a `@packed`-struct-typed slot (see `docs/language.md`'s own
+"Structs" section for what `@packed` means).
+
+`IRBuilder.cpp`'s `checkPackedAlignmentSafety()` only rejects a packed
+layout where one member's byte offset *relative to the struct's own
+start* isn't a multiple of that member's own alignment - it says nothing
+about whether the struct's start itself, once placed in a stack frame or
+as a global, ends up at an address whose own alignment the backend's
+plain `lw`/`sw` can actually use. A packed struct's own `structAlign` is
+1 (no padding), so nothing currently pads its frame offset up before
+subtracting its exact byte size from `fp`: confirmed via the emitted
+asm for `tests/struct_packed_basic.c`'s `struct Mixed @packed { int b;
+char a; char c; }` (size 6) - its one local lands at `addiu t2,fp,-6`,
+2 bytes short of a 4-byte boundary, and the `int b` member's `stind`
+(a `sw`) at that address is a genuine MIPS misaligned-word trap, not
+just a wrong value. The same compounds for `tests/struct_packed_array.c`:
+even a base address padded to 4 bytes would still put element 1 at
+`base+6`, itself 2 bytes off, since nothing pads the packed *size*
+either - fixing this for real means either forcing a packed struct's
+size up to its natural alignment when it's used as an array element
+(which would take back some of what `@packed` is for), or giving MIPS
+real unaligned-access codegen for a struct member load/store the way
+`pdp7`/`pdp10`/`pdp11` already compose multi-byte access from smaller
+pieces rather than trusting a single hardware instruction.
+
+Confirmed via `tests/struct_packed_basic.c` and `tests/struct_packed_array.c`
+failing on `r10000`/`mips` with a qemu monitor crash (not a wrong
+value - a real trap), while every other simulator-verified backend
+(`i386`, `vax`, `pdp7`, `pdp10`, `pdp11`, `armv7a`, `armv8a`/`arm64`,
+`armv7a-m`/`cortex-m3`, `powerpc`, `alpha`, `saturn`, `tms320c6713`)
+tolerates the same misalignment, either in hardware or via this
+codegen's own byte-composed load/store. Not yet fixed; both tests are
+skip-listed for `r10000` in `tests/run_tests.sh`'s `is_known_unsupported()`
+rather than left as an unexplained failure.
+
+## Most backends mis-scaled an array index for an element whose width isn't 1/2/4/8 bytes
+
+Affected `src/codegen/{mips,powerpc,alpha,tms320c6713,x86_8086,avr,mcs51,
+i8008,m6502,m65c02}/*Codegen.{h,cpp}` - every backend with this
+`elemShift()`/doubling-count pattern other than `i386`, `vax`, `pdp7`,
+`pdp10`, `pdp11`, `armv7a`/`armv8a`/`arm64`, and `armv7a-m`/`cortex-m`,
+which this subset's earlier work already covered.
 
 Each affected backend's array-index address computation (`genIndexAddr()`
-or equivalent) scales the index by the element's byte width via a
+or equivalent) scaled the index by the element's byte width via a
 shift/doubling count derived from `widthOf()`, with a fallback for any
-width other than 1/2/4/8 bytes that's simply wrong: it treats the width
-as if it were 8 regardless of what it actually is (one extra
+width other than 1/2/4/8 bytes that was simply wrong: it treated the
+width as if it were 8 regardless of what it actually was (one extra
 shift/doubling step past the `4` case), silently computing the wrong
 element address - confirmed via a direct pointer-arithmetic check
-(`&arr[1] - &arr[0]` comes back 8 regardless of the element's real
+(`&arr[1] - &arr[0]` came back 8 regardless of the element's real
 width), not just a read-back-the-value check: the two are not the same
 test. A read-back-the-value check can pass even though the address is
 wrong, because the same wrong address is used consistently for both the
@@ -103,38 +141,34 @@ exactly why `tests/struct_mixed_width_fields.c` and
 appeared to pass on `m6502`/`m65c02`/`i8008` before the pointer check
 below was written - their 2-byte `int` happened to make those two
 tests' particular struct size a coincidental power of two (4), even
-though the bug is just as present there.
-`MCS51Codegen::genIndexAddr()` is worse still - it doubles the index
-exactly once for *any* width other than 1, which already mis-scales a
+though the bug was just as present there.
+`MCS51Codegen::genIndexAddr()` was worse still - it doubled the index
+exactly once for *any* width other than 1, which already mis-scaled a
 plain `long`/`long long` array (width 4/8) even without a struct
 anywhere involved.
 
 Before `@packed`/struct-array support, every element type's width was
 always exactly 1/2/4/8 (`char`/`short`/`int`/`long`/`long long`), so this
-never fired. A struct array now can: a packed struct's size is whatever
-its members add up to, and even an *unpacked* struct's size only
-happens to be a power of two by coincidence (e.g. three `int` members
-packs to 12 bytes unpacked too); a struct of 1/2/3 `char` members is a
-reliable repro on every target regardless of its own `int` width, which
-is why `tests/struct_nonpow2_array_stride.c` (new, a 3-`char` struct)
-uses that shape and checks the real pointer stride directly, not just a
-value read back.
+never fired. A struct array can: a packed struct's size is whatever its
+members add up to, and even an *unpacked* struct's size only happens to
+be a power of two by coincidence (e.g. three `int` members packs to 12
+bytes unpacked too); a struct of 1/2/3 `char` members is a reliable
+repro on every target regardless of its own `int` width, which is why
+`tests/struct_nonpow2_array_stride.c` (new, a 3-`char` struct) uses that
+shape and checks the real pointer stride directly, not just a value
+read back.
 
-Confirmed and fixed, with a real multiply (or - on `pdp11` only, which
-has no native multiply wired into this codegen's own index-scaling path
-- the registers it already uses for a scalar `*`) in place of the shift,
-each verified via that target's own qemu or `open-simh` simulator
-against `tests/struct_nonpow2_array_stride.c` and the rest of
-`tests/struct_*.c`, on: `i386`, `vax`, `pdp7`, `pdp10`, `pdp11`,
-`armv7a`, `armv8a`/`arm64`, `armv7a-m`/`cortex-m3`. `powerpc`, `alpha`,
-`saturn`, `tms320c6713`, `r10000`/`mips`, `8086`/`8088`, and `8051` were
-confirmed still affected (same qemu/`open-simh` simulators, same test)
-but not yet fixed - each needs its own per-ISA scaling fix verified the
-same way, which is a substantial separate undertaking given how many
-backends are involved; `sparc`, `m16c`, `pic16`, `pic18` have no working
-simulator wired into `tests/run_tests.sh` at all, and `8080`/`z80` need
-the `z80-python` package (not installed in this environment) to run
-theirs.
+Fixed, with a real multiply (`mullw`/`mulq`/`mul`/`imul`/the shared
+software multiply-by-register routine each of these backends already
+had for a scalar `*`, as appropriate per target) in place of the shift,
+on every backend listed above - each verified via its own qemu or
+`open-simh` simulator against `tests/struct_nonpow2_array_stride.c` and
+the rest of `tests/struct_*.c`. `sparc`, `m16c`, `pic16`, `pic18` still
+have no working simulator wired into `tests/run_tests.sh` at all to
+verify a fix against, and `8080`/`z80` need the `z80-python` package
+(not installed in this environment) to run theirs; these four remain
+unverified (not necessarily unfixed - their `elemShift()` has the same
+shape as the others, just never confirmed against real execution).
 
 ## `tests/run_tests.sh` never runs in CI
 

@@ -100,7 +100,8 @@ class MipsCodegen : public Backend {
             case 1: return 0;
             case 2: return 1;
             case 4: return 2;
-            default: return 3;
+            case 8: return 3;
+            default: return -1;
         }
     }
     // Loads a value of `type` from `addrReg` into t0 (or t1:t0 for a

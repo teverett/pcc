@@ -292,8 +292,12 @@ std::unique_ptr<rcc::TargetLinker> makeLinker(const std::string &target,
     }
     if (target == "8086" || target == "8088") return rcc::makeI8086Linker();
     if (target == "z80") return rcc::makeZ80Linker();
-    if (target == "6502") return rcc::makeM6502Linker();
-    if (target == "65c02") return rcc::makeM65C02Linker();
+    if (target == "6502") {
+        return baseAddressWords ? rcc::makeM6502Linker(*baseAddressWords) : rcc::makeM6502Linker();
+    }
+    if (target == "65c02") {
+        return baseAddressWords ? rcc::makeM65C02Linker(*baseAddressWords) : rcc::makeM65C02Linker();
+    }
     if (target == "8080") return rcc::makeI8080Linker();
     if (target == "8008") return rcc::makeI8008Linker();
     if (target == "stm8") return rcc::makeSTM8Linker();
@@ -610,8 +614,8 @@ int main(int argc, char **argv) {
         std::cerr << "--base requires --link\n";
         return 1;
     }
-    if (baseAddressWords && target != "pdp7") {
-        std::cerr << "--base is only supported for --target=pdp7 right now\n";
+    if (baseAddressWords && target != "pdp7" && target != "6502" && target != "65c02") {
+        std::cerr << "--base is only supported for --target=pdp7/6502/65c02 right now\n";
         return 1;
     }
 

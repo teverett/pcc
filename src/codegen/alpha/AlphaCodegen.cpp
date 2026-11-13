@@ -453,7 +453,13 @@ void AlphaCodegen::genExpr(const ir::Expr &e) {
 void AlphaCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // t0 = index
     int shift = elemShift(slot->type);
-    if (shift > 0) code_ << "    sll t0,t0," << shift << "\n";
+    if (shift > 0) {
+        code_ << "    sll t0,t0," << shift << "\n";
+    } else if (shift < 0) {
+        // Non-power-of-two element width (a struct's): scale by a real multiply instead.
+        loadImm32("t3", widthOfType(slot->type));
+        code_ << "    mulq t0,t3,t0\n";
+    }
     if (slot->arraySize > 0) {
         loadSlotAddr("t2", slot);
         code_ << "    addq t2,t2,t0\n";

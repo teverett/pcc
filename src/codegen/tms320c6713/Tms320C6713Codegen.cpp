@@ -505,6 +505,10 @@ void Tms320C6713Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxE
     if (shift > 0) {
         loadImm32(T10, shift);
         code_ << "    SHL " << AC << "," << AC << "," << T10 << "\n";
+    } else if (shift < 0) {
+        // Non-power-of-two element width (a struct's): scale by a real multiply instead.
+        loadImm32(T10, widthOfType(slot->type));
+        genMulLow32(AC, AC, T10);
     }
     if (slot->arraySize > 0) {
         loadSlotAddr(T2, slot);

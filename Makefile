@@ -92,7 +92,7 @@ OPTIMIZERS_DIRS   := $(OPTIMIZERS_DIR)/constant_folding $(OPTIMIZERS_DIR)/consta
 # header comment - instead of being split across src/coff/, src/elf/,
 # src/objectformat/ and src/linker/format/ the way it used to be.
 FILEFORMAT_DIR  := $(SRC_DIR)/fileformat
-FILEFORMAT_DIRS := $(FILEFORMAT_DIR) $(FILEFORMAT_DIR)/archive $(FILEFORMAT_DIR)/coff $(FILEFORMAT_DIR)/elf $(FILEFORMAT_DIR)/macho $(FILEFORMAT_DIR)/aout $(FILEFORMAT_DIR)/flat $(FILEFORMAT_DIR)/raw $(FILEFORMAT_DIR)/rim $(FILEFORMAT_DIR)/ptr $(FILEFORMAT_DIR)/a7out $(FILEFORMAT_DIR)/list
+FILEFORMAT_DIRS := $(FILEFORMAT_DIR) $(FILEFORMAT_DIR)/archive $(FILEFORMAT_DIR)/coff $(FILEFORMAT_DIR)/elf $(FILEFORMAT_DIR)/macho $(FILEFORMAT_DIR)/aout $(FILEFORMAT_DIR)/flat $(FILEFORMAT_DIR)/raw $(FILEFORMAT_DIR)/rim $(FILEFORMAT_DIR)/ptr $(FILEFORMAT_DIR)/a7out $(FILEFORMAT_DIR)/list $(FILEFORMAT_DIR)/dos33 $(FILEFORMAT_DIR)/prodos
 
 HAND_SRCS := \
     $(SRC_DIR)/main.cpp \
@@ -110,6 +110,8 @@ HAND_SRCS := \
     $(FILEFORMAT_DIR)/ptr/PtrFormat.cpp \
     $(FILEFORMAT_DIR)/a7out/A7outFormat.cpp \
     $(FILEFORMAT_DIR)/list/ListFormat.cpp \
+    $(FILEFORMAT_DIR)/dos33/Dos33Format.cpp \
+    $(FILEFORMAT_DIR)/prodos/ProDosFormat.cpp \
     $(FILEFORMAT_DIR)/archive/ArchiveReader.cpp \
     $(FILEFORMAT_DIR)/coff/PeExportReader.cpp \
     $(FILEFORMAT_DIR)/coff/HostedCoffReader.cpp \
@@ -231,11 +233,17 @@ OBJS     := $(patsubst %,$(OBJ_DIR)/%.o,$(notdir $(ALL_SRCS)))
 
 vpath %.cpp $(GEN_DIR):$(SRC_DIR):$(AST_DIR):$(IR_DIR):$(LINKER_DIR):$(FACTORY_DIR):$(PREPROCESSOR_DIR):$(subst $(SPACE),:,$(OPTIMIZERS_DIRS)):$(subst $(SPACE),:,$(BACKEND_DIRS)):$(subst $(SPACE),:,$(FILEFORMAT_DIRS))
 
-.PHONY: all clean generate build test test-hosted-internal
+.PHONY: all clean generate build rt test test-hosted-internal
 
-all: build
+all: build rt
 
 build: $(TARGET)
+
+# Target runtime libraries (src/rt/<target>/, e.g. apple2/apple2.lib - see
+# src/rt/Makefile) - each one's own Makefile invokes $(TARGET) itself, so
+# this depends on it being built first.
+rt: $(TARGET)
+	$(MAKE) -C src/rt
 
 # Only needed by hand, after editing a grammar/*.g4 file - see this
 # Makefile's own header comment and scripts/generate-grammars.sh's.
@@ -264,6 +272,7 @@ $(TARGET): $(OBJS)
 
 clean:
 	rm -rf build
+	$(MAKE) -C src/rt clean
 
 # Runs the shared preprocessor unit tests and every backend's test suite in
 # turn - see tests/run_tests.sh's

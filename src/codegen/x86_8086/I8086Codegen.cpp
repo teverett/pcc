@@ -588,8 +588,13 @@ void I8086Codegen::genExpr(const ir::Expr &e) {
 // needs `lea` (only known relative to bp at runtime).
 std::string I8086Codegen::computeElementAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);
-    // shl only takes a literal count of 1 (or cl) - a wider shift is that many in a row.
-    for (int i = 0; i < elemShift(slot->type); i++) code_ << "    shl ax, 1\n";
+    int shift = elemShift(slot->type);
+    if (shift >= 0) {
+        // shl only takes a literal count of 1 (or cl) - a wider shift is that many in a row.
+        for (int i = 0; i < shift; i++) code_ << "    shl ax, 1\n";
+    } else {
+        scaleIndexByWidth(slot->type);  // non-power-of-two width (a struct's)
+    }
     code_ << "    mov bx, ax\n";
     if (slot->arraySize > 0) {
         if (slot->kind == ir::SlotKind::Global) {
@@ -677,7 +682,14 @@ void I8086Codegen::genAddrOf(const ir::Expr &operand) {
     }
     if (operand.kind == ir::ExprKind::Index) {
         genExpr(*operand.lhs);
-        for (int i = 0; i < elemShift(operand.slot->type); i++) code_ << "    shl ax, 1\n";
+        {
+            int shift = elemShift(operand.slot->type);
+            if (shift >= 0) {
+                for (int i = 0; i < shift; i++) code_ << "    shl ax, 1\n";
+            } else {
+                scaleIndexByWidth(operand.slot->type);  // non-power-of-two width (a struct's)
+            }
+        }
         if (operand.slot->arraySize > 0) {
             if (operand.slot->kind == ir::SlotKind::Global) {
                 code_ << "    add ax, " << label(operand.slot) << "\n";

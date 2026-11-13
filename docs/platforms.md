@@ -37,6 +37,10 @@ retro hardware through pluggable backends. Today it supports:
   for `JSR`/`RTS`; every Local/Param lives in a software frame reached
   through a zero-page frame pointer). `tests/run_tests.sh --target=6502`
   runs against a real 6502 core via `py65` (`pip install py65`).
+  `--link --format=dos33`/`prodos` wrap the same linked bytes in an
+  Apple ][ DOS 3.3/ProDOS metadata convention - see `docs/using.md`'s
+  own `--format` row and `src/rt/apple2/` for a ROM/ProDOS-MLI call
+  runtime library built on top of this target.
 - **65c02** — WDC 65C02, same dialect/platform choices as `6502` plus the
   real CMOS-only instructions `M65C02Codegen.cpp`/`M65C02Assembler.cpp`
   support: `STZ`, used automatically by codegen itself to zero a zero-page

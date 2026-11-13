@@ -791,7 +791,15 @@ void M6502Codegen::genExpr(const ir::Expr &e) {
 void M6502Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
     int shift = elemShift(slot->type);  // ac *= widthOf(slot->type), a power of two
-    for (int i = 0; i < shift; i++) code_ << "    asl ac\n    rol ac+1\n";
+    if (shift >= 0) {
+        for (int i = 0; i < shift; i++) code_ << "    asl ac\n    rol ac+1\n";
+    } else {
+        // Non-power-of-two element width (a struct's): scale via the shared software
+        // multiply routine instead - see genMulCore()'s own comment (bc * dx -> ac).
+        code_ << "    lda ac\n    sta bc\n    lda ac+1\n    sta bc+1\n";
+        code_ << "    ldai " << widthOfType(slot->type) << "\n    sta dx\n    ldai 0\n    sta dx+1\n";
+        genMulCore();
+    }
     if (slot->kind == ir::SlotKind::Global) {
         std::string lbl = label(slot);
         code_ << "    clc\n";

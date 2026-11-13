@@ -2792,11 +2792,17 @@ is_known_unsupported() {
         8088:longlong_add_carry_chain.c) return 0 ;;
         8086:longlong_sub_borrow_chain.c) return 0 ;;
         8088:longlong_sub_borrow_chain.c) return 0 ;;
+        8086:struct_packed_array.c) return 0 ;;             # same - doesn't fit the 512-byte boot sector
+        8088:struct_packed_array.c) return 0 ;;
         8080:types_longlong_divmod.c) return 0 ;;          # no verified wide multiply/divide routine
         8080:types_longlong_divmod_repeated.c) return 0 ;; # same - no verified wide multiply/divide routine
         z80:types_longlong_divmod.c) return 0 ;;
         z80:types_longlong_divmod_repeated.c) return 0 ;;  # same - no verified wide multiply/divide routine
         8051:types_arrays.c) return 0 ;;                   # wide (long/long long) values unsupported at all
+        8051:struct_alignment_size.c) return 0 ;;          # same - sizeof() always yields a 'long'-typed literal
+        8051:struct_packed_array.c) return 0 ;;
+        8051:struct_packed_basic.c) return 0 ;;
+        8051:unsigned_literal_above_long_max.c) return 0 ;;
         8051:types_longlong_arith.c) return 0 ;;
         8051:test_long_arith.c) return 0 ;;
         8051:local_mixed_width_layout.c) return 0 ;;
@@ -2843,6 +2849,10 @@ is_known_unsupported() {
         r10000:string_literal_unaligned_compound.c) return 0 ;; # same deliberately-misaligned-word-access style
                                                              # as pdp11's own entry above - real MIPS hardware
                                                              # also raises an address-error exception on it
+        r10000:struct_packed_basic.c) return 0 ;;           # same misaligned-word-access trap, this time from
+                                                             # a '@packed' struct's own un-padded placement -
+                                                             # see docs/known-bugs.md's own entry on this
+        r10000:struct_packed_array.c) return 0 ;;           # same
         r10000:types_longlong_divmod.c) return 0 ;;         # MipsCodegen.cpp's genWideDivMod() gives a wrong
                                                              # answer here - not yet root-caused, unlike the
                                                              # i386/ARM/M68k ports of the same algorithm

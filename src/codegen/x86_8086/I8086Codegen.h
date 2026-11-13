@@ -65,8 +65,14 @@ class I8086Codegen : public Backend {
             case 1: return 0;
             case 2: return 1;
             case 4: return 2;
-            default: return 3;
+            case 8: return 3;
+            default: return -1;
         }
+    }
+    // Scales AX by a struct element's non-power-of-two width (elemShift() < 0) via a real
+    // multiply, since the `shl` loop callers use for the power-of-two case can't represent one.
+    void scaleIndexByWidth(Type t) {
+        code_ << "    mov bx, " << widthOfType(t) << "\n    mul bx\n";
     }
 
     // Loads `mem` into AX, sign/zero-extending a narrower-than-int type; for a wide

@@ -437,7 +437,13 @@ void PowerPCCodegen::genExpr(const ir::Expr &e) {
 void PowerPCCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // t0 = index
     int shift = elemShift(slot->type);
-    if (shift > 0) code_ << "    slwi t0,t0," << shift << "\n";
+    if (shift > 0) {
+        code_ << "    slwi t0,t0," << shift << "\n";
+    } else if (shift < 0) {
+        // Non-power-of-two element width (a struct's): scale by a real multiply instead.
+        loadImmediate("t1", widthOfType(slot->type));
+        code_ << "    mullw t0,t0,t1\n";
+    }
     if (slot->arraySize > 0) {
         if (slot->kind == ir::SlotKind::Global) {
             loadAddress("t2", label(slot));

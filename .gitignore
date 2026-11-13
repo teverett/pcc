@@ -1,6 +1,4 @@
-/build
-/.idea
+**/build
 **/*.o
-/example/build/hello-macos
-*.o
-/examples/example1/build
+**/*.lib
+/.idea

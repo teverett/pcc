@@ -42,15 +42,15 @@ void patchAbsHi8(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t valu
 }
 }  // namespace
 
-std::unique_ptr<TargetLinker> makeM65C02Linker() {
+std::unique_ptr<TargetLinker> makeM65C02Linker(uint32_t baseAddress) {
     GenericLinkerConfig config;
-    config.baseAddress = kM65C02BaseAddress;
+    config.baseAddress = baseAddress;
     config.machineType = kM65C02CoffMachine;
     config.entryObject = assembleM65C02Object(kEntryAsm);
     config.relocPatchers[kM65C02RelocAbs16] = RelocKinds::patchAbs16;
     config.relocPatchers[kM65C02RelocAbsLo8] = patchAbsLo8;
     config.relocPatchers[kM65C02RelocAbsHi8] = patchAbsHi8;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"flat", "coff", "elf", "aout", "dos33", "prodos"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

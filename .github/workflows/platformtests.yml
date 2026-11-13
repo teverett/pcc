@@ -155,3 +155,49 @@ jobs:
               val -= 0x10000
           assert val == 45, val
           PY
+
+      # example4 is an Apple ][ "hello world" (src/rt/apple2/) - also a
+      # freestanding 6502 binary, so the same py65 approach as example3
+      # applies, but it makes real COUT/CROUT/HOME calls (asm { jsr ... }
+      # in src/rt/apple2/apple2.c) that would otherwise JSR into empty
+      # memory. Each is patched with a tiny hand-written 6502 stub before
+      # running: COUT ($FDED) appends A (masked back to 7 bits - COUT
+      # itself expects bit 7 set for normal display text, see apple2.c's
+      # own a2_cout() comment) into a buffer at $0400, tracked via a
+      # zero-page position counter at $F0 (ldx $F0; sta $0400,x; inx; stx
+      # $F0; rts); CROUT ($FD8E) pushes a newline then falls into that
+      # same COUT stub; HOME ($FC58) is a no-op (rts) - its effect isn't
+      # observable from outside the (nonexistent) text screen, so this
+      # only confirms the call itself doesn't crash.
+      - name: Build and run 6502 example4 in py65 emulator
+        if: matrix.name == 'macos'
+        run: |
+          make -C examples/example4 "$(pwd)/examples/example4/build/main.flat"
+          python3 - <<'PY'
+          from py65.devices.mpu6502 import MPU
+
+          with open("examples/example4/build/main.flat", "rb") as f:
+              data = f.read()
+
+          base = 0x0600
+          mpu = MPU()
+          mpu.memory[base:base + len(data)] = data
+
+          mpu.memory[0xFDED:0xFDED + 9] = [0xA6, 0xF0, 0x9D, 0x00, 0x04, 0xE8, 0x86, 0xF0, 0x60]
+          mpu.memory[0xF0] = 0
+          mpu.memory[0xFD8E:0xFD8E + 5] = [0xA9, 0x8A, 0x4C, 0xED, 0xFD]
+          mpu.memory[0xFC58] = 0x60
+
+          mpu.pc = base
+          for _ in range(2_000_000):
+              pc_before = mpu.pc
+              mpu.step()
+              if mpu.pc == pc_before:
+                  break
+          else:
+              raise SystemExit("simulator never reached the halt loop (step limit exceeded)")
+
+          n = mpu.memory[0xF0]
+          out = bytes(mpu.memory[0x0400 + i] & 0x7F for i in range(n))
+          assert out == b"HELLO, WORLD!\n", out
+          PY

@@ -585,9 +585,38 @@ void MCS51Codegen::genExpr(const ir::Expr &e) {
 void MCS51Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     int elemWidth = widthOfType(slot->type);
     genExpr(idxExpr);  // ac = index
-    if (elemWidth != 1) {
-        code_ << "    clrc\n    mova ac\n    rlca\n    movd ac\n";  // ac *= 2, since each element is 2 bytes
-        code_ << "    mova ac+1\n    rlca\n    movd ac+1\n";
+    // elemWidth is 1/2/4/8 for every scalar this type system produces, so doubling
+    // log2(elemWidth) times (real HW has no 16-bit multiply - see genMul()) covers those
+    // exactly. A struct's width isn't always a power of two, though (e.g. three `char`
+    // members), so any other width falls back to the same software multiply loop genMul()
+    // uses (bc * dx -> ac), rather than being silently doubled the wrong number of times.
+    int shift = elemWidth == 1 ? 0 : elemWidth == 2 ? 1 : elemWidth == 4 ? 2 : elemWidth == 8 ? 3 : -1;
+    if (shift > 0) {
+        for (int i = 0; i < shift; i++) {
+            code_ << "    clrc\n    mova ac\n    rlca\n    movd ac\n";
+            code_ << "    mova ac+1\n    rlca\n    movd ac+1\n";
+        }
+    } else if (shift < 0) {
+        copy16("bc", "ac");  // bc = multiplicand (the index)
+        uint16_t w16 = static_cast<uint16_t>(elemWidth);
+        code_ << "    movai " << (w16 & 0xFF) << "\n    movd dx\n";
+        code_ << "    movai " << ((w16 >> 8) & 0xFF) << "\n    movd dx+1\n";  // dx = multiplier (the width)
+        code_ << "    movai 0\n    movd ac\n    movai 0\n    movd ac+1\n";    // ac = product = 0
+        code_ << "    movai 16\n    movd cx\n";
+        std::string Lloop = newLabel(), Ladd = newLabel(), Lskipadd = newLabel(), Ldone = newLabel();
+        code_ << Lloop << ":\n";
+        code_ << "    mova dx\n    anli 1\n";
+        safeBranch("jnz", Ladd, Lskipadd);
+        code_ << Ladd << ":\n";
+        code_ << "    mova bc\n    add ac\n    movd ac\n";
+        code_ << "    mova bc+1\n    addc ac+1\n    movd ac+1\n";
+        code_ << Lskipadd << ":\n";
+        code_ << "    clrc\n    mova bc\n    rlca\n    movd bc\n";
+        code_ << "    mova bc+1\n    rlca\n    movd bc+1\n";
+        code_ << "    clrc\n    mova dx+1\n    rrca\n    movd dx+1\n";
+        code_ << "    mova dx\n    rrca\n    movd dx\n";
+        safeDjnz("cx", Lloop, Ldone);
+        code_ << Ldone << ":\n";
     }
     bool isGlobal = slot->kind == ir::SlotKind::Global;
     if (slot->arraySize > 0) {
