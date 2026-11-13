@@ -217,30 +217,6 @@ at all to verify a fix against, and remain unverified (not necessarily
 unfixed - their `elemShift()` has the same shape as the others, just
 never confirmed against real execution).
 
-## `68000`/`mc68328`/`stm32` have the same mis-scaled array index bug the entry above fixed elsewhere
-
-Affects `src/codegen/m68k/M68kCodegen.{h,cpp}` (shared by both `68000`
-and `mc68328`, since they're bit-for-bit the same instruction set - see
-`docs/platforms.md`'s own `mc68328` entry) and
-`src/codegen/stm32/STM32Codegen.{h,cpp}`. These three backends weren't
-touched by the fix the entry above describes - `M68kCodegen.h`'s
-`elemDoublings()` and `STM32Codegen.h`'s `elemShift()` both still have
-the original broken fallback: any element width other than 1/2/4 bytes
-is scaled as if it were 8 (three doublings/an `lsl #3`-equivalent),
-silently computing the wrong element address exactly the way the
-now-fixed backends used to.
-
-Confirmed directly: `tests/struct_nonpow2_array_stride.c` (a 3-`char`
-struct, expects 33 - see that file's own comment) comes back 88 on all
-three (`(p1-p0)*10+(p2-p1)` with each stride computed as 8 instead of
-3), and `tests/struct_packed_array.c` fails the same way, via
-`tests/run_tests.sh --target=68000`/`--target=mc68328`/`--target=stm32`
-(the real `qemu-system-m68k`/`qemu-system-arm` simulators these targets
-are tested against). Not yet fixed - the same real-multiply fix
-(`mulsl`/`mulul` for `68000`/`mc68328`, `muls`/the target's own
-software multiply for `stm32`) just hasn't been applied to these three
-backends yet.
-
 ## `tests/run_tests.sh --target=8086`/`8088` has no working test execution
 
 Affects `tests/run_tests.sh`'s `8086|8088)` prerequisites case,
