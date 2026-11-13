@@ -6,9 +6,11 @@ A "hello world" for the TRS-80 Model I/III, compiled and linked against
 stores into video RAM (`$3C00`-`$3FFF`) rather than any ROM/DOS call.
 
 `make` runs the three-file pipeline: `main.c` compiles on its own
-(`--format=coff`), `src/rt/trs80/trs80.lib` is built (or reused) via that
-directory's own Makefile, then the two combine via `--link --format=cmd`
-into `build/main.cmd` - the real TRS-80 DOS "/CMD" load-module byte stream
+(`--platform=z80-cmd`, which assumes `coff` since no `--link` is given
+yet - see `docs/using.md`'s own `--platform` entry),
+`src/rt/trs80/trs80.lib` is built (or reused) via that directory's own
+Makefile, then the two combine via `--link --platform=z80-cmd` into
+`build/main.cmd` - the real TRS-80 DOS "/CMD" load-module byte stream
 (TYPE/LENGTH/DATA records; see `../../src/fileformat/cmd/CmdFormat.h`'s own
 header comment for exactly what each record means) that TRSDOS/LDOS/NEWDOS
 load and run directly off a real/emulated floppy, with no translation step

@@ -16,19 +16,22 @@ make                       # produces build/main.col, a padded cartridge image
 make build/main.raw        # the same program, unpadded (no standard-size rounding)
 ```
 
-`--target=z80-coleco` compiles with the same Z80 backend as `--target=z80`
-(see `docs/platforms.md`) but links against a ColecoVision-specific entry
-object: the cartridge header (a `$55AA`/`$AA55` signature and pointer
-table the BIOS reads before ever jumping to this program's own code -
-see `src/linker/factory/ColecoLinkerFactory.cpp`'s own header comment)
+`--platform=z80-coleco-colecorom` (used for both the compile step, where
+it assumes `coff` since no `--link` is given yet, and the `--link` step
+itself - see `docs/using.md`'s own `--platform` entry) compiles with the
+same Z80 backend as `z80-*` targets (see `docs/platforms.md`) but links
+against a ColecoVision-specific entry object: the cartridge header (a
+`$55AA`/`$AA55` signature and pointer table the BIOS reads before ever
+jumping to this program's own code - see
+`src/linker/factory/ColecoLinkerFactory.cpp`'s own header comment)
 instead of TRS-80's/8080's plain `call fn_main; halt`.
 
-`--format=colecorom` pads the linked image with `$FF` up to the nearest
-standard cartridge size (8/16/24/32 KiB - see
-`src/fileformat/colecorom/ColecoRomFormat.h`); `--format=raw` is the same
-bytes without that padding, used for this example's own CI check (and
-by `tests/run_coleco_rt_tests.sh`) since a Z80 simulator doesn't care how
-big the file around the bytes it actually executes is.
+Its `colecorom` format pads the linked image with `$FF` up to the
+nearest standard cartridge size (8/16/24/32 KiB - see
+`src/fileformat/colecorom/ColecoRomFormat.h`); `--platform=z80-coleco-raw`
+is the same bytes without that padding, used for this example's own CI
+check (and by `tests/run_coleco_rt_tests.sh`) since a Z80 simulator
+doesn't care how big the file around the bytes it actually executes is.
 
 ## Why no real hardware/BIOS to test against
 

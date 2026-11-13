@@ -6,10 +6,12 @@ A "hello world" for MS-DOS, compiled and linked against `src/rt/msdos/`
 program does.
 
 `make` runs the two-file pipeline: `main.c` compiles on its own
-(`--target=8086-dos --format=coff`), `src/rt/msdos/msdos.lib` is built (or
-reused) via that directory's own Makefile, then the two combine via
-`--link --format=raw` into `build/main.com` - DOS's own `.com` convention
-has no header of its own, so `--format=raw`'s plain bytes, loaded/entered
+(`--platform=8086-dos-raw`, which assumes `coff` since no `--link` is
+given yet - see `docs/using.md`'s own `--platform` entry),
+`src/rt/msdos/msdos.lib` is built (or reused) via that directory's own
+Makefile, then the two combine via `--link --platform=8086-dos-raw`
+into `build/main.com` - DOS's own `.com` convention has no header of its
+own, so `raw`'s plain bytes, loaded/entered
 at `0x100` (see `docs/platforms.md`'s own `8086-dos` entry), are already a
 real, directly-runnable `.com` file. Run it under DOSBox, a `dosemu`
 install, or real MS-DOS (`main.com` at the DOS prompt); there's no CI

@@ -7,8 +7,10 @@ direct stores into video RAM (`$0400`-`$05FF`) rather than any ROM/BASIC
 call.
 
 `make` runs the three-file pipeline: `main.c` compiles on its own
-(`--format=coff`), `src/rt/coco/coco.lib` is built (or reused) via that
-directory's own Makefile, then the two combine via `--link` into both
+(`--platform=6809-raw`, which assumes `coff` since no `--link` is given
+yet - see `docs/using.md`'s own `--platform` entry),
+`src/rt/coco/coco.lib` is built (or reused) via that directory's own
+Makefile, then the two combine via `--link` into both
 `build/main.raw` (a flat binary, useful for feeding to any tool that
 loads raw bytes at a fixed address) and `build/main.decb` (the real
 CoCo `LOADM`/`CLOADM` load-module byte stream - see

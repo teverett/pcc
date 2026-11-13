@@ -4,7 +4,6 @@ APPLE2_DIR := $(EXAMPLE_DIR)../../src/rt/apple2
 APPLE2_LIB := $(APPLE2_DIR)/apple2.lib
 
 include $(EXAMPLE_DIR)../examples.mk
-TARGET := 6502
 
 .PHONY: all clean
 
@@ -14,7 +13,7 @@ $(BUILD_DIR):
 	mkdir -p "$@"
 
 $(BUILD_DIR)/main.o: main.c | $(BUILD_DIR)
-	$(RCC) --target=$(TARGET) --format=coff --dump-ir --dump-asm --out="$@" "$<"
+	$(RCC) --platform=6502-prodos --dump-ir --dump-asm --out="$@" "$<"
 
 # apple2.lib is src/rt/apple2/'s own build product (see that directory's
 # Makefile) - built here via a sub-make rather than recompiling apple2.c
@@ -30,7 +29,7 @@ $(APPLE2_LIB):
 # regardless of its directory entry's `aux_type` - see
 # src/linker/factory/M6502LinkerFactory.h's own comment.
 $(BUILD_DIR)/main.prodos: $(BUILD_DIR)/main.o $(APPLE2_LIB)
-	$(RCC) --link --target=$(TARGET) --format=prodos --base=8192 --out="$@" "$(BUILD_DIR)/main.o" "$(APPLE2_LIB)"
+	$(RCC) --link --platform=6502-prodos --base=8192 --out="$@" "$(BUILD_DIR)/main.o" "$(APPLE2_LIB)"
 
 # Same link, written out as `raw` instead of `prodos` - identical bytes
 # minus the trailing file_type/aux_type footer (see
@@ -38,7 +37,7 @@ $(BUILD_DIR)/main.prodos: $(BUILD_DIR)/main.o $(APPLE2_LIB)
 # directly in py65 without having to strip that footer back off first.
 # Same --base as main.prodos above - they need to stay identical bytes.
 $(BUILD_DIR)/main.raw: $(BUILD_DIR)/main.o $(APPLE2_LIB)
-	$(RCC) --link --target=$(TARGET) --format=raw --base=8192 --out="$@" "$(BUILD_DIR)/main.o" "$(APPLE2_LIB)"
+	$(RCC) --link --platform=6502-raw --base=8192 --out="$@" "$(BUILD_DIR)/main.o" "$(APPLE2_LIB)"
 
 clean:
 	rm -rf "$(BUILD_DIR)"

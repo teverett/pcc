@@ -627,7 +627,22 @@ int main(int argc, char **argv) {
         }
         target = it->target;
         if (!it->format.empty()) {
-            format = it->format;
+            // A platform name's format describes the FINAL product, which
+            // only exists once every file is linked - it says nothing
+            // about how to compile any one file along the way. So in
+            // compile mode (no --link yet), the same --platform=<name>
+            // used for the eventual --link step also works unchanged for
+            // every earlier `--format=coff` compile step: assume `coff`
+            // (the one real relocatable object format every target with
+            // a TargetLinker can compile to) instead of the platform's
+            // own final format, which is only honored once --link is
+            // actually given. A target with no TargetLinker at all
+            // (pdp1/tms320c6713 - see allPlatforms()) has no `coff` to
+            // assume, so its own single format is used as-is either way.
+            std::unique_ptr<rcc::Backend> platformBackend = makeBackend(target);
+            std::vector<std::string> compileFormats = platformBackend->assembledFormats();
+            bool hasCoff = std::find(compileFormats.begin(), compileFormats.end(), "coff") != compileFormats.end();
+            format = (!link && hasCoff) ? "coff" : it->format;
             formatSet = true;
         }
     }

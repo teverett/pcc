@@ -72,6 +72,42 @@ class PlatformFlagTest(unittest.TestCase):
             self.assertEqual(via_platform.returncode, 0, via_platform.stderr)
             self.assertEqual(explicit_out.read_bytes(), platform_out.read_bytes())
 
+    def test_platform_compile_step_assumes_coff_regardless_of_its_own_format(self):
+        # The same --platform=<name> used for the eventual --link step also
+        # works unchanged for every earlier compile step: in compile mode
+        # (no --link yet), its own format component is a statement about
+        # the FINAL product, not this one file, so `coff` - the one real
+        # relocatable object format - is assumed instead, letting a
+        # multi-step pipeline reuse one literal --platform value everywhere.
+        source = BUILD / "coff_assumed.c"
+        source.write_text("int main() { return 1; }\n")
+        obj = BUILD / "coff_assumed.o"
+        result = self.run_rcc("--platform=6502-dos33", f"--out={obj}", source)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # A real COFF object's first two bytes are its little-endian
+        # machine ID - 6502's own invented ID is 0x6502, i.e. 02 65 - not
+        # dos33's own 4-byte load-address/length header.
+        data = obj.read_bytes()
+        self.assertEqual(data[0], 0x02)
+        self.assertEqual(data[1], 0x65)
+        # The same object, --link'ed under that identical --platform value,
+        # now does honor dos33 as the real final format.
+        linked = BUILD / "coff_assumed.dos33"
+        link_result = self.run_rcc("--link", "--platform=6502-dos33", f"--out={linked}", obj)
+        self.assertEqual(link_result.returncode, 0, link_result.stderr)
+        self.assertGreater(linked.stat().st_size, 0)
+
+    def test_platform_compile_step_keeps_own_format_when_target_has_no_coff(self):
+        # pdp1 has no TargetLinker/--link step and no `coff` in its own
+        # assembledFormats() at all (just `list`/`rim`) - there's nothing
+        # to assume, so its own single format is used exactly as named.
+        source = BUILD / "no_coff_to_assume.c"
+        source.write_text("int main() { return 1; }\n")
+        out = BUILD / "no_coff_to_assume.rim"
+        result = self.run_rcc("--platform=pdp1-rim", f"--out={out}", source)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreater(out.stat().st_size, 0)
+
     def test_unknown_platform_name_fails_clearly(self):
         result = self.run_rcc("--platform=bogus-name", "--out=" + str(BUILD / "x"), BUILD / "nonexistent.c")
         self.assertNotEqual(result.returncode, 0)
