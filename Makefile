@@ -328,6 +328,7 @@ test-hosted-internal: all $(BIN_DIR)/archive_reader_test $(BIN_DIR)/macho_data_t
 	$(BIN_DIR)/decb_format_test
 	$(BIN_DIR)/m6809_assembler_test
 	python3 tests/m6809_link_test.py $(TARGET)
+	python3 tests/platform_flag_test.py $(TARGET)
 	python3 tests/hosted_internal_linker_test.py $(TARGET)
 	python3 tests/hosted_linux_linker_test.py $(TARGET)
 
@@ -341,6 +342,7 @@ test: all $(BIN_DIR)/preprocessor_test $(BIN_DIR)/archive_reader_test $(BIN_DIR)
 	$(BIN_DIR)/m6809_assembler_test
 	python3 tests/qemu_wait_test.py
 	python3 tests/m6809_link_test.py $(TARGET)
+	python3 tests/platform_flag_test.py $(TARGET)
 	python3 tests/hosted_internal_linker_test.py $(TARGET)
 	python3 tests/hosted_linux_linker_test.py $(TARGET)
 	python3 tests/pic16_function_pointer_call_test.py $(TARGET)

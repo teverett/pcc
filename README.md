@@ -7,7 +7,7 @@ produce real, runnable hosted-OS executables - `i386-linux` (ELF),
 `i386-windows` (PE), and `armv8a-macos` (Mach-O) - linked entirely by
 rcc itself, with no external linker invoked. See
 [`docs/using.md`](docs/using.md) for the `--target=<target>-<host>`
-triple syntax and `--list-triples`.
+triple syntax and `--list-all`.
 
 # platforms
 

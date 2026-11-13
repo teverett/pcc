@@ -140,9 +140,12 @@ void usage(const char *argv0) {
                  "\n"
                  "<target> is a backend name (e.g. pdp7, i386, armv8a) and <host> is the real OS\n"
                  "the produced executable runs on - 'none' (the default, meaning freestanding/\n"
-                 "bare metal), 'linux', 'windows', or 'macos', wherever that target has one; see\n"
-                 "--list-triples for every target-host combination actually supported. A plain\n"
-                 "--target=<target> is shorthand for '-none'.\n"
+                 "bare metal), 'linux', 'windows', or 'macos', wherever that target has one. A\n"
+                 "plain --target=<target> is shorthand for '-none'.\n"
+                 "\n"
+                 "--platform=<name> is sugar for a --target/--format pair under one name (e.g.\n"
+                 "--platform=6502-dos33). --list-all prints every --target-host combination and\n"
+                 "every --platform name this build actually accepts, one per line.\n"
                  "\n"
                  "A non-coff --format takes exactly one .c file - real separate compilation\n"
                  "is now the only way to combine more than one: compile each file on its own\n"
@@ -187,7 +190,7 @@ void writeToBuildDir(const std::string &name, const std::string &content, bool b
 // Every name makeBackend()/makeLinker() accept as --target (aliases sharing
 // a backend, like 8088->8086, are listed separately since each is
 // independently valid on the command line). Used both for "unknown
-// --target" error messages and for --list-triples.
+// --target" error messages and for --list-all.
 const std::vector<std::string> kTargetNames = {
     "pdp1", "pdp7", "8086", "8088", "8086-dos", "6502", "65c02", "68000", "mc68328", "pdp11", "pdp10", "8080", "z80", "z80-coleco", "6809", "8008",
     "stm8", "stm32", "i386", "m16c", "m30626fjpfp", "pic16", "pic18", "r10000", "r4000", "cortex-m3",
@@ -231,15 +234,6 @@ ParsedTarget parseTargetTriple(const std::string &value) {
         }
     }
     return {value, "none"};
-}
-
-void listTriples() {
-    std::vector<std::string> triples;
-    for (const auto &name : kTargetNames) {
-        for (const auto &host : hostsFor(name)) triples.push_back(name + "-" + host);
-    }
-    std::sort(triples.begin(), triples.end());
-    for (const auto &triple : triples) std::cout << triple << "\n";
 }
 
 // Several --target names below are deliberate, software-identical aliases
@@ -333,6 +327,61 @@ std::unique_ptr<rcc::TargetLinker> makeLinker(const std::string &target,
     return nullptr;
 }
 
+// Every human-facing "<target>-<format>" platform name this project
+// supports, e.g. "6502-dos33" or "z80-coleco-colecorom", built by
+// enumerating kTargetNames x each target's own valid output formats -
+// never by splitting a name string back apart, so a target name that
+// itself contains a dash (z80-coleco, 8086-dos, cortex-m3) is never
+// ambiguous. A target with a real TargetLinker uses its
+// outputFormats() (the --link-stage formats); `pdp1` (no TargetLinker/
+// --link step at all) and `tms320c6713` (outputFormats() is empty -
+// asm-only) fall back to their own Backend::assembledFormats() instead,
+// so every target still appears here even with no --link support - "asm"
+// is dropped from that fallback since it's "print the assembly text",
+// not a file-produced convention, consistent with how outputFormats()
+// never lists it either. The three hosted triples (i386-linux/windows,
+// armv8a-macos) already fully name their own single, implied format
+// (see the `derivedFormat` logic below) and need no format suffix, so
+// they're listed as plain target-host pairs with an empty `format` -
+// --platform= resolution leaves `format` unset for these and lets that
+// existing derivation run normally.
+struct Platform {
+    std::string name;
+    std::string target;
+    std::string format;  // empty for a hosted triple, whose format is implied, not chosen.
+};
+std::vector<Platform> allPlatforms() {
+    std::vector<Platform> platforms;
+    for (const auto &name : kTargetNames) {
+        std::vector<std::string> formats;
+        std::unique_ptr<rcc::TargetLinker> linker = makeLinker(name);
+        if (linker) formats = linker->outputFormats();
+        // tms320c6713's own linker exists but has an empty outputFormats()
+        // (asm-only, no relocatable object format at all - see that
+        // target's own LinkerFactory header comment); pdp1 has no
+        // TargetLinker/--link step at all. Either way, fall back to the
+        // target's own single-file-compile Backend::assembledFormats() so
+        // every target still appears in this table.
+        if (formats.empty()) {
+            std::unique_ptr<rcc::Backend> backend = makeBackend(name);
+            for (const auto &f : backend->assembledFormats()) {
+                if (f != "asm") formats.push_back(f);
+            }
+        }
+        for (const auto &format : formats) platforms.push_back({name + "-" + format, name, format});
+    }
+    for (const auto &target : {std::string("i386"), std::string("armv8a")}) {
+        for (const auto &host : hostsFor(target)) {
+            if (host != "none") platforms.push_back({target + "-" + host, target + "-" + host, ""});
+        }
+    }
+    std::sort(platforms.begin(), platforms.end(), [](const Platform &a, const Platform &b) { return a.name < b.name; });
+    return platforms;
+}
+
+void listAll() {
+    for (const auto &platform : allPlatforms()) std::cout << platform.name << "\n";
+}
 
 // Parses one file into its own Program, then appends its functions/globals
 // onto `combined`; name resolution (IRBuilder) runs once, afterward, over
@@ -471,7 +520,10 @@ int main(int argc, char **argv) {
     bool systemLinkerSet = false;
     std::vector<std::string> srcPaths;
     std::vector<std::string> systemLinkInputs;
+    bool targetSet = false;
     bool formatSet = false;
+    std::string platformName;
+    bool platformSet = false;
     bool hosted = false;
     bool windowsHosted = false;
     bool macosHosted = false;
@@ -494,9 +546,13 @@ int main(int argc, char **argv) {
         std::string v;
         if (!(v = takeValue("--target=")).empty()) {
             target = v;
+            targetSet = true;
         } else if (!(v = takeValue("--format=")).empty()) {
             format = v;
             formatSet = true;
+        } else if (!(v = takeValue("--platform=")).empty()) {
+            platformName = v;
+            platformSet = true;
         } else if (!(v = takeValue("--out=")).empty()) {
             outPath = v;
         } else if (!(v = takeValue("--linker=")).empty()) {
@@ -505,8 +561,8 @@ int main(int argc, char **argv) {
         } else if (!(v = takeValue("--windows-linker=")).empty()) {
             windowsLinkerKind = v;
             windowsLinkerKindSet = true;
-        } else if (arg == "--list-triples") {
-            listTriples();
+        } else if (arg == "--list-all") {
+            listAll();
             return 0;
         } else if (arg == "-L" || arg == "-l") {
             if (i + 1 >= argc) {
@@ -552,6 +608,28 @@ int main(int argc, char **argv) {
     if (srcPaths.empty()) {
         usage(argv[0]);
         return 1;
+    }
+
+    // --platform is pure sugar over --target/--format, resolved to exactly
+    // those two before anything else below ever sees it - never a separate
+    // code path past this point.
+    if (platformSet) {
+        if (targetSet || formatSet) {
+            std::cerr << "--platform can't be combined with --target or --format - pick one\n";
+            return 1;
+        }
+        std::vector<Platform> platforms = allPlatforms();
+        auto it = std::find_if(platforms.begin(), platforms.end(),
+                                [&](const Platform &p) { return p.name == platformName; });
+        if (it == platforms.end()) {
+            std::cerr << "unknown --platform '" << platformName << "' - see --list-all for every valid name\n";
+            return 1;
+        }
+        target = it->target;
+        if (!it->format.empty()) {
+            format = it->format;
+            formatSet = true;
+        }
     }
 
     // Normalizes --target=<target>-<host> into plain `target` plus the

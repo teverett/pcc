@@ -3,6 +3,16 @@
 `rcc` is a compiler and linker for a small subset of C, targeting real
 retro hardware through pluggable backends. Today it supports:
 
+For the exact, up-to-date list of every target's own output-format
+choices (the bullets below describe each one in prose, which can go
+stale), run `rcc --list-all` - it prints every `--target=<name>[-<host>]`
+triple and every `--platform=<name>` name this build accepts, generated
+directly from each target's own `TargetLinker::outputFormats()` (or, for
+the few targets with no `--link` support, `Backend::assembledFormats()`)
+rather than hand-maintained. `--platform=<name>` (e.g.
+`--platform=6502-dos33`) is sugar for the matching `--target`/`--format`
+pair - see `docs/using.md`.
+
 - **pdp1** — PDP-1 assembly (`src/codegen/pdp1/Pdp1Codegen.h`), a genuine
   one's-complement machine with no link/carry bit and no hardware
   multiply/divide, 4096 words of address space (half of pdp7's), producing
