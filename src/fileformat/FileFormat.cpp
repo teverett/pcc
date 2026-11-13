@@ -18,6 +18,7 @@
 #include "fileformat/colecorom/ColecoRomFormat.h"
 #include "fileformat/decb/DecbFormat.h"
 #include "fileformat/prg/PrgFormat.h"
+#include "fileformat/atari/AtariExeFormat.h"
 
 namespace rcc {
 
@@ -53,6 +54,8 @@ std::unique_ptr<FileFormatWriter> makeFileFormatWriter(FileFormatKind kind) {
             return std::make_unique<DecbFormatWriter>();
         case FileFormatKind::Prg:
             return std::make_unique<PrgFormatWriter>();
+        case FileFormatKind::AtariExe:
+            return std::make_unique<AtariExeFormatWriter>();
     }
     return nullptr;
 }
@@ -89,6 +92,8 @@ std::unique_ptr<FileFormatReader> makeFileFormatReader(FileFormatKind kind) {
             return std::make_unique<DecbFormatReader>();
         case FileFormatKind::Prg:
             return std::make_unique<PrgFormatReader>();
+        case FileFormatKind::AtariExe:
+            return std::make_unique<AtariExeFormatReader>();
     }
     return nullptr;
 }
@@ -110,6 +115,7 @@ std::optional<FileFormatKind> fileFormatKindFromName(const std::string &name) {
     if (name == "colecorom") return FileFormatKind::ColecoRom;
     if (name == "decb") return FileFormatKind::Decb;
     if (name == "prg") return FileFormatKind::Prg;
+    if (name == "atari") return FileFormatKind::AtariExe;
     return std::nullopt;
 }
 
@@ -145,6 +151,8 @@ std::string fileFormatName(FileFormatKind kind) {
             return "decb";
         case FileFormatKind::Prg:
             return "prg";
+        case FileFormatKind::AtariExe:
+            return "atari";
     }
     return "";
 }

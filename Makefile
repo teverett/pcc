@@ -92,7 +92,7 @@ OPTIMIZERS_DIRS   := $(OPTIMIZERS_DIR)/constant_folding $(OPTIMIZERS_DIR)/consta
 # header comment - instead of being split across src/coff/, src/elf/,
 # src/objectformat/ and src/linker/format/ the way it used to be.
 FILEFORMAT_DIR  := $(SRC_DIR)/fileformat
-FILEFORMAT_DIRS := $(FILEFORMAT_DIR) $(FILEFORMAT_DIR)/archive $(FILEFORMAT_DIR)/coff $(FILEFORMAT_DIR)/elf $(FILEFORMAT_DIR)/macho $(FILEFORMAT_DIR)/aout $(FILEFORMAT_DIR)/raw $(FILEFORMAT_DIR)/rim $(FILEFORMAT_DIR)/ptr $(FILEFORMAT_DIR)/a7out $(FILEFORMAT_DIR)/list $(FILEFORMAT_DIR)/dos33 $(FILEFORMAT_DIR)/prodos $(FILEFORMAT_DIR)/cmd $(FILEFORMAT_DIR)/colecorom $(FILEFORMAT_DIR)/decb $(FILEFORMAT_DIR)/prg
+FILEFORMAT_DIRS := $(FILEFORMAT_DIR) $(FILEFORMAT_DIR)/archive $(FILEFORMAT_DIR)/coff $(FILEFORMAT_DIR)/elf $(FILEFORMAT_DIR)/macho $(FILEFORMAT_DIR)/aout $(FILEFORMAT_DIR)/raw $(FILEFORMAT_DIR)/rim $(FILEFORMAT_DIR)/ptr $(FILEFORMAT_DIR)/a7out $(FILEFORMAT_DIR)/list $(FILEFORMAT_DIR)/dos33 $(FILEFORMAT_DIR)/prodos $(FILEFORMAT_DIR)/cmd $(FILEFORMAT_DIR)/colecorom $(FILEFORMAT_DIR)/decb $(FILEFORMAT_DIR)/prg $(FILEFORMAT_DIR)/atari
 
 HAND_SRCS := \
     $(SRC_DIR)/main.cpp \
@@ -115,6 +115,7 @@ HAND_SRCS := \
     $(FILEFORMAT_DIR)/colecorom/ColecoRomFormat.cpp \
     $(FILEFORMAT_DIR)/decb/DecbFormat.cpp \
     $(FILEFORMAT_DIR)/prg/PrgFormat.cpp \
+    $(FILEFORMAT_DIR)/atari/AtariExeFormat.cpp \
     $(FILEFORMAT_DIR)/archive/ArchiveReader.cpp \
     $(FILEFORMAT_DIR)/coff/PeExportReader.cpp \
     $(FILEFORMAT_DIR)/coff/HostedCoffReader.cpp \
@@ -318,6 +319,10 @@ $(BIN_DIR)/prg_format_test: tests/prg_format_test.cpp $(FILEFORMAT_DIR)/prg/PrgF
 	@mkdir -p $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) tests/prg_format_test.cpp $(FILEFORMAT_DIR)/prg/PrgFormat.cpp -o $@
 
+$(BIN_DIR)/atari_exe_format_test: tests/atari_exe_format_test.cpp $(FILEFORMAT_DIR)/atari/AtariExeFormat.cpp $(FILEFORMAT_DIR)/atari/AtariExeFormat.h $(FILEFORMAT_DIR)/ObjectFile.h
+	@mkdir -p $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) tests/atari_exe_format_test.cpp $(FILEFORMAT_DIR)/atari/AtariExeFormat.cpp -o $@
+
 # Unlike the file-format tests above, this links against the generated
 # ANTLR grammar (M6809Assembler.cpp parses via grammar/RccAsm.g4), so it
 # needs the same $(CPPFLAGS)/$(LDFLAGS)/$(LDLIBS) the main binary does.
@@ -325,20 +330,21 @@ $(BIN_DIR)/m6809_assembler_test: tests/m6809_assembler_test.cpp $(SRC_DIR)/codeg
 	@mkdir -p $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/m6809_assembler_test.cpp $(SRC_DIR)/codegen/m6809/M6809Assembler.cpp $(GEN_DIR)/RccAsmLexer.cpp $(GEN_DIR)/RccAsmParser.cpp $(GEN_DIR)/RccAsmBaseVisitor.cpp $(GEN_DIR)/RccAsmVisitor.cpp $(LDFLAGS) $(LDLIBS) -o $@
 
-test-hosted-internal: all $(BIN_DIR)/archive_reader_test $(BIN_DIR)/macho_data_test $(BIN_DIR)/cmd_format_test $(BIN_DIR)/colecorom_format_test $(BIN_DIR)/decb_format_test $(BIN_DIR)/prg_format_test $(BIN_DIR)/m6809_assembler_test
+test-hosted-internal: all $(BIN_DIR)/archive_reader_test $(BIN_DIR)/macho_data_test $(BIN_DIR)/cmd_format_test $(BIN_DIR)/colecorom_format_test $(BIN_DIR)/decb_format_test $(BIN_DIR)/prg_format_test $(BIN_DIR)/atari_exe_format_test $(BIN_DIR)/m6809_assembler_test
 	$(BIN_DIR)/archive_reader_test
 	$(BIN_DIR)/macho_data_test
 	$(BIN_DIR)/cmd_format_test
 	$(BIN_DIR)/colecorom_format_test
 	$(BIN_DIR)/decb_format_test
 	$(BIN_DIR)/prg_format_test
+	$(BIN_DIR)/atari_exe_format_test
 	$(BIN_DIR)/m6809_assembler_test
 	python3 tests/m6809_link_test.py $(TARGET)
 	python3 tests/platform_flag_test.py $(TARGET)
 	python3 tests/hosted_internal_linker_test.py $(TARGET)
 	python3 tests/hosted_linux_linker_test.py $(TARGET)
 
-test: all $(BIN_DIR)/preprocessor_test $(BIN_DIR)/archive_reader_test $(BIN_DIR)/macho_data_test $(BIN_DIR)/cmd_format_test $(BIN_DIR)/colecorom_format_test $(BIN_DIR)/decb_format_test $(BIN_DIR)/prg_format_test $(BIN_DIR)/m6809_assembler_test
+test: all $(BIN_DIR)/preprocessor_test $(BIN_DIR)/archive_reader_test $(BIN_DIR)/macho_data_test $(BIN_DIR)/cmd_format_test $(BIN_DIR)/colecorom_format_test $(BIN_DIR)/decb_format_test $(BIN_DIR)/prg_format_test $(BIN_DIR)/atari_exe_format_test $(BIN_DIR)/m6809_assembler_test
 	$(BIN_DIR)/preprocessor_test
 	$(BIN_DIR)/archive_reader_test
 	$(BIN_DIR)/macho_data_test
@@ -346,6 +352,7 @@ test: all $(BIN_DIR)/preprocessor_test $(BIN_DIR)/archive_reader_test $(BIN_DIR)
 	$(BIN_DIR)/colecorom_format_test
 	$(BIN_DIR)/decb_format_test
 	$(BIN_DIR)/prg_format_test
+	$(BIN_DIR)/atari_exe_format_test
 	$(BIN_DIR)/m6809_assembler_test
 	python3 tests/qemu_wait_test.py
 	python3 tests/m6809_link_test.py $(TARGET)
@@ -373,5 +380,6 @@ test: all $(BIN_DIR)/preprocessor_test $(BIN_DIR)/archive_reader_test $(BIN_DIR)
 	./tests/run_apple2_rom_wrapper_tests.sh $(TARGET)
 	./tests/run_vic20_format_tests.sh $(TARGET)
 	./tests/run_c64_format_tests.sh $(TARGET)
+	./tests/run_atari400_format_tests.sh $(TARGET)
 	./tests/run_trs80_rt_tests.sh $(TARGET)
 	./tests/run_coleco_rt_tests.sh $(TARGET)

@@ -367,9 +367,12 @@ class Assembler {
     // Not a general 65C02 encoder: only the mnemonic/operand-shape
     // combinations M65C02Codegen.cpp emits, plus (rmb0-7/smb0-7/bbr0-7/
     // bbs0-7/wai/stp) real WDC 65C02 instructions no C-level construct maps
-    // to - these are never emitted by M65C02Codegen.cpp itself, only
-    // reachable by a user's own `asm { }` block (see docs/language.md's
-    // "Inline asm" - exactly the escape hatch that comment describes).
+    // to, plus `ldxi` (immediate-only LDX, same reason and same opcode as
+    // M6502Assembler.cpp's own - CIO IOCB-number selection in
+    // src/rt/atari400/) - these are never emitted by M65C02Codegen.cpp
+    // itself, only reachable by a user's own `asm { }` block (see
+    // docs/language.md's "Inline asm" - exactly the escape hatch that
+    // comment describes).
     void encodeInstr(const std::string &mnemonic, const std::vector<std::vector<Syllable>> &ops) {
         auto one = [&]() -> const std::vector<Syllable> & {
             if (ops.size() != 1) fail("'" + mnemonic + "' needs exactly one operand");
@@ -400,7 +403,7 @@ class Assembler {
             return;
         }
         static const std::unordered_map<std::string, uint8_t> immLow = {
-            {"ldai", 0xA9}, {"ldyi", 0xA0}, {"adci", 0x69}, {"andi", 0x29}, {"eori", 0x49},
+            {"ldai", 0xA9}, {"ldyi", 0xA0}, {"ldxi", 0xA2}, {"adci", 0x69}, {"andi", 0x29}, {"eori", 0x49},
         };
         if (auto it = immLow.find(mnemonic); it != immLow.end()) {
             emit8(it->second);

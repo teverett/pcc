@@ -318,7 +318,7 @@ class Assembler {
         emit8(static_cast<uint8_t>((v >> 8) & 0xFF));
     }
 
-    // `ldai`/`adci`/`andi`/`eori`/`ldyi` immediate operand, and `dblo`'s data
+    // `ldai`/`adci`/`andi`/`eori`/`ldyi`/`ldxi` immediate operand, and `dblo`'s data
     // byte: the LOW byte of the resolved value - equivalent to a real
     // assembler's `#<label` low-byte operator, spelled as a plain mnemonic.
     void emitImmLow(const std::vector<Syllable> &e) {
@@ -362,9 +362,13 @@ class Assembler {
         emit8(static_cast<uint8_t>(static_cast<int8_t>(rel)));
     }
 
-    // The full instruction vocabulary M6502Codegen.cpp emits. Not a general
-    // 6502 encoder: no X/Y-indexed modes, no absolute LDX/LDY/STX/STY/
-    // CMP/CPX/CPY - exactly the mnemonic/operand combinations used here.
+    // The full instruction vocabulary M6502Codegen.cpp emits, plus `ldxi`
+    // (immediate-only LDX, added for src/rt/atari400/'s own CIO IOCB-number
+    // selection - see that directory's own atari400.c comment for why only
+    // the immediate form is needed, never a general X register). Not a
+    // general 6502 encoder otherwise: no X/Y-indexed modes, no absolute
+    // LDX/LDY/STX/STY/CMP/CPX/CPY, no TAX/TXA/TAY/TYA - exactly the
+    // mnemonic/operand combinations used here.
     void encodeInstr(const std::string &mnemonic, const std::vector<std::vector<Syllable>> &ops) {
         auto one = [&]() -> const std::vector<Syllable> & {
             if (ops.size() != 1) fail("'" + mnemonic + "' needs exactly one operand");
@@ -392,7 +396,7 @@ class Assembler {
             return;
         }
         static const std::unordered_map<std::string, uint8_t> immLow = {
-            {"ldai", 0xA9}, {"ldyi", 0xA0}, {"adci", 0x69}, {"andi", 0x29}, {"eori", 0x49},
+            {"ldai", 0xA9}, {"ldyi", 0xA0}, {"ldxi", 0xA2}, {"adci", 0x69}, {"andi", 0x29}, {"eori", 0x49},
         };
         if (auto it = immLow.find(mnemonic); it != immLow.end()) {
             emit8(it->second);

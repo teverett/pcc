@@ -101,7 +101,17 @@ pair - see `docs/using.md`.
   `examples/6502-c64/`) - both KERNAL call runtime libraries built on
   top of this target, duplicated between the two directories rather
   than shared even though they call the identical jump-table addresses
-  (see `src/rt/c64/c64.h`'s own header comment for why).
+  (see `src/rt/c64/c64.h`'s own header comment for why). `--link
+  --format=atari` wraps the same linked bytes in the Atari 400/800 DOS
+  binary-load segment convention instead - see `src/rt/atari400/` for a
+  CIO call runtime library built on top of this target (`--base=8192`,
+  $2000; `examples/6502-atari400/`). Atari's CIO needs an IOCB number in
+  the X register, unlike every other 6502 runtime library here (which
+  only ever touch the accumulator) - the one real new wrinkle this
+  target needed: the assembler had no X-register support at all until
+  `ldxi` (immediate-only `LDX`, opcode `$A2`) was added specifically for
+  it (see `M6502Assembler.cpp`'s own `encodeInstr()` comment); still no
+  `STX`/`TAX`/indexed addressing or general X-register support.
 - **65c02** — WDC 65C02, same dialect/platform choices as `6502` plus the
   real CMOS-only instructions `M65C02Codegen.cpp`/`M65C02Assembler.cpp`
   support: `STZ`, used automatically by codegen itself to zero a zero-page

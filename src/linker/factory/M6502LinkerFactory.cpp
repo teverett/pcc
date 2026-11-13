@@ -45,7 +45,7 @@ std::unique_ptr<TargetLinker> makeM6502Linker(uint32_t baseAddress) {
     config.relocPatchers[kM6502RelocAbs16] = RelocKinds::patchAbs16;
     config.relocPatchers[kM6502RelocAbs16Lo] = patchAbs16Lo;
     config.relocPatchers[kM6502RelocAbs16Hi] = patchAbs16Hi;
-    config.outputFormats = {"raw", "coff", "elf", "aout", "dos33", "prodos", "prg"};
+    config.outputFormats = {"raw", "coff", "elf", "aout", "dos33", "prodos", "prg", "atari"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
