@@ -16,9 +16,14 @@ else
 DEFAULT_TARGET := macos
 endif
 
-.PHONY: all macos linux windows clean
+.PHONY: all macos linux windows test clean
 
 all: $(DEFAULT_TARGET)
+
+# Runs the just-built binary directly and checks its output (test.py) -
+# see that script's own header comment.
+test: all
+	python3 "$(EXAMPLE_DIR)test.py" "$(BUILD_DIR)"
 
 macos: $(BUILD_DIR)/hello-macos
 linux: $(BUILD_DIR)/hello-linux

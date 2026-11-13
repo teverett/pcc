@@ -5,7 +5,7 @@ MSDOS_LIB := $(MSDOS_DIR)/msdos.lib
 
 include $(EXAMPLE_DIR)../examples.mk
 
-.PHONY: all clean
+.PHONY: all test clean
 
 all: $(BUILD_DIR)/main.com
 
@@ -24,6 +24,11 @@ $(MSDOS_LIB):
 
 $(BUILD_DIR)/main.com: $(BUILD_DIR)/main.o $(MSDOS_LIB)
 	$(RCC) --link --platform=8086-dos-raw --out="$(BUILD_DIR)/main.com" "$(BUILD_DIR)/main.o" "$(MSDOS_LIB)"
+
+# No DOS/8086 emulator is wired into this project for that - see this
+# example's own README - so this only confirms main.com exists.
+test: all
+	test -s "$(BUILD_DIR)/main.com"
 
 clean:
 	rm -rf "$(BUILD_DIR)"

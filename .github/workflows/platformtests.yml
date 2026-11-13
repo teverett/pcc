@@ -91,312 +91,42 @@ jobs:
         if: matrix.name == 'macos'
         run: pip3 install --break-system-packages z80-python
 
-      # m30626fjpfp-freestanding targets the M16C core, which has no Python
-      # (or other) emulator wired into this project anywhere - see that
-      # example's own README. There's nothing to run it against, so this
-      # only confirms main.c still compiles and links; main.c itself has no
-      # observable output (no I/O calls at all) to assert against anyway.
-      - name: Build m30626fjpfp-freestanding example
-        if: matrix.name == 'macos'
-        run: |
-          make -C examples/m30626fjpfp-freestanding
-          test -s examples/m30626fjpfp-freestanding/build/main.bin
-
-      # 8086-msdos targets 8086-dos (a `.com` loaded/entered at 0x100 under
-      # a real DOS environment, not a bootable floppy image), unlike the
-      # plain `8086`/`8088` boot-sector targets tests/run_tests.sh's own
-      # check_8086() runs under qemu -fda. No DOS/8086 emulator is wired
-      # into this project for that - see that example's own README - so
-      # this only confirms main.c still compiles and links against
-      # src/rt/msdos/.
-      - name: Build 8086-msdos example
-        if: matrix.name == 'macos'
-        run: |
-          make -C examples/8086-msdos
-          test -s examples/8086-msdos/build/main.com
-
-      # 6809-coco targets a bare 6809 CoCo "hello world" (src/rt/coco/).
-      # No Python (or other) 6809 emulator is wired into this project
-      # anywhere yet - see docs/known-bugs.md - so this only confirms
-      # main.c still compiles and links against src/rt/coco/, the same
-      # build-only treatment as m30626fjpfp-freestanding/8086-msdos above.
-      - name: Build 6809-coco example
-        if: matrix.name == 'macos'
-        run: |
-          make -C examples/6809-coco
-          test -s examples/6809-coco/build/main.raw
-          test -s examples/6809-coco/build/main.decb
-
-      - name: Build and run macOS hello example
-        if: matrix.name == 'macos'
-        run: |
-          make -C examples/hosted-hello macos
-          python3 - <<'PY'
-          import subprocess
-          result = subprocess.run(["examples/hosted-hello/build/hello-macos"], capture_output=True)
-          assert result.stdout == b"hello rcc\n", (result.stdout, result.stderr)
-          assert result.returncode == 0, result.returncode
-          PY
-
-      - name: Build and run Linux hello example
-        if: matrix.name == 'linux'
-        run: |
-          make -C examples/hosted-hello linux
-          python3 - <<'PY'
-          import subprocess
-          output = subprocess.check_output(["examples/hosted-hello/build/hello-linux"])
-          assert output == b"hello rcc\n", repr(output)
-          PY
-
-      - name: Build and run Windows hello example
-        if: matrix.name == 'windows'
-        shell: msys2 {0}
-        run: |
-          mingw32-make -C examples/hosted-hello windows
-          python3 - <<'PY'
-          import subprocess
-          output = subprocess.check_output(["examples/hosted-hello/build/hello-windows.exe"])
-          assert output in (b"hello rcc\n", b"hello rcc\r\n"), repr(output)
-          PY
-
-      # 6502-freestanding is a freestanding 6502 binary (no OS to exec it on), so
-      # it's verified with py65's MPU core instead of actually running it
-      # - same self-jump halt detection and zero-page return-value
-      # convention (`ac` at addresses 2/3) as tests/run_tests.sh's own
-      # check_6502(), since the linker's _start stub for `--format=raw`
-      # is the same one M6502Codegen.cpp emits for the raw pipeline.
-      - name: Build and run 6502-freestanding in py65 emulator
-        if: matrix.name == 'macos'
-        run: |
-          make -C examples/6502-freestanding
-          python3 - <<'PY'
-          from py65.devices.mpu6502 import MPU
-
-          with open("examples/6502-freestanding/build/main.bin", "rb") as f:
-              data = f.read()
-
-          base = 0x0600
-          mpu = MPU()
-          mpu.memory[base:base + len(data)] = data
-          mpu.pc = base
-
-          for _ in range(2_000_000):
-              pc_before = mpu.pc
-              mpu.step()
-              if mpu.pc == pc_before:  # "halt: jmp halt"
-                  break
-          else:
-              raise SystemExit("simulator never reached the halt loop (step limit exceeded)")
-
-          lo = mpu.memory[2]
-          hi = mpu.memory[3]
-          val = lo | (hi << 8)
-          if val >= 0x8000:
-              val -= 0x10000
-          assert val == 45, val
-          PY
-
-      # 68000-freestanding is a freestanding 68000 binary (no OS to exec it
-      # on), so it's verified against a real `qemu-system-m68k -M none -cpu
-      # m68000` the same way tests/run_tests.sh's own check_68000() does:
-      # the `loader` device forces the CPU's PC straight to the program's
-      # load address (no boot ROM/vector table), tests/qemu_wait.py polls
-      # the monitor until the register dump settles into the linker's own
-      # halt loop, and main()'s return value is read back out of D0.
       - name: Install qemu (68000 emulator)
         if: matrix.name == 'macos'
         run: brew install qemu
 
-      - name: Build and run 68000-freestanding in qemu
+      - name: Install open-simh (pdp7 emulator)
+        if: matrix.name == 'macos'
+        run: brew install open-simh
+
+      # Each example's own `test` target builds it, then verifies it in
+      # whichever simulator (py65, z80-python, qemu-system-m68k,
+      # open-simh's pdp7) that target has one wired up for - see each
+      # example's own Makefile/README for which. m30626fjpfp-freestanding/
+      # 8086-msdos/6809-coco have no emulator wired into this project at
+      # all, so their `test` targets only confirm the build output exists.
+      - name: Run macOS-only example tests
         if: matrix.name == 'macos'
         run: |
-          make -C examples/68000-freestanding
-          python3 -I - <<'PY'
-          import re
-          import subprocess
-          import sys
+          make -C examples/m30626fjpfp-freestanding test
+          make -C examples/8086-msdos test
+          make -C examples/6809-coco test
+          make -C examples/6502-freestanding test
+          make -C examples/68000-freestanding test
+          make -C examples/pdp7-freestanding test
+          make -C examples/6502-dos33 test
+          make -C examples/z80-trs80 test
+          make -C examples/z80-coleco test
 
-          binfile = "examples/68000-freestanding/build/main.bin"
-          monitor = "/tmp/68000-freestanding.monitor"
-
-          qemu = subprocess.Popen([
-              "qemu-system-m68k", "-M", "none", "-cpu", "m68000", "-m", "16M",
-              "-device", f"loader,file={binfile},addr=0x1000,cpu-num=0",
-              "-device", "loader,addr=0x1000,cpu-num=0",
-              "-monitor", f"unix:{monitor},server,nowait", "-display", "none", "-no-reboot",
-          ])
-          try:
-              result = subprocess.run(
-                  ["python3", "-I", "tests/qemu_wait.py", monitor, "40"],
-                  capture_output=True, text=True, timeout=45,
-              )
-          finally:
-              qemu.terminate()
-              try:
-                  qemu.wait(timeout=5)
-              except subprocess.TimeoutExpired:
-                  qemu.kill()
-
-          if result.returncode != 0:
-              sys.exit(f"qemu_wait failed:\n{result.stdout}\n{result.stderr}")
-
-          match = re.search(r"D0 = ([0-9a-fA-F]+)", result.stdout)
-          assert match, result.stdout
-          d0 = int(match.group(1), 16)
-          if d0 >= 0x80000000:
-              d0 -= 0x100000000
-          assert d0 == 45, d0
-          PY
-
-      # 6502-dos33 is an Apple ][ "hello world" (src/rt/apple2/) - also a
-      # freestanding 6502 binary, so the same py65 approach as
-      # 6502-freestanding applies, but it makes real COUT/CROUT/HOME/
-      # SETTXT/VTAB/SETINV/SETNORM calls (asm { jsr ... } in
-      # src/rt/apple2/apple2.c) that would otherwise JSR into empty
-      # memory. Each is patched with a tiny hand-written 6502 stub before
-      # running: COUT ($FDED) appends A (masked back to 7 bits - COUT
-      # itself expects bit 7 set for normal display text, see apple2.c's
-      # own a2_cout() comment) into a buffer at $0400, tracked via a
-      # zero-page position counter at $F0 (ldx $F0; sta $0400,x; inx; stx
-      # $F0; rts); CROUT ($FD8E) pushes a newline then falls into that
-      # same COUT stub; HOME/SETTXT/VTAB/SETINV/SETNORM are all no-ops
-      # (rts) - their effects aren't observable from outside the
-      # (nonexistent) text screen, so this only confirms each call itself
-      # doesn't crash.
-      - name: Build and run 6502-dos33 in py65 emulator
+      - name: Build and run macOS hello example
         if: matrix.name == 'macos'
-        run: |
-          make -C examples/6502-dos33 "$(pwd)/examples/6502-dos33/build/main.raw"
-          python3 - <<'PY'
-          from py65.devices.mpu6502 import MPU
+        run: make -C examples/hosted-hello test
 
-          with open("examples/6502-dos33/build/main.raw", "rb") as f:
-              data = f.read()
+      - name: Build and run Linux hello example
+        if: matrix.name == 'linux'
+        run: make -C examples/hosted-hello test
 
-          base = 0x2000
-          mpu = MPU()
-          mpu.memory[base:base + len(data)] = data
-
-          mpu.memory[0xFDED:0xFDED + 9] = [0xA6, 0xF0, 0x9D, 0x00, 0x04, 0xE8, 0x86, 0xF0, 0x60]
-          mpu.memory[0xF0] = 0
-          mpu.memory[0xFD8E:0xFD8E + 5] = [0xA9, 0x8A, 0x4C, 0xED, 0xFD]
-          mpu.memory[0xFC58] = 0x60  # HOME
-          mpu.memory[0xFB39] = 0x60  # SETTXT
-          mpu.memory[0xFC22] = 0x60  # VTAB
-          mpu.memory[0xFE80] = 0x60  # SETINV
-          mpu.memory[0xFE84] = 0x60  # SETNORM
-
-          mpu.pc = base
-          for _ in range(2_000_000):
-              pc_before = mpu.pc
-              mpu.step()
-              if mpu.pc == pc_before:
-                  break
-          else:
-              raise SystemExit("simulator never reached the halt loop (step limit exceeded)")
-
-          n = mpu.memory[0xF0]
-          out = bytes(mpu.memory[0x0400 + i] & 0x7F for i in range(n))
-          assert out == b"HELLO, WORLD!\n", out
-          PY
-
-      # z80-trs80 is a TRS-80 "hello world" (src/rt/trs80/) - a freestanding
-      # Z80 binary, run on a real, independent Z80 core (z80-python) rather
-      # than py65/6502. Unlike 6502-dos33, no ROM call needs patching with a
-      # stub first: trs80.c only ever stores through a pointer cast straight
-      # to video RAM's own absolute address (see src/rt/trs80/trs80.h's own
-      # header comment), so the simulator's memory array already is the
-      # screen - the printed text is read straight back out of it.
-      - name: Build and run z80-trs80 on a Z80 core
-        if: matrix.name == 'macos'
-        run: |
-          make -C examples/z80-trs80 "$(pwd)/examples/z80-trs80/build/main.raw"
-          python3 - <<'PY'
-          from z80_python import Z80CPU
-
-          with open("examples/z80-trs80/build/main.raw", "rb") as f:
-              data = f.read()
-
-          base = 0x8000
-          memory = bytearray(0x10000)
-          memory[base:base + len(data)] = data
-
-          cpu = Z80CPU(memory.__getitem__, memory.__setitem__)
-          cpu.pc = base
-          for _ in range(2_000_000):
-              pc_before = cpu.pc
-              cpu.step()
-              if cpu.pc == pc_before:  # "halt: jp halt"
-                  break
-          else:
-              raise SystemExit("simulator never reached the halt loop (step limit exceeded)")
-
-          row = bytes(memory[0x3C00 + 7 * 64:0x3C00 + 8 * 64])
-          assert row == b" " * 25 + b"HELLO, WORLD!" + b" " * 26, row
-          PY
-
-      # z80-coleco is a ColecoVision "hello world" (src/rt/coleco/) - also a
-      # freestanding Z80 binary, but unlike z80-trs80's pure memory-mapped
-      # hardware, coleco.c reaches the VDP/controllers/sound chip entirely
-      # through `IN`/`OUT` (port-mapped, not memory-mapped - see
-      # src/rt/coleco/coleco.h's own header comment), so this needs z80-
-      # python's own `read_port`/`write_port` callbacks, not just a plain
-      # memory array. One real Z80 hardware quirk this harness accounts
-      # for: `OUT (n),A` puts A on the address bus's own upper byte too
-      # (z80-python's own `_op_out_n_a()` models this faithfully - port
-      # address "A:n"), so every callback here masks `port` down to 8 bits,
-      # exactly what a real ColecoVision's own simple port decoder does
-      # (only A0-A7 select a device).
-      - name: Build and run z80-coleco on a Z80 core
-        if: matrix.name == 'macos'
-        run: |
-          make -C examples/z80-coleco "$(pwd)/examples/z80-coleco/build/main.raw"
-          python3 - <<'PY'
-          from z80_python import Z80CPU
-
-          with open("examples/z80-coleco/build/main.raw", "rb") as f:
-              data = f.read()
-
-          base = 0x8000
-          memory = bytearray(0x10000)
-          memory[base:base + len(data)] = data
-
-          vram = bytearray(0x4000)
-          state = {"addr": 0, "latch": None}
-
-          def read_port(port):
-              port &= 0xFF
-              if port == 0xBE:
-                  val = vram[state["addr"] & 0x3FFF]
-                  state["addr"] = (state["addr"] + 1) & 0x3FFF
-                  return val
-              return 0xFF
-
-          def write_port(port, value):
-              port &= 0xFF
-              if port == 0xBE:
-                  vram[state["addr"] & 0x3FFF] = value
-                  state["addr"] = (state["addr"] + 1) & 0x3FFF
-              elif port == 0xBF:
-                  if state["latch"] is None:
-                      state["latch"] = value
-                  else:
-                      lo, hi = state["latch"], value
-                      state["latch"] = None
-                      if not (hi & 0x80):
-                          state["addr"] = (lo | ((hi & 0x3F) << 8)) & 0x3FFF
-
-          cpu = Z80CPU(memory.__getitem__, memory.__setitem__, read_port=read_port, write_port=write_port)
-          cpu.pc = base
-          for _ in range(2_000_000):
-              pc_before = cpu.pc
-              cpu.step()
-              if cpu.pc == pc_before:  # "halt: jp halt"
-                  break
-          else:
-              raise SystemExit("simulator never reached the halt loop (step limit exceeded)")
-
-          name_table = vram[0x1800:0x1800 + 32 * 24]
-          row = bytes(name_table[10 * 32:11 * 32])
-          assert row == b" " * 9 + b"HELLO, WORLD!" + b" " * 10, row
-          PY
+      - name: Build and run Windows hello example
+        if: matrix.name == 'windows'
+        shell: msys2 {0}
+        run: mingw32-make -C examples/hosted-hello test

@@ -5,7 +5,7 @@ COLECO_LIB := $(COLECO_DIR)/coleco.lib
 
 include $(EXAMPLE_DIR)../examples.mk
 
-.PHONY: all clean
+.PHONY: all test clean
 
 all: $(BUILD_DIR)/main.col
 
@@ -31,6 +31,11 @@ $(BUILD_DIR)/main.col: $(BUILD_DIR)/main.o $(COLECO_LIB)
 # run it directly in a Z80 simulator without padding to worry about.
 $(BUILD_DIR)/main.raw: $(BUILD_DIR)/main.o $(COLECO_LIB)
 	$(RCC) --link --platform=z80-coleco-raw --out="$@" "$(BUILD_DIR)/main.o" "$(COLECO_LIB)"
+
+# Runs main.raw on a real Z80 core (test.py) - see that script's own
+# header comment.
+test: $(BUILD_DIR)/main.raw
+	python3 "$(EXAMPLE_DIR)test.py" "$(BUILD_DIR)/main.raw"
 
 clean:
 	rm -rf "$(BUILD_DIR)"

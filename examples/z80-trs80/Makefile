@@ -5,7 +5,7 @@ TRS80_LIB := $(TRS80_DIR)/trs80.lib
 
 include $(EXAMPLE_DIR)../examples.mk
 
-.PHONY: all clean
+.PHONY: all test clean
 
 all: $(BUILD_DIR)/main.cmd
 
@@ -32,6 +32,11 @@ $(BUILD_DIR)/main.cmd: $(BUILD_DIR)/main.o $(TRS80_LIB)
 # first.
 $(BUILD_DIR)/main.raw: $(BUILD_DIR)/main.o $(TRS80_LIB)
 	$(RCC) --link --platform=z80-raw --out="$@" "$(BUILD_DIR)/main.o" "$(TRS80_LIB)"
+
+# Runs main.raw on a real Z80 core (test.py) - see that script's own
+# header comment.
+test: $(BUILD_DIR)/main.raw
+	python3 "$(EXAMPLE_DIR)test.py" "$(BUILD_DIR)/main.raw"
 
 clean:
 	rm -rf "$(BUILD_DIR)"

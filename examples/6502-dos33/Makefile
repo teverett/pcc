@@ -5,7 +5,7 @@ APPLE2_LIB := $(APPLE2_DIR)/apple2.lib
 
 include $(EXAMPLE_DIR)../examples.mk
 
-.PHONY: all clean
+.PHONY: all test clean
 
 all: $(BUILD_DIR)/main.prodos
 
@@ -38,6 +38,11 @@ $(BUILD_DIR)/main.prodos: $(BUILD_DIR)/main.o $(APPLE2_LIB)
 # Same --base as main.prodos above - they need to stay identical bytes.
 $(BUILD_DIR)/main.raw: $(BUILD_DIR)/main.o $(APPLE2_LIB)
 	$(RCC) --link --platform=6502-raw --base=8192 --out="$@" "$(BUILD_DIR)/main.o" "$(APPLE2_LIB)"
+
+# Runs main.raw in py65's 6502 MPU core (test.py) - see that script's own
+# header comment.
+test: $(BUILD_DIR)/main.raw
+	python3 "$(EXAMPLE_DIR)test.py" "$(BUILD_DIR)/main.raw"
 
 clean:
 	rm -rf "$(BUILD_DIR)"

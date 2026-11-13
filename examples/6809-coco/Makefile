@@ -5,7 +5,7 @@ COCO_LIB := $(COCO_DIR)/coco.lib
 
 include $(EXAMPLE_DIR)../examples.mk
 
-.PHONY: all clean
+.PHONY: all test clean
 
 all: $(BUILD_DIR)/main.raw $(BUILD_DIR)/main.decb
 
@@ -28,6 +28,12 @@ $(BUILD_DIR)/main.raw: $(BUILD_DIR)/main.o $(COCO_LIB)
 # The real CoCo LOADM/CLOADM byte stream - see ../../src/fileformat/decb/DecbFormat.h.
 $(BUILD_DIR)/main.decb: $(BUILD_DIR)/main.o $(COCO_LIB)
 	$(RCC) --link --platform=6809-decb --out="$@" "$(BUILD_DIR)/main.o" "$(COCO_LIB)"
+
+# No Python (or other) 6809 emulator is wired into this project anywhere
+# yet - see docs/known-bugs.md - so this only confirms both outputs exist.
+test: all
+	test -s "$(BUILD_DIR)/main.raw"
+	test -s "$(BUILD_DIR)/main.decb"
 
 clean:
 	rm -rf "$(BUILD_DIR)"
