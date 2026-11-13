@@ -375,8 +375,14 @@ void M68kCodegen::genExpr(const ir::Expr &e) {
 // pointer variable, so the base comes from reading its stored value.
 void M68kCodegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // d0 = index
-    // d0 *= element width, via repeated doubling.
-    for (int i = elemDoublings(slot->type); i > 0; i--) code_ << "    addl d0,d0\n";
+    // d0 *= element width, via repeated doubling, or a real multiply for a
+    // non-power-of-two width (a struct's).
+    int doublings = elemDoublings(slot->type);
+    if (doublings >= 0) {
+        for (int i = 0; i < doublings; i++) code_ << "    addl d0,d0\n";
+    } else {
+        scaleIndexByWidth(slot->type);
+    }
     if (slot->arraySize > 0) {
         if (slot->kind == ir::SlotKind::Global) {
             code_ << "    leal " << label(slot) << ",a0\n";

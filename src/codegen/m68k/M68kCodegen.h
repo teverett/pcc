@@ -96,14 +96,24 @@ class M68kCodegen : public Backend {
 
     int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
-    // Number of doubling ("addl d0,d0") steps to scale an index by this element width.
+    // Number of doubling ("addl d0,d0") steps to scale an index by this element
+    // width, or -1 when the width isn't a power of two (genIndexAddr() then scales
+    // via a real multiply instead - see scaleIndexByWidth()).
     int elemDoublings(Type t) const {
         switch (widthOfType(t)) {
             case 1: return 0;
             case 2: return 1;
             case 4: return 2;
-            default: return 3;
+            case 8: return 3;
+            default: return -1;
         }
+    }
+    // Scales D0 (the index) by a struct element's non-power-of-two width via
+    // MULU.W, same as genCompoundOp()'s own '*'. The width always fits in 16 bits,
+    // so the 16x16->32 hardware multiply is exact regardless of the index's range.
+    void scaleIndexByWidth(Type t) {
+        code_ << "    movel " << widthOfType(t) << ",d1\n";
+        code_ << "    muluw d1,d0\n";
     }
 
     // Loads a value of `type` from frame/absolute operand text `mem` into D0 (or

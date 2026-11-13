@@ -91,14 +91,23 @@ class STM32Codegen : public Backend {
     // Only `long long` is wider than the native 32-bit int - the one type needing the r0:r1
     // register-pair convention below.
     bool isWide(Type t) const { return widthOfType(t) > widthOfType(Type{BaseType::Int, false}); }
-    // log2 of an element type's width (1/2/4/8 bytes -> 0/1/2/3), the shift genIndexAddr() uses.
+    // log2 of an element type's width (1/2/4/8 bytes -> 0/1/2/3), the shift genIndexAddr() uses,
+    // or -1 when the width isn't a power of two (genIndexAddr() then scales via a real multiply
+    // instead - see scaleIndexByWidth()).
     int elemShift(Type t) const {
         switch (widthOfType(t)) {
             case 1: return 0;
             case 2: return 1;
             case 4: return 2;
-            default: return 3;
+            case 8: return 3;
+            default: return -1;
         }
+    }
+    // Scales r0 (the index) by a struct element's non-power-of-two width via the hardware `mul`
+    // (full 32x32->32 on this CPU, unlike m68k's 16-bit-only multiply).
+    void scaleIndexByWidth(Type t) {
+        code_ << "    movl " << widthOfType(t) << ",r3\n";
+        code_ << "    mul r3,r0\n";
     }
 
     // Loads a value of `type` from the address in `addrReg` into r0 (or r0:r1 for `long long`),

@@ -217,6 +217,30 @@ at all to verify a fix against, and remain unverified (not necessarily
 unfixed - their `elemShift()` has the same shape as the others, just
 never confirmed against real execution).
 
+## `68000`/`mc68328`/`stm32` have the same mis-scaled array index bug the entry above fixed elsewhere
+
+Affects `src/codegen/m68k/M68kCodegen.{h,cpp}` (shared by both `68000`
+and `mc68328`, since they're bit-for-bit the same instruction set - see
+`docs/platforms.md`'s own `mc68328` entry) and
+`src/codegen/stm32/STM32Codegen.{h,cpp}`. These three backends weren't
+touched by the fix the entry above describes - `M68kCodegen.h`'s
+`elemDoublings()` and `STM32Codegen.h`'s `elemShift()` both still have
+the original broken fallback: any element width other than 1/2/4 bytes
+is scaled as if it were 8 (three doublings/an `lsl #3`-equivalent),
+silently computing the wrong element address exactly the way the
+now-fixed backends used to.
+
+Confirmed directly: `tests/struct_nonpow2_array_stride.c` (a 3-`char`
+struct, expects 33 - see that file's own comment) comes back 88 on all
+three (`(p1-p0)*10+(p2-p1)` with each stride computed as 8 instead of
+3), and `tests/struct_packed_array.c` fails the same way, via
+`tests/run_tests.sh --target=68000`/`--target=mc68328`/`--target=stm32`
+(the real `qemu-system-m68k`/`qemu-system-arm` simulators these targets
+are tested against). Not yet fixed - the same real-multiply fix
+(`mulsl`/`mulul` for `68000`/`mc68328`, `muls`/the target's own
+software multiply for `stm32`) just hasn't been applied to these three
+backends yet.
+
 ## `tests/run_tests.sh --target=8086`/`8088` has no working test execution
 
 Affects `tests/run_tests.sh`'s `8086|8088)` prerequisites case,
@@ -295,3 +319,53 @@ battery has been read by hand and looks correct - but none of this is
 the same as running real 6809 machine code. Remove this entry once a
 suitable Python 6809 emulator package is found and `check_6809()` is
 wired into the dispatch.
+
+## `tests/hex_literal.c` fails on `--target=8051`/`8052`/`8031`/`8032`, missing from that target's long-arithmetic skip-list
+
+Affects `tests/run_tests.sh`'s `is_known_unsupported()`. MCS51 deliberately
+has no `long`/`long long` arithmetic at all (`MCS51Codegen.cpp`'s own
+`err(e.line, "'long'/'long long' arithmetic isn't supported on this
+target")`), and `is_known_unsupported()` already skip-lists about twenty
+other `tests/*.c` cases for `8051` on exactly that basis (`types_arrays.c`,
+`test_long_arith.c`, `unsigned_literal_above_long_max.c`, etc.) - but not
+`tests/hex_literal.c`, whose `unsigned long b = 0XFFUL;` hits the same
+restriction. Confirmed directly: `./tests/run_tests.sh --target=8051`
+fails it with `'long'/'long long' arithmetic isn't supported on this
+target`, the same error every skip-listed case above gets, just without
+the skip entry. Not yet fixed - needs an `8051:hex_literal.c) return 0
+;;` arm alongside the existing ones (and, since the shared MCS51 backend
+is identical across part numbers, the same gap presumably applies if
+`8052`/`8031`/`8032` are ever added to that function's own `$TARGET`
+matching instead of all falling under `8051`'s arms as they do today).
+
+## `make test`'s Apple II/TRS-80/ColecoVision runtime test scripts break when `$(TARGET)` is a relative path
+
+Affects `tests/run_apple2_format_tests.sh`, `tests/run_apple2_rom_wrapper_tests.sh`,
+`tests/run_trs80_rt_tests.sh`, and `tests/run_coleco_rt_tests.sh` - all
+four share the same `RCC="$ROOT_DIR/build/bin/rcc"; for arg in "$@"; do
+... RCC="$arg" ...; done` pattern, which takes a `path/to/rcc` argument
+and stores it verbatim with no absolute-path resolution, then later does
+`cd "$tmpdir"` before ever invoking `"$RCC"`. The root `Makefile`'s own
+`test` target calls every one of these four with exactly `$(TARGET)` =
+`build/bin/rcc` (relative, see `BIN_DIR`/`TARGET` near its top) - so once
+the script's own `cd` lands it in a fresh `mktemp -d` directory, that
+relative path no longer resolves to anything, and the script dies with
+a plain `build/bin/rcc: No such file or directory` (bash's own
+"couldn't exec" message, not one of the script's own) before running
+any real check.
+
+Confirmed directly: `./tests/run_apple2_format_tests.sh build/bin/rcc`
+and `./tests/run_apple2_rom_wrapper_tests.sh build/bin/rcc`, run from the
+repo root exactly the way `make test` runs them, both fail this way
+(exit 127); `run_trs80_rt_tests.sh`/`run_coleco_rt_tests.sh` take the
+same argument the same way and `cd` the same way, but exit earlier on
+their own `z80-python not found` check in this environment, so this
+wasn't directly confirmed for those two, just inferred from the
+identical code shape. This is presumably why it's gone unnoticed: per
+the "doesn't run `make test`/`run_tests.sh` in CI" entry above, nothing
+in CI ever calls these scripts with a relative path (or at all) to
+catch it. Not yet fixed - each script's `for arg in "$@"` loop needs to
+resolve `$arg` to an absolute path (e.g. `RCC="$(cd "$(dirname "$arg")"
+&& pwd)/$(basename "$arg")"`) before the later `cd "$tmpdir"`, the same
+way `ROOT_DIR`/`SCRIPT_DIR` already resolve themselves a few lines
+above.

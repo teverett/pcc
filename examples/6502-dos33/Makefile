@@ -1,5 +1,5 @@
 EXAMPLE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-BUILD_DIR ?= $(EXAMPLE_DIR)build
+BUILD_DIR ?= build
 APPLE2_DIR := $(EXAMPLE_DIR)../../src/rt/apple2
 APPLE2_LIB := $(APPLE2_DIR)/apple2.lib
 
@@ -42,7 +42,7 @@ $(BUILD_DIR)/main.raw: $(BUILD_DIR)/main.o $(APPLE2_LIB)
 # Runs main.raw in py65's 6502 MPU core (test.py) - see that script's own
 # header comment.
 test: $(BUILD_DIR)/main.raw
-	python3 "$(EXAMPLE_DIR)test.py" "$(BUILD_DIR)/main.raw"
+	python3 "test.py" "$(BUILD_DIR)/main.raw"
 
 clean:
 	rm -rf "$(BUILD_DIR)"

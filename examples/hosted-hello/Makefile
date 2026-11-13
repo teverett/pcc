@@ -1,5 +1,5 @@
 EXAMPLE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-BUILD_DIR ?= $(EXAMPLE_DIR)build
+BUILD_DIR ?= build
 
 include $(EXAMPLE_DIR)../examples.mk
 
@@ -23,7 +23,7 @@ all: $(DEFAULT_TARGET)
 # Runs the just-built binary directly and checks its output (test.py) -
 # see that script's own header comment.
 test: all
-	python3 "$(EXAMPLE_DIR)test.py" "$(BUILD_DIR)"
+	python3 "test.py" "$(BUILD_DIR)"
 
 macos: $(BUILD_DIR)/hello-macos
 linux: $(BUILD_DIR)/hello-linux

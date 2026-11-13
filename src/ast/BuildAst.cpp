@@ -1,6 +1,7 @@
 #include "BuildAst.h"
 
 #include <algorithm>
+#include <cctype>
 #include <stdexcept>
 
 #include "ANTLRInputStream.h"
@@ -59,10 +60,10 @@ ExprPtr buildExpr(CParser::ExprContext *ctx);
 // A decimal digit string's value as the raw 64-bit pattern `Expr::intValue`/callers store it
 // in - parsed unsigned so a literal up to 2^64-1 (e.g. an `ULL` one past `LONG_MAX`) wraps the
 // same way C itself defines it, instead of `std::stol`'s signed range rejecting it outright.
-long parseDigits(const std::string &text, antlr4::ParserRuleContext *ctx, const char *what) {
+long parseDigits(const std::string &text, antlr4::ParserRuleContext *ctx, const char *what, int base = 10) {
     unsigned long long v = 0;
     try {
-        v = std::stoull(text);
+        v = std::stoull(text, nullptr, base);
     } catch (const std::out_of_range &) {
         err(ctx, std::string(what) + " '" + text + "' is too large to represent in 64 bits");
     }
@@ -108,8 +109,15 @@ Type parseNumberSuffix(const std::string &suffix, antlr4::ParserRuleContext *ctx
 // returns both the parsed value and the suffix's Type.
 void parseIntLiteral(const std::string &text, antlr4::ParserRuleContext *ctx, long &value, Type &type) {
     size_t digitsEnd = 0;
-    while (digitsEnd < text.size() && text[digitsEnd] >= '0' && text[digitsEnd] <= '9') digitsEnd++;
-    value = parseDigits(text.substr(0, digitsEnd), ctx, "an integer literal");
+    bool isHex = text.size() >= 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X');
+    if (isHex) {
+        digitsEnd = 2;
+        while (digitsEnd < text.size() && std::isxdigit(static_cast<unsigned char>(text[digitsEnd]))) digitsEnd++;
+    } else {
+        while (digitsEnd < text.size() && text[digitsEnd] >= '0' && text[digitsEnd] <= '9') digitsEnd++;
+    }
+    // Base 0 makes stoull auto-detect the same 0x/0/decimal prefixing the lexer's NUMBER rule admits.
+    value = parseDigits(text.substr(0, digitsEnd), ctx, "an integer literal", 0);
     type = parseNumberSuffix(text.substr(digitsEnd), ctx);
 }
 

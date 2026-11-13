@@ -152,6 +152,9 @@ jobs:
       - name: Test Linux CI runtime configuration
         run: python3 tests/linux_ci_runtime_test.py
 
+      - name: Test example Makefiles' test-recipe script paths
+        run: python3 tests/example_test_recipe_test.py
+
       - name: Install ANTLR C++ runtime (conda-forge, prebuilt, exact version)
         uses: mamba-org/setup-micromamba@v3
         with:

@@ -86,12 +86,13 @@ DOT       : '.' ;
 ARROW     : '->' ;
 
 IDENT   : [a-zA-Z_][a-zA-Z_0-9]* ;
-// An optional u/l suffix picks the literal's type (unsigned/long/long
-// long, same spelling as ISO C's integer-suffix rule) - BuildAst parses
-// and validates the suffix text itself; this rule only admits the
-// syntax, same as every other token here that defers meaning to
-// BuildAst.
-NUMBER  : [0-9]+ [uUlL]* ;
+// Decimal, octal (leading 0), or hex (0x/0X), same spelling as ISO C's
+// integer-constant rule, plus an optional u/l suffix that picks the
+// literal's type (unsigned/long/long long, same spelling as ISO C's
+// integer-suffix rule) - BuildAst parses and validates the digits and
+// the suffix text itself; this rule only admits the syntax, same as
+// every other token here that defers meaning to BuildAst.
+NUMBER  : ( '0' [xX] [0-9a-fA-F]+ | '0' [0-7]* | [1-9] [0-9]* ) [uUlL]* ;
 // A single character, no escapes - enough for ASCII-arithmetic use
 // like '0' + digit; see ../README.md's "Scope and limitations".
 CHARLIT : '\'' ~['\r\n] '\'' ;

@@ -460,11 +460,14 @@ void STM32Codegen::genExpr(const ir::Expr &e) {
 // array's element addresses increase with the index.
 void STM32Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // r0 = index
-    // r0 *= the element type's width via a variable-count `lsl`.
+    // r0 *= the element type's width via a variable-count `lsl`, or a real multiply for a
+    // non-power-of-two width (a struct's).
     int shift = elemShift(slot->type);
     if (shift > 0) {
         code_ << "    movl " << shift << ",r3\n";
         code_ << "    lsl r0,r0,r3\n";
+    } else if (shift < 0) {
+        scaleIndexByWidth(slot->type);
     }
     if (slot->arraySize > 0) {
         if (slot->kind == ir::SlotKind::Global) {

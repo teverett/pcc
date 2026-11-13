@@ -1,5 +1,5 @@
 EXAMPLE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-BUILD_DIR ?= $(EXAMPLE_DIR)build
+BUILD_DIR ?= build
 
 include $(EXAMPLE_DIR)../examples.mk
 
@@ -19,7 +19,7 @@ $(BUILD_DIR)/main.bin: $(BUILD_DIR)/main.o
 # Runs main.bin in py65's 6502 MPU core (test.py) - see that script's own
 # header comment.
 test: $(BUILD_DIR)/main.bin
-	python3 "$(EXAMPLE_DIR)test.py" "$(BUILD_DIR)/main.bin"
+	python3 "test.py" "$(BUILD_DIR)/main.bin"
 
 clean:
 	rm -rf "$(BUILD_DIR)"
