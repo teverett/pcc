@@ -47,7 +47,10 @@ constexpr size_t kNlistSize = 12;
 constexpr size_t kRelocSize = 8;
 
 bool isArm64DarwinLocalSymbol(const std::string &name) {
-    return name.rfind("L", 0) == 0 || name.rfind("___strlit", 0) == 0;
+    // "___rcc_local_" is IRBuilder's own 'static'-linkage name mangling
+    // (see IRBuilder.cpp's mangleStaticName()) with this ABI's leading "_"
+    // prepended by Arm64Codegen::label().
+    return name.rfind("L", 0) == 0 || name.rfind("___strlit", 0) == 0 || name.rfind("___rcc_local_", 0) == 0;
 }
 
 std::string writeArm64DarwinObject(const ObjectFile &obj) {

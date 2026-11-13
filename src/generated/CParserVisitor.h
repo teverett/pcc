@@ -99,6 +99,10 @@ public:
 
     virtual std::any visitLocalDecl(CParser::LocalDeclContext *context) = 0;
 
+    virtual std::any visitStaticLocalArrayDecl(CParser::StaticLocalArrayDeclContext *context) = 0;
+
+    virtual std::any visitStaticLocalDecl(CParser::StaticLocalDeclContext *context) = 0;
+
     virtual std::any visitExprStmt(CParser::ExprStmtContext *context) = 0;
 
     virtual std::any visitCaseLabel(CParser::CaseLabelContext *context) = 0;

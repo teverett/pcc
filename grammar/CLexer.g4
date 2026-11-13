@@ -32,6 +32,7 @@ BREAK_KW : 'break' ;
 CONTINUE_KW: 'continue' ;
 GOTO_KW  : 'goto' ;
 EXTERN_KW: 'extern' ;
+STATIC_KW: 'static' ;
 STRUCT_KW: 'struct' ;
 LPAREN   : '(' ;
 RPAREN   : ')' ;

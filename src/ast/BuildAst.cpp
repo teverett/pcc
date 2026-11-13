@@ -567,6 +567,36 @@ StmtPtr buildSimpleStmt(CParser::SimpleStmtContext *ctx) {
         if (auto *e = c->expr()) s->initOrReturnOrExpr = buildExpr(e);
         return s;
     }
+    if (auto *c = dynamic_cast<CParser::StaticLocalArrayDeclContext *>(ctx)) {
+        auto s = std::make_unique<Stmt>();
+        s->kind = StmtKind::LocalDecl;
+        s->isStatic = true;
+        s->line = c->getStart()->getLine();
+        s->declName = c->IDENT()->getText();
+        s->type = buildType(c->typeSpec());
+        s->arraySize = static_cast<int>(parsePlainNumber(c->size, c, "an array size"));
+        if (s->arraySize <= 0) err(c, "array size must be a positive integer");
+        s->arrayInit = buildArrayInit(c->arrayInit());
+        padArrayInit(s->arrayInit, s->arraySize, c);
+        return s;
+    }
+    if (auto *c = dynamic_cast<CParser::StaticLocalDeclContext *>(ctx)) {
+        auto s = std::make_unique<Stmt>();
+        s->kind = StmtKind::LocalDecl;
+        s->isStatic = true;
+        s->line = c->getStart()->getLine();
+        s->declName = c->IDENT()->getText();
+        s->type = buildType(c->typeSpec());
+        if (auto *num = c->val) {
+            auto lit = std::make_unique<Expr>();
+            lit->kind = ExprKind::IntLit;
+            lit->line = c->getStart()->getLine();
+            lit->intValue = parsePlainNumber(num, c, "a static local initializer");
+            if (c->sign) lit->intValue = -lit->intValue;
+            s->initOrReturnOrExpr = std::move(lit);
+        }
+        return s;
+    }
     if (auto *c = dynamic_cast<CParser::ExprStmtContext *>(ctx)) {
         auto s = std::make_unique<Stmt>();
         s->kind = StmtKind::ExprStmt;
@@ -783,6 +813,7 @@ Program buildProgram(CParser::ProgramContext *ctx) {
             FunctionDecl fn;
             fn.name = local->IDENT()->getText();
             fn.line = local->getStart()->getLine();
+            fn.isStatic = local->stat != nullptr;
             buildReturnType(local->returnTypeSpec(), fn.returnType, fn.isVoid);
             if (auto *pl = local->paramList()) {
                 for (auto *p : pl->param()) {
@@ -811,6 +842,7 @@ Program buildProgram(CParser::ProgramContext *ctx) {
             } else if (auto *arr = dynamic_cast<CParser::GlobalArrayDeclContext *>(gd)) {
                 g.name = arr->IDENT()->getText();
                 g.type = buildType(arr->typeSpec());
+                g.isStatic = arr->stat != nullptr;
                 g.arraySize = static_cast<int>(parsePlainNumber(arr->size, arr, "an array size"));
                 if (g.arraySize <= 0) err(arr, "array size must be a positive integer");
                 g.arrayInit = buildArrayInit(arr->arrayInit());
@@ -822,6 +854,7 @@ Program buildProgram(CParser::ProgramContext *ctx) {
             } else if (auto *sc = dynamic_cast<CParser::GlobalScalarDeclContext *>(gd)) {
                 g.name = sc->IDENT()->getText();
                 g.type = buildType(sc->typeSpec());
+                g.isStatic = sc->stat != nullptr;
                 if (auto *num = sc->val) {
                     g.hasInit = true;
                     g.initValue = parsePlainNumber(num, sc, "a global initializer");

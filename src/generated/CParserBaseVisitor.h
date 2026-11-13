@@ -175,6 +175,14 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitStaticLocalArrayDecl(CParser::StaticLocalArrayDeclContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitStaticLocalDecl(CParser::StaticLocalDeclContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitExprStmt(CParser::ExprStmtContext *ctx) override {
     return visitChildren(ctx);
   }

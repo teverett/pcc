@@ -101,9 +101,14 @@ structMember
 // interrupt/trap vectors). Not meaningful on an 'extern' declaration
 // (that address lives in whichever file really defines it), so not
 // offered on that alternative.
+//
+// 'static' gives this function internal linkage: it's still a normal
+// function in this file, but never becomes an extern placeholder another
+// file's 'extern' declaration can resolve against - see docs/language.md's
+// "Static declarations" section.
 functionDecl
-    : 'extern' returnTypeSpec IDENT '(' paramList? ')' ';'                         # externFunctionDecl
-    | returnTypeSpec IDENT '(' paramList? ')' ('@' addr=NUMBER)? (block | ';')     # localFunctionDecl
+    : 'extern' returnTypeSpec IDENT '(' paramList? ')' ';'                                   # externFunctionDecl
+    | stat='static'? returnTypeSpec IDENT '(' paramList? ')' ('@' addr=NUMBER)? (block | ';') # localFunctionDecl
     ;
 
 // A function's return type is either an ordinary typeSpec or 'void'
@@ -130,11 +135,14 @@ param
 // the only way to tell IRBuilder a name used only via '&'/an array-
 // initializer element in this file is DATA defined in another file,
 // not a function.
+//
+// 'static' on a non-'extern' global gives it internal linkage, same as on
+// a function above.
 globalDecl
     : 'extern' typeSpec IDENT '[' size=NUMBER ']' ';'                            # externArrayDecl
     | 'extern' typeSpec IDENT ';'                                                 # externScalarDecl
-    | typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)? ('@' addr=NUMBER)? ';'   # globalArrayDecl
-    | typeSpec IDENT ('=' sign='-'? val=NUMBER)? ('@' addr=NUMBER)? ';'              # globalScalarDecl
+    | stat='static'? typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)? ('@' addr=NUMBER)? ';'  # globalArrayDecl
+    | stat='static'? typeSpec IDENT ('=' sign='-'? val=NUMBER)? ('@' addr=NUMBER)? ';'           # globalScalarDecl
     ;
 
 // Elements are plain literals, optionally negated, or a bare function/
@@ -180,10 +188,16 @@ statement
     | ';'                                                         # emptyStmt
     ;
 
+// A 'static' local's initializer is restricted to the same compile-time-
+// constant form a global's is (plain, optionally negated, NUMBER) rather
+// than a general expr - it's evaluated once, not on every call, so there's
+// no runtime value available to initialize it from.
 simpleStmt
-    : typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)?    # localArrayDecl
-    | typeSpec IDENT ('=' expr)?                              # localDecl
-    | expr                                                  # exprStmt
+    : typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)?                    # localArrayDecl
+    | typeSpec IDENT ('=' expr)?                                              # localDecl
+    | 'static' typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)?           # staticLocalArrayDecl
+    | 'static' typeSpec IDENT ('=' sign='-'? val=NUMBER)?                    # staticLocalDecl
+    | expr                                                                  # exprStmt
     ;
 
 // A case label's value is a plain (optionally negated) integer literal,

@@ -1,6 +1,7 @@
 #include "IRBuilder.h"
 
 #include <algorithm>
+#include <cctype>
 #include <iostream>
 #include <stdexcept>
 #include <unordered_map>
@@ -151,6 +152,7 @@ class Builder {
             for (ir::Slot *p : irFn->params) declareLocal(p->sourceName, p, fn.line);
             currentReturnType_ = irFn->returnType;
             currentFunctionIsVoid_ = irFn->isVoid;
+            currentFunctionName_ = fn.name;
             currentSourceFile_ = fn.sourceFile;
             currentFunctionLabels_.clear();
             collectLabels(fn.body.get());
@@ -277,6 +279,8 @@ class Builder {
             // reference to a later name in this file still resolves.
             slot->hasAddress = g.hasAddress;
             slot->address = g.address;
+            slot->isStatic = g.isStatic;
+            if (g.isStatic) slot->sourceName = mangleStaticName(g.sourceFile, g.name);
             slot->sourceFile = g.sourceFile;
             globalByName_[g.name] = slot;
         }
@@ -305,6 +309,8 @@ class Builder {
             }
             irFn->hasAddress = fn.hasAddress;
             irFn->address = fn.address;
+            irFn->isStatic = fn.isStatic;
+            if (fn.isStatic) irFn->sourceName = mangleStaticName(fn.sourceFile, fn.name);
             // Params start past a two-native-int reservation for the saved
             // frame pointer/return address. Each param occupies at least one
             // native int's width (a caller pushes whole words), wider only
@@ -395,6 +401,25 @@ class Builder {
         slot->isExternal = true;
         globalByName_[name] = slot;
         return slot;
+    }
+
+    // A 'static' global/function/local needs internal linkage: under real
+    // separate compilation (--format=coff/elf/macho), its name must not
+    // collide with another translation unit's own same-named 'static'
+    // symbol at link time (GenericLinker treats any two same-named defined
+    // symbols as a duplicate-symbol error, with no notion of per-file
+    // visibility). Folding the originating source file into the name, not
+    // just the bare C name, keeps every 'static' symbol unique across
+    // files without the linker needing to know about linkage at all. The
+    // "__rcc_local_" prefix additionally gets this symbol hidden/unexported
+    // for whichever backends' object writers already sniff that exact
+    // prefix for compiler-internal labels (see e.g. CoffFormat.cpp's/
+    // ElfFormat.cpp's own isRccLocalSymbol()) - a side benefit on those
+    // backends, not something every backend's object writer honors.
+    std::string mangleStaticName(const std::string &sourceFile, const std::string &name) {
+        std::string sanitized;
+        for (char c : sourceFile) sanitized += std::isalnum(static_cast<unsigned char>(c)) ? c : '_';
+        return "__rcc_local_" + sanitized + "_" + name;
     }
 
     ir::Slot *allocSlot(ir::SlotKind kind, const std::string &name, int arraySize = 0) {
@@ -1292,6 +1317,44 @@ class Builder {
                 out->kind = ir::StmtKind::Continue;
                 return out;
             case StmtKind::LocalDecl: {
+                if (s.isStatic) {
+                    // A 'static' local has the same storage as a Global (one
+                    // persistent location, initialized once at program start
+                    // rather than on every call) - it's just not reachable by
+                    // name outside this function. Reuse a Global Slot
+                    // outright rather than adding a fourth SlotKind: every
+                    // backend's Global-storage emission already handles it
+                    // with no further change, as long as the name is unique
+                    // and `declareLocal` below still keys it under the
+                    // short, unqualified source name for ordinary scope
+                    // resolution inside this function.
+                    std::string mangled = mangleStaticName(
+                        currentSourceFile_,
+                        currentFunctionName_ + "_" + s.declName + "_" + std::to_string(nextStaticLocalId_++));
+                    ir::Slot *slot = allocSlot(ir::SlotKind::Global, mangled, s.arraySize);
+                    slot->type = resolveStructType(s.type, s.line);
+                    slot->isStatic = true;
+                    slot->sourceFile = currentSourceFile_;
+                    if (slot->type.base == BaseType::Struct && s.arraySize > 0) {
+                        err(s.line, "an array of 'struct " + slot->type.structTag +
+                                         "' isn't supported yet as a 'static' local (only a single struct "
+                                         "variable is) - see docs/language.md's \"Structs\" section");
+                    }
+                    if (s.arraySize > 0) {
+                        slot->arrayInit = resolveArrayInit(s.arrayInit, s.line);
+                    } else if (s.initOrReturnOrExpr) {
+                        // Grammar restricts a 'static' local's scalar initializer to a plain
+                        // (optionally negated) literal - see CParser.g4's staticLocalDecl - so
+                        // this is always an already-built IntLit, never a runtime expr to
+                        // evaluate on every call.
+                        slot->hasInit = true;
+                        slot->initValue = s.initOrReturnOrExpr->intValue;
+                    }
+                    declareLocal(s.declName, slot, s.line);
+                    out->kind = ir::StmtKind::Empty;
+                    out->declSlot = slot;
+                    return out;
+                }
                 out->kind = ir::StmtKind::LocalDecl;
                 ir::Slot *slot = allocSlot(ir::SlotKind::Local, s.declName, s.arraySize);
                 slot->type = resolveStructType(s.type, s.line);
@@ -1489,6 +1552,8 @@ class Builder {
     TypeWidths widths_{};
     Type currentReturnType_;  // the function currently being built - see StmtKind::Return
     bool currentFunctionIsVoid_ = false;  // the function currently being built returns no value
+    std::string currentFunctionName_;  // ditto - used to mangle a 'static' local's own Global slot name
+    int nextStaticLocalId_ = 0;  // ditto - disambiguates two same-named 'static' locals in one function
     std::string currentSourceFile_;  // ditto - stamped onto a StringLit's own synthetic global
     // tag -> resolved layout, for this compile only - see registerStructs()/resolveStructType().
     std::unordered_map<std::string, StructLayout> structsByTag_;

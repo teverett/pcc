@@ -296,7 +296,7 @@ the same as running real 6809 machine code. Remove this entry once a
 suitable Python 6809 emulator package is found and `check_6809()` is
 wired into the dispatch.
 
-## `tests/hex_literal.c` fails on `--target=8051`/`8052`/`8031`/`8032`, missing from that target's long-arithmetic skip-list
+## `tests/hex_literal.c` fails on `--target=8051`/`8052`/`8031`/`8032`/`pdp1`, missing from each target's long-arithmetic skip-list
 
 Affects `tests/run_tests.sh`'s `is_known_unsupported()`. MCS51 deliberately
 has no `long`/`long long` arithmetic at all (`MCS51Codegen.cpp`'s own
@@ -313,6 +313,17 @@ the skip entry. Not yet fixed - needs an `8051:hex_literal.c) return 0
 is identical across part numbers, the same gap presumably applies if
 `8052`/`8031`/`8032` are ever added to that function's own `$TARGET`
 matching instead of all falling under `8051`'s arms as they do today).
+
+`pdp1` has the identical shape of gap for a different reason:
+`Pdp1Codegen.h`'s own class comment explains it has no `long`/`long long`
+support either (this one's-complement machine has no link/carry bit at
+all, so a correct multi-word carry chain would need its own from-scratch
+algorithm, unlike `pdp7`'s two's-complement-with-link architecture), and
+`is_known_unsupported()` has no `pdp1` arm for `hex_literal.c` either.
+Confirmed directly: `./tests/run_tests.sh --target=pdp1` fails
+`tests/hex_literal.c` with `'long'/'long long' local variable isn't
+supported on the pdp1 backend: ...`. Not yet fixed - needs a
+`pdp1:hex_literal.c) return 0 ;;` arm alongside the `8051` one above.
 
 ## `make test`'s Apple II/TRS-80/ColecoVision runtime test scripts break when `$(TARGET)` is a relative path
 

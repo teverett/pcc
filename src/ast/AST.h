@@ -126,6 +126,9 @@ struct Stmt {
     int arraySize = 0;                            // LocalDecl: >0 means an array of this many words
     std::vector<ArrayInitElem> arrayInit;         // LocalDecl array: initializer (padded with 0s)
     std::string asmText;                           // Asm: raw text between the braces, verbatim
+    // LocalDecl: 'static' storage duration - initOrReturnOrExpr (if set) must be a
+    // compile-time-constant IntLit, evaluated once rather than on every call.
+    bool isStatic = false;
 };
 
 using StmtPtr = std::unique_ptr<Stmt>;
@@ -149,6 +152,7 @@ struct FunctionDecl {
     std::string sourceFile;  // originating .c file
 
     bool isExternDecl = false;  // 'extern': defined in another file
+    bool isStatic = false;      // 'static': internal linkage, not externally resolvable
 };
 
 struct GlobalVar {
@@ -164,6 +168,7 @@ struct GlobalVar {
     std::string sourceFile;        // originating .c file
 
     bool isExternDecl = false;  // 'extern': data defined in another file
+    bool isStatic = false;      // 'static': internal linkage, not externally resolvable
 };
 
 // One field of a struct definition, in declaration order; `type` carries

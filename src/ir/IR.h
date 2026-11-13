@@ -58,6 +58,13 @@ struct Slot {
     // unresolved reference into a relocation.
     bool isExternal = false;
 
+    // Global only. 'static': internal linkage - this name is never resolved
+    // against (or exported to) another translation unit's `extern`, even
+    // under real separate compilation. A block-scope 'static' local is itself
+    // a Global slot with a mangled, function-prefixed `sourceName` (see
+    // IRBuilder.cpp's handling of Stmt::isStatic) and always has this set.
+    bool isStatic = false;
+
     // Param only. A backend's label for a global/param slot must be a
     // deterministic function of name + position, not of `id` (which is just
     // this compile's own allocation order) — separate compilation units
@@ -119,6 +126,9 @@ struct Function {
     // the call site's own argument count is trusted, not checked against
     // another file's signature.
     bool isExternal = false;
+
+    // 'static': internal linkage, same as Slot::isStatic.
+    bool isStatic = false;
 
     // Local-variable frame size in bytes: highest Local frameOffset plus that
     // local's size, minus the reserved-int offset frameOffset is counted

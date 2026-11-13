@@ -271,6 +271,50 @@ This has no effect at all outside real separate compilation (a plain
 in the one file it's given, so there's never anything ambiguous to
 declare).
 
+## Static declarations
+
+`static` has two different uses, same as real C:
+
+A file-scope `static` on a global or a function gives it **internal
+linkage**: it's still an ordinary global/function in this file, but
+it's never resolved against another file's `extern` declaration of the
+same name, and never collides with another file's own same-named
+`static` under real separate compilation (`--format=coff`/`elf`/`macho`
++ `--link`) — each file's `static int counter;`/`static int helper()
+{...}` is its own, independent symbol, even if another file happens to
+declare one with the identical name. (`extern` and `static` are
+mutually exclusive on the same declaration — a name defined in this
+file is either visible to other files or it isn't.)
+
+A block-scope `static` local has **static storage duration**: one
+persistent storage location that exists for the whole program, not a
+fresh one per call, initialized exactly once (before `main` runs, like
+a global) rather than every time its declaration statement executes.
+
+```c
+int next() {
+    static int calls = 0;  // initialized once, not on every call
+    calls = calls + 1;
+    return calls;
+}
+```
+
+Calling `next()` three times returns `1`, `2`, `3` — `calls` keeps its
+value across calls, unlike an ordinary (non-`static`) local, which is a
+fresh, uninitialized frame slot every time its enclosing block is
+entered. A `static` local's own name still obeys ordinary block
+scoping (invisible outside its function, shadowable the same way a
+plain local is) — only its *storage* behaves like a global's.
+
+A `static` local's initializer, same as a global's, must be a
+plain (optionally negated) integer literal or array-initializer list —
+it's evaluated once, at compile time, not as a runtime expression on
+each call, so there's no runtime value available to initialize it
+from. A `static` local with no initializer starts at zero, same as an
+uninitialized global. The same restrictions a global has otherwise
+(see "Structs" above) apply here too — e.g. no struct initializer, no
+array of struct.
+
 ## Building / Usage
 
 Building rcc from source, and every compile-mode/link-mode
