@@ -1,4 +1,4 @@
-# example1
+# hosted-hello
 
 Compiles `hello.c` as a hosted executable for the current desktop OS, linking
 against the host's C library/system library:

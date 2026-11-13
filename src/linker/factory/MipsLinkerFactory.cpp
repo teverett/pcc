@@ -77,7 +77,7 @@ std::unique_ptr<TargetLinker> makeMipsLinker() {
     config.relocPatchers[kMipsRelocLo] = patchMipsLo;
     config.relocPatchers[kMipsRelocJump] = patchMipsJump;
     config.relocPatchers[kMipsRelocAbs32] = patchMipsAbs32;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

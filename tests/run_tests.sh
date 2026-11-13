@@ -107,14 +107,14 @@ case "$TARGET" in
         fi
         ;;
     8086|8088)
-        if ! command -v qemu-system-i386 >/dev/null 2>&1; then
-            echo "qemu-system-i386 not found on PATH - install it (e.g. 'brew install qemu')" >&2
-            exit 1
-        fi
-        if ! command -v python3 >/dev/null 2>&1; then
-            echo "python3 not found on PATH - needed to talk to qemu's monitor" >&2
-            exit 1
-        fi
+        # Disabled for now: this target's --format=raw used to be a BIOS-bootable
+        # 512-byte boot sector, which check_8086() ran by handing the whole image to
+        # `qemu-system-i386 -fda`. Building a boot sector is out of scope for rcc, so
+        # --format=raw is now a plain flat binary with no boot-sector framing at all -
+        # and nothing here can get qemu to start executing a bare flat 16-bit real-mode
+        # image without one. See docs/known-bugs.md.
+        echo "--target=$TARGET: qemu-based testing is disabled for now (no boot-sector image to execute - see docs/known-bugs.md)" >&2
+        exit 1
         ;;
     6502)
         # No real simulator here (py65's own CLI monitor can't easily
@@ -2770,6 +2770,17 @@ is_known_unsupported() {
         saturn:types_longlong_divmod_repeated.c) return 0 ;; # same - no verified multi-chunk multiply/divide routine
         saturn:place.c) return 0 ;;                          # '@' fixed placement isn't supported on this backend
         saturn:identical_code_folding_addr_exclusion.c) return 0 ;; # same - needs '@' fixed placement
+        # '@' fixed placement is supported here (see M6502Codegen.cpp/
+        # M65C02Codegen.cpp's own emitPlacement()/placementLine()), but this
+        # file's own hardcoded "256"/"384" offsets assume every byte of
+        # unplaced code between them (isr's own body plus all of main's) fits
+        # in well under 384 bytes - true for every other target's own denser
+        # encoding, not for this backend's byte-at-a-time software-stack-
+        # frame codegen. tests/6502/addr_placement_*.c and
+        # tests/65c02/addr_placement_*.c cover the same placement fix with
+        # offsets sized for this backend instead.
+        6502:place.c) return 0 ;;
+        65c02:place.c) return 0 ;;
         8086:types_longlong_divmod.c) return 0 ;;          # routine doesn't fit the 512-byte boot sector
         8088:types_longlong_divmod.c) return 0 ;;
         8086:types_longlong_divmod_repeated.c) return 0 ;; # same - doesn't fit the 512-byte boot sector

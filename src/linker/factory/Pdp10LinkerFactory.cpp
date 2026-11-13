@@ -58,7 +58,7 @@ std::unique_ptr<TargetLinker> makePdp10Linker() {
     config.machineType = kPdp10CoffMachine;
     config.entryObject = assemblePdp10Object(kEntryAsm);
     config.relocPatchers[kPdp10RelocAbs18] = patchAbs18;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     config.addressUnitBytes = 5;
     config.outputUnitBits = 36;
     return std::make_unique<GenericLinker>(std::move(config));

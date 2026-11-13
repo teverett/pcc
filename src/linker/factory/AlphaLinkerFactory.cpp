@@ -99,7 +99,7 @@ std::unique_ptr<TargetLinker> makeAlphaLinker() {
     config.relocPatchers[kAlphaRelocHigh] = patchAlphaHigh;
     config.relocPatchers[kAlphaRelocLow] = patchAlphaLow;
     config.relocPatchers[kAlphaRelocAbs32] = patchAlphaAbs32;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

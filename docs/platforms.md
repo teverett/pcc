@@ -19,16 +19,58 @@ retro hardware through pluggable backends. Today it supports:
   formats (bootable paper tape, etc.), runnable under the `open-simh`
   PDP-7 simulator.
 - **8086** — 16-bit real-mode 8086 assembly (NASM syntax), producing a
-  bootable 512-byte boot-sector binary runnable under `qemu-system-i386`,
-  or (`--format=elf`) a minimal flat ELF executable — same single-blob
-  model as every other format here (no section/symbol tables), and
-  incomplete the way `--format=aout` is: a real ELF loader expects
-  32-bit protected-mode code, not 16-bit real mode, so this is for
-  tooling that just needs to recognize the file as ELF.
+  bare flat binary loaded/entered at `kI8086BaseAddress` (`0x1000`) with
+  no boot-sector/BIOS loading convention of any kind (building a bootable
+  image from it is out of scope for this project), or (`--format=elf`) a
+  minimal flat ELF executable — same single-blob model as every other
+  format here (no section/symbol tables), and incomplete the way
+  `--format=aout` is: a real ELF loader expects 32-bit protected-mode
+  code, not 16-bit real mode, so this is for tooling that just needs to
+  recognize the file as ELF. `tests/run_tests.sh --target=8086` is
+  deliberately disabled for now - its qemu harness used to BIOS-boot the
+  old boot-sector image, which no longer exists - see `docs/known-bugs.md`.
 - **8088** — a deliberate, software-identical alias for `8086`: the
   8088's one real difference (an 8-bit external data bus) is invisible
   to every instruction this compiler could emit, so `--target=8088`
   reuses the 8086 backend outright.
+- **8086-dos** — the same `I8086Codegen` backend as `8086`/`8088` (every instruction it
+  emits is identical), but targeting a real MS-DOS `.com` program instead of a bare
+  flat binary: `--format=raw` (and `--link --format=raw`) produce exactly the
+  plain-bytes program a `.com` file is - DOS's own loader already makes CS=DS=ES=SS
+  the one segment the process gets (the PSP) and gives it a valid stack before the
+  entry point ever runs, so unlike `8086`'s own entry stub there's no segment/stack
+  setup at all. Loaded/entered at `kI8086DosBaseAddress` (`0x100`, where DOS always
+  loads a `.com`), and exits via `INT 21h` function `4Ch` instead of `hlt` (see
+  `I8086Codegen::generate()`'s and `I8086LinkerFactory.cpp`'s own `dosAbi`/
+  `kDosEntryAsm` comments). Gets its own reserved COFF machine ID, `kI8086DosCoffMachine`
+  (`0x0D86`), distinct from plain `8086`'s `0x0086`, since the two entry/exit
+  conventions are link-incompatible - `GenericLinker`'s machine-type check is what
+  catches an attempt to `--link` one target's objects against the other's entry
+  object. `src/rt/msdos/` provides an `INT 21h` runtime library - console
+  I/O (`dos_putchar`/`dos_puts`/`dos_print`/`dos_getchar`/`dos_gets`/
+  `dos_kbhit`), file I/O (`dos_create`/`dos_open`/`dos_close`/`dos_read`/
+  `dos_write`/`dos_delete`/`dos_rename`/`dos_seek`, each returning a
+  non-negative result on success or a negated DOS error code on failure),
+  date/time (`dos_date_year`/`_month`/`_day`/`_weekday`,
+  `dos_time_hour`/`_minute`/`_second`/`_hundredths`), the command tail
+  (`dos_cmdline_len`/`dos_cmdline_char`, read straight out of the PSP at
+  absolute addresses `0x80`/`0x81` - a `.com` program's own DS already is
+  the PSP segment), and `dos_exit` - the same role `src/rt/apple2/`'s
+  ROM/ProDOS-MLI wrapper plays for `6502`/`65c02`. Deliberately not
+  provided: environment-block access and `INT 21h`/48h-4Ah (DOS memory
+  allocation), both of which hand back a real-mode *segment* that there's
+  no way to dereference from C - this dialect's own assembler has no
+  segment-override syntax (`es:[bx]`) at all. Every staging global is a
+  full `int`, read/written through `[g_name]` inside `asm { }`, never bare
+  `g_name` (this dialect's "mov" has no `ah`/`al`/`dl`-style sub-register
+  names - see `I8086Assembler.cpp`'s own `regIndex()` - so a function
+  number or byte argument that has to land in one specific byte of a
+  register is folded into one `mov ax/dx, imm16` instead, or extracted
+  from one with `and ax, 255`/`shr ax, 8` where DOS packs two fields into
+  one register); and this C subset's own number literals are decimal-only
+  (no `0x` hex, unlike the asm-text grammar inline `asm { }` blocks use),
+  so `dos_exit()`'s `INT 21h`/`4Ch` is built from `19456 + code`, not
+  `0x4C00 + code` - see `docs/language.md`'s own `NUMBER` note.
 - **6502** — 6502 assembly (own dialect; `src/codegen/m6502/M6502Assembler.h`),
   a bare flat binary loaded/entered at `$0600`, no OS/I/O conventions, on
   a CPU with three 8-bit registers, no hardware multiply/divide, and
@@ -418,8 +460,8 @@ retro hardware through pluggable backends. Today it supports:
   `place.c`/`identical_code_folding_addr_exclusion.c` tests are skipped
   for this target. The link base is `0x1000`, the entry stub sets `d0`
   to `0xF000`, and objects use the ad hoc COFF machine ID `0x5A74`; the
-  linked-output format name is `flat` (not `raw`, which the shared
-  `RawFormat` writer reserves for an x86 boot sector). No real or
+  linked-output format name is `raw`, the same shared `RawFormat` writer
+  name used for the single-file compile format. No real or
   mainstream Saturn emulator exists for headless, scriptable register
   checks (x48/emu48 are interactive HP48/HP49 calculator emulators, not
   bare Saturn cores) - and this backend's own dialect is this project's
@@ -473,7 +515,8 @@ extended).
 
 The same C subset compiles to every target, each predefining its own
 macro for `#ifdef`-gated code (an alias target defines both its base
-target's macro and its own): `__PDP7__`, `__8086__` (also for `8088`),
+target's macro and its own): `__PDP7__`, `__8086__` (also for `8088`/`8086-dos`,
+plus `__MSDOS__` for `8086-dos`),
 `__6502__` (also for `65c02`, plus `__65C02__`), `__68000__` (also for
 `mc68328`, plus `__MC68328__`), `__PDP11__`, `__PDP10__`, `__STM8__`, `__M16C__` (also
 for `m30626fjpfp`, plus `__M30626FJPFP__`), `__8080__`, `__Z80__`,

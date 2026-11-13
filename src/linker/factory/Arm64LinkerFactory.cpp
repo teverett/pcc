@@ -74,7 +74,7 @@ std::unique_ptr<TargetLinker> makeArm64Linker() {
     config.relocPatchers[kArm64RelocRel26] = patchA64Rel26;
     config.relocPatchers[kArm64RelocMovZLo] = patchA64MovZLo;
     config.relocPatchers[kArm64RelocMovKHi] = patchA64MovKHi;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

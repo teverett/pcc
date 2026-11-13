@@ -102,7 +102,7 @@ std::unique_ptr<TargetLinker> makeArmMLinker() {
     config.relocPatchers[kArmMRelocMovWLo] = patchArmMMovWLo;
     config.relocPatchers[kArmMRelocMovTHi] = patchArmMMovTHi;
     config.relocPatchers[kArmMRelocBranch] = patchArmMBranch;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

@@ -306,6 +306,7 @@ std::string M6502Codegen::generate(const ir::Program &prog, bool objectMode) {
         // An external global isn't defined in this file; it's only
         // referenced by name, letting the assembler defer it to a relocation.
         if (slot->isExternal) continue;
+        if (slot->hasAddress) trailer_.push_back(placementLine(slot->address));
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit, slot->type);
@@ -334,6 +335,7 @@ std::map<std::string, std::string> M6502Codegen::perFileAsm() const { return per
 // two's-complement, exact under mod-65536 wraparound.
 void M6502Codegen::genFunction(const ir::FunctionBody &fn) {
     curFunction_ = fn.func;
+    if (fn.func->hasAddress) code_ << placementLine(fn.func->address) << "\n";
     code_ << label(fn.func) << ":\n";
     // Every param reserves at least a native int's width (2 bytes); a wider
     // type reserves its own width - the sum is the caller's argument-area size.

@@ -81,7 +81,7 @@ std::unique_ptr<TargetLinker> makeAVRLinker() {
     config.relocPatchers[kAVRRelocAbs16] = RelocKinds::patchAbs16;
     config.relocPatchers[kAVRRelocCallWord] = patchCallWord;
     config.relocPatchers[kAVRRelocLdiw16] = patchLdiw16;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     config.dataBaseAddress = kAVRSramBaseAddress;
     return std::make_unique<GenericLinker>(std::move(config));
 }

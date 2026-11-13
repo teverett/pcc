@@ -75,6 +75,140 @@ void a2_wait(unsigned char n) {
     }
 }
 
+void a2_cout1(unsigned char c) {
+    rt_a = c | 128;
+    asm {
+        lda g_rt_a
+        jsr 65008  ; COUT1, $FDF0
+    }
+}
+
+unsigned char a2_rdchar() {
+    asm {
+        jsr 64821  ; RDCHAR, $FD35
+        sta g_rt_a
+    }
+    return rt_a;
+}
+
+unsigned char a2_keyin() {
+    asm {
+        jsr 64795  ; KEYIN, $FD1B
+        sta g_rt_a
+    }
+    return rt_a;
+}
+
+void a2_vtab(unsigned char row) {
+    rt_a = row;
+    asm {
+        lda g_rt_a
+        jsr 64546  ; VTAB, $FC22
+    }
+}
+
+void a2_clreol() {
+    asm {
+        jsr 64668  ; CLREOL, $FC9C
+    }
+}
+
+void a2_clreop() {
+    asm {
+        jsr 64578  ; CLREOP, $FC42
+    }
+}
+
+void a2_settxt() {
+    asm {
+        jsr 64313  ; SETTXT, $FB39
+    }
+}
+
+void a2_setgr() {
+    asm {
+        jsr 64320  ; SETGR, $FB40
+    }
+}
+
+void a2_setinv() {
+    asm {
+        jsr 65152  ; SETINV, $FE80
+    }
+}
+
+void a2_setnorm() {
+    asm {
+        jsr 65156  ; SETNORM, $FE84
+    }
+}
+
+void a2_setkbd() {
+    asm {
+        jsr 65161  ; SETKBD, $FE89
+    }
+}
+
+void a2_setvid() {
+    asm {
+        jsr 65171  ; SETVID, $FE93
+    }
+}
+
+void a2_grclrscr() {
+    asm {
+        jsr 63538  ; CLRSCR, $F832
+    }
+}
+
+void a2_clrtop() {
+    asm {
+        jsr 63542  ; CLRTOP, $F836
+    }
+}
+
+void a2_getln() {
+    asm {
+        jsr 64874  ; GETLN, $FD6A
+    }
+}
+
+void a2_move(int from, int to, int dest) {
+    rt_a = from & 255;
+    asm {
+        lda g_rt_a
+        sta 60  ; A1L, $3C
+    }
+    rt_a = (from >> 8) & 255;
+    asm {
+        lda g_rt_a
+        sta 61  ; A1H, $3D
+    }
+    rt_a = to & 255;
+    asm {
+        lda g_rt_a
+        sta 62  ; A2L, $3E
+    }
+    rt_a = (to >> 8) & 255;
+    asm {
+        lda g_rt_a
+        sta 63  ; A2H, $3F
+    }
+    rt_a = dest & 255;
+    asm {
+        lda g_rt_a
+        sta 66  ; A4L, $42
+    }
+    rt_a = (dest >> 8) & 255;
+    asm {
+        lda g_rt_a
+        sta 67  ; A4H, $43
+    }
+    asm {
+        jsr 65068  ; MOVE, $FE2C
+    }
+}
+
 // ProDOS MLI call trampoline (see ProDOS Technical Reference Manual ch. 5):
 // JSR $BF00, the command byte, then the parameter-list address - all three
 // have to sit in the instruction stream immediately after the JSR, so

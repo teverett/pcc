@@ -696,15 +696,13 @@ class Assembler {
 };
 
 // The one `.text` section is just `bytes()` as-is; each label's symbol value is its
-// offset within that section (address minus orgBase()). Machine type 0x0086 is a
-// custom, non-registered COFF machine ID (real 8086/DOS tooling used OMF, not COFF).
-constexpr uint16_t kI8086CoffMachine = 0x0086;
-
+// offset within that section (address minus orgBase()).
+//
 // Shared by writeCoff() (serializes to COFF bytes) and assembleI8086Object() (returns
 // the ObjectFile directly).
-ObjectFile buildObjectFile(const Assembler &a) {
+ObjectFile buildObjectFile(const Assembler &a, uint16_t machineType) {
     ObjectFile obj;
-    obj.machineType = kI8086CoffMachine;
+    obj.machineType = machineType;
     obj.base = a.orgBase();
     const auto &bytesVec = a.bytes();
     obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
@@ -729,11 +727,14 @@ ObjectFile buildObjectFile(const Assembler &a) {
     return obj;
 }
 
-std::string writeCoff(const Assembler &a) { return CoffFormatWriter().write(buildObjectFile(a)); }
+std::string writeCoff(const Assembler &a, uint16_t machineType) {
+    return CoffFormatWriter().write(buildObjectFile(a, machineType));
+}
 
 }  // namespace
 
-std::string assembleI8086(const std::string &asmText, I8086OutputFormat format, bool allowExternal) {
+std::string assembleI8086(const std::string &asmText, I8086OutputFormat format, bool allowExternal,
+                           uint16_t machineType) {
     std::vector<Line> lines = parseProgram(asmText);
     Assembler assembler(allowExternal);
     assembler.run(lines);
@@ -743,18 +744,18 @@ std::string assembleI8086(const std::string &asmText, I8086OutputFormat format, 
             return std::string(bytes.begin(), bytes.end());
         }
         case I8086OutputFormat::Coff:
-            return writeCoff(assembler);
+            return writeCoff(assembler, machineType);
         case I8086OutputFormat::Elf:
-            return ElfFormatWriter().write(buildObjectFile(assembler));
+            return ElfFormatWriter().write(buildObjectFile(assembler, machineType));
     }
     fail("unknown output format");
 }
 
-ObjectFile assembleI8086Object(const std::string &asmText) {
+ObjectFile assembleI8086Object(const std::string &asmText, uint16_t machineType) {
     std::vector<Line> lines = parseProgram(asmText);
     Assembler assembler(/*allowExternal=*/true);
     assembler.run(lines);
-    return buildObjectFile(assembler);
+    return buildObjectFile(assembler, machineType);
 }
 
 }  // namespace rcc

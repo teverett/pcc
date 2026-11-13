@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Checks --target=6502 --link --format=dos33/prodos (Dos33Format.cpp,
 # ProDosFormat.cpp) byte-for-byte against the same program's own
-# --format=flat link - see src/fileformat/dos33/Dos33Format.h's and
+# --format=raw link - see src/fileformat/dos33/Dos33Format.h's and
 # src/fileformat/prodos/ProDosFormat.h's own header comments for exactly
 # what each format's extra bytes mean. No 6502 simulator needed: both
 # formats are pure byte-layout conventions around an already-linked image,
@@ -37,7 +37,7 @@ EOF
 
 "$RCC" --target=6502 --format=coff main.c >/dev/null
 "$RCC" --target=6502 --format=coff "$ROOT_DIR/src/rt/apple2/apple2.c" >/dev/null
-"$RCC" --link --target=6502 --format=flat --out=prog.flat build/main.o build/apple2.o
+"$RCC" --link --target=6502 --format=raw --out=prog.flat build/main.o build/apple2.o
 "$RCC" --link --target=6502 --format=dos33 --out=prog.dos33 build/main.o build/apple2.o
 "$RCC" --link --target=6502 --format=prodos --out=prog.prodos build/main.o build/apple2.o
 
@@ -75,7 +75,7 @@ for target in 6502 65c02; do
     "$RCC" --target="$target" --format=coff "$ROOT_DIR/src/rt/apple2/apple2.c" >/dev/null
     "$RCC" --link --target="$target" --format=prodos --base=8192 --out="prog_$target.prodos" \
         "build/main.o" "build/apple2.o"
-    "$RCC" --link --target="$target" --format=flat --base=8192 --out="prog_$target.flat" \
+    "$RCC" --link --target="$target" --format=raw --base=8192 --out="prog_$target.flat" \
         "build/main.o" "build/apple2.o"
 
     python3 - "$PWD" "$target" <<'PY' || fail=1

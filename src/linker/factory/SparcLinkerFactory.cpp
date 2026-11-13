@@ -80,7 +80,7 @@ std::unique_ptr<TargetLinker> makeSparcLinker() {
     config.relocPatchers[kSparcRelocLo] = patchSparcLo;
     config.relocPatchers[kSparcRelocCall] = patchSparcCall30;
     config.relocPatchers[kSparcRelocAbs32] = patchSparcAbs32;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

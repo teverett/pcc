@@ -170,7 +170,34 @@ verify a fix against, and `8080`/`z80` need the `z80-python` package
 unverified (not necessarily unfixed - their `elemShift()` has the same
 shape as the others, just never confirmed against real execution).
 
-## `tests/run_tests.sh` never runs in CI
+## `tests/run_tests.sh --target=8086`/`8088` has no working test execution
+
+Affects `tests/run_tests.sh`'s `8086|8088)` prerequisites case,
+`check_8086()`, and `tests/qemu_wait.py`'s `--8086-image` handling.
+
+`I8086LinkerFactory.cpp`'s entry stub and `I8086Codegen::generate()`'s
+single-file entry sequence used to assemble a BIOS-bootable 512-byte boot
+sector (`ORG 0x7C00`, padded/signed with `0x55 0xAA` by the old
+`RawFormat.cpp`), which `check_8086()` ran by handing the whole image to
+`qemu-system-i386 -fda`, with `qemu_wait.py`'s `i8086_end_pattern()`
+byte-matching that exact entry sequence to detect completion.
+
+Producing a boot-sector image is out of scope for this project (same
+reasoning as `i386`'s own hosted-vs-bare-metal split), so both entry
+sequences now emit a plain flat binary loaded/entered at
+`kI8086BaseAddress` (`0x1000`) with no boot-sector framing at all -
+`--format=raw` is just `obj.textBytes`, the same convention `flat` uses
+everywhere else. `-fda` can no longer boot that image (no `0x55 0xAA`
+signature), so `tests/run_tests.sh --target=8086`/`8088` now exits
+immediately with an explanatory message instead of running (and failing)
+every test - testing this target is deliberately disabled for now rather
+than left silently broken. Fixing it needs a replacement way to get the
+flat binary running under `qemu-system-i386` without rcc itself ever
+constructing a boot sector - e.g. a tiny bootloader built and owned by
+the test harness (not rcc) that chain-loads this binary via `INT 13h` and
+jumps to `kI8086BaseAddress`, or switching to a different execution/
+verification method entirely. Not yet fixed.
+
 
 Affects `.github/workflows/ci.yml`.
 

@@ -39,7 +39,7 @@ std::unique_ptr<TargetLinker> makeI386Linker() {
     config.entryObject = assembleI386Object(entryAsm());
     config.relocPatchers[kI386RelocAbs32] = RelocKinds::patchAbs32;
     config.relocPatchers[kI386RelocRel32] = RelocKinds::patchRel32;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

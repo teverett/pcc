@@ -224,6 +224,13 @@ class M6502Codegen : public Backend {
     static std::string label(const ir::Function *fn) { return "fn_" + fn->sourceName; }
 
     std::string allocTemp() { return "t" + std::to_string(tempCounter_++); }
+    // `@addr` placement: pads forward to a byte offset from `org` via
+    // `times (addr-($-$$)) db 0`, matching the 8086 backend's own idiom
+    // (I8086Codegen::emitPlacement) - this dialect's `$` only increases, so
+    // placement can only insert forward padding, never reorder.
+    static std::string placementLine(long address) {
+        return "times (" + std::to_string(address) + "-($-$$)) db 0";
+    }
     void declareArray(const std::string &lbl, const std::vector<ir::ArrayInitElem> &values, Type elemType);
     std::string arrayElemText(const ir::ArrayInitElem &e);
     std::string newLabel() { return "L" + std::to_string(labelCounter_++); }

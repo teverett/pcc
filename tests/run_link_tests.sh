@@ -151,8 +151,8 @@ SIMH
 }
 
 # Shared by 8086/8088 (--format=raw bootable floppy image) and i386
-# (--format=flat, still a real Multiboot image here - see
-# docs/using.md's own "flat" row) - both read back the same way
+# (--link --format=raw, still a real Multiboot image here - see
+# docs/using.md's own "raw" row) - both read back the same way
 # run_tests.sh's own check_8086/check_i386 do.
 check_x86() {
     local a="$1" b="$2" name="$3" fmt="$4" linkfmt="$5" loadkernel="$6"
@@ -214,7 +214,7 @@ check_x86() {
 check_vax() {
     local a="$1" b="$2" name="$3"
     local binfile="$tmpdir/$name.bin"
-    link_case "$a" "$b" "$name" coff flat "$binfile" || return 1
+    link_case "$a" "$b" "$name" coff raw "$binfile" || return 1
 
     local simfile="$tmpdir/$name.simh" outfile="$tmpdir/$name.out"
     printf 'load -o %s 4000\nd pc 4000\ngo\ne r0\nquit\n' "$binfile" >"$simfile"
@@ -251,7 +251,7 @@ check_vax() {
 check_avr() {
     local a="$1" b="$2" name="$3"
     local binfile="$tmpdir/$name.bin"
-    link_case "$a" "$b" "$name" coff flat "$binfile" || return 1
+    link_case "$a" "$b" "$name" coff raw "$binfile" || return 1
 
     qemu_count=$((qemu_count + 1))
     local monitor="$sockdir/$qemu_count"
@@ -297,7 +297,7 @@ check_avr() {
 check_alpha() {
     local a="$1" b="$2" name="$3"
     local binfile="$tmpdir/$name.bin"
-    link_case "$a" "$b" "$name" coff flat "$binfile" || return 1
+    link_case "$a" "$b" "$name" coff raw "$binfile" || return 1
 
     local outfile="$tmpdir/$name.sim.out"
     python3 -I - "$binfile" > "$outfile" <<'PY'
@@ -521,7 +521,7 @@ for a in "$LINK_DIR"/*_a.c; do
         pdp7) check_pdp7 "$a" "$b" "$base" || fail=1 ;;
         8086) check_x86 "$a" "$b" "$base" coff raw 0 || fail=1 ;;
         8088) check_x86 "$a" "$b" "$base" coff raw 0 || fail=1 ;;
-        i386) check_x86 "$a" "$b" "$base" coff flat 1 || fail=1 ;;
+        i386) check_x86 "$a" "$b" "$base" coff raw 1 || fail=1 ;;
         vax) check_vax "$a" "$b" "$base" || fail=1 ;;
         avr) check_avr "$a" "$b" "$base" || fail=1 ;;
         alpha) check_alpha "$a" "$b" "$base" || fail=1 ;;

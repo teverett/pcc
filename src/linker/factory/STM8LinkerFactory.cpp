@@ -35,7 +35,7 @@ std::unique_ptr<TargetLinker> makeSTM8Linker() {
     config.machineType = kSTM8CoffMachine;
     config.entryObject = assembleSTM8Object(kEntryAsm);
     config.relocPatchers[kSTM8RelocAbs16] = RelocKinds::patchAbs16BE;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

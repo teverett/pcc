@@ -33,11 +33,13 @@ struct Syllable {
 
 struct Line {
     std::vector<std::string> labels;
-    enum Kind { None, Equate, Org, Db, DbLo, DbHi, Instr } kind = None;
+    enum Kind { None, Equate, Org, Db, DbLo, DbHi, Times, Instr } kind = None;
     std::string equateName;                       // Equate
-    std::vector<std::vector<Syllable>> exprList;  // Equate (1)/Org (1)/Db/DbLo/DbHi (N)
+    std::vector<std::vector<Syllable>> exprList;  // Equate (1)/Org (1)/Db/DbLo/DbHi (N)/Times' inner db (1)
     std::string mnemonic;                         // Instr
     std::vector<std::vector<Syllable>> operands;  // Instr
+    std::vector<Syllable> timesCount;              // Times
+    std::string innerMnemonic;                      // Times: the inner mnemonic (always "db")
 };
 
 std::string toLower(std::string s) {
@@ -97,8 +99,17 @@ Line buildLine(RccAsmParser::LineContext *ctx) {
         line.exprList.push_back(exprToSyllables(assign->rhs));
         return line;
     }
-    if (dynamic_cast<RccAsmParser::TimesStmtContext *>(stmt)) {
-        fail("'times' isn't part of this target's dialect");
+    // `'@' addr` placement (M65C02Codegen.cpp's emitPlacement()): pads
+    // forward to a byte offset from the current `org` via
+    // `times (addr-($-$$)) db 0`, matching the 8086 backend's own
+    // placement idiom (see I8086Assembler.cpp).
+    if (auto *times = dynamic_cast<RccAsmParser::TimesStmtContext *>(stmt)) {
+        line.kind = Line::Times;
+        line.timesCount = exprToSyllables(times->count);
+        line.innerMnemonic = toLower(times->mnemonic->getText());
+        if (line.innerMnemonic != "db") fail("'times' only supports a 'db' body in this dialect");
+        for (auto *op : times->operand()) line.exprList.push_back(buildOperand(op));
+        return line;
     }
     auto *instr = dynamic_cast<RccAsmParser::InstrStmtContext *>(stmt);
     if (!instr) fail("internal: unhandled statement alternative");
@@ -214,6 +225,16 @@ class Assembler {
             case Line::DbHi:
                 for (const auto &e : line.exprList) emitImmHigh(e);
                 return;
+            case Line::Times: {
+                uint32_t count = evalExpr(line.timesCount);
+                // A negative "times (addr-($-$$))" count wraps to a huge uint32_t -
+                // reject it rather than silently emitting megabytes of padding
+                // (it means `addr` is behind the current position already).
+                if (count > 0x10000) fail("'@' placement address is before the current position");
+                uint32_t v = line.exprList.empty() ? 0 : evalExpr(line.exprList.at(0));
+                for (uint32_t i = 0; i < count; i++) emit8(static_cast<uint8_t>(v));
+                return;
+            }
             case Line::Instr:
                 encodeInstr(line.mnemonic, line.operands);
                 return;
@@ -246,6 +267,10 @@ class Assembler {
             }
             return static_cast<uint32_t>(std::stoul(t));
         }
+        // `$`/`$$`: the current location / the current `org` base - only
+        // meaningful inside a `times (addr-($-$$))` placement-padding count.
+        if (syl.text == "$") return orgBase_ + offset_;
+        if (syl.text == "$$") return orgBase_;
         auto it = labels_.find(syl.text);
         if (it != labels_.end()) {
             if (allowExternal_ && wasLocalAddress && !equates_.count(syl.text)) *wasLocalAddress = true;

@@ -15,7 +15,7 @@ mkdir -p "$BUILD_DIR"
 python3 "$SCRIPT_DIR/hosted_internal_linker_test.py" "$RCC"
 
 "$RCC" --target=armv8a-macos --format=macho \
-    --out="$BUILD_DIR/hello.o" "$ROOT_DIR/examples/example1/hello.c"
+    --out="$BUILD_DIR/hello.o" "$ROOT_DIR/examples/hosted-hello/hello.c"
 "$RCC" --link --target=armv8a-macos --format=macho \
     --out="$BUILD_DIR/hello" "$BUILD_DIR/hello.o" -lSystem
 codesign --verify "$BUILD_DIR/hello"

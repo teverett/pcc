@@ -33,7 +33,7 @@ std::unique_ptr<TargetLinker> makePdp11Linker() {
     config.entryObject = assemblePdp11Object(kEntryAsm);
     config.relocPatchers[kPdp11RelocAbs16] = RelocKinds::patchAbs16;
     config.relocPatchers[kPdp11RelocRel16] = patchRel16NoAdj;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

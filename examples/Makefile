@@ -1,23 +1,23 @@
 EXAMPLES_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
-.PHONY: all example1 example2 example3 example4 clean
+.PHONY: all hosted-hello m30626fjpfp-freestanding 6502-freestanding 6502-dos33 clean
 
-all: example1 example2 example3 example4
+all: hosted-hello m30626fjpfp-freestanding 6502-freestanding 6502-dos33
 
-example1:
-	$(MAKE) -C $(EXAMPLES_DIR)example1
+hosted-hello:
+	$(MAKE) -C $(EXAMPLES_DIR)hosted-hello
 
-example2:
-	$(MAKE) -C $(EXAMPLES_DIR)example2
+m30626fjpfp-freestanding:
+	$(MAKE) -C $(EXAMPLES_DIR)m30626fjpfp-freestanding
 
-example3:
-	$(MAKE) -C $(EXAMPLES_DIR)example3
+6502-freestanding:
+	$(MAKE) -C $(EXAMPLES_DIR)6502-freestanding
 
-example4:
-	$(MAKE) -C $(EXAMPLES_DIR)example4
+6502-dos33:
+	$(MAKE) -C $(EXAMPLES_DIR)6502-dos33
 
 clean:
-	$(MAKE) -C $(EXAMPLES_DIR)example1 clean
-	$(MAKE) -C $(EXAMPLES_DIR)example2 clean
-	$(MAKE) -C $(EXAMPLES_DIR)example3 clean
-	$(MAKE) -C $(EXAMPLES_DIR)example4 clean
+	$(MAKE) -C $(EXAMPLES_DIR)hosted-hello clean
+	$(MAKE) -C $(EXAMPLES_DIR)m30626fjpfp-freestanding clean
+	$(MAKE) -C $(EXAMPLES_DIR)6502-freestanding clean
+	$(MAKE) -C $(EXAMPLES_DIR)6502-dos33 clean

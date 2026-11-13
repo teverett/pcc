@@ -28,7 +28,7 @@ std::unique_ptr<TargetLinker> makeI8080Linker() {
     config.machineType = kI8080CoffMachine;
     config.entryObject = assembleI8080Object(kEntryAsm);
     config.relocPatchers[kI8080RelocAbs16] = RelocKinds::patchAbs16;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

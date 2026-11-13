@@ -79,7 +79,7 @@ std::unique_ptr<TargetLinker> makePowerPCLinker() {
     config.relocPatchers[kPowerPCRelocLo] = patchPowerPCLo;
     config.relocPatchers[kPowerPCRelocBranch] = patchPowerPCBranch24;
     config.relocPatchers[kPowerPCRelocAbs32] = patchPowerPCAbs32;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

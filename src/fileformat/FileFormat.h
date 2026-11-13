@@ -28,11 +28,12 @@ class FileFormatReader {
     virtual ObjectFile read(const std::string &bytes) const = 0;
 };
 
-// `Flat` answers to two `--format` names: `objraw` when compiling (drops the symbol table) and
-// `flat` when linking (same, on an already-resolved ObjectFile) — one implementation, two names.
-// `Raw`/`Rim`/`Ptr`/`A7out`/`List`/`Dos33`/`ProDos` are link-output-only conventions, never a
+// `Raw` answers to two `--format` names: `raw` when compiling a whole program or linking (same,
+// on an already-resolved ObjectFile), and `objraw` when compiling (drops the symbol table,
+// inspection-only) — one implementation, two names.
+// `Rim`/`Ptr`/`A7out`/`List`/`Dos33`/`ProDos` are link-output-only conventions, never a
 // per-file compile format.
-enum class FileFormatKind { Coff, Elf, MachO, Aout, Flat, Raw, Rim, Ptr, A7out, List, Dos33, ProDos };
+enum class FileFormatKind { Coff, Elf, MachO, Aout, Raw, Rim, Ptr, A7out, List, Dos33, ProDos };
 
 std::unique_ptr<FileFormatWriter> makeFileFormatWriter(FileFormatKind kind);
 std::unique_ptr<FileFormatReader> makeFileFormatReader(FileFormatKind kind);
@@ -40,12 +41,12 @@ std::unique_ptr<FileFormatReader> makeFileFormatReader(FileFormatKind kind);
 // Maps a `--format`/`--link --format` string to its FileFormatKind, or nullopt if none matches.
 std::optional<FileFormatKind> fileFormatKindFromName(const std::string &name);
 
-// Canonical spelling of a format name; `Flat`'s two names both canonicalize to "flat".
+// Canonical spelling of a format name; `Raw`'s three names all canonicalize to "raw".
 std::string fileFormatName(FileFormatKind kind);
 
 // Sniffs a file's leading bytes to identify its format, for `--link` merging inputs compiled with
-// different `--format`s. Only returns Coff/Elf/MachO/Aout/Flat (link-output-only formats,
-// including Dos33/ProDos, are never `--link` input); `Flat` has no magic number, so it's the
+// different `--format`s. Only returns Coff/Elf/MachO/Aout/Raw (link-output-only formats,
+// including Dos33/ProDos, are never `--link` input); `Raw` has no magic number, so it's the
 // last-resort fallback.
 FileFormatKind detectFileFormat(const std::string &bytes);
 

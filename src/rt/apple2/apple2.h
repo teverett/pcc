@@ -38,6 +38,56 @@ void a2_prhex(unsigned char n);
 void a2_bell();
 // Busy-waits roughly `n` * the monitor's own WAIT ($FCA8) delay unit.
 void a2_wait(unsigned char n);
+// Prints one character directly to the screen, bypassing the $36/$37
+// output hook, via COUT1 ($FDF0). Same high-bit convention as a2_cout().
+void a2_cout1(unsigned char c);
+// Waits for and returns one keystroke, with RDKEY's own escape-sequence
+// handling, via RDCHAR ($FD35).
+unsigned char a2_rdchar();
+// Reads one key directly from the keyboard hardware, via KEYIN ($FD1B).
+unsigned char a2_keyin();
+// Moves the cursor to text row `row` (0-based), via VTAB ($FC22).
+void a2_vtab(unsigned char row);
+// Clears from the cursor to the end of the current line, via CLREOL ($FC9C).
+void a2_clreol();
+// Clears from the cursor to the end of the text page, via CLREOP ($FC42).
+void a2_clreop();
+// Sets the soft switches for 40-column text mode, via SETTXT ($FB39).
+void a2_settxt();
+// Sets the soft switches for lo-res graphics mode, via SETGR ($FB40).
+void a2_setgr();
+// Sets inverse video text, via SETINV ($FE80).
+void a2_setinv();
+// Sets normal video text, via SETNORM ($FE84).
+void a2_setnorm();
+// Resets the character-input hook ($38/$39) to the ROM keyboard routine,
+// via SETKBD ($FE89).
+void a2_setkbd();
+// Resets the character-output hook ($36/$37) to the ROM screen routine,
+// via SETVID ($FE93).
+void a2_setvid();
+// Clears the lo-res graphics screen to black, via CLRSCR ($F832).
+void a2_grclrscr();
+// Clears the top (non-text-window) part of the lo-res graphics screen to
+// black, via CLRTOP ($F836).
+void a2_clrtop();
+
+// Reads one line of keyboard input via GETLN ($FD6A): shows the current
+// PROMPT ($33) character, echoes keystrokes, and supports the usual
+// line-editing keys. The monitor itself (not this wrapper, and not rcc -
+// see docs/known-bugs.md's "'@' addr pinning isn't implemented for the
+// 6502/65c02 backends' global arrays") always writes the finished line
+// into its own fixed buffer at $200-$2FF, one byte per character with bit
+// 7 set (the same normal-text convention as a2_cout()'s own input),
+// terminated by a single $8D (a carriage return, not 0) rather than NUL.
+void a2_getln();
+
+// Copies the inclusive byte range [from, to] to a same-size range starting
+// at dest, via MOVE ($FE2C). `from`/`to`/`dest` are plain untyped addresses
+// (see docs/language.md's "a plain `int` used as an untyped address"), not
+// typed pointers - MOVE stages them through the monitor's own zero-page
+// cells ($3C-$3F, $42-$43) rather than any 6502 register.
+void a2_move(int from, int to, int dest);
 
 // Patches mli_trampoline's command byte and parameter-list address (an
 // untyped address - see docs/language.md's "a plain `int` used as an

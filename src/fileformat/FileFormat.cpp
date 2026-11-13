@@ -7,7 +7,6 @@
 #include "fileformat/coff/CoffFormat.h"
 #include "fileformat/elf/ElfFormat.h"
 #include "fileformat/macho/MachOFormat.h"
-#include "fileformat/flat/FlatFormat.h"
 #include "fileformat/raw/RawFormat.h"
 #include "fileformat/rim/RimFormat.h"
 #include "fileformat/ptr/PtrFormat.h"
@@ -28,8 +27,6 @@ std::unique_ptr<FileFormatWriter> makeFileFormatWriter(FileFormatKind kind) {
             return std::make_unique<MachOFormatWriter>();
         case FileFormatKind::Aout:
             return std::make_unique<AoutFormatWriter>();
-        case FileFormatKind::Flat:
-            return std::make_unique<FlatFormatWriter>();
         case FileFormatKind::Raw:
             return std::make_unique<RawFormatWriter>();
         case FileFormatKind::Rim:
@@ -58,8 +55,6 @@ std::unique_ptr<FileFormatReader> makeFileFormatReader(FileFormatKind kind) {
             return std::make_unique<MachOFormatReader>();
         case FileFormatKind::Aout:
             return std::make_unique<AoutFormatReader>();
-        case FileFormatKind::Flat:
-            return std::make_unique<FlatFormatReader>();
         case FileFormatKind::Raw:
             return std::make_unique<RawFormatReader>();
         case FileFormatKind::Rim:
@@ -83,8 +78,7 @@ std::optional<FileFormatKind> fileFormatKindFromName(const std::string &name) {
     if (name == "elf") return FileFormatKind::Elf;
     if (name == "macho") return FileFormatKind::MachO;
     if (name == "aout") return FileFormatKind::Aout;
-    if (name == "objraw") return FileFormatKind::Flat;
-    if (name == "flat") return FileFormatKind::Flat;
+    if (name == "objraw") return FileFormatKind::Raw;
     if (name == "raw") return FileFormatKind::Raw;
     if (name == "rim") return FileFormatKind::Rim;
     if (name == "ptr") return FileFormatKind::Ptr;
@@ -105,8 +99,6 @@ std::string fileFormatName(FileFormatKind kind) {
             return "macho";
         case FileFormatKind::Aout:
             return "aout";
-        case FileFormatKind::Flat:
-            return "flat";
         case FileFormatKind::Raw:
             return "raw";
         case FileFormatKind::Rim:
@@ -145,11 +137,12 @@ FileFormatKind detectFileFormat(const std::string &bytes) {
         if (magic == 0407) return FileFormatKind::Aout;
     }
     // COFF has no magic number, only a Machine ID; every target's k<Target>CoffMachine must be
-    // listed here or its --format=coff objects fall through to the Flat fallback below.
+    // listed here or its --format=coff objects fall through to the Raw fallback below.
     static const std::unordered_set<uint16_t> kKnownCoffMachines = {
         0x014C,  // standard Windows i386 COFF
         0x1987,  // pdp7
         0x0086,  // 8086/8088
+        0x0D86,  // 8086-dos
         0x5A38,  // z80
         0x6502,  // 6502
         0xC502,  // 65c02
@@ -184,7 +177,7 @@ FileFormatKind detectFileFormat(const std::string &bytes) {
         uint16_t machine = static_cast<uint8_t>(bytes[0]) | (static_cast<uint8_t>(bytes[1]) << 8);
         if (kKnownCoffMachines.count(machine)) return FileFormatKind::Coff;
     }
-    return FileFormatKind::Flat;
+    return FileFormatKind::Raw;
 }
 
 }  // namespace rcc

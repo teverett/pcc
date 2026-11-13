@@ -71,7 +71,7 @@ std::unique_ptr<TargetLinker> makeArmLinker() {
     config.relocPatchers[kArmRelocRel24] = patchArmRel24;
     config.relocPatchers[kArmRelocMovWLo] = patchArmMovWLo;
     config.relocPatchers[kArmRelocMovTHi] = patchArmMovTHi;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

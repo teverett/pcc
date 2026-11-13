@@ -22,7 +22,7 @@ std::unique_ptr<TargetLinker> makeM16cLinker() {
     config.machineType = kM16cCoffMachine;
     config.entryObject = assembleM16cObject(kEntryAsm);
     config.relocPatchers[kM16cRelocAbs16] = RelocKinds::patchAbs16;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

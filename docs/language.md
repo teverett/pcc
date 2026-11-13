@@ -81,6 +81,12 @@ Deliberate simplifications, not bugs:
 - An unsuffixed numeric literal is always `int`; it does not
   auto-widen to `long`/`long long` on overflow — use a suffix (`10L`,
   `4000000000UL`) for anything that needs to be wider.
+- A `NUMBER` is decimal only (`CLexer.g4`'s own token is `[0-9]+`
+  plus the integer suffix) — no `0x`/`0X` hex and no octal, unlike an
+  `asm { }` block's own text, which is a separate grammar entirely and
+  does support 8086-style hex (see `docs/asm.md`'s own `NUMBER` row).
+  Write a hex-sized constant like `0x4C00` as its decimal value
+  (`19456`) in real C code.
 - A real pointer (`T*`) has scaled arithmetic (`p + 1` moves by
   `sizeof(T)`) and a typed dereference (`*p` reads/writes exactly
   `sizeof(T)`, correctly sign/zero-extended); a plain `int` used as an

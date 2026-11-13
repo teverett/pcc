@@ -50,7 +50,7 @@ std::unique_ptr<TargetLinker> makeI8008Linker() {
     config.relocPatchers[kI8008RelocAbs16] = RelocKinds::patchAbs16;
     config.relocPatchers[kI8008RelocAbs16Lo] = patchAbs16Lo;
     config.relocPatchers[kI8008RelocAbs16Hi] = patchAbs16Hi;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

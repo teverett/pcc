@@ -25,7 +25,7 @@ std::unique_ptr<TargetLinker> makeMC68328Linker() {
     config.machineType = kMC68328CoffMachine;
     config.entryObject = assembleMC68328Object(kEntryAsm);
     config.relocPatchers[kMC68328RelocAbs32] = RelocKinds::patchAbs32BE;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

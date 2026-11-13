@@ -17,16 +17,24 @@ namespace rcc {
 // variable/temporary is one 16-bit word; register-indexed addressing
 // (`[label+bx]`) handles arrays and pointers.
 //
-// `--format=raw`: generate() emits a self-contained 512-byte boot
-// sector (zeroes segment registers, sets up a stack at 0x7C00, calls
-// main, halts). A program too large for one boot sector needs
-// `--format=coff` instead (an ordinary object file with no size
-// limit); linking/packaging that into a bootable image is not this
-// compiler's job.
+// `--format=raw`: generate() emits a self-contained flat binary (zeroes segment
+// registers, sets up a stack, calls main, halts), loaded/entered at
+// `kI8086BaseAddress` - no boot sector or other BIOS/OS loading convention of any kind;
+// building one from this plain binary, if ever wanted, is not this compiler's job.
+//
+// `dosAbi` (true for `--target=8086-dos`) switches that non-object entry sequence to a
+// real MS-DOS `.com` program instead: no segment/stack setup (DOS's own loader already
+// made CS=DS=ES=SS the PSP segment and gave the process a valid stack), `ORG
+// kI8086DosBaseAddress` (`0x100`, where DOS loads a `.com`) instead of
+// `kI8086BaseAddress`, and `INT 21h` function `4Ch` instead of `hlt` to exit. Every
+// instruction this backend ever emits is identical either way - only the entry/exit
+// sequence and base address differ - so this one Codegen class covers both rather than
+// a separate one the way `mc68328`'s own real hardware differences do.
 class I8086Codegen : public Backend {
    public:
+    explicit I8086Codegen(bool dosAbi = false) : dosAbi_(dosAbi) {}
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
-    std::string name() const override { return "8086"; }
+    std::string name() const override { return dosAbi_ ? "8086-dos" : "8086"; }
     TypeWidths typeWidths() const override { return {1, 2, 2, 4, 8}; }
     std::string sourceExtension() const override { return ".asm"; }
     std::vector<std::string> assembledFormats() const override { return {"raw", "coff", "elf"}; }
@@ -35,6 +43,7 @@ class I8086Codegen : public Backend {
                                                   const std::string &format) const override;
 
    private:
+    bool dosAbi_;
 
     void emitPlacement(long address);
     void genFunction(const ir::FunctionBody &fn);

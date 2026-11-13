@@ -25,7 +25,7 @@ std::unique_ptr<TargetLinker> makeMCS51Linker() {
     config.machineType = kMCS51CoffMachine;
     config.entryObject = assembleMCS51Object(kEntryAsm);
     config.relocPatchers[kMCS51RelocAbs16] = RelocKinds::patchAbs16BE;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     // XDATA and CODE both start at address 0 but are separate, non-aliasing
     // address spaces reached over separate buses (MOVX vs. PC-fetch).
     config.dataBaseAddress = 0;

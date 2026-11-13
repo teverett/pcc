@@ -92,7 +92,7 @@ OPTIMIZERS_DIRS   := $(OPTIMIZERS_DIR)/constant_folding $(OPTIMIZERS_DIR)/consta
 # header comment - instead of being split across src/coff/, src/elf/,
 # src/objectformat/ and src/linker/format/ the way it used to be.
 FILEFORMAT_DIR  := $(SRC_DIR)/fileformat
-FILEFORMAT_DIRS := $(FILEFORMAT_DIR) $(FILEFORMAT_DIR)/archive $(FILEFORMAT_DIR)/coff $(FILEFORMAT_DIR)/elf $(FILEFORMAT_DIR)/macho $(FILEFORMAT_DIR)/aout $(FILEFORMAT_DIR)/flat $(FILEFORMAT_DIR)/raw $(FILEFORMAT_DIR)/rim $(FILEFORMAT_DIR)/ptr $(FILEFORMAT_DIR)/a7out $(FILEFORMAT_DIR)/list $(FILEFORMAT_DIR)/dos33 $(FILEFORMAT_DIR)/prodos
+FILEFORMAT_DIRS := $(FILEFORMAT_DIR) $(FILEFORMAT_DIR)/archive $(FILEFORMAT_DIR)/coff $(FILEFORMAT_DIR)/elf $(FILEFORMAT_DIR)/macho $(FILEFORMAT_DIR)/aout $(FILEFORMAT_DIR)/raw $(FILEFORMAT_DIR)/rim $(FILEFORMAT_DIR)/ptr $(FILEFORMAT_DIR)/a7out $(FILEFORMAT_DIR)/list $(FILEFORMAT_DIR)/dos33 $(FILEFORMAT_DIR)/prodos
 
 HAND_SRCS := \
     $(SRC_DIR)/main.cpp \
@@ -104,7 +104,6 @@ HAND_SRCS := \
     $(FILEFORMAT_DIR)/elf/ElfFormat.cpp \
     $(FILEFORMAT_DIR)/macho/MachOFormat.cpp \
     $(FILEFORMAT_DIR)/aout/AoutFormat.cpp \
-    $(FILEFORMAT_DIR)/flat/FlatFormat.cpp \
     $(FILEFORMAT_DIR)/raw/RawFormat.cpp \
     $(FILEFORMAT_DIR)/rim/RimFormat.cpp \
     $(FILEFORMAT_DIR)/ptr/PtrFormat.cpp \
@@ -323,3 +322,5 @@ test: all $(BIN_DIR)/preprocessor_test $(BIN_DIR)/archive_reader_test $(BIN_DIR)
 	./tests/run_tests.sh $(TARGET) --target=8051
 	./tests/run_tests.sh $(TARGET) --target=stm32
 	./tests/run_tests.sh $(TARGET) --target=i386
+	./tests/run_apple2_format_tests.sh $(TARGET)
+	./tests/run_apple2_rom_wrapper_tests.sh $(TARGET)

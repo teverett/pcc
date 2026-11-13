@@ -10,4 +10,9 @@ namespace rcc {
 // real-mode x86, so relocations patch via the shared RelocKinds with no local patch function.
 std::unique_ptr<TargetLinker> makeI8086Linker();
 
+// Same backend, same instruction encoding, but a real MS-DOS `.com` program's own
+// entry/exit convention and load address instead of a bare flat binary's - see
+// I8086LinkerFactory.cpp's own `kDosEntryAsm` comment.
+std::unique_ptr<TargetLinker> makeI8086DosLinker();
+
 }  // namespace rcc

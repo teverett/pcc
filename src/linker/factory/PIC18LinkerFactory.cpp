@@ -103,7 +103,7 @@ std::unique_ptr<TargetLinker> makePIC18Linker() {
     config.relocPatchers[kPIC18RelocDataAbs8] = patchDataAbs8;
     config.relocPatchers[kPIC18RelocCodeLo] = patchCodeLo;
     config.relocPatchers[kPIC18RelocCodeHi] = patchCodeHi;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     // Data-space linking begins at 0x22, right after the fixed
     // pseudo-register equate region (0x00-0x21).
     config.dataBaseAddress = kPIC18DataBaseAddress;

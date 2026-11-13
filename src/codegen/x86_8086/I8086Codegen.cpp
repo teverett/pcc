@@ -31,8 +31,9 @@ void I8086Codegen::declareArray(const std::string &label, const std::vector<ir::
 
 std::string I8086Codegen::newLabel() { return "L" + std::to_string(labelCounter_++); }
 
-// `@addr` placement: pads forward to a byte offset from ORG (0x7C00) via `times`.
-// NASM's `$` only increases, so placement can only insert forward padding, never reorder.
+// `@addr` placement: pads forward to a byte offset from ORG (kI8086BaseAddress) via
+// `times`. NASM's `$` only increases, so placement can only insert forward padding,
+// never reorder.
 void I8086Codegen::emitPlacement(long address) { code_ << "times (" << address << "-($-$$)) db 0\n"; }
 
 std::string I8086Codegen::generate(const ir::Program &prog, bool objectMode) {
@@ -55,19 +56,33 @@ std::string I8086Codegen::generate(const ir::Program &prog, bool objectMode) {
 
     size_t rangeStart = static_cast<size_t>(code_.tellp());
     code_ << "BITS 16\n";
-    // objectMode: no boot-sector wrapper/entry sequence here - the linker synthesizes
-    // one after linking. An object's own base is `ORG 0`; placement is the linker's job.
+    // objectMode: no entry sequence here - the linker synthesizes one after linking. An
+    // object's own base is `ORG 0`; placement is the linker's job.
     if (objectMode) {
         code_ << "ORG 0\n\n";
+    } else if (dosAbi_) {
+        // DOS's own loader already made CS=DS=ES=SS the one segment this process gets
+        // (the PSP) and gave it a valid stack, so there's no segment/stack setup here -
+        // just call main and exit via INT 21h/4Ch. This dialect's `mov` has no `ah`
+        // register to load just the function number into (I8086Assembler.cpp has none
+        // at all - see its own "movb"/"and" comments), so AX is reloaded wholesale with
+        // `0x4C00`: function 4Ch, exit code 0 - main's own return value doesn't survive
+        // as a real DOS exit code this way, only up until this mov.
+        code_ << "ORG 0x" << std::hex << kI8086DosBaseAddress << std::dec << "\n\n";
+        code_ << "_start:\n";
+        code_ << "    call " << label(mainFn) << "\n";
+        code_ << "    mov ax, 0x4C00\n";
+        code_ << "    int 0x21\n\n";
+        codeRanges.push_back({mainFn->sourceFile, rangeStart, static_cast<size_t>(code_.tellp())});
     } else {
-        code_ << "ORG 0x7C00\n\n";
+        code_ << "ORG 0x" << std::hex << kI8086BaseAddress << std::dec << "\n\n";
         code_ << "_start:\n";
         code_ << "    cli\n";
         code_ << "    xor ax, ax\n";
         code_ << "    mov ds, ax\n";
         code_ << "    mov es, ax\n";
         code_ << "    mov ss, ax\n";
-        code_ << "    mov sp, 0x7C00\n";  // stack grows down from just below the boot sector itself
+        code_ << "    mov sp, 0xFFFE\n";  // top of the flat 64KB segment this program lives in
         code_ << "    sti\n";
         code_ << "    call " << label(mainFn) << "\n";
         code_ << "    hlt\n";
@@ -1331,21 +1346,21 @@ void I8086Codegen::genDivMod(const ir::Expr &lhs, const ir::Expr &rhs, bool want
 
 // A from-scratch x86 instruction encoder, no external assembler needed.
 //
-// The boot-sector padding/signature is only added for `--format=raw`, never in
-// generate() itself: an object file has no 510-byte limit (it's never booted
-// directly), so it must never see this padding.
+// `--format=raw`, like every other target here, is a plain whole-program flat binary -
+// no boot sector, no padding, no signature (building a bootable image is out of scope
+// for this project; see I8086LinkerFactory.cpp's own entry-stub comment).
 std::optional<std::string> I8086Codegen::assembleInProcess(const std::string &asmText,
                                                              const std::string &format) const {
-    if (format == "raw") {
-        std::string bootable = asmText + "\ntimes (510-($-$$)) db 0\ndw 0xAA55\n";
-        return assembleI8086(bootable, I8086OutputFormat::Bin);
-    }
+    const uint16_t machineType = dosAbi_ ? kI8086DosCoffMachine : kI8086CoffMachine;
+    if (format == "raw") return assembleI8086(asmText, I8086OutputFormat::Bin);
     // `--format=coff` is real separate compilation: an undefined symbol is deferred
     // as a relocation for a future `--link` step.
-    if (format == "coff") return assembleI8086(asmText, I8086OutputFormat::Coff, /*allowExternal=*/true);
-    // `--format=elf`, like `--format=raw`, is a complete self-contained program: an
-    // undefined symbol is a hard error, and no boot-sector padding is appended.
-    if (format == "elf") return assembleI8086(asmText, I8086OutputFormat::Elf);
+    if (format == "coff") {
+        return assembleI8086(asmText, I8086OutputFormat::Coff, /*allowExternal=*/true, machineType);
+    }
+    // `--format=elf` is also a complete self-contained program: an undefined symbol is
+    // a hard error.
+    if (format == "elf") return assembleI8086(asmText, I8086OutputFormat::Elf, /*allowExternal=*/false, machineType);
     return std::nullopt;
 }
 

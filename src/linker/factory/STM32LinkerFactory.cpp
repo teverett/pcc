@@ -104,7 +104,7 @@ std::unique_ptr<TargetLinker> makeSTM32Linker() {
     config.relocPatchers[kSTM32RelocMovWLo] = patchStm32MovWLo;
     config.relocPatchers[kSTM32RelocMovTHi] = patchStm32MovTHi;
     config.relocPatchers[kSTM32RelocBranch25] = patchStm32Branch25;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

@@ -422,6 +422,7 @@ std::string M65C02Codegen::generate(const ir::Program &prog, bool objectMode) {
         // An external global isn't defined in this file: skip it here and
         // let the assembler defer the reference as a relocation.
         if (slot->isExternal) continue;
+        if (slot->hasAddress) trailer_.push_back(placementLine(slot->address));
         const std::string lbl = label(slot.get());
         if (slot->arraySize > 0) {
             declareArray(lbl, slot->arrayInit, slot->type);
@@ -446,6 +447,7 @@ std::map<std::string, std::string> M65C02Codegen::perFileAsm() const { return pe
 // caller's pushed arguments end, sets fp to that saved word, then reserves
 // frameSize*2 more bytes below fp for locals.
 void M65C02Codegen::genFunction(const ir::FunctionBody &fn) {
+    if (fn.func->hasAddress) code_ << placementLine(fn.func->address) << "\n";
     code_ << label(fn.func) << ":\n";
     addConst16("ptr", "sp", -2);     // ptr = saved-fp word's address
     storeIndirect("ptr", "fp");      // [ptr] = caller's fp

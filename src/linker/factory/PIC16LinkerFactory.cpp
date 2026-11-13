@@ -84,7 +84,7 @@ std::unique_ptr<TargetLinker> makePIC16Linker() {
     config.relocPatchers[kPIC16RelocData] = patchPIC16Data;
     config.relocPatchers[kPIC16RelocCodeLo] = patchPIC16CodeLo;
     config.relocPatchers[kPIC16RelocCodeHi] = patchPIC16CodeHi;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

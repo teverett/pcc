@@ -40,10 +40,10 @@ atom       : IDENT | NUMBER | '(' expr ')'
 - `;` starts a comment (matching NASM's convention, used on both
   targets), runs to end of line, and is otherwise never special.
 - `NUMBER` is decimal, pdp7-style octal (a leading `0`, e.g. its
-  `ion`/`iof` literal instruction words), or 8086-style hex (`0x7C00`).
+  `ion`/`iof` literal instruction words), or 8086-style hex (`0x1000`).
 - `times (COUNT) mnemonic operand, ...` is NASM's repeat-prefix
-  (used for the 8086 boot-sector's placement padding, e.g.
-  `times (510-($-$$)) db 0`). It needs its own parens around `count`
+  (used for the 8086 backend's `@addr` placement padding, e.g.
+  `times (0x2000-($-$$)) db 0`). It needs its own parens around `count`
   because `expr` is otherwise unbounded: with no required separator
   between `count` and `mnemonic`, a bare trailing identifier is
   syntactically indistinguishable from the following mnemonic, and

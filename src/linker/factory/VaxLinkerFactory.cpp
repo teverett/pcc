@@ -25,7 +25,7 @@ std::unique_ptr<TargetLinker> makeVaxLinker() {
     config.machineType = kVaxCoffMachine;
     config.entryObject = assembleVaxObject(kEntryAsm);
     config.relocPatchers[kVaxRelocAbs32] = RelocKinds::patchAbs32;
-    config.outputFormats = {"flat", "coff", "elf", "aout"};
+    config.outputFormats = {"raw", "coff", "elf", "aout"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 
