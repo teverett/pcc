@@ -9,13 +9,14 @@ RCC = Path(sys.argv.pop(1) if len(sys.argv) > 1 else ROOT / "build/bin/rcc").res
 BUILD = ROOT / "build/platform-flag-tests"
 
 
-# --platform=<name> is pure sugar over --target/--format, and --list-all
-# enumerates every <target>-<host> triple and every --platform name this
-# build accepts - both generated from the same allPlatforms()/kTargetNames
-# tables in src/main.cpp, never hand-maintained, so they can't drift from
-# what --target/--format/--platform actually support. --list-triples and
-# the earlier, narrower --list-platforms have both been replaced by
-# --list-all and no longer exist.
+# --platform=<name> is pure sugar over --target/--format, and
+# --list-platforms enumerates every <target>-<host> triple and every
+# --platform name this build accepts - both generated from the same
+# allPlatforms()/kTargetNames tables in src/main.cpp, never hand-
+# maintained, so they can't drift from what --target/--format/--platform
+# actually support. --list-triples (the narrower, now-removed flag that
+# used to show only <target>-<host> triples) has been folded into this
+# one combined --list-platforms and no longer exists.
 class PlatformFlagTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -32,8 +33,8 @@ class PlatformFlagTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return object_path
 
-    def test_list_all_contains_expected_names_including_formatless_targets(self):
-        names = set(self.run_rcc("--list-all").stdout.splitlines())
+    def test_list_platforms_contains_expected_names_including_formatless_targets(self):
+        names = set(self.run_rcc("--list-platforms").stdout.splitlines())
         for expected in (
             "6502-dos33", "65c02-prodos", "z80-coleco-colecorom",
             "6809-decb", "8086-dos-raw", "saturn-coff", "i386-linux",
@@ -48,11 +49,10 @@ class PlatformFlagTest(unittest.TestCase):
         # convention - it must never appear as a platform's format suffix.
         self.assertFalse(any(name.endswith("-asm") for name in names))
 
-    def test_list_triples_and_old_list_platforms_no_longer_exist(self):
-        for flag in ("--list-triples", "--list-platforms"):
-            result = self.run_rcc(flag)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("unknown option", result.stderr)
+    def test_list_triples_no_longer_exists(self):
+        result = self.run_rcc("--list-triples")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unknown option", result.stderr)
 
     def test_platform_resolves_identically_to_explicit_target_and_format(self):
         # One target with no dash of its own, one whose target name itself
@@ -75,7 +75,7 @@ class PlatformFlagTest(unittest.TestCase):
     def test_unknown_platform_name_fails_clearly(self):
         result = self.run_rcc("--platform=bogus-name", "--out=" + str(BUILD / "x"), BUILD / "nonexistent.c")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("--list-all", result.stderr)
+        self.assertIn("--list-platforms", result.stderr)
 
     def test_platform_combined_with_target_is_rejected_explicitly(self):
         result = self.run_rcc(

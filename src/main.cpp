@@ -144,7 +144,7 @@ void usage(const char *argv0) {
                  "plain --target=<target> is shorthand for '-none'.\n"
                  "\n"
                  "--platform=<name> is sugar for a --target/--format pair under one name (e.g.\n"
-                 "--platform=6502-dos33). --list-all prints every --target-host combination and\n"
+                 "--platform=6502-dos33). --list-platforms prints every --target-host combination and\n"
                  "every --platform name this build actually accepts, one per line.\n"
                  "\n"
                  "A non-coff --format takes exactly one .c file - real separate compilation\n"
@@ -190,7 +190,7 @@ void writeToBuildDir(const std::string &name, const std::string &content, bool b
 // Every name makeBackend()/makeLinker() accept as --target (aliases sharing
 // a backend, like 8088->8086, are listed separately since each is
 // independently valid on the command line). Used both for "unknown
-// --target" error messages and for --list-all.
+// --target" error messages and for --list-platforms.
 const std::vector<std::string> kTargetNames = {
     "pdp1", "pdp7", "8086", "8088", "8086-dos", "6502", "65c02", "68000", "mc68328", "pdp11", "pdp10", "8080", "z80", "z80-coleco", "6809", "8008",
     "stm8", "stm32", "i386", "m16c", "m30626fjpfp", "pic16", "pic18", "r10000", "r4000", "cortex-m3",
@@ -379,7 +379,7 @@ std::vector<Platform> allPlatforms() {
     return platforms;
 }
 
-void listAll() {
+void listPlatforms() {
     for (const auto &platform : allPlatforms()) std::cout << platform.name << "\n";
 }
 
@@ -561,8 +561,8 @@ int main(int argc, char **argv) {
         } else if (!(v = takeValue("--windows-linker=")).empty()) {
             windowsLinkerKind = v;
             windowsLinkerKindSet = true;
-        } else if (arg == "--list-all") {
-            listAll();
+        } else if (arg == "--list-platforms") {
+            listPlatforms();
             return 0;
         } else if (arg == "-L" || arg == "-l") {
             if (i + 1 >= argc) {
@@ -622,7 +622,7 @@ int main(int argc, char **argv) {
         auto it = std::find_if(platforms.begin(), platforms.end(),
                                 [&](const Platform &p) { return p.name == platformName; });
         if (it == platforms.end()) {
-            std::cerr << "unknown --platform '" << platformName << "' - see --list-all for every valid name\n";
+            std::cerr << "unknown --platform '" << platformName << "' - see --list-platforms for every valid name\n";
             return 1;
         }
         target = it->target;

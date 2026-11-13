@@ -5,7 +5,7 @@ retro hardware through pluggable backends. Today it supports:
 
 For the exact, up-to-date list of every target's own output-format
 choices (the bullets below describe each one in prose, which can go
-stale), run `rcc --list-all` - it prints every `--target=<name>[-<host>]`
+stale), run `rcc --list-platforms` - it prints every `--target=<name>[-<host>]`
 triple and every `--platform=<name>` name this build accepts, generated
 directly from each target's own `TargetLinker::outputFormats()` (or, for
 the few targets with no `--link` support, `Backend::assembledFormats()`)
