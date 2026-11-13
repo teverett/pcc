@@ -6,6 +6,7 @@ directory with a `Makefile` and a `README.md` of its own:
 - `hosted-hello` — hosted executable for the current desktop OS (macOS/Linux/Windows)
 - `m30626fjpfp-freestanding` — freestanding binary for the `m30626fjpfp` target
 - `6502-freestanding` — freestanding binary for the `6502` target
+- `68000-freestanding` — freestanding binary for the `68000` target
 - `6502-dos33` — Apple ][ "hello world" for `6502`, linked as
   `--platform=6502-prodos` against `src/rt/apple2/`'s ROM-call runtime
   library

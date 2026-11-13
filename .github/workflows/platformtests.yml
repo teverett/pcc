@@ -196,6 +196,58 @@ jobs:
           assert val == 45, val
           PY
 
+      # 68000-freestanding is a freestanding 68000 binary (no OS to exec it
+      # on), so it's verified against a real `qemu-system-m68k -M none -cpu
+      # m68000` the same way tests/run_tests.sh's own check_68000() does:
+      # the `loader` device forces the CPU's PC straight to the program's
+      # load address (no boot ROM/vector table), tests/qemu_wait.py polls
+      # the monitor until the register dump settles into the linker's own
+      # halt loop, and main()'s return value is read back out of D0.
+      - name: Install qemu (68000 emulator)
+        if: matrix.name == 'macos'
+        run: brew install qemu
+
+      - name: Build and run 68000-freestanding in qemu
+        if: matrix.name == 'macos'
+        run: |
+          make -C examples/68000-freestanding
+          python3 -I - <<'PY'
+          import re
+          import subprocess
+          import sys
+
+          binfile = "examples/68000-freestanding/build/main.bin"
+          monitor = "/tmp/68000-freestanding.monitor"
+
+          qemu = subprocess.Popen([
+              "qemu-system-m68k", "-M", "none", "-cpu", "m68000", "-m", "16M",
+              "-device", f"loader,file={binfile},addr=0x1000,cpu-num=0",
+              "-device", "loader,addr=0x1000,cpu-num=0",
+              "-monitor", f"unix:{monitor},server,nowait", "-display", "none", "-no-reboot",
+          ])
+          try:
+              result = subprocess.run(
+                  ["python3", "-I", "tests/qemu_wait.py", monitor, "40"],
+                  capture_output=True, text=True, timeout=45,
+              )
+          finally:
+              qemu.terminate()
+              try:
+                  qemu.wait(timeout=5)
+              except subprocess.TimeoutExpired:
+                  qemu.kill()
+
+          if result.returncode != 0:
+              sys.exit(f"qemu_wait failed:\n{result.stdout}\n{result.stderr}")
+
+          match = re.search(r"D0 = ([0-9a-fA-F]+)", result.stdout)
+          assert match, result.stdout
+          d0 = int(match.group(1), 16)
+          if d0 >= 0x80000000:
+              d0 -= 0x100000000
+          assert d0 == 45, d0
+          PY
+
       # 6502-dos33 is an Apple ][ "hello world" (src/rt/apple2/) - also a
       # freestanding 6502 binary, so the same py65 approach as
       # 6502-freestanding applies, but it makes real COUT/CROUT/HOME/
