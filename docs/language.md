@@ -49,9 +49,10 @@ IRBuilder's `collectLabels`), a local declaration (scalar or array,
 optionally initialized), a bare expression statement, and
 `asm { ... }` (see "Inline asm" below).
 
-Not in this subset: `union`/`enum`/`typedef`, floating point, variadic
+Not in this subset: `union`/`typedef`, floating point, variadic
 functions, and designated initializers. `struct` is supported, in the
-narrower form described in "Structs" below.
+narrower form described in "Structs" below; `enum` is supported too,
+in the narrower form described in "Enums" below.
 
 ## Scope and limitations
 
@@ -108,9 +109,18 @@ Deliberate simplifications, not bugs:
 - `CHARLIT` (`'x'`) has no escape sequences at all: exactly one raw
   character between the quotes (enough for ASCII-arithmetic use like
   `'0' + digit`).
-- `STRINGLIT` (`"..."`) has a small, fixed escape set — `\\ \" \n \t
-  \r \0` — no octal/hex escapes, and no line continuation (a string
-  literal can't span a physical line). It lowers to the address of an
+- `STRINGLIT` (`"..."`) supports `\\ \" \n \t \r`, an octal escape
+  (`\ooo`, 1-3 octal digits, e.g. `\101` is `'A'`), and a hex escape
+  (`\xhh...`, one or more hex digits), all with the same spelling as
+  ISO C's; an escape value wider than a byte truncates to its low 8
+  bits, also matching ISO C's own overflow behavior. Still no line
+  continuation (a string literal can't span a physical line) — unlike
+  the escape set above, that's not a per-string-literal feature in
+  real C either (it's a universal backslash-newline splice applied to
+  the whole source before tokenizing, phase 2 of translation), and
+  this project doesn't support it anywhere, including inside a
+  multi-line `#define` (see `src/preprocessor/Preprocessor.cpp`'s own
+  header comment). It lowers to the address of an
   anonymous, NUL-terminated `char` array holding its decoded bytes —
   exactly what `&someCharArray` already means for a hand-declared one
   (see `IRBuilder.cpp`'s own `buildExpr` case for `ExprKind::
@@ -147,6 +157,40 @@ global), and an array of structs at file scope (a local array of
 structs works; see `IRBuilder.cpp`'s own comment on why only the global
 case is excluded). Each of these is a compile error, not a silent
 miscompile.
+
+## Enums
+
+`enum Tag { Member, ... };` at file scope only, same as `struct` — no
+forward declaration (a tag must be fully defined, textually, before
+any use of it or of its members). Unlike `struct`, an enum has no
+runtime representation of its own at all: `enum Tag` is just another
+spelling for `int` once resolved, and every member is a plain `int`
+compile-time constant, substituted directly wherever it's used —
+nothing downstream of parsing (the IR, any backend) ever sees `enum`
+in any form. `sizeof(enum Tag)` is therefore always exactly
+`sizeof(int)`.
+
+A member with no `= value` takes the previous member's value plus one
+(`0` for the first member); a member that gives one may reuse an
+already-assigned value, same as real C, but may not reuse an
+already-declared member's own *name* — nor may a tag be reused. A
+member's value must be a plain (optionally negated) integer literal,
+not a general expression (the same restriction a `struct` member's
+array size already has).
+
+An enum constant is usable anywhere a `NUMBER` literal already was: as
+a general expression, a `switch`'s `case` label, and a global's or
+`static` local's initializer. It is *not* usable as an array size or
+an array initializer element (those grammar slots only ever took a
+literal `NUMBER` to begin with — see "Scope and limitations" above).
+
+An enum constant shares no namespace-collision checking with ordinary
+variables/parameters/functions (this subset's symbol tables for those
+are built later, in `IRBuilder`, after enum constants are already
+resolved away in `BuildAst.cpp`) — avoid reusing an enum member's name
+for a variable, parameter, or function in the same file; doing so is
+not diagnosed, and the enum constant always wins at any later use of
+that name.
 
 ## Bitwise operators
 

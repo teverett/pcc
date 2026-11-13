@@ -51,6 +51,10 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitEnumType(CParser::EnumTypeContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitTopLevelDecl(CParser::TopLevelDeclContext *ctx) override {
     return visitChildren(ctx);
   }
@@ -60,6 +64,14 @@ public:
   }
 
   virtual std::any visitStructMember(CParser::StructMemberContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitEnumDecl(CParser::EnumDeclContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitEnumMember(CParser::EnumMemberContext *ctx) override {
     return visitChildren(ctx);
   }
 

@@ -27,13 +27,14 @@ signed or unsigned, pointers (`T*`, with real pointee-typed arithmetic
 and dereference), arrays, casts, `sizeof`, and a narrower form of
 `struct` (see `docs/language.md`'s own "Structs" section). A function's
 return type can also be `void` (no other use of `void` - no `void*`,
-no `void` parameter - is supported). String literals
+no `void` parameter - is supported), and a narrower form of `enum`
+(see `docs/language.md`'s own "Enums" section). String literals
 (`"like this"`) are supported - each one lowers to the address of an
 anonymous, NUL-terminated `char` array holding its decoded bytes, the
 same as a hand-declared `char` array would. A text-level preprocessor
 handles `#include`, object-like `#define`/`#undef`, and `#ifdef`/
 `#ifndef`/`#if`/`#else`/`#elif`/`#endif`, function-like and variadic
-macros, stringizing, and token pasting. No unions/enums/typedefs, no
+macros, stringizing, and token pasting. No unions/typedefs, no
 floats.
 
 ## Documentation

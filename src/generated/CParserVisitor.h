@@ -37,11 +37,17 @@ public:
 
     virtual std::any visitStructType(CParser::StructTypeContext *context) = 0;
 
+    virtual std::any visitEnumType(CParser::EnumTypeContext *context) = 0;
+
     virtual std::any visitTopLevelDecl(CParser::TopLevelDeclContext *context) = 0;
 
     virtual std::any visitStructDecl(CParser::StructDeclContext *context) = 0;
 
     virtual std::any visitStructMember(CParser::StructMemberContext *context) = 0;
+
+    virtual std::any visitEnumDecl(CParser::EnumDeclContext *context) = 0;
+
+    virtual std::any visitEnumMember(CParser::EnumMemberContext *context) = 0;
 
     virtual std::any visitExternFunctionDecl(CParser::ExternFunctionDeclContext *context) = 0;
 

@@ -115,6 +115,7 @@ jobs:
           make -C examples/68000-freestanding test
           make -C examples/pdp7-freestanding test
           make -C examples/6502-dos33 test
+          make -C examples/6502-vic20 test
           make -C examples/z80-trs80 test
           make -C examples/z80-coleco test
 

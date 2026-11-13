@@ -8,8 +8,8 @@ options { tokenVocab = CLexer; }
 // scope: char/short/int/long/long long, each signed or unsigned, each
 // optionally pointer-typed (typeSpec's own trailing '*'s - see
 // ../src/Type.h's Type::ptrDepth), plus a narrower form of `struct`
-// (see ../docs/language.md's own "Structs" section) - no unions/enums/
-// typedefs or floats, no preprocessor; an array's initializer is
+// and `enum` (see ../docs/language.md's own "Structs"/"Enums" sections)
+// - no unions/typedefs or floats; an array's initializer is
 // always a literal list, never a general expression). This is a
 // from-scratch grammar sized for that
 // subset, not a full ISO C grammar - the same approach ../../pdp-assembler
@@ -52,12 +52,19 @@ baseTypeSpec
     // "is this identifier a type name" ambiguity - same disambiguation
     // invariant the other alternatives above already rely on.
     | 'struct' IDENT                                          # structType
+    // 'enum' is likewise a fixed keyword. Unlike struct, an enum has no
+    // runtime type of its own at all once resolved - BuildAst.cpp's
+    // buildBaseType turns this straight into plain 'int' (after checking
+    // the tag is actually defined - see enumDecl below), so Type.h never
+    // needs to know enums exist.
+    | 'enum' IDENT                                            # enumType
     ;
 
 topLevelDecl
     : functionDecl
     | globalDecl
     | structDecl
+    | enumDecl
     ;
 
 // A struct must be fully defined (tag + member list) before any use of
@@ -78,6 +85,21 @@ structDecl
 
 structMember
     : typeSpec IDENT ('[' size=NUMBER ']')? ';'
+    ;
+
+// Like struct, no forward declaration - a tag must be fully defined,
+// textually, before any use of it or of its members (see
+// BuildAst.cpp's buildEnumDecl). A member with no '=' takes the
+// previous member's value plus one (0 for the first member), same as
+// real C; a member that gives one may reuse an already-assigned value
+// (also same as real C), but may not reuse an already-declared
+// member's own NAME.
+enumDecl
+    : 'enum' IDENT LBRACE enumMember (',' enumMember)* ','? RBRACE ';'
+    ;
+
+enumMember
+    : IDENT ('=' sign='-'? val=NUMBER)?
     ;
 
 // A trailing ';' instead of a block, with no leading 'extern', is a
@@ -142,7 +164,10 @@ globalDecl
     : 'extern' typeSpec IDENT '[' size=NUMBER ']' ';'                            # externArrayDecl
     | 'extern' typeSpec IDENT ';'                                                 # externScalarDecl
     | stat='static'? typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)? ('@' addr=NUMBER)? ';'  # globalArrayDecl
-    | stat='static'? typeSpec IDENT ('=' sign='-'? val=NUMBER)? ('@' addr=NUMBER)? ';'           # globalScalarDecl
+    // The initializer is a plain (optionally negated) literal, or an
+    // already-declared enum constant's bare name (identVal) - see
+    // BuildAst.cpp's resolveConstOrEnum.
+    | stat='static'? typeSpec IDENT ('=' (sign='-'? val=NUMBER | identVal=IDENT))? ('@' addr=NUMBER)? ';'  # globalScalarDecl
     ;
 
 // Elements are plain literals, optionally negated, or a bare function/
@@ -196,7 +221,7 @@ simpleStmt
     : typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)?                    # localArrayDecl
     | typeSpec IDENT ('=' expr)?                                              # localDecl
     | 'static' typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)?           # staticLocalArrayDecl
-    | 'static' typeSpec IDENT ('=' sign='-'? val=NUMBER)?                    # staticLocalDecl
+    | 'static' typeSpec IDENT ('=' (sign='-'? val=NUMBER | identVal=IDENT))? # staticLocalDecl
     | expr                                                                  # exprStmt
     ;
 
@@ -209,8 +234,8 @@ simpleStmt
 // themselves impose no scope of their own (BuildAst/IRBuilder treat the
 // whole switch body as a single scope, like block's own statement*).
 switchCase
-    : 'case' sign='-'? val=NUMBER ':' statement*   # caseLabel
-    | 'default' ':' statement*                     # defaultLabel
+    : 'case' (sign='-'? val=NUMBER | identVal=IDENT) ':' statement*   # caseLabel
+    | 'default' ':' statement*                                       # defaultLabel
     ;
 
 // op defaults to plain '=' (an ordinary assignment); any of the ten

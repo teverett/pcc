@@ -92,7 +92,13 @@ pair - see `docs/using.md`.
   `--link --format=dos33`/`prodos` wrap the same linked bytes in an
   Apple ][ DOS 3.3/ProDOS metadata convention - see `docs/using.md`'s
   own `--format` row and `src/rt/apple2/` for a ROM/ProDOS-MLI call
-  runtime library built on top of this target.
+  runtime library built on top of this target. `--link --format=prg`
+  wraps the same linked bytes in the Commodore VIC-20/C64/PET load-
+  address convention instead - see `src/rt/vic20/` for a KERNAL call
+  runtime library built on top of this target, `--base=4097` ($1001,
+  the unexpanded VIC-20's own BASIC-program start address) to place it
+  somewhere the KERNAL will actually load and run it from, and
+  `examples/6502-vic20/` for a worked "hello world" example.
 - **65c02** — WDC 65C02, same dialect/platform choices as `6502` plus the
   real CMOS-only instructions `M65C02Codegen.cpp`/`M65C02Assembler.cpp`
   support: `STZ`, used automatically by codegen itself to zero a zero-page

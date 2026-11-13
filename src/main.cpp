@@ -136,7 +136,7 @@ void usage(const char *argv0) {
               << " [--target=<target>[-<host>]] [--format=asm|<target-specific>] [--out file]\n"
                  "       [--optimize] [--dump-ir] [--dump-asm] file.c [file2.c ...]\n"
                  "   or: " << argv0
-              << " --link [--target=<target>[-<host>]] --format=<target-native> [--gc-sections] [--base=<word-addr>] [--out file] file1.o [file2.o ...]\n"
+              << " --link [--target=<target>[-<host>]] --format=<target-native> [--gc-sections] [--base=<word-addr>|0x<hex>|$<hex>] [--out file] file1.o [file2.o ...]\n"
                  "\n"
                  "<target> is a backend name (e.g. pdp7, i386, armv8a) and <host> is the real OS\n"
                  "the produced executable runs on - 'none' (the default, meaning freestanding/\n"
@@ -586,10 +586,24 @@ int main(int argc, char **argv) {
         } else if (arg == "--gc-sections") {
             gcSections = true;
         } else if (!(v = takeValue("--base=")).empty()) {
+            std::string numeric = v;
+            int radix = 10;
+            if (!numeric.empty() && numeric[0] == '$') {
+                numeric.erase(0, 1);
+                radix = 16;
+            } else if (numeric.size() > 2 && numeric[0] == '0' &&
+                       (numeric[1] == 'x' || numeric[1] == 'X')) {
+                radix = 16;
+            }
             try {
-                baseAddressWords = static_cast<uint32_t>(std::stoul(v));
+                size_t pos = 0;
+                unsigned long parsed = std::stoul(numeric, &pos, radix);
+                if (pos != numeric.size()) {
+                    throw std::invalid_argument(numeric);
+                }
+                baseAddressWords = static_cast<uint32_t>(parsed);
             } catch (const std::exception &) {
-                std::cerr << "--base must be a decimal word address, got '" << v << "'\n";
+                std::cerr << "--base must be a decimal or hex (0x../$..) word address, got '" << v << "'\n";
                 return 1;
             }
         } else if (arg == "-h" || arg == "--help") {

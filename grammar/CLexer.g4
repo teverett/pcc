@@ -34,6 +34,7 @@ GOTO_KW  : 'goto' ;
 EXTERN_KW: 'extern' ;
 STATIC_KW: 'static' ;
 STRUCT_KW: 'struct' ;
+ENUM_KW  : 'enum' ;
 LPAREN   : '(' ;
 RPAREN   : ')' ;
 LBRACK   : '[' ;
@@ -97,14 +98,15 @@ NUMBER  : ( '0' [xX] [0-9a-fA-F]+ | '0' [0-7]* | [1-9] [0-9]* ) [uUlL]* ;
 // A single character, no escapes - enough for ASCII-arithmetic use
 // like '0' + digit; see ../README.md's "Scope and limitations".
 CHARLIT : '\'' ~['\r\n] '\'' ;
-// A double-quoted byte string with a small, fixed escape set (just
-// enough to write a message with embedded newlines/tabs/quotes - no
-// octal/hex escapes, same deliberately-minimal spirit as CHARLIT's
-// own lack of any). BuildAst decodes STRINGLIT_ESC itself; this rule
-// only admits the syntax. No line continuation - a string literal
-// can't span a physical line.
+// A double-quoted byte string: \\ \" \n \t \r, an octal escape (\ooo, 1-3
+// octal digits, same spelling as ISO C's), or a hex escape (\xhh..., one or
+// more hex digits, same spelling as ISO C's) - BuildAst decodes
+// STRINGLIT_ESC itself (including the octal/hex value -> byte conversion);
+// this rule only admits the syntax. Still no line continuation - a string
+// literal can't span a physical line (see docs/language.md's "Scope and
+// limitations").
 STRINGLIT : '"' (STRINGLIT_ESC | ~["\\\r\n])* '"' ;
-fragment STRINGLIT_ESC : '\\' ["\\ntr0] ;
+fragment STRINGLIT_ESC : '\\' ( [0-7] [0-7]? [0-7]? | 'x' [0-9a-fA-F]+ | ["\\ntr] ) ;
 
 LINE_COMMENT  : '//' ~[\r\n]* -> skip ;
 BLOCK_COMMENT : '/*' .*? '*/' -> skip ;

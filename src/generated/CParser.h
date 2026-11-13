@@ -16,25 +16,25 @@ public:
     VOID_KW = 7, SIZEOF_KW = 8, IF_KW = 9, ELSE_KW = 10, WHILE_KW = 11, 
     FOR_KW = 12, SWITCH_KW = 13, CASE_KW = 14, DEFAULT_KW = 15, RETURN_KW = 16, 
     BREAK_KW = 17, CONTINUE_KW = 18, GOTO_KW = 19, EXTERN_KW = 20, STATIC_KW = 21, 
-    STRUCT_KW = 22, LPAREN = 23, RPAREN = 24, LBRACK = 25, RBRACK = 26, 
-    LBRACE = 27, RBRACE = 28, AT = 29, SEMI = 30, COMMA = 31, ASSIGN = 32, 
-    STAR = 33, AMP = 34, MINUS = 35, BANG = 36, TILDE = 37, SLASH = 38, 
-    PERCENT = 39, PLUS = 40, SHL = 41, SHR = 42, LE = 43, GE = 44, LT = 45, 
-    GT = 46, EQ = 47, NE = 48, CARET = 49, PIPE = 50, ANDAND = 51, OROR = 52, 
-    PLUSEQ = 53, MINUSEQ = 54, STAREQ = 55, SLASHEQ = 56, PERCENTEQ = 57, 
-    AMPEQ = 58, CARETEQ = 59, PIPEEQ = 60, SHLEQ = 61, SHREQ = 62, INC = 63, 
-    DEC = 64, QUESTION = 65, COLON = 66, DOT = 67, ARROW = 68, IDENT = 69, 
-    NUMBER = 70, CHARLIT = 71, STRINGLIT = 72, LINE_COMMENT = 73, BLOCK_COMMENT = 74, 
-    WS = 75, ASM_BEGIN = 76, ASM_TEXT = 77, ASM_END = 78
+    STRUCT_KW = 22, ENUM_KW = 23, LPAREN = 24, RPAREN = 25, LBRACK = 26, 
+    RBRACK = 27, LBRACE = 28, RBRACE = 29, AT = 30, SEMI = 31, COMMA = 32, 
+    ASSIGN = 33, STAR = 34, AMP = 35, MINUS = 36, BANG = 37, TILDE = 38, 
+    SLASH = 39, PERCENT = 40, PLUS = 41, SHL = 42, SHR = 43, LE = 44, GE = 45, 
+    LT = 46, GT = 47, EQ = 48, NE = 49, CARET = 50, PIPE = 51, ANDAND = 52, 
+    OROR = 53, PLUSEQ = 54, MINUSEQ = 55, STAREQ = 56, SLASHEQ = 57, PERCENTEQ = 58, 
+    AMPEQ = 59, CARETEQ = 60, PIPEEQ = 61, SHLEQ = 62, SHREQ = 63, INC = 64, 
+    DEC = 65, QUESTION = 66, COLON = 67, DOT = 68, ARROW = 69, IDENT = 70, 
+    NUMBER = 71, CHARLIT = 72, STRINGLIT = 73, LINE_COMMENT = 74, BLOCK_COMMENT = 75, 
+    WS = 76, ASM_BEGIN = 77, ASM_TEXT = 78, ASM_END = 79
   };
 
   enum {
     RuleProgram = 0, RuleTypeSpec = 1, RuleBaseTypeSpec = 2, RuleTopLevelDecl = 3, 
-    RuleStructDecl = 4, RuleStructMember = 5, RuleFunctionDecl = 6, RuleReturnTypeSpec = 7, 
-    RuleParamList = 8, RuleParam = 9, RuleGlobalDecl = 10, RuleArrayInit = 11, 
-    RuleArrayInitElem = 12, RuleBlock = 13, RuleStatement = 14, RuleSimpleStmt = 15, 
-    RuleSwitchCase = 16, RuleAssignOp = 17, RuleExpr = 18, RuleCondExpr = 19, 
-    RuleArgList = 20
+    RuleStructDecl = 4, RuleStructMember = 5, RuleEnumDecl = 6, RuleEnumMember = 7, 
+    RuleFunctionDecl = 8, RuleReturnTypeSpec = 9, RuleParamList = 10, RuleParam = 11, 
+    RuleGlobalDecl = 12, RuleArrayInit = 13, RuleArrayInitElem = 14, RuleBlock = 15, 
+    RuleStatement = 16, RuleSimpleStmt = 17, RuleSwitchCase = 18, RuleAssignOp = 19, 
+    RuleExpr = 20, RuleCondExpr = 21, RuleArgList = 22
   };
 
   explicit CParser(antlr4::TokenStream *input);
@@ -60,6 +60,8 @@ public:
   class TopLevelDeclContext;
   class StructDeclContext;
   class StructMemberContext;
+  class EnumDeclContext;
+  class EnumMemberContext;
   class FunctionDeclContext;
   class ReturnTypeSpecContext;
   class ParamListContext;
@@ -173,6 +175,16 @@ public:
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
 
+  class  EnumTypeContext : public BaseTypeSpecContext {
+  public:
+    EnumTypeContext(BaseTypeSpecContext *ctx);
+
+    antlr4::tree::TerminalNode *ENUM_KW();
+    antlr4::tree::TerminalNode *IDENT();
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+  };
+
   class  LongLongTypeContext : public BaseTypeSpecContext {
   public:
     LongLongTypeContext(BaseTypeSpecContext *ctx);
@@ -207,6 +219,7 @@ public:
     FunctionDeclContext *functionDecl();
     GlobalDeclContext *globalDecl();
     StructDeclContext *structDecl();
+    EnumDeclContext *enumDecl();
 
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
@@ -255,6 +268,45 @@ public:
   };
 
   StructMemberContext* structMember();
+
+  class  EnumDeclContext : public antlr4::ParserRuleContext {
+  public:
+    EnumDeclContext(antlr4::ParserRuleContext *parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    antlr4::tree::TerminalNode *ENUM_KW();
+    antlr4::tree::TerminalNode *IDENT();
+    antlr4::tree::TerminalNode *LBRACE();
+    std::vector<EnumMemberContext *> enumMember();
+    EnumMemberContext* enumMember(size_t i);
+    antlr4::tree::TerminalNode *RBRACE();
+    antlr4::tree::TerminalNode *SEMI();
+    std::vector<antlr4::tree::TerminalNode *> COMMA();
+    antlr4::tree::TerminalNode* COMMA(size_t i);
+
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+   
+  };
+
+  EnumDeclContext* enumDecl();
+
+  class  EnumMemberContext : public antlr4::ParserRuleContext {
+  public:
+    antlr4::Token *sign = nullptr;
+    antlr4::Token *val = nullptr;
+    EnumMemberContext(antlr4::ParserRuleContext *parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    antlr4::tree::TerminalNode *IDENT();
+    antlr4::tree::TerminalNode *ASSIGN();
+    antlr4::tree::TerminalNode *NUMBER();
+    antlr4::tree::TerminalNode *MINUS();
+
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+   
+  };
+
+  EnumMemberContext* enumMember();
 
   class  FunctionDeclContext : public antlr4::ParserRuleContext {
   public:
@@ -420,9 +472,11 @@ public:
     antlr4::Token *stat = nullptr;
     antlr4::Token *sign = nullptr;
     antlr4::Token *val = nullptr;
+    antlr4::Token *identVal = nullptr;
     antlr4::Token *addr = nullptr;
     TypeSpecContext *typeSpec();
-    antlr4::tree::TerminalNode *IDENT();
+    std::vector<antlr4::tree::TerminalNode *> IDENT();
+    antlr4::tree::TerminalNode* IDENT(size_t i);
     antlr4::tree::TerminalNode *SEMI();
     antlr4::tree::TerminalNode *ASSIGN();
     antlr4::tree::TerminalNode *AT();
@@ -738,9 +792,11 @@ public:
 
     antlr4::Token *sign = nullptr;
     antlr4::Token *val = nullptr;
+    antlr4::Token *identVal = nullptr;
     antlr4::tree::TerminalNode *STATIC_KW();
     TypeSpecContext *typeSpec();
-    antlr4::tree::TerminalNode *IDENT();
+    std::vector<antlr4::tree::TerminalNode *> IDENT();
+    antlr4::tree::TerminalNode* IDENT(size_t i);
     antlr4::tree::TerminalNode *ASSIGN();
     antlr4::tree::TerminalNode *NUMBER();
     antlr4::tree::TerminalNode *MINUS();
@@ -797,9 +853,11 @@ public:
 
     antlr4::Token *sign = nullptr;
     antlr4::Token *val = nullptr;
+    antlr4::Token *identVal = nullptr;
     antlr4::tree::TerminalNode *CASE_KW();
     antlr4::tree::TerminalNode *COLON();
     antlr4::tree::TerminalNode *NUMBER();
+    antlr4::tree::TerminalNode *IDENT();
     std::vector<StatementContext *> statement();
     StatementContext* statement(size_t i);
     antlr4::tree::TerminalNode *MINUS();

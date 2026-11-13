@@ -11,8 +11,8 @@ ROM's `COUT`/`CROUT` calls, the same way any real Apple ][ program does.
 given yet - see `docs/using.md`'s own `--platform` entry),
 `src/rt/apple2/apple2.lib` is built (or reused) via that directory's own
 Makefile, then the two combine via `--link --platform=6502-prodos
---base=8192` into `build/main.prodos` - `--base=8192`
-($2000) keeps the linked program clear of the Apple ]['s own text page 1
+--base=$2000` into `build/main.prodos` - `--base=$2000`
+keeps the linked program clear of the Apple ]['s own text page 1
 (`$0400`-`$07FF`), which the default `$0600` base sits inside of and
 which this program's own `COUT`/`CROUT` calls write through; $2000 is
 also where ProDOS's own loader always enters a `SYS` file regardless of

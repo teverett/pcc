@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cctype>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "ANTLRInputStream.h"
 #include "BaseErrorListener.h"
@@ -13,6 +15,20 @@
 namespace rcc {
 
 namespace {
+
+// An enum's tags/constants are resolved entirely here, immediately, at
+// every use (see the VarExprContext case in buildExpr, and
+// resolveConstOrEnum below for the handful of other spots - a static
+// local's/global's initializer, a 'case' label - that take a compile-time
+// constant rather than a general expr): Program/IR/every backend never
+// see 'enum' in any form, since a member is just an int and 'enum Tag'
+// itself resolves to plain Int (see buildBaseType's EnumTypeContext case).
+// Reset at the start of every buildProgram() call - each source file gets
+// its own call (see main.cpp's parseAndMergeFile), and main.cpp only ever
+// calls buildProgram() sequentially, never concurrently - so a later
+// file's enum never collides with, or is visible to, an earlier one's.
+std::unordered_map<std::string, long> g_enumConstants;
+std::unordered_set<std::string> g_enumTags;
 
 [[noreturn]] void err(antlr4::ParserRuleContext *ctx, const std::string &msg) {
     throw std::runtime_error("line " + std::to_string(ctx->getStart()->getLine()) + ": " + msg);
@@ -80,6 +96,26 @@ long parsePlainNumber(antlr4::Token *tok, antlr4::ParserRuleContext *ctx, const 
     return parseDigits(text, ctx, what);
 }
 
+// Resolves a value that's either a plain (optionally negated) NUMBER or
+// an already-declared enum constant's bare name - the handful of
+// compile-time-constant positions (a global/static-local initializer, a
+// 'case' label) that take a literal NUMBER also take an enum constant's
+// name the same way. Exactly one of numTok/identTok is non-null, per the
+// grammar alternative that called this.
+long resolveConstOrEnum(antlr4::Token *numTok, antlr4::Token *signTok, antlr4::Token *identTok,
+                        antlr4::ParserRuleContext *ctx, const char *what) {
+    if (identTok != nullptr) {
+        auto it = g_enumConstants.find(identTok->getText());
+        if (it == g_enumConstants.end()) {
+            err(ctx, std::string(what) + " '" + identTok->getText() + "' isn't a known enum constant");
+        }
+        return it->second;
+    }
+    long value = parsePlainNumber(numTok, ctx, what);
+    if (signTok != nullptr) value = -value;
+    return value;
+}
+
 // Parses a NUMBER token's integer suffix (ISO C spelling: u/U once, l/L
 // zero to two times, not mixed case) into the literal's Type.
 Type parseNumberSuffix(const std::string &suffix, antlr4::ParserRuleContext *ctx) {
@@ -121,9 +157,17 @@ void parseIntLiteral(const std::string &text, antlr4::ParserRuleContext *ctx, lo
     type = parseNumberSuffix(text.substr(digitsEnd), ctx);
 }
 
+int hexDigitValue(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    return std::tolower(static_cast<unsigned char>(c)) - 'a' + 10;
+}
+
 // Strips the surrounding quotes from a STRINGLIT token and resolves its
-// escapes; the grammar admits only \\ \" \n \t \r \0, so no other case
-// can occur here.
+// escapes; the grammar admits only \\ \" \n \t \r, an octal escape (\ooo,
+// 1-3 octal digits), or a hex escape (\xhh..., one or more hex digits), so
+// no other case can occur here. Both numeric forms truncate to the low 8
+// bits (this is a byte string), same as ISO C's own overflow behavior for
+// an escape value wider than a `char`.
 std::string decodeStringLit(const std::string &raw) {
     std::string out;
     out.reserve(raw.size());
@@ -144,11 +188,31 @@ std::string decodeStringLit(const std::string &raw) {
             case 'r':
                 out.push_back('\r');
                 break;
-            case '0':
-                out.push_back('\0');
+            case 'x': {
+                unsigned value = 0;
+                i++;
+                while (i + 1 < raw.size() && std::isxdigit(static_cast<unsigned char>(raw[i]))) {
+                    value = value * 16 + static_cast<unsigned>(hexDigitValue(raw[i]));
+                    i++;
+                }
+                i--;
+                out.push_back(static_cast<char>(static_cast<unsigned char>(value)));
                 break;
+            }
             default:
-                out.push_back(raw[i]);  // \\ or \" - the backslash itself is dropped
+                if (raw[i] >= '0' && raw[i] <= '7') {
+                    unsigned value = 0;
+                    int digits = 0;
+                    while (digits < 3 && i + 1 < raw.size() && raw[i] >= '0' && raw[i] <= '7') {
+                        value = value * 8 + static_cast<unsigned>(raw[i] - '0');
+                        i++;
+                        digits++;
+                    }
+                    i--;
+                    out.push_back(static_cast<char>(static_cast<unsigned char>(value)));
+                } else {
+                    out.push_back(raw[i]);  // \\ or \" - the backslash itself is dropped
+                }
                 break;
         }
     }
@@ -188,6 +252,14 @@ Type buildBaseType(CParser::BaseTypeSpecContext *ctx) {
         Type t(BaseType::Struct);
         t.structTag = c->IDENT()->getText();
         return t;
+    }
+    if (auto *c = dynamic_cast<CParser::EnumTypeContext *>(ctx)) {
+        const std::string &tag = c->IDENT()->getText();
+        if (!g_enumTags.count(tag)) {
+            err(ctx, "use of undefined 'enum " + tag +
+                         "' (a tag must be fully defined, textually, before any use of it)");
+        }
+        return Type{BaseType::Int, false};
     }
     err(ctx, "internal: unhandled baseTypeSpec alternative");
 }
@@ -327,10 +399,19 @@ ExprPtr buildCondExpr(CParser::CondExprContext *ctx) {
         return e;
     }
     if (auto *c = dynamic_cast<CParser::VarExprContext *>(ctx)) {
+        std::string name = c->IDENT()->getText();
+        auto enumIt = g_enumConstants.find(name);
+        if (enumIt != g_enumConstants.end()) {
+            auto e = std::make_unique<Expr>();
+            e->kind = ExprKind::IntLit;
+            e->line = c->getStart()->getLine();
+            e->intValue = enumIt->second;
+            return e;
+        }
         auto e = std::make_unique<Expr>();
         e->kind = ExprKind::Var;
         e->line = c->getStart()->getLine();
-        e->name = c->IDENT()->getText();
+        e->name = std::move(name);
         return e;
     }
     if (auto *c = dynamic_cast<CParser::NumExprContext *>(ctx)) {
@@ -585,14 +666,13 @@ StmtPtr buildSimpleStmt(CParser::SimpleStmtContext *ctx) {
         s->kind = StmtKind::LocalDecl;
         s->isStatic = true;
         s->line = c->getStart()->getLine();
-        s->declName = c->IDENT()->getText();
+        s->declName = c->IDENT(0)->getText();
         s->type = buildType(c->typeSpec());
-        if (auto *num = c->val) {
+        if (c->val || c->identVal) {
             auto lit = std::make_unique<Expr>();
             lit->kind = ExprKind::IntLit;
             lit->line = c->getStart()->getLine();
-            lit->intValue = parsePlainNumber(num, c, "a static local initializer");
-            if (c->sign) lit->intValue = -lit->intValue;
+            lit->intValue = resolveConstOrEnum(c->val, c->sign, c->identVal, c, "a static local initializer");
             s->initOrReturnOrExpr = std::move(lit);
         }
         return s;
@@ -679,8 +759,8 @@ StmtPtr buildStmt(CParser::StatementContext *ctx) {
         for (auto *sc : c->switchCase()) {
             SwitchCase sw;
             if (auto *caseLabel = dynamic_cast<CParser::CaseLabelContext *>(sc)) {
-                sw.value = parsePlainNumber(caseLabel->val, caseLabel, "a case label");
-                if (caseLabel->sign) sw.value = -sw.value;
+                sw.value = resolveConstOrEnum(caseLabel->val, caseLabel->sign, caseLabel->identVal, caseLabel,
+                                               "a case label");
                 if (std::find(seenValues.begin(), seenValues.end(), sw.value) != seenValues.end()) {
                     err(caseLabel, "duplicate case value " + std::to_string(sw.value));
                 }
@@ -785,13 +865,39 @@ StructDecl buildStructDecl(CParser::StructDeclContext *ctx) {
     return decl;
 }
 
+// Registers an enum's tag and every member's value into g_enumTags/
+// g_enumConstants (see their own comment above) - it has no AST node of
+// its own to return, since nothing downstream of BuildAst ever needs to
+// know an enum existed.
+void buildEnumDecl(CParser::EnumDeclContext *ctx) {
+    const std::string &tag = ctx->IDENT()->getText();
+    if (g_enumTags.count(tag)) err(ctx, "redefinition of 'enum " + tag + "'");
+    long next = 0;
+    for (auto *m : ctx->enumMember()) {
+        const std::string &name = m->IDENT()->getText();
+        if (g_enumConstants.count(name)) err(m, "redefinition of enum constant '" + name + "'");
+        long value = next;
+        if (m->val) {
+            value = parsePlainNumber(m->val, m, "an enum member's value");
+            if (m->sign) value = -value;
+        }
+        g_enumConstants[name] = value;
+        next = value + 1;
+    }
+    g_enumTags.insert(tag);
+}
+
 }  // namespace
 
 Program buildProgram(CParser::ProgramContext *ctx) {
     Program prog;
+    g_enumConstants.clear();
+    g_enumTags.clear();
     for (auto *top : ctx->topLevelDecl()) {
         if (auto *sd = top->structDecl()) {
             prog.structs.push_back(buildStructDecl(sd));
+        } else if (auto *ed = top->enumDecl()) {
+            buildEnumDecl(ed);
         } else if (auto *fd = top->functionDecl()) {
             if (auto *ext = dynamic_cast<CParser::ExternFunctionDeclContext *>(fd)) {
                 FunctionDecl fn;
@@ -852,13 +958,12 @@ Program buildProgram(CParser::ProgramContext *ctx) {
                     g.address = parsePlainNumber(arr->addr, arr, "a '@' address");
                 }
             } else if (auto *sc = dynamic_cast<CParser::GlobalScalarDeclContext *>(gd)) {
-                g.name = sc->IDENT()->getText();
+                g.name = sc->IDENT(0)->getText();
                 g.type = buildType(sc->typeSpec());
                 g.isStatic = sc->stat != nullptr;
-                if (auto *num = sc->val) {
+                if (sc->val || sc->identVal) {
                     g.hasInit = true;
-                    g.initValue = parsePlainNumber(num, sc, "a global initializer");
-                    if (sc->sign) g.initValue = -g.initValue;
+                    g.initValue = resolveConstOrEnum(sc->val, sc->sign, sc->identVal, sc, "a global initializer");
                 }
                 if (sc->addr) {
                     g.hasAddress = true;

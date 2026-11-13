@@ -17,6 +17,7 @@
 #include "fileformat/cmd/CmdFormat.h"
 #include "fileformat/colecorom/ColecoRomFormat.h"
 #include "fileformat/decb/DecbFormat.h"
+#include "fileformat/prg/PrgFormat.h"
 
 namespace rcc {
 
@@ -50,6 +51,8 @@ std::unique_ptr<FileFormatWriter> makeFileFormatWriter(FileFormatKind kind) {
             return std::make_unique<ColecoRomFormatWriter>();
         case FileFormatKind::Decb:
             return std::make_unique<DecbFormatWriter>();
+        case FileFormatKind::Prg:
+            return std::make_unique<PrgFormatWriter>();
     }
     return nullptr;
 }
@@ -84,6 +87,8 @@ std::unique_ptr<FileFormatReader> makeFileFormatReader(FileFormatKind kind) {
             return std::make_unique<ColecoRomFormatReader>();
         case FileFormatKind::Decb:
             return std::make_unique<DecbFormatReader>();
+        case FileFormatKind::Prg:
+            return std::make_unique<PrgFormatReader>();
     }
     return nullptr;
 }
@@ -104,6 +109,7 @@ std::optional<FileFormatKind> fileFormatKindFromName(const std::string &name) {
     if (name == "cmd") return FileFormatKind::Cmd;
     if (name == "colecorom") return FileFormatKind::ColecoRom;
     if (name == "decb") return FileFormatKind::Decb;
+    if (name == "prg") return FileFormatKind::Prg;
     return std::nullopt;
 }
 
@@ -137,6 +143,8 @@ std::string fileFormatName(FileFormatKind kind) {
             return "colecorom";
         case FileFormatKind::Decb:
             return "decb";
+        case FileFormatKind::Prg:
+            return "prg";
     }
     return "";
 }
