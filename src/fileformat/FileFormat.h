@@ -32,8 +32,8 @@ class FileFormatReader {
 // on an already-resolved ObjectFile), and `objraw` when compiling (drops the symbol table,
 // inspection-only) — one implementation, two names.
 // `Rim`/`Ptr`/`A7out`/`List`/`Dos33`/`ProDos`/`Cmd`/`ColecoRom`/`Decb`/`Prg`/`AtariExe`/
-// `Atari2600Rom`/`NesRom`/`Sna` are link-output-only conventions, never a per-file compile format.
-enum class FileFormatKind { Coff, Elf, MachO, Aout, Raw, Rim, Ptr, A7out, List, Dos33, ProDos, Cmd, ColecoRom, Decb, Prg, AtariExe, Atari2600Rom, NesRom, Sna };
+// `Atari2600Rom`/`NesRom`/`Sna`/`Amsdos` are link-output-only conventions, never a per-file compile format.
+enum class FileFormatKind { Coff, Elf, MachO, Aout, Raw, Rim, Ptr, A7out, List, Dos33, ProDos, Cmd, ColecoRom, Decb, Prg, AtariExe, Atari2600Rom, NesRom, Sna, Amsdos };
 
 std::unique_ptr<FileFormatWriter> makeFileFormatWriter(FileFormatKind kind);
 std::unique_ptr<FileFormatReader> makeFileFormatReader(FileFormatKind kind);

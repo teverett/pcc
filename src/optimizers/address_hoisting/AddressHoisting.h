@@ -9,11 +9,11 @@ namespace rcc {
 // Hoists the base address of a real array (a Local/Global Slot with
 // arraySize > 0) out of every repeated Index/Assign/CompoundAssign that
 // names it within one function, into a single pointer-typed temporary
-// computed once - see docs/known-bugs.md's note on why every backend
-// otherwise re-derives this address from scratch at each use (cheap on
-// most targets, but e.g. 6 words every time on pdp7, whose `law`
-// instruction loads its own raw opcode bits alongside the address and
-// needs an extra masking `and`).
+// computed once. Without this, every backend re-derives this address
+// from scratch at each use, which is cheap on most targets but costs
+// e.g. 6 words every time on pdp7, whose `law` instruction loads its
+// own raw opcode bits alongside the address and needs an extra masking
+// `and`.
 //
 // Deliberately conservative: unlike a plain pointer variable, a real
 // array's storage address never changes during one function activation

@@ -27,7 +27,7 @@ class TargetLinker {
     // (GenericLinker's own `isGlobalName` convention) split its `.text` into sections at their
     // boundaries, and only the sections transitively reachable from the entry sequence (always
     // kept in full) are included in the output - everything else is dropped, the same way a real
-    // linker's `--gc-sections` drops unreferenced functions. Default false keeps today's
+    // linker's `--gc-sections` drops unreferenced functions. Default false keeps the
     // whole-object layout.
     virtual ObjectFile merge(const std::vector<ObjectFile> &objects, bool gcSections = false) const = 0;
 

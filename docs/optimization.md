@@ -8,7 +8,9 @@ backend is selected — since every backend-specific decision
 after the IR exists, an optimizer written once benefits every target
 (see `docs/platforms.md` for the full list).
 
-Today there are eight, run in this order (`src/main.cpp`):
+Today there are nine, run in this order (`src/main.cpp`). Eight implement
+the shared `Optimizer` interface; `AddressHoisting` is the exception (see
+below).
 
 - **`ConstantPropagation`**
   (`src/optimizers/constant_propagation/ConstantPropagation.cpp`) —
@@ -71,13 +73,28 @@ Today there are eight, run in this order (`src/main.cpp`):
   already-canonicalized form. Introduces brand new locals after
   `IRBuilder` already assigned every other local's own frame offset
   once, which is why `main.cpp` calls `IRBuilder.h`'s own
-  `recomputeFrameLayout` right after this pass runs. See
+  `recomputeFrameLayout` once the later passes below are done. See
   `LocalCSE.h`'s own comment for the deliberate gaps (no operand-order
   normalization, no iterating to a fixpoint, nothing but `Binary`/
   `Index` ever considered) and the one pre-existing `IRPrinter.cpp`
   cosmetic gap this pass makes far more visible (a promoted
   subexpression's `--dump-ir` text can read ambiguously, though the
   real tree - and so the actual compiled program - is unaffected).
+
+- **`AddressHoisting`** (`src/optimizers/address_hoisting/AddressHoisting.cpp`)
+  — hoists the base address of a real array (a Local/Global `Slot` with
+  `arraySize > 0`) out of every repeated `Index`/`Assign`/
+  `CompoundAssign` that names it within one function, into a single
+  pointer-typed temporary computed once, instead of every backend
+  re-deriving that address from scratch at each use. Deliberately
+  conservative: a real array's storage address never changes during one
+  function activation, so every occurrence naming the same array `Slot`
+  is hoisted unconditionally once 2+ occurrences exist, with no
+  invalidation analysis needed. Needs a target's `TypeWidths` (to scale
+  the index by the array's element width), so unlike the other passes
+  this doesn't implement the `Optimizer` interface — `main.cpp` calls it
+  directly, like `recomputeFrameLayout`. Runs after `LocalCSE` for the
+  same canonicalization reason the passes below do.
 
 - **`DeadStoreElimination`**
   (`src/optimizers/dead_store_elimination/DeadStoreElimination.cpp`) —

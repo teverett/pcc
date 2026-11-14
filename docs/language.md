@@ -147,6 +147,14 @@ chainable (`a.b.c`), and works as both a read and an assignment target
 value on its left (a variable, an array element, a dereferenced
 pointer, or another member); `->` requires a pointer to one.
 
+An optional `@packed` after the tag (`struct Tag @packed { ... };`)
+disables inter-member padding: every member is laid out back-to-back
+with no gaps, the struct's own alignment becomes 1, and its overall
+size is the exact byte sum with no trailing padding either (see
+`src/StructLayout.h`/`src/StructLayout.cpp`). See
+[`docs/known-bugs.md`](known-bugs.md) for a target-specific case where
+this can still misalign a packed struct in memory.
+
 Not supported: passing or returning a struct by value (only a pointer
 to one, as a parameter or return type), whole-struct assignment
 (`a = b` where both are struct-typed), a struct initializer (`= {...}`
@@ -180,9 +188,11 @@ array size already has).
 
 An enum constant is usable anywhere a `NUMBER` literal already was: as
 a general expression, a `switch`'s `case` label, and a global's or
-`static` local's initializer. It is *not* usable as an array size or
-an array initializer element (those grammar slots only ever took a
-literal `NUMBER` to begin with — see "Scope and limitations" above).
+`static` local's initializer. It is *not* usable as an array size
+(that grammar slot only ever takes a literal `NUMBER`) or as an array
+initializer element: that slot also accepts a bare identifier, but
+only as a function/global's own address (the dispatch-table idiom —
+see "Scope and limitations" above), never as an enum constant's value.
 
 An enum constant shares no namespace-collision checking with ordinary
 variables/parameters/functions (this subset's symbol tables for those
@@ -238,12 +248,16 @@ value` (object-like and function-like, including variadic macros,
 `#elif`/`#else`/`#endif` (`#if`/`#elif` evaluate a small integer-
 constant-expression language: `defined`, integer literals, `! - + * /
 % == != < <= > >= && ||`, parens, real C precedence — an undefined
-identifier evaluates to `0`, same as real cpp). `__LINE__`/`__FILE__`/
-`__DATE__`/`__TIME__` are predefined, alongside a target macro for
-whichever backend is active (`__PDP7__`, `__8086__`, etc. — see
-`main.cpp`'s own table). `__LINE__` substitutes as a plain integer
-literal; `__FILE__`/`__DATE__`/`__TIME__` substitute as a real string
-literal, valid anywhere one is (`int p; p = __FILE__;`).
+identifier evaluates to `0`, same as real cpp), `#pragma once`
+(other `#pragma` forms are silently ignored), `#error message`,
+`#warning message`, and `#line NUM ["file"]` (retargets the file/line
+reported in diagnostics and `__LINE__`/`__FILE__` for everything after
+it, until the next `#line` or the end of the current file).
+`__LINE__`/`__FILE__`/`__DATE__`/`__TIME__` are predefined, alongside a
+target macro for whichever backend is active (`__PDP7__`, `__8086__`,
+etc. — see `main.cpp`'s own table). `__LINE__` substitutes as a plain
+integer literal; `__FILE__`/`__DATE__`/`__TIME__` substitute as a real
+string literal, valid anywhere one is (`int p; p = __FILE__;`).
 
 Macro names are expanded only in preprocessing tokens, not inside
 string/character literals or comments. `#if`/`#ifdef` nesting must
@@ -254,16 +268,21 @@ an `#include` are approximate.
 
 rcc's own `--format=coff` is a real relocatable object (one `.text`
 section, one `.bss` size reservation, a symbol table, a relocation
-table), but it's a **deliberate, non-standard** choice: COFF has no
-historical tie to any target this project supports (PDP-7 predates it
-entirely; real 16-bit 8086/DOS tooling used OMF, not COFF). Every
-object this project writes uses its own custom, unregistered `Machine`
-value, which existing tooling's COFF readers (`objdump` included)
-reject outright as "not a valid object file" purely because of that
-one unrecognized field — this is expected, not a bug: rcc's COFF is
-one of several interchangeable object-container formats it defines
-purely for its own `--link` step (alongside ELF/Mach-O/a.out), never
-meant for interop with a real, independent COFF toolchain. See
+table). For every target except the `i386-windows` hosted triple, it's
+a **deliberate, non-standard** choice: COFF has no historical tie to
+any target this project supports (PDP-7 predates it entirely; real
+16-bit 8086/DOS tooling used OMF, not COFF). Each such object uses its
+own custom, unregistered `Machine` value, which existing tooling's
+COFF readers (`objdump` included) reject outright as "not a valid
+object file" purely because of that one unrecognized field — this is
+expected, not a bug: rcc's COFF is one of several interchangeable
+object-container formats it defines purely for its own `--link` step
+(alongside ELF/Mach-O/a.out), never meant for interop with a real,
+independent COFF toolchain. `i386-windows` is the exception: it uses
+the standard `IMAGE_FILE_MACHINE_I386` value and standard COFF
+relocation/symbol records, producing real objects and `.lib` libraries
+that interoperate with other Windows toolchains — see
+[`docs/using.md`](using.md)'s "Hosted executables" section. See
 `src/fileformat/coff/CoffFormat.h`'s own header comment for the full
 reasoning.
 

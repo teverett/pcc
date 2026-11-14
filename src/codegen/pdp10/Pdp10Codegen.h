@@ -174,9 +174,8 @@ class Pdp10Codegen : public Backend {
     // *differing* sign bits are decided directly from which one has the bit set (that one is
     // the unsigned-larger value) - a plain "flip the sign bit, then SUB" trick isn't safe on
     // its own here, since that subtraction itself can overflow when the two flipped operands
-    // land at opposite extremes (confirmed by this exact failure during development - see
-    // tests/longlong_add_carry_chain.c and friends). Mirrors Pdp7Codegen.cpp's own
-    // emitSignedLtCells()'s same-sign/differing-sign split.
+    // land at opposite extremes. Mirrors Pdp7Codegen.cpp's own emitSignedLtCells()'s
+    // same-sign/differing-sign split.
     void emitUnsignedLess(const std::string &a, const std::string &b);
 
     int localArrayBase(const ir::Slot *slot);

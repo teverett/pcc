@@ -22,6 +22,7 @@
 #include "fileformat/atari2600/Atari2600RomFormat.h"
 #include "fileformat/nes/NesRomFormat.h"
 #include "fileformat/sna/SnaFormat.h"
+#include "fileformat/amsdos/AmsdosFormat.h"
 
 namespace rcc {
 
@@ -65,6 +66,8 @@ std::unique_ptr<FileFormatWriter> makeFileFormatWriter(FileFormatKind kind) {
             return std::make_unique<NesRomFormatWriter>();
         case FileFormatKind::Sna:
             return std::make_unique<SnaFormatWriter>();
+        case FileFormatKind::Amsdos:
+            return std::make_unique<AmsdosFormatWriter>();
     }
     return nullptr;
 }
@@ -109,6 +112,8 @@ std::unique_ptr<FileFormatReader> makeFileFormatReader(FileFormatKind kind) {
             return std::make_unique<NesRomFormatReader>();
         case FileFormatKind::Sna:
             return std::make_unique<SnaFormatReader>();
+        case FileFormatKind::Amsdos:
+            return std::make_unique<AmsdosFormatReader>();
     }
     return nullptr;
 }
@@ -134,6 +139,7 @@ std::optional<FileFormatKind> fileFormatKindFromName(const std::string &name) {
     if (name == "a26") return FileFormatKind::Atari2600Rom;
     if (name == "nes") return FileFormatKind::NesRom;
     if (name == "sna") return FileFormatKind::Sna;
+    if (name == "amsdos") return FileFormatKind::Amsdos;
     return std::nullopt;
 }
 
@@ -177,6 +183,8 @@ std::string fileFormatName(FileFormatKind kind) {
             return "nes";
         case FileFormatKind::Sna:
             return "sna";
+        case FileFormatKind::Amsdos:
+            return "amsdos";
     }
     return "";
 }

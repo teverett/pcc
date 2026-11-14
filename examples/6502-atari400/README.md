@@ -7,14 +7,12 @@ handler (`CIOV`, `$E456`), the same way any real Atari program does.
 
 Unlike `examples/6502-vic20/`'s and `examples/6502-c64/`'s KERNAL calls
 (every one of which only ever touches the accumulator), CIO needs the
-IOCB number in the X register - the one real new wrinkle this target
-needed: rcc's 6502/65c02 assemblers had no X-register support at all
-until `ldxi` (immediate-only `LDX`) was added specifically for this (see
-`src/codegen/m6502/M6502Assembler.cpp`'s own `encodeInstr()` comment).
-Every `jsr $E456` here still only ever sets X to the constant `0`
-(IOCB 0, the screen editor `"E:"`, already open by the OS at boot) - no
-general X-register support (no `STX`/`TAX`/indexed addressing) was
-added.
+IOCB number in the X register. rcc's 6502/65c02 assemblers only support
+`ldxi` (immediate-only `LDX`) for this - no `STX`/`TAX`/indexed
+addressing (see `src/codegen/m6502/M6502Assembler.cpp`'s own
+`encodeInstr()` comment). Every `jsr $E456` here only ever sets X to the
+constant `0` (IOCB 0, the screen editor `"E:"`, already open by the OS
+at boot).
 
 `make` runs the three-file pipeline: `main.c` compiles on its own
 (`--platform=6502-atari`, which assumes `coff` since no `--link` is

@@ -316,8 +316,8 @@ class Assembler {
             {"nop", 0x00},    {"halt", 0x01},   {"ret", 0x02},    {"rim", 0x03},    {"sim", 0x04},
             {"addw_xy", 0x05}, {"subw_xy", 0x06}, {"cpw_xy", 0x07}, {"exg_xy", 0x08},
             {"ldxind", 0x09}, {"stxind", 0x0A}, {"inca", 0x0B},   {"deca", 0x0C},   {"tnza", 0x0D},
-            // scf/rcf: real STM8 set/clear carry, used to seed a chained
-            // rlc/rrc for a long/long long shift (see genWideShift()).
+            // scf/rcf: real STM8 set/clear carry, employed to seed a
+            // chained rlc/rrc for a long/long long shift (see genWideShift()).
             {"scf", 0x0E}, {"rcf", 0x0F},
         };
         if (mnemonic == "addw" || mnemonic == "subw" || mnemonic == "cpw" || mnemonic == "exg") {

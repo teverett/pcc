@@ -123,6 +123,7 @@ jobs:
           make -C examples/z80-trs80 test
           make -C examples/z80-coleco test
           make -C examples/z80-zxspectrum test
+          make -C examples/z80-cpc test
 
       - name: Build and run macOS hello example
         if: matrix.name == 'macos'

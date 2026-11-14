@@ -1115,10 +1115,7 @@ void SaturnCodegen::genWideAddSub(bool isAdd, int chunks) {
     for (int i = chunks - 1; i >= 0; i--) code_ << "    ld a, [" << lhsT[i] << "]\n    push a\n";
 }
 
-// Each chunk is independent - no carry chain needed. `|` is synthesized via De Morgan, matching
-// how genBitwise() handles the narrow case, since this ISA has no direct `or` needed here (it
-// does, in fact - kept for symmetry with that comment's origin in Pdp7Codegen.cpp is moot; this
-// backend's `or` instruction is used directly).
+// Each chunk is independent - no carry chain needed.
 void SaturnCodegen::genWideBitwise(const std::string &op, int chunks) {
     std::vector<std::string> rhsT(chunks), lhsT(chunks);
     for (auto &t : rhsT) {

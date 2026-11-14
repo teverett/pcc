@@ -24,20 +24,19 @@ namespace rcc {
 // `../../../src-assem/sys/s1.s`) starts near word address 0, not
 // `kPdp7BaseAddress` (4096) - needed to keep kernel-resident code
 // (e.g. a disk-completion poll loop) outside whatever address range a
-// swappable "user" region's own transfers might overwrite (confirmed
-// directly: this is what actually lets a real disk transfer covering
-// the entire ordinary 4096-8191 user range stop hanging, instead of
-// overwriting the very poll loop waiting on it). The entry sequence
-// is unchanged (`jms FN_main; hlt` plus the shared runtime) - this
-// does not yet replicate the real interrupt vector table/CAL-trap
-// entry that would really live at low addresses, only the base
-// address itself. Literal 0 is NOT safe for code that makes real
-// function calls: this runtime's own `__addr` scratch cell lands on
-// word address 9 at that base, the real PDP-7's own hardware
-// autoindex register 9 (confirmed directly to hang real code) - a
-// small nonzero base (e.g. 16) avoids it and still matches how much
-// low memory the real kernel's own interrupt vector table needs
-// anyway.
+// swappable "user" region's own transfers might overwrite: a transfer
+// spanning the entire ordinary 4096-8191 user range would otherwise
+// overwrite the very poll loop waiting on it, hanging the transfer.
+// The entry sequence is unchanged (`jms FN_main; hlt` plus the shared
+// runtime) - this does not replicate the real interrupt vector
+// table/CAL-trap entry that would really live at low addresses, only
+// the base address itself. Literal 0 is NOT safe for code that makes
+// real function calls: this runtime's own `__addr` scratch cell would
+// land on word address 9 at that base, which is the real PDP-7's own
+// hardware autoindex register 9, so using it as a scratch cell hangs
+// real code - a small nonzero base (e.g. 16) avoids it and still
+// matches how much low memory the real kernel's own interrupt vector
+// table needs anyway.
 std::unique_ptr<TargetLinker> makePdp7Linker(uint32_t baseAddressWords = kPdp7BaseAddress);
 
 }  // namespace rcc

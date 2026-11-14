@@ -941,11 +941,9 @@ void Z80Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     // ptr = index * widthOfType(slot->type): the width is a compile-time constant, so this is a
     // fully unrolled shift-and-add multiply (double `_bc`, add into `ac` for each set bit of the
     // width) rather than a runtime loop - genMul()'s own bit-serial loop exists because *both*
-    // operands there are only known at runtime; one side here never is. This replaced a plain
-    // doubling count derived from log2(width) that was only ever correct for a width of exactly
-    // 1/2/4/8 bytes - see docs/known-bugs.md's former "Most backends mis-scaled an array index
-    // for an element whose width isn't 1/2/4/8 bytes" entry for the element-width-3 (a 3-`char`
-    // struct) repro that caught it.
+    // operands there are only known at runtime; one side here never is. Iterating over the
+    // width's actual set bits (rather than a fixed doubling count derived from log2(width))
+    // keeps this correct for any element width, not just 1/2/4/8 bytes.
     code_ << "    ld hl, [ac]\n    ld [_bc], hl\n";  // _bc = index (current doubling value)
     code_ << "    ld hl, 0\n    ld [ac], hl\n";      // ac = running product, starts at 0
     for (int w = widthOfType(slot->type); w > 0; w >>= 1) {

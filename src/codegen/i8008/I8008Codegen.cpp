@@ -25,7 +25,7 @@ constexpr uint32_t kPseudoBase = kMemTop - 0x400;
 // pseudo-registers (18 bytes total).
 constexpr uint32_t kWideBase = kPseudoBase + 18;
 // Capacity of the subexpression-save stack (`sp`): a fixed limit with no overflow check.
-[[maybe_unused]] constexpr int kStackSize = 32;  // documents the reserved region's size; its content is never read back
+[[maybe_unused]] constexpr int kStackSize = 32;
 constexpr uint32_t kStackBase = kWideBase + 32;
 // Capacity of the frame-pointer chain (`fpsp`): bounded in practice by the 8008's 7-level hardware call-nesting
 // limit, with no overflow check of its own.

@@ -36,9 +36,8 @@ pair - see `docs/using.md`.
   format here (no section/symbol tables), and incomplete the way
   `--format=aout` is: a real ELF loader expects 32-bit protected-mode
   code, not 16-bit real mode, so this is for tooling that just needs to
-  recognize the file as ELF. `tests/run_tests.sh --target=8086` is
-  deliberately disabled for now - its qemu harness used to BIOS-boot the
-  old boot-sector image, which no longer exists - see `docs/known-bugs.md`.
+  recognize the file as ELF. `tests/run_tests.sh --target=8086` has no
+  working automated test execution — see `docs/known-bugs.md`.
 - **8088** — a deliberate, software-identical alias for `8086`: the
   8088's one real difference (an 8-bit external data bus) is invisible
   to every instruction this compiler could emit, so `--target=8088`
@@ -107,11 +106,10 @@ pair - see `docs/using.md`.
   CIO call runtime library built on top of this target (`--base=8192`,
   $2000; `examples/6502-atari400/`). Atari's CIO needs an IOCB number in
   the X register, unlike every other 6502 runtime library here (which
-  only ever touch the accumulator) - the one real new wrinkle this
-  target needed: the assembler had no X-register support at all until
-  `ldxi` (immediate-only `LDX`, opcode `$A2`) was added specifically for
-  it (see `M6502Assembler.cpp`'s own `encodeInstr()` comment); still no
-  `STX`/`TAX`/indexed addressing or general X-register support.
+  only ever touch the accumulator), so the assembler supports `ldxi`
+  (immediate-only `LDX`, opcode `$A2`) for loading it (see
+  `M6502Assembler.cpp`'s own `encodeInstr()` comment); there is still no
+  `STX`/`TAX`/indexed addressing or other X-register support.
 - **atari2600** — same 6502 instruction encoding and dialect as `6502`
   above (the real Atari 2600 uses a 6507, electrically a 6502 with its
   top address pins removed - no instruction-level difference this
@@ -252,7 +250,7 @@ pair - see `docs/using.md`.
   same-sign-bit case (an ordinary signed `SUB` can't overflow) and a
   differing-sign-bit case (decided directly from which operand has the
   bit set, since a plain "flip the sign bit, then subtract" trick can
-  itself overflow — confirmed by a real failure during development);
+  itself overflow in that case);
   unsigned `/`/`%` is a 36-bit restoring shift-subtract division loop,
   since the real double-length `DIV` turned out (confirmed directly)
   not to treat a zero-extended dividend as a plain unsigned 72-bit
@@ -316,9 +314,8 @@ pair - see `docs/using.md`.
   (see `docs/using.md`'s own `--format` row and
   `src/fileformat/colecorom/ColecoRomFormat.h`). Its VDP/controller/
   sound hardware is entirely port-mapped (`IN`/`OUT`, not a memory
-  address), which this backend's assembler didn't support until
-  `src/rt/coleco/`'s own runtime library needed it - see
-  `Z80Assembler.h`'s own header comment.
+  address); the assembler supports this for `src/rt/coleco/`'s own
+  runtime library - see `Z80Assembler.h`'s own header comment.
 - **zx spectrum** — like `z80-coleco`, the same `z80` backend under a
   different machine convention rather than a separate `--target`: the
   48K ZX Spectrum has a full, uncontended RAM window at `$4000`-`$FFFF`
@@ -341,8 +338,7 @@ pair - see `docs/using.md`.
   each read via `IN A,(n)` with the half-row select byte preloaded into
   A, since a real Z80's `IN A,(n)`/`OUT (n),A` put that register on the
   address bus's own upper byte - see `Z80Assembler.h`'s own header
-  comment, first added for `z80-coleco`'s port-mapped VDP), and the
-  screen's own two memory-mapped regions: attribute memory
+  comment), and the screen's own two memory-mapped regions: attribute memory
   (`$5800`-`$5AFF`, plain stores - no `asm{}` needed, like `z80-trs80`'s
   video RAM) and the pixel bitmap (`$4000`-`$57FF`, using the real,
   famously non-linear ZX Spectrum screen address formula, computed with
@@ -354,6 +350,47 @@ pair - see `docs/using.md`.
   `atari2600`/`2a03` describe), and the Kempston joystick (a common but
   genuinely optional third-party add-on, not built into every real 48K
   Spectrum).
+- **amstrad cpc** — like `z80-coleco`/`zx spectrum`, the same `z80` backend
+  under a different machine convention: the CPC's free RAM window
+  (`$4000`-`$BFFF`, clear of the lower ROM below it and screen memory
+  above it) comfortably contains plain `z80`'s own default link base,
+  `$8000`, so no separate target or base-address change is needed. The
+  only new piece is `--format=amsdos` (see `docs/using.md`'s own
+  `--format` row and `src/fileformat/amsdos/AmsdosFormat.h`): the real
+  128-byte header every CPC disk/tape binary carries, which AMSDOS's own
+  `LOAD`/`RUN` and most emulators read to find a program's own load/
+  entry address and length.
+  `src/rt/cpc/` reaches real, documented CPC hardware directly, no
+  firmware call: the Gate Array (port `$7F`) sets ink/border colors and
+  the screen mode via two sequential `OUT`s each; the screen bitmap
+  (`$C000`-`$FFFF`, ordinarily mapped RAM, plain stores like
+  `zx spectrum`'s own screen memory) only supports mode 2 (640x200,
+  monochrome) - modes 0/1 interleave each pixel's bits across a byte's
+  high and low nibbles, genuinely trickier to get right than mode 2's
+  flat 1-bit-per-pixel layout, with no CPC emulator in this project to
+  cross-check a candidate decoding against; and `cpc_psg_write()`
+  writes directly to the AY-3-8912 sound chip's registers through the
+  8255 PPI's own well-documented register-write bus sequence (ports
+  `$F4`/`$F6`) - this needed the Z80 backend's first `IN r,(C)`/
+  `OUT (C),r` encodings (`Z80Assembler.cpp`), the only two real Z80
+  instructions this project's assembler didn't already support (the
+  pre-existing `IN A,(n)`/`OUT (n),A` immediate-port forms, added for
+  `z80-coleco`, have no register-indirect-port equivalent). Reading the
+  keyboard matrix (through the same PSG/PPI bus) is deliberately not
+  implemented: the secondary sources consulted gave inconsistent detail
+  on the exact bit sequence that selects a keyboard row rather than a
+  PSG register, and there's no emulator here to verify a candidate
+  sequence against.
+  A real, previously-unknown hazard surfaced while building this:
+  `Z80Codegen.cpp`'s hardware stack starts at a fixed `$FF00` shared by
+  every z80 platform (see `docs/known-bugs.md`'s own entry), which
+  collides with the very top of the CPC's own screen RAM - writing
+  close enough to `$FF00` while any function is still on the call stack
+  corrupts that call's own return address/locals instead of the
+  intended byte. `cpc_cls()`/`cpc_set_pixel()` stay clear of it by
+  leaving the screen bitmap's last 512 bytes (and the bottom ~48 of its
+  200 scanlines) untouched - no other z80 platform here writes memory
+  that close to `$FF00`, so none of them hit this.
 - **6809** — real Motorola 6809 assembly/machine code (`M6809Assembler.h`),
   a bare flat binary loaded/entered at `$3000` (12288). Big-endian, unlike
   every other target documented so far on this page. Values live in the
@@ -578,8 +615,9 @@ pair - see `docs/using.md`.
   `SPL`/`SPH` to RAMEND, and objects use the ad hoc COFF machine ID `0x4156`. A Global actually
   *defined* (with an initializer) in an object other than the one with `main` is never initialized
   under real separate compilation (SRAM's own lack of static contents, cross-object - see
-  `AVRCodegen.h`'s own header comment); no Harvard-data target here is wired into
-  `tests/run_link_tests.sh` for the same reason, until now. Verified under
+  `AVRCodegen.h`'s own header comment); `avr` is the only Harvard-data
+  target here wired into `tests/run_link_tests.sh` (`mcs51`/`pic16`/
+  `pic18` aren't). Verified under
   `qemu-system-avr -M uno` (a real ATmega328P core, not a from-scratch interpreter);
   `tests/avr/*.c` holds the AVR-only cases, run alongside the shared corpus by
   `tests/run_tests.sh --target=avr`, and `tests/run_link_tests.sh --target=avr` covers
@@ -689,17 +727,20 @@ extended).
 
 The same C subset compiles to every target, each predefining its own
 macro for `#ifdef`-gated code (an alias target defines both its base
-target's macro and its own): `__PDP7__`, `__8086__` (also for `8088`/`8086-dos`,
-plus `__MSDOS__` for `8086-dos`),
-`__6502__` (also for `65c02`, plus `__65C02__`), `__68000__` (also for
-`mc68328`, plus `__MC68328__`), `__PDP11__`, `__PDP10__`, `__STM8__`, `__M16C__` (also
-for `m30626fjpfp`, plus `__M30626FJPFP__`), `__8080__`, `__Z80__`,
-`__8008__`, `__MCS51__` (also for
+target's macro and its own): `__PDP1__`, `__PDP7__`, `__8086__` (also for
+`8088`, plus `__8088__`; also for `8086-dos`, plus `__MSDOS__`),
+`__6502__` (also for `atari2600`/`2a03`/`65c02`, plus `__ATARI2600__`/
+`__2A03__`/`__65C02__`), `__68000__` (also for `mc68328`, plus
+`__MC68328__`), `__PDP11__`, `__PDP10__`, `__8080__`, `__Z80__` (also for
+`z80-coleco`, plus `__COLECO__`), `__6809__`, `__8008__`, `__STM8__`,
+`__STM32__`, `__I386__`, `__M16C__` (also for `m30626fjpfp`, plus
+`__M30626FJPFP__`), `__PIC16__`, `__PIC18__`, `__R10000__` (also for
+`r4000`, plus `__R4000__`), `__CORTEX_M3__` (also for `cortex-m4`/
+`cortex-m7`, plus `__CORTEX_M4__`/`__CORTEX_M7__`), `__MCS51__` (also for
 `8051`/`8052`/`8031`/`8032`, plus each one's own `__8051__`/`__8052__`/
-`__8031__`/`__8032__`), `__PIC16__`, `__PIC18__`, `__STM32__`, `__I386__`,
-`__ARMV7A__`, `__ARMV8A__` (also `__aarch64__`), `__CORTEX_M3__` (also
-for `cortex-m4`/`cortex-m7`, plus `__CORTEX_M4__`/`__CORTEX_M7__`),
-`__R10000__` (also for `r4000`, plus `__R4000__`), `__POWERPC__` (also
-`__ppc__`), `__SPARC__` (also `__sparc__`), `__VAX__` (also `__vax__`), `__AVR__` (also
-`__AVR_ATmega328P__`), `__ALPHA__` (also
-`__alpha__`), `__SATURN__` — see `src/main.cpp`'s `makeBackend()` comment.
+`__8031__`/`__8032__`), `__ARMV7A__`, `__ARMV8A__` (also `__aarch64__`),
+`__POWERPC__` (also `__ppc__`), `__SPARC__` (also `__sparc__`), `__VAX__`
+(also `__vax__`), `__AVR__` (also `__AVR_ATmega328P__`), `__ALPHA__`
+(also `__alpha__`), `__SATURN__`, `__TMS320C6713__` (also
+`__tms320c6713__`) — see `src/main.cpp`'s `predefinedMacros` setup in
+`main()`.

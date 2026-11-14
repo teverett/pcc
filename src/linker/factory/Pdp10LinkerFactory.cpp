@@ -12,8 +12,8 @@ constexpr uint64_t kMask18 = 0777777;
 constexpr uint64_t kMask36 = 0777777777777ULL;
 
 // Reads/writes one 36-bit word packed as 5 big-endian bytes (top 4 bits of the first byte
-// unused/zero) - the same layout Pdp10Assembler.cpp's own emit36() produces, confirmed against
-// real `pdp10` behavior while developing this target (see Pdp10Codegen.h's header comment).
+// unused/zero) - the same layout Pdp10Assembler.cpp's own emit36() produces (see Pdp10Codegen.h's
+// header comment).
 uint64_t read36(const std::vector<uint8_t> &image, uint32_t siteOffset) {
     return (static_cast<uint64_t>(image[siteOffset] & 0xF) << 32) | (static_cast<uint64_t>(image[siteOffset + 1]) << 24) |
            (static_cast<uint64_t>(image[siteOffset + 2]) << 16) | (static_cast<uint64_t>(image[siteOffset + 3]) << 8) |

@@ -153,7 +153,7 @@ ObjectFile GenericLinker::merge(const std::vector<ObjectFile> &userObjects, bool
     // Object 0 (the entry sequence) is always included whole, same as a non-gc link: it has no
     // visibility into what the real objects need, so it can't be pruned by this same mechanism.
     // `included[i]` marks, per object, which of `sections[i]` survive; absent gcSections every
-    // section of every object is kept, reproducing the old whole-object behavior exactly.
+    // section of every object is kept, matching the whole-object layout exactly.
     std::vector<std::vector<Section>> sections = sectionsOf(objects, config_);
     std::vector<std::vector<bool>> included(objects.size());
     for (size_t i = 0; i < objects.size(); i++) included[i].assign(sections[i].size(), !gcSections || i == 0);
@@ -168,7 +168,7 @@ ObjectFile GenericLinker::merge(const std::vector<ObjectFile> &userObjects, bool
         for (const auto &sym : objects[i].symbols) {
             if (!sym.isDefined || sym.isData) continue;
             size_t s = sectionContaining(sections[i], sym.value);
-            if (s < sections[i].size()) defSection[sym.name] = {i, s};  // last definition wins, as before
+            if (s < sections[i].size()) defSection[sym.name] = {i, s};  // last definition wins
         }
     }
 
@@ -252,8 +252,8 @@ ObjectFile GenericLinker::merge(const std::vector<ObjectFile> &userObjects, bool
     }
 
     // A symbol's resolved address needs its own section's new base plus how far past that
-    // section's own old start it sits (0 when gcSections is off, since then every section's new
-    // base equals the old whole-object layout's objectBase exactly).
+    // section's own pre-link start it sits (0 when gcSections is off, since then every section's
+    // new base equals the whole-object layout's objectBase exactly).
     auto resolvedAddr = [&](size_t i, const ObjSymbol &sym) -> std::optional<uint32_t> {
         if (sym.isData) return dataBase[i] + sym.value;
         size_t s = sectionContaining(sections[i], sym.value);

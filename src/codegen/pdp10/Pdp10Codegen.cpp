@@ -247,13 +247,11 @@ void Pdp10Codegen::genExpr(const ir::Expr &e) {
             if (isWide(e.slot->type)) {
                 // Mirrors Pdp11Codegen.cpp's own wide Assign exactly: peek each pushed rhs
                 // word in place (via P itself as the index register, `[15-i]`) rather than
-                // popping, then discard the whole pushed block in one `SUBI` - popping into
-                // storage and then re-pushing (as an earlier version of this code did) left
-                // the result "available" for a chained use, but leaked those words onto the
-                // real hardware stack forever whenever this Assign was used as a bare
-                // statement (its result never consumed), permanently shifting every later
-                // `[15-N]` in this function by `words` - confirmed directly against the
-                // simulator. An Assign used as a statement is by far the common case, and
+                // popping, then discard the whole pushed block in one `SUBI`. Popping into
+                // storage and then re-pushing would leak those words onto the real hardware
+                // stack forever whenever this Assign is used as a bare statement (its result
+                // never consumed), permanently shifting every later `[15-N]` in this function
+                // by `words`. An Assign used as a statement is by far the common case, and
                 // IRBuilder never needs a wide Assign's own value chained into another
                 // expression, so this never leaves anything reusable on the stack either.
                 int words = wordCountOf(e.slot->type);
@@ -775,10 +773,8 @@ int Pdp10Codegen::localArrayBase(const ir::Slot *slot) { return slot->frameOffse
 // variable's base instead comes from reading its stored value.
 void Pdp10Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // AC1 = index
-    // Every scalar element type this subset supported until now (char/
-    // short/int/pointer) is exactly one native word, so this was always
-    // a no-op; a struct element can be several words, so the index is
-    // scaled by the element's own width before use.
+    // Every scalar element type (char/short/int/pointer) is exactly one native word; a struct
+    // element can be several words, so the index is scaled by the element's own width before use.
     int elemW = widthOfType(slot->type);
     if (elemW != 1) {
         code_ << "    movei 2," << elemW << "\n";

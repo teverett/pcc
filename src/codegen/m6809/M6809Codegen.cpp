@@ -863,9 +863,10 @@ void M6809Codegen::genExpr(const ir::Expr &e) {
 
 // Leaves slot[idxExpr]'s effective address in `ptr`. The scaling multiply
 // (index * widthOfType(slot->type)) is a compile-time-constant-width
-// shift-and-add, fully unrolled over the width's own set bits - see
-// Z80Codegen.cpp's identical comment and docs/known-bugs.md's former
-// element-width-3 repro for why this isn't a naive power-of-two doubling.
+// shift-and-add, fully unrolled over the width's own set bits (see
+// Z80Codegen.cpp's identical comment), so a non-power-of-two element width
+// (e.g. 3, for a 3-byte struct) scales correctly, unlike a naive
+// power-of-two doubling.
 void M6809Codegen::genIndexAddr(const ir::Slot *slot, const ir::Expr &idxExpr) {
     genExpr(idxExpr);  // ac = index
     code_ << "    ldd [ac]\n    std [_bc]\n";  // _bc = index (current doubling value)

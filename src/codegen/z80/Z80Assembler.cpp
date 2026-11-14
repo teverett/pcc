@@ -325,6 +325,23 @@ class Assembler {
         return it->second;
     }
 
+    // Register field for the ED-prefixed IN r,(C)/OUT (C),r group: same b=0,c=1,d=2,e=3,h=4,l=5,
+    // a=7 numbering as reg8Code(), minus r=6 (the real opcode there, "IN (C)"/"OUT (C),0", is an
+    // undocumented, flags-only/zero-only placeholder - left unencoded rather than guessed at).
+    uint8_t in_out_c_RegCode(const Operand &operand, const std::string &mnemonic) {
+        requireBare(operand, mnemonic);
+        auto name = asBareIdent(operand);
+        if (!name) fail("'" + mnemonic + "' needs a register name (a/b/c/d/e/h/l), not an expression");
+        static const std::unordered_map<std::string, uint8_t> table = {
+            {"b", 0}, {"c", 1}, {"d", 2}, {"e", 3}, {"h", 4}, {"l", 5}, {"a", 7},
+        };
+        auto it = table.find(*name);
+        if (it == table.end()) {
+            fail("'" + mnemonic + "': '" + *name + "' isn't a register IN r,(C)/OUT (C),r can take (a/b/c/d/e/h/l)");
+        }
+        return it->second;
+    }
+
     // Register-pair field for LD rr,nn/INC rr/DEC rr/ADD|ADC|SBC HL,rr: bc=0,de=1,hl=2,sp=3.
     uint8_t pairCodeBDHSP(const Operand &operand, const std::string &mnemonic) {
         requireBare(operand, mnemonic);
@@ -604,22 +621,39 @@ class Assembler {
             return;
         }
         if (mnemonic == "in") {
-            // IN A,[n] -- the only form this backend's RT libraries need
-            // (an 8-bit port read); no codegen emits this, only asm{}
-            // blocks reaching port-mapped hardware (e.g. src/rt/coleco/).
-            requireA(operandAt(ops, 0, mnemonic, 2), mnemonic);
+            // IN A,[n] (an 8-bit immediate port read - the real Z80 has no other register's
+            // immediate-port form) or IN r,[c] (ED-prefixed, port is whatever's on BC - every
+            // real 8-bit register except the undocumented, flags-only "IN (C)" placeholder at
+            // r=6). No codegen emits either; only asm{} blocks reaching port-mapped hardware
+            // (src/rt/coleco/'s VDP/controllers, src/rt/cpc/'s PSG/keyboard) need them.
+            const Operand &dst = operandAt(ops, 0, mnemonic, 2);
             const Operand &port = operandAt(ops, 1, mnemonic, 2);
             requireMemory(port, mnemonic);
+            auto portName = asBareIdent(port);
+            if (portName && *portName == "c") {
+                emit8(0xED);
+                emit8(static_cast<uint8_t>(0x40 | (in_out_c_RegCode(dst, mnemonic) << 3)));
+                return;
+            }
+            requireA(dst, mnemonic);
             emit8(0xDB);
             emitImm8(port);
             return;
         }
         if (mnemonic == "out") {
-            // OUT [n],A -- the only form this backend's RT libraries need
-            // (an 8-bit port write).
+            // OUT [n],A (an 8-bit immediate port write) or OUT [c],r (ED-prefixed, port is
+            // whatever's on BC) - same two-form split as "in" above, and the same undocumented
+            // r=6 ("OUT (C),0") left unencoded.
             const Operand &port = operandAt(ops, 0, mnemonic, 2);
+            const Operand &src = operandAt(ops, 1, mnemonic, 2);
             requireMemory(port, mnemonic);
-            requireA(operandAt(ops, 1, mnemonic, 2), mnemonic);
+            auto portName = asBareIdent(port);
+            if (portName && *portName == "c") {
+                emit8(0xED);
+                emit8(static_cast<uint8_t>(0x41 | (in_out_c_RegCode(src, mnemonic) << 3)));
+                return;
+            }
+            requireA(src, mnemonic);
             emit8(0xD3);
             emitImm8(port);
             return;
