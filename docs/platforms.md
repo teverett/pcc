@@ -440,6 +440,42 @@ pair - see `docs/using.md`.
   deliberate scope limitation, not a bug. No automated emulator-based
   test exists yet for this target or its CoCo runtime - see
   `docs/known-bugs.md`.
+- **tms9900** — real TMS9900 assembly/machine code (`TMS9900Assembler.h`),
+  a genuinely different architecture from every other target on this
+  page: its 16 "registers" (`r0`-`r15`) aren't real CPU registers at
+  all, just 16 RAM words addressed through a separate Workspace Pointer
+  (`WP`, set once via `LWPI`) - see `TMS9900Codegen.h`'s own header
+  comment for the full register convention this backend adopts. Full
+  orthogonal addressing (register/indirect/indirect-autoincrement/
+  symbolic/indexed) reaches a Local/Param's own frame slot in one
+  instruction (`[r10+N]`/`[r10-N]`, the real Indexed mode) - no
+  software-pointer-staging workaround the 6502 backend needs. `*`/`/`
+  use the real hardware `MPY`/`DIV` (16x16→32 multiply, 32÷16→16r16
+  divide); `DIV` is unsigned-only in hardware, so signed division
+  negates both operands to magnitudes first and fixes the quotient/
+  remainder's sign afterward - the chip has no signed divide at all.
+  `<<`/`>>` use the real hardware `SLA`/`SRL`/`SRA`, whose count comes
+  from an immediate or, when that field is 0, from `r0`'s own low
+  nibble at runtime. Genuinely separate signed (`JLT`/`JLE`/`JGT`) and
+  unsigned (`JL`/`JH`/`JHE`) branch conditions exist in hardware, unlike
+  the 6502/z80's sign-bit-correction tricks - but the chip has no
+  direct signed `>=` or unsigned `<=` jump at all, synthesized instead
+  by swapping which operand `C` compares against which (see
+  `TMS9900Codegen.cpp`'s own `genCompare()`/`emitCompare()` comments).
+  There's also no plain bitwise AND instruction - only `SZC` ("set
+  zeros corresponding", i.e. `dst &= ~src`) and `SOC` (`dst |= src`) -
+  so `&` is synthesized as `dst &= ~(~src)` via `INV` plus `SZC`. The
+  real documented subroutine-linkage convention is used directly: `BL`
+  sets `r11` to the return address (no hardware call stack exists at
+  all), and a nested call saves/restores `r11` around it, same as real
+  TMS9900 software always has to. `long`/`long long` aren't implemented
+  - every such code path throws a clear error rather than emitting
+  wrong code, a deliberate scope cut (see `TMS9900Codegen.h`'s own
+  header comment), not a bug. No pip-installable Python TMS9900 core
+  exists, so this target has no automated execution test - see
+  `docs/known-bugs.md` for exactly how it was verified anyway (a
+  disposable from-scratch interpreter, not checked into this project,
+  that caught two real bugs during development).
 - **8008** — Intel's first microprocessor, the most primitive target
   here: no stack pointer or PUSH/POP (`CALL`/`RET` use a real but
   internal 7-level return stack — a hardware ceiling on call-nesting

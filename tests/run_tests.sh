@@ -6,7 +6,7 @@
 # on every target (see ../src/Backend.h: a .c file means the same
 # thing regardless of --target).
 #
-# Usage: tests/run_tests.sh [path/to/rcc] [--target=pdp1|pdp7|pdp11|pdp10|vax|avr|alpha|saturn|tms320c6713|r10000|powerpc|cortex-m3|8086|8088|6502|65c02|68000|mc68328|8080|z80|6809|8008|8051|stm32|i386|armv7a|armv8a] [--optimize]
+# Usage: tests/run_tests.sh [path/to/rcc] [--target=pdp1|pdp7|pdp11|pdp10|vax|avr|alpha|saturn|tms320c6713|r10000|powerpc|cortex-m3|8086|8088|6502|65c02|68000|mc68328|8080|z80|6809|tms9900|8008|8051|stm32|i386|armv7a|armv8a] [--optimize]
 #
 # --optimize passes rcc's own --optimize straight through to every
 # compile below, so the exact same checks also confirm the IR
@@ -206,6 +206,15 @@ case "$TARGET" in
         echo "no verified Python 6809 emulator package is wired in yet - see docs/known-bugs.md; --target=6809 compiles only, verify execution manually" >&2
         exit 1
         ;;
+    tms9900)
+        # No pip-installable Python TMS9900 core was found (see docs/known-bugs.md) - same
+        # situation as 6809 above. This target's own codegen/assembler were instead verified
+        # against a small, from-scratch TMS9900 interpreter built just for that purpose while
+        # developing this backend (same idea as ../src/codegen/m6502/M6502Codegen.h's own
+        # from-scratch verification note), not checked into this project.
+        echo "no verified Python TMS9900 emulator package is wired in yet - see docs/known-bugs.md; --target=tms9900 compiles only, verify execution manually" >&2
+        exit 1
+        ;;
     8008)
         # No PyPI package exists for this one (the 8008 isn't object-
         # code compatible with anything later - see
@@ -335,7 +344,7 @@ case "$TARGET" in
         # check_saturn(). Standard library only, nothing to install.
         ;;
     *)
-        echo "unknown --target '$TARGET' (known: pdp7, pdp11, pdp10, vax, avr, alpha, saturn, tms320c6713, r10000, powerpc, cortex-m3, 8086, 8088, 6502, 65c02, 68000, mc68328, 8080, z80, 6809, 8008, 8051, stm32, i386, armv7a, armv8a)" >&2
+        echo "unknown --target '$TARGET' (known: pdp7, pdp11, pdp10, vax, avr, alpha, saturn, tms320c6713, r10000, powerpc, cortex-m3, 8086, 8088, 6502, 65c02, 68000, mc68328, 8080, z80, 6809, tms9900, 8008, 8051, stm32, i386, armv7a, armv8a)" >&2
         exit 1
         ;;
 esac

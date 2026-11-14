@@ -220,6 +220,7 @@ FileFormatKind detectFileFormat(const std::string &bytes) {
         0x6502,  // 6502
         0x2600,  // atari2600
         0x2A03,  // 2a03
+        0x9900,  // tms9900
         0xC502,  // 65c02
         0x8080,  // 8080
         0x5708,  // stm8

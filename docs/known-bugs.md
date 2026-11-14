@@ -214,6 +214,42 @@ the same as running real 6809 machine code. Remove this entry once a
 suitable Python 6809 emulator package is found and `check_6809()` is
 wired into the dispatch.
 
+## `--target=tms9900` has no automated execution test
+
+Affects the whole `tms9900` backend (`src/codegen/tms9900/
+TMS9900Codegen.cpp`, `TMS9900Assembler.cpp`). No pip-installable Python
+TMS9900 CPU core exists (searched directly - nothing on PyPI, unlike
+`z80-python`/`py65` for the Z80/6502 families), so `tests/run_tests.sh
+--target=tms9900` deliberately fails loudly with a clear message
+instead of silently skipping or faking a pass - see its `tms9900)`
+tool-check arm. There's no `check_tms9900()` scaffolded at all (unlike
+`check_6809()` above), since no real core exists yet to eventually wire
+one in against.
+
+Verified as far as possible without a real, independent, checked-in
+emulator: `make build`'s own build is clean with no warnings;
+`tests/tms9900_assembler_test.cpp` asserts exact opcode bytes for every
+one of the TMS9900's 69 real instructions against its own documented
+opcode table (cross-checked against MAME's own `tms9900.cpp` decode
+table); and, going a step further than `6809`'s "read by hand" level, a
+small from-scratch TMS9900 interpreter (not checked into this project -
+built purely as a development aid, covering only the instruction forms
+this backend's codegen actually emits) was used to run real test
+programs exercising int arithmetic/comparisons (signed and unsigned),
+multiply/divide (the real hardware `MPY`/`DIV`), shifts, bitwise
+operators (including the `SZC`+`INV` synthesis this architecture's
+missing plain-AND instruction needs), pointers, arrays, recursion, and
+ternary/logical operators - all producing correct results. Two real
+bugs were found and fixed this way (a signed `<=`/`>=` swapped-operand
+mix-up in `TMS9900Codegen.cpp`'s own `genCompare()`), along with two
+bugs in that disposable interpreter itself (not in this project's own
+code). `long`/`long long` isn't implemented at all (a deliberate scope
+cut, not a bug - see `TMS9900Codegen.h`'s own header comment); every
+code path that would need it throws a clear error instead of emitting
+wrong code. Remove this entry once a suitable Python TMS9900 emulator
+package is found (or written) and a real `check_tms9900()` is wired
+into the dispatch.
+
 ## `tests/hex_literal.c` fails on `--target=8051`/`8052`/`8031`/`8032`/`pdp1`, missing from each target's long-arithmetic skip-list
 
 Affects `tests/run_tests.sh`'s `is_known_unsupported()`. MCS51 deliberately
