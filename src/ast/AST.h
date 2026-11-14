@@ -129,6 +129,8 @@ struct Stmt {
     // LocalDecl: 'static' storage duration - initOrReturnOrExpr (if set) must be a
     // compile-time-constant IntLit, evaluated once rather than on every call.
     bool isStatic = false;
+    // LocalDecl: 'const' - writing to this name after its declaration is rejected.
+    bool isConst = false;
 };
 
 using StmtPtr = std::unique_ptr<Stmt>;
@@ -138,6 +140,7 @@ using StmtPtr = std::unique_ptr<Stmt>;
 struct Param {
     std::string name;
     Type type;
+    bool isConst = false;  // 'const': writing to this parameter is rejected
 };
 
 struct FunctionDecl {
@@ -169,6 +172,7 @@ struct GlobalVar {
 
     bool isExternDecl = false;  // 'extern': data defined in another file
     bool isStatic = false;      // 'static': internal linkage, not externally resolvable
+    bool isConst = false;       // 'const': writing to this name after initialization is rejected
 };
 
 // One field of a struct definition, in declaration order; `type` carries

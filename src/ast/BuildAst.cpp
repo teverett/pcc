@@ -637,6 +637,7 @@ StmtPtr buildSimpleStmt(CParser::SimpleStmtContext *ctx) {
         if (s->arraySize <= 0) err(c, "array size must be a positive integer");
         s->arrayInit = buildArrayInit(c->arrayInit());
         padArrayInit(s->arrayInit, s->arraySize, c);
+        s->isConst = c->cst != nullptr;
         return s;
     }
     if (auto *c = dynamic_cast<CParser::LocalDeclContext *>(ctx)) {
@@ -646,6 +647,10 @@ StmtPtr buildSimpleStmt(CParser::SimpleStmtContext *ctx) {
         s->declName = c->IDENT()->getText();
         s->type = buildType(c->typeSpec());
         if (auto *e = c->expr()) s->initOrReturnOrExpr = buildExpr(e);
+        s->isConst = c->cst != nullptr;
+        if (s->isConst && !s->initOrReturnOrExpr) {
+            err(c, "a 'const' local must have an initializer");
+        }
         return s;
     }
     if (auto *c = dynamic_cast<CParser::StaticLocalArrayDeclContext *>(ctx)) {
@@ -659,6 +664,7 @@ StmtPtr buildSimpleStmt(CParser::SimpleStmtContext *ctx) {
         if (s->arraySize <= 0) err(c, "array size must be a positive integer");
         s->arrayInit = buildArrayInit(c->arrayInit());
         padArrayInit(s->arrayInit, s->arraySize, c);
+        s->isConst = c->cst != nullptr;
         return s;
     }
     if (auto *c = dynamic_cast<CParser::StaticLocalDeclContext *>(ctx)) {
@@ -668,12 +674,15 @@ StmtPtr buildSimpleStmt(CParser::SimpleStmtContext *ctx) {
         s->line = c->getStart()->getLine();
         s->declName = c->IDENT(0)->getText();
         s->type = buildType(c->typeSpec());
+        s->isConst = c->cst != nullptr;
         if (c->val || c->identVal) {
             auto lit = std::make_unique<Expr>();
             lit->kind = ExprKind::IntLit;
             lit->line = c->getStart()->getLine();
             lit->intValue = resolveConstOrEnum(c->val, c->sign, c->identVal, c, "a static local initializer");
             s->initOrReturnOrExpr = std::move(lit);
+        } else if (s->isConst) {
+            err(c, "a 'const' local must have an initializer");
         }
         return s;
     }
@@ -906,7 +915,7 @@ Program buildProgram(CParser::ProgramContext *ctx) {
                 buildReturnType(ext->returnTypeSpec(), fn.returnType, fn.isVoid);
                 if (auto *pl = ext->paramList()) {
                     for (auto *p : pl->param()) {
-                        fn.params.push_back(Param{p->IDENT()->getText(), buildType(p->typeSpec())});
+                        fn.params.push_back(Param{p->IDENT()->getText(), buildType(p->typeSpec()), p->cst != nullptr});
                     }
                 }
                 fn.isExternDecl = true;
@@ -923,7 +932,7 @@ Program buildProgram(CParser::ProgramContext *ctx) {
             buildReturnType(local->returnTypeSpec(), fn.returnType, fn.isVoid);
             if (auto *pl = local->paramList()) {
                 for (auto *p : pl->param()) {
-                    fn.params.push_back(Param{p->IDENT()->getText(), buildType(p->typeSpec())});
+                    fn.params.push_back(Param{p->IDENT()->getText(), buildType(p->typeSpec()), p->cst != nullptr});
                 }
             }
             if (local->addr) {
@@ -941,14 +950,17 @@ Program buildProgram(CParser::ProgramContext *ctx) {
                 g.arraySize = static_cast<int>(parsePlainNumber(extArr->size, extArr, "an array size"));
                 if (g.arraySize <= 0) err(extArr, "array size must be a positive integer");
                 g.isExternDecl = true;
+                g.isConst = extArr->cst != nullptr;
             } else if (auto *extSc = dynamic_cast<CParser::ExternScalarDeclContext *>(gd)) {
                 g.name = extSc->IDENT()->getText();
                 g.type = buildType(extSc->typeSpec());
                 g.isExternDecl = true;
+                g.isConst = extSc->cst != nullptr;
             } else if (auto *arr = dynamic_cast<CParser::GlobalArrayDeclContext *>(gd)) {
                 g.name = arr->IDENT()->getText();
                 g.type = buildType(arr->typeSpec());
                 g.isStatic = arr->stat != nullptr;
+                g.isConst = arr->cst != nullptr;
                 g.arraySize = static_cast<int>(parsePlainNumber(arr->size, arr, "an array size"));
                 if (g.arraySize <= 0) err(arr, "array size must be a positive integer");
                 g.arrayInit = buildArrayInit(arr->arrayInit());
@@ -961,9 +973,13 @@ Program buildProgram(CParser::ProgramContext *ctx) {
                 g.name = sc->IDENT(0)->getText();
                 g.type = buildType(sc->typeSpec());
                 g.isStatic = sc->stat != nullptr;
+                g.isConst = sc->cst != nullptr;
                 if (sc->val || sc->identVal) {
                     g.hasInit = true;
                     g.initValue = resolveConstOrEnum(sc->val, sc->sign, sc->identVal, sc, "a global initializer");
+                }
+                if (g.isConst && !g.hasInit) {
+                    err(sc, "a 'const' global must have an initializer");
                 }
                 if (sc->addr) {
                     g.hasAddress = true;

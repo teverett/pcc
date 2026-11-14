@@ -310,3 +310,25 @@ resolve `$arg` to an absolute path (e.g. `RCC="$(cd "$(dirname "$arg")"
 && pwd)/$(basename "$arg")"`) before the later `cd "$tmpdir"`, the same
 way `ROOT_DIR`/`SCRIPT_DIR` already resolve themselves a few lines
 above.
+
+## `src/generated/CParser.cpp`'s `condExprSempred()` triggers `-Wunused-parameter`
+
+Affects `src/generated/CParser.cpp`'s `condExprSempred(CondExprContext
+*_localctx, size_t predicateIndex)` - ANTLR's C++ target emits this
+helper (one of the generated semantic-predicate dispatchers for
+`condExpr`'s operator-precedence alternatives) with a `_localctx`
+parameter the generated body never reads, so `-Wall -Wextra` flags it.
+Pre-existing in the checked-in `src/generated/CParser.cpp` (reproduces
+identically from the parser grammar as it stood before the `const`
+qualifier was added - confirmed by compiling that earlier commit's own
+checked-in copy standalone), not something any grammar change
+introduced; it simply went unnoticed because nothing had forced
+`CParser.cpp` to recompile in a while, and `make`'s incremental
+object-file caching meant the warning wasn't actually re-surfacing
+each build. Not fixed here: `src/generated/` is machine output from
+`scripts/generate-grammars.sh` (see the root `Makefile`'s own header
+comment), never hand-edited, so the real fix has to be either an
+upstream ANTLR C++-target template change or a build-level
+`-Wno-unused-parameter` carve-out scoped to `src/generated/` alone -
+out of scope for whatever grammar change happens to be the one that
+next forces a rebuild of this file.

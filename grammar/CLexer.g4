@@ -33,6 +33,7 @@ CONTINUE_KW: 'continue' ;
 GOTO_KW  : 'goto' ;
 EXTERN_KW: 'extern' ;
 STATIC_KW: 'static' ;
+CONST_KW: 'const' ;
 STRUCT_KW: 'struct' ;
 ENUM_KW  : 'enum' ;
 LPAREN   : '(' ;

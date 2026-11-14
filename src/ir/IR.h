@@ -65,6 +65,10 @@ struct Slot {
     // IRBuilder.cpp's handling of Stmt::isStatic) and always has this set.
     bool isStatic = false;
 
+    // Global/Local/Param. 'const': writing to this slot after its
+    // declaration (assignment, compound-assignment, or ++/--) is rejected.
+    bool isConst = false;
+
     // Param only. A backend's label for a global/param slot must be a
     // deterministic function of name + position, not of `id` (which is just
     // this compile's own allocation order) — separate compilation units

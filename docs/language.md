@@ -378,6 +378,38 @@ uninitialized global. The same restrictions a global has otherwise
 (see "Structs" above) apply here too — e.g. no struct initializer, no
 array of struct.
 
+## Const declarations
+
+`const` marks a global, a local, or a function parameter as **never
+written to after its declaration**: an assignment, compound-assignment
+(`+=` etc.), or `++`/`--` naming it directly is a compile error.
+
+```c
+const int limit = 10;
+
+int clamp(const int x) {
+    const int half = limit / 2;
+    return x > half ? half : x;
+}
+```
+
+`const` can combine with `static` (`static const int x = 1;`) and with
+`extern` (`extern const int x;` — the usual rule that an `extern`
+declaration takes no initializer still applies). A non-`extern` `const`
+global or local must have an initializer — there would otherwise be no
+way to ever give it a value.
+
+`const` is tracked only on the declared name itself, not per
+pointer-indirection level: this subset's `Type` has no separate
+pointer-vs-pointee qualifier (see `src/Type.h`'s own `ptrDepth`), so
+`const int *p` and `int *const p` aren't distinguished, and writing
+through a pointer (`*p = x`, `p[i] = x`) is never rejected on `const`
+grounds even if `p` itself is `const` — only reassigning `p` itself
+would be. A `const` array's elements, by contrast, *are* protected
+(`arr[i] = x` on a `const` array is rejected), since an array element
+is addressed directly off the array's own slot, not through a separate
+pointer value.
+
 ## Building / Usage
 
 Building rcc from source, and every compile-mode/link-mode

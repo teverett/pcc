@@ -146,8 +146,12 @@ paramList
     : param (',' param)*
     ;
 
+// 'const' marks the declared name itself as never written to after its
+// declaration - see ../docs/language.md's "Const declarations" section
+// for exactly what it does (and doesn't, e.g. no pointee-vs-pointer
+// distinction) protect.
 param
-    : typeSpec IDENT
+    : cst='const'? typeSpec IDENT
     ;
 
 // The optional '@' addr on each local alternative is the same fixed-
@@ -159,15 +163,17 @@ param
 // not a function.
 //
 // 'static' on a non-'extern' global gives it internal linkage, same as on
-// a function above.
+// a function above. 'const' (on any alternative here, including 'extern')
+// marks the global as never written to after its declaration - see param's
+// own comment above and ../docs/language.md's "Const declarations" section.
 globalDecl
-    : 'extern' typeSpec IDENT '[' size=NUMBER ']' ';'                            # externArrayDecl
-    | 'extern' typeSpec IDENT ';'                                                 # externScalarDecl
-    | stat='static'? typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)? ('@' addr=NUMBER)? ';'  # globalArrayDecl
+    : 'extern' cst='const'? typeSpec IDENT '[' size=NUMBER ']' ';'                            # externArrayDecl
+    | 'extern' cst='const'? typeSpec IDENT ';'                                                 # externScalarDecl
+    | stat='static'? cst='const'? typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)? ('@' addr=NUMBER)? ';'  # globalArrayDecl
     // The initializer is a plain (optionally negated) literal, or an
     // already-declared enum constant's bare name (identVal) - see
     // BuildAst.cpp's resolveConstOrEnum.
-    | stat='static'? typeSpec IDENT ('=' (sign='-'? val=NUMBER | identVal=IDENT))? ('@' addr=NUMBER)? ';'  # globalScalarDecl
+    | stat='static'? cst='const'? typeSpec IDENT ('=' (sign='-'? val=NUMBER | identVal=IDENT))? ('@' addr=NUMBER)? ';'  # globalScalarDecl
     ;
 
 // Elements are plain literals, optionally negated, or a bare function/
@@ -216,12 +222,15 @@ statement
 // A 'static' local's initializer is restricted to the same compile-time-
 // constant form a global's is (plain, optionally negated, NUMBER) rather
 // than a general expr - it's evaluated once, not on every call, so there's
-// no runtime value available to initialize it from.
+// no runtime value available to initialize it from. 'const' on any
+// alternative here marks the local as never written to after its
+// declaration - see param's own comment above and
+// ../docs/language.md's "Const declarations" section.
 simpleStmt
-    : typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)?                    # localArrayDecl
-    | typeSpec IDENT ('=' expr)?                                              # localDecl
-    | 'static' typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)?           # staticLocalArrayDecl
-    | 'static' typeSpec IDENT ('=' (sign='-'? val=NUMBER | identVal=IDENT))? # staticLocalDecl
+    : cst='const'? typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)?                    # localArrayDecl
+    | cst='const'? typeSpec IDENT ('=' expr)?                                              # localDecl
+    | 'static' cst='const'? typeSpec IDENT '[' size=NUMBER ']' ('=' arrayInit)?           # staticLocalArrayDecl
+    | 'static' cst='const'? typeSpec IDENT ('=' (sign='-'? val=NUMBER | identVal=IDENT))? # staticLocalDecl
     | expr                                                                  # exprStmt
     ;
 

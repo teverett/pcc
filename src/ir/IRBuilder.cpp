@@ -251,6 +251,16 @@ class Builder {
         }
     }
 
+    // 'const' is tracked per-slot (the named object itself), not per-level on
+    // Type - a pointer's own const-ness and its pointee's are indistinguishable
+    // here, so a write through a pointer is never rejected on this basis (see
+    // docs/language.md's "Const declarations").
+    void rejectConstWrite(const ir::Slot *slot, const std::string &name, int line) {
+        if (slot->isConst) {
+            err(line, "assignment to '" + name + "' - it's declared 'const'");
+        }
+    }
+
     void registerGlobalsAndFunctions(const Program &prog) {
         for (const auto &g : prog.globals) {
             if (globalByName_.count(g.name)) err(g.line, "redeclaration of global '" + g.name + "'");
@@ -260,6 +270,7 @@ class Builder {
             // '&name'/array-init element elsewhere in this file is resolved.
             if (g.isExternDecl) {
                 slot->isExternal = true;
+                slot->isConst = g.isConst;
                 slot->sourceFile = g.sourceFile;
                 globalByName_[g.name] = slot;
                 continue;
@@ -280,6 +291,7 @@ class Builder {
             slot->hasAddress = g.hasAddress;
             slot->address = g.address;
             slot->isStatic = g.isStatic;
+            slot->isConst = g.isConst;
             if (g.isStatic) slot->sourceName = mangleStaticName(g.sourceFile, g.name);
             slot->sourceFile = g.sourceFile;
             globalByName_[g.name] = slot;
@@ -321,6 +333,7 @@ class Builder {
                 ir::Slot *p = allocSlot(ir::SlotKind::Param, fn.params[i].name);
                 p->type = resolveStructType(fn.params[i].type, fn.line);
                 rejectStructByValue(p->type, fn.line, "a function parameter");
+                p->isConst = fn.params[i].isConst;
                 p->ownerFunctionName = fn.name;
                 p->paramIndex = static_cast<int>(i);
                 // No alignUp: the caller's push sequence lays params
@@ -875,7 +888,9 @@ class Builder {
             case ExprKind::Assign: {
                 ir::Slot *slot = resolveVar(e.name, e.line);
                 if (e.lhs && slot->arraySize == 0 && isPointer(slot->type)) {
-                    // `p[i] = rhs` is `*(p+i) = rhs`.
+                    // `p[i] = rhs` is `*(p+i) = rhs` - writes through p's
+                    // pointee, not p itself, so p's own 'const' (if any)
+                    // doesn't apply here (see rejectConstWrite's own comment).
                     ir::ExprPtr sum = buildPointerIndexAddr(slot, *e.lhs, e.line);
                     out->kind = ir::ExprKind::DerefAssign;
                     Type pointee = pointeeOf(sum->type);
@@ -885,6 +900,7 @@ class Builder {
                     out->rhs = wrapConvert(buildExpr(*e.rhs), pointee, e.line);
                     return out;
                 }
+                rejectConstWrite(slot, e.name, e.line);
                 out->kind = ir::ExprKind::Assign;
                 out->slot = slot;
                 if (e.lhs) {
@@ -899,7 +915,9 @@ class Builder {
             case ExprKind::CompoundAssign: {
                 ir::Slot *slot = resolveVar(e.name, e.line);
                 if (e.lhs && slot->arraySize == 0 && isPointer(slot->type)) {
-                    // `p[i] op= rhs` (incl. p[i]++/p[i]--) is `*(p+i) op= rhs`.
+                    // `p[i] op= rhs` (incl. p[i]++/p[i]--) is `*(p+i) op= rhs` -
+                    // writes through p's pointee, not p itself (see
+                    // rejectConstWrite's own comment).
                     ir::ExprPtr sum = buildPointerIndexAddr(slot, *e.lhs, e.line);
                     out->kind = ir::ExprKind::CompoundDerefAssign;
                     Type pointee = pointeeOf(sum->type);
@@ -912,6 +930,7 @@ class Builder {
                     out->rhs = buildCompoundRhs(pointee, e.op, *e.rhs, e.line);
                     return out;
                 }
+                rejectConstWrite(slot, e.name, e.line);
                 out->kind = ir::ExprKind::CompoundAssign;
                 out->slot = slot;
                 out->op = e.op;
@@ -1334,6 +1353,7 @@ class Builder {
                     ir::Slot *slot = allocSlot(ir::SlotKind::Global, mangled, s.arraySize);
                     slot->type = resolveStructType(s.type, s.line);
                     slot->isStatic = true;
+                    slot->isConst = s.isConst;
                     slot->sourceFile = currentSourceFile_;
                     if (slot->type.base == BaseType::Struct && s.arraySize > 0) {
                         err(s.line, "an array of 'struct " + slot->type.structTag +
@@ -1358,6 +1378,7 @@ class Builder {
                 out->kind = ir::StmtKind::LocalDecl;
                 ir::Slot *slot = allocSlot(ir::SlotKind::Local, s.declName, s.arraySize);
                 slot->type = resolveStructType(s.type, s.line);
+                slot->isConst = s.isConst;
                 if (slot->type.base == BaseType::Struct) {
                     // A struct local (scalar or array) starts uninitialized,
                     // same as any other local with no initializer - skip

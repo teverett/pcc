@@ -16,16 +16,16 @@ public:
     VOID_KW = 7, SIZEOF_KW = 8, IF_KW = 9, ELSE_KW = 10, WHILE_KW = 11, 
     FOR_KW = 12, SWITCH_KW = 13, CASE_KW = 14, DEFAULT_KW = 15, RETURN_KW = 16, 
     BREAK_KW = 17, CONTINUE_KW = 18, GOTO_KW = 19, EXTERN_KW = 20, STATIC_KW = 21, 
-    STRUCT_KW = 22, ENUM_KW = 23, LPAREN = 24, RPAREN = 25, LBRACK = 26, 
-    RBRACK = 27, LBRACE = 28, RBRACE = 29, AT = 30, SEMI = 31, COMMA = 32, 
-    ASSIGN = 33, STAR = 34, AMP = 35, MINUS = 36, BANG = 37, TILDE = 38, 
-    SLASH = 39, PERCENT = 40, PLUS = 41, SHL = 42, SHR = 43, LE = 44, GE = 45, 
-    LT = 46, GT = 47, EQ = 48, NE = 49, CARET = 50, PIPE = 51, ANDAND = 52, 
-    OROR = 53, PLUSEQ = 54, MINUSEQ = 55, STAREQ = 56, SLASHEQ = 57, PERCENTEQ = 58, 
-    AMPEQ = 59, CARETEQ = 60, PIPEEQ = 61, SHLEQ = 62, SHREQ = 63, INC = 64, 
-    DEC = 65, QUESTION = 66, COLON = 67, DOT = 68, ARROW = 69, IDENT = 70, 
-    NUMBER = 71, CHARLIT = 72, STRINGLIT = 73, LINE_COMMENT = 74, BLOCK_COMMENT = 75, 
-    WS = 76, ASM_BEGIN = 77, ASM_TEXT = 78, ASM_END = 79
+    CONST_KW = 22, STRUCT_KW = 23, ENUM_KW = 24, LPAREN = 25, RPAREN = 26, 
+    LBRACK = 27, RBRACK = 28, LBRACE = 29, RBRACE = 30, AT = 31, SEMI = 32, 
+    COMMA = 33, ASSIGN = 34, STAR = 35, AMP = 36, MINUS = 37, BANG = 38, 
+    TILDE = 39, SLASH = 40, PERCENT = 41, PLUS = 42, SHL = 43, SHR = 44, 
+    LE = 45, GE = 46, LT = 47, GT = 48, EQ = 49, NE = 50, CARET = 51, PIPE = 52, 
+    ANDAND = 53, OROR = 54, PLUSEQ = 55, MINUSEQ = 56, STAREQ = 57, SLASHEQ = 58, 
+    PERCENTEQ = 59, AMPEQ = 60, CARETEQ = 61, PIPEEQ = 62, SHLEQ = 63, SHREQ = 64, 
+    INC = 65, DEC = 66, QUESTION = 67, COLON = 68, DOT = 69, ARROW = 70, 
+    IDENT = 71, NUMBER = 72, CHARLIT = 73, STRINGLIT = 74, LINE_COMMENT = 75, 
+    BLOCK_COMMENT = 76, WS = 77, ASM_BEGIN = 78, ASM_TEXT = 79, ASM_END = 80
   };
 
   enum {
@@ -390,10 +390,12 @@ public:
 
   class  ParamContext : public antlr4::ParserRuleContext {
   public:
+    antlr4::Token *cst = nullptr;
     ParamContext(antlr4::ParserRuleContext *parent, size_t invokingState);
     virtual size_t getRuleIndex() const override;
     TypeSpecContext *typeSpec();
     antlr4::tree::TerminalNode *IDENT();
+    antlr4::tree::TerminalNode *CONST_KW();
 
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
@@ -419,10 +421,12 @@ public:
   public:
     ExternScalarDeclContext(GlobalDeclContext *ctx);
 
+    antlr4::Token *cst = nullptr;
     antlr4::tree::TerminalNode *EXTERN_KW();
     TypeSpecContext *typeSpec();
     antlr4::tree::TerminalNode *IDENT();
     antlr4::tree::TerminalNode *SEMI();
+    antlr4::tree::TerminalNode *CONST_KW();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
@@ -432,6 +436,7 @@ public:
     GlobalArrayDeclContext(GlobalDeclContext *ctx);
 
     antlr4::Token *stat = nullptr;
+    antlr4::Token *cst = nullptr;
     antlr4::Token *size = nullptr;
     antlr4::Token *addr = nullptr;
     TypeSpecContext *typeSpec();
@@ -445,6 +450,7 @@ public:
     ArrayInitContext *arrayInit();
     antlr4::tree::TerminalNode *AT();
     antlr4::tree::TerminalNode *STATIC_KW();
+    antlr4::tree::TerminalNode *CONST_KW();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
@@ -453,6 +459,7 @@ public:
   public:
     ExternArrayDeclContext(GlobalDeclContext *ctx);
 
+    antlr4::Token *cst = nullptr;
     antlr4::Token *size = nullptr;
     antlr4::tree::TerminalNode *EXTERN_KW();
     TypeSpecContext *typeSpec();
@@ -461,6 +468,7 @@ public:
     antlr4::tree::TerminalNode *RBRACK();
     antlr4::tree::TerminalNode *SEMI();
     antlr4::tree::TerminalNode *NUMBER();
+    antlr4::tree::TerminalNode *CONST_KW();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
@@ -470,6 +478,7 @@ public:
     GlobalScalarDeclContext(GlobalDeclContext *ctx);
 
     antlr4::Token *stat = nullptr;
+    antlr4::Token *cst = nullptr;
     antlr4::Token *sign = nullptr;
     antlr4::Token *val = nullptr;
     antlr4::Token *identVal = nullptr;
@@ -481,6 +490,7 @@ public:
     antlr4::tree::TerminalNode *ASSIGN();
     antlr4::tree::TerminalNode *AT();
     antlr4::tree::TerminalNode *STATIC_KW();
+    antlr4::tree::TerminalNode *CONST_KW();
     std::vector<antlr4::tree::TerminalNode *> NUMBER();
     antlr4::tree::TerminalNode* NUMBER(size_t i);
     antlr4::tree::TerminalNode *MINUS();
@@ -761,10 +771,12 @@ public:
   public:
     LocalDeclContext(SimpleStmtContext *ctx);
 
+    antlr4::Token *cst = nullptr;
     TypeSpecContext *typeSpec();
     antlr4::tree::TerminalNode *IDENT();
     antlr4::tree::TerminalNode *ASSIGN();
     ExprContext *expr();
+    antlr4::tree::TerminalNode *CONST_KW();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
@@ -773,6 +785,7 @@ public:
   public:
     StaticLocalArrayDeclContext(SimpleStmtContext *ctx);
 
+    antlr4::Token *cst = nullptr;
     antlr4::Token *size = nullptr;
     antlr4::tree::TerminalNode *STATIC_KW();
     TypeSpecContext *typeSpec();
@@ -782,6 +795,7 @@ public:
     antlr4::tree::TerminalNode *NUMBER();
     antlr4::tree::TerminalNode *ASSIGN();
     ArrayInitContext *arrayInit();
+    antlr4::tree::TerminalNode *CONST_KW();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
@@ -790,6 +804,7 @@ public:
   public:
     StaticLocalDeclContext(SimpleStmtContext *ctx);
 
+    antlr4::Token *cst = nullptr;
     antlr4::Token *sign = nullptr;
     antlr4::Token *val = nullptr;
     antlr4::Token *identVal = nullptr;
@@ -798,6 +813,7 @@ public:
     std::vector<antlr4::tree::TerminalNode *> IDENT();
     antlr4::tree::TerminalNode* IDENT(size_t i);
     antlr4::tree::TerminalNode *ASSIGN();
+    antlr4::tree::TerminalNode *CONST_KW();
     antlr4::tree::TerminalNode *NUMBER();
     antlr4::tree::TerminalNode *MINUS();
 
@@ -808,6 +824,7 @@ public:
   public:
     LocalArrayDeclContext(SimpleStmtContext *ctx);
 
+    antlr4::Token *cst = nullptr;
     antlr4::Token *size = nullptr;
     TypeSpecContext *typeSpec();
     antlr4::tree::TerminalNode *IDENT();
@@ -816,6 +833,7 @@ public:
     antlr4::tree::TerminalNode *NUMBER();
     antlr4::tree::TerminalNode *ASSIGN();
     ArrayInitContext *arrayInit();
+    antlr4::tree::TerminalNode *CONST_KW();
 
     virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
   };
