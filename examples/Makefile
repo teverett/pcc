@@ -1,8 +1,8 @@
 EXAMPLES_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
-.PHONY: all hosted-hello m30626fjpfp-freestanding 6502-freestanding 68000-freestanding pdp7-freestanding 6502-dos33 6502-vic20 6502-c64 6502-atari400 8086-msdos z80-trs80 z80-coleco 6809-coco test clean
+.PHONY: all hosted-hello m30626fjpfp-freestanding 6502-freestanding 68000-freestanding pdp7-freestanding 6502-dos33 6502-vic20 6502-c64 6502-atari400 6502-atari2600 8086-msdos z80-trs80 z80-coleco 6809-coco test clean
 
-all: hosted-hello m30626fjpfp-freestanding 6502-freestanding 68000-freestanding pdp7-freestanding 6502-dos33 6502-vic20 6502-c64 6502-atari400 8086-msdos z80-trs80 z80-coleco 6809-coco
+all: hosted-hello m30626fjpfp-freestanding 6502-freestanding 68000-freestanding pdp7-freestanding 6502-dos33 6502-vic20 6502-c64 6502-atari400 6502-atari2600 8086-msdos z80-trs80 z80-coleco 6809-coco
 
 hosted-hello:
 	$(MAKE) -C $(EXAMPLES_DIR)hosted-hello
@@ -31,6 +31,9 @@ pdp7-freestanding:
 6502-atari400:
 	$(MAKE) -C $(EXAMPLES_DIR)6502-atari400
 
+6502-atari2600:
+	$(MAKE) -C $(EXAMPLES_DIR)6502-atari2600
+
 8086-msdos:
 	$(MAKE) -C $(EXAMPLES_DIR)8086-msdos
 
@@ -56,6 +59,7 @@ test:
 	$(MAKE) -C $(EXAMPLES_DIR)6502-vic20 test
 	$(MAKE) -C $(EXAMPLES_DIR)6502-c64 test
 	$(MAKE) -C $(EXAMPLES_DIR)6502-atari400 test
+	$(MAKE) -C $(EXAMPLES_DIR)6502-atari2600 test
 	$(MAKE) -C $(EXAMPLES_DIR)z80-trs80 test
 	$(MAKE) -C $(EXAMPLES_DIR)z80-coleco test
 	$(MAKE) -C $(EXAMPLES_DIR)8086-msdos test
@@ -71,6 +75,7 @@ clean:
 	$(MAKE) -C $(EXAMPLES_DIR)6502-vic20 clean
 	$(MAKE) -C $(EXAMPLES_DIR)6502-c64 clean
 	$(MAKE) -C $(EXAMPLES_DIR)6502-atari400 clean
+	$(MAKE) -C $(EXAMPLES_DIR)6502-atari2600 clean
 	$(MAKE) -C $(EXAMPLES_DIR)8086-msdos clean
 	$(MAKE) -C $(EXAMPLES_DIR)z80-trs80 clean
 	$(MAKE) -C $(EXAMPLES_DIR)z80-coleco clean

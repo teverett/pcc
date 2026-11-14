@@ -28,7 +28,7 @@ $(ATARI400_LIB):
 # least 16K of RAM (unverified against every real memory configuration -
 # see src/rt/atari400/atari400.h's own header comment).
 $(BUILD_DIR)/main.atari: $(BUILD_DIR)/main.o $(ATARI400_LIB)
-	$(RCC) --link --platform=6502-atari --base='$2000' --out="$@" "$(BUILD_DIR)/main.o" "$(ATARI400_LIB)"
+	$(RCC) --link --platform=6502-atari --base='$$2000' --out="$@" "$(BUILD_DIR)/main.o" "$(ATARI400_LIB)"
 
 # Same link, written out as `raw` instead of `atari` - identical program
 # bytes minus the segment headers and RUNAD-poke segment (see ../../src/
@@ -36,7 +36,7 @@ $(BUILD_DIR)/main.atari: $(BUILD_DIR)/main.o $(ATARI400_LIB)
 # in py65 without having to parse the segment format first. Same --base
 # as main.atari above - they need to stay identical bytes.
 $(BUILD_DIR)/main.raw: $(BUILD_DIR)/main.o $(ATARI400_LIB)
-	$(RCC) --link --platform=6502-raw --base='$2000' --out="$@" "$(BUILD_DIR)/main.o" "$(ATARI400_LIB)"
+	$(RCC) --link --platform=6502-raw --base='$$2000' --out="$@" "$(BUILD_DIR)/main.o" "$(ATARI400_LIB)"
 
 # Runs main.raw in py65's 6502 MPU core (test.py) - see that script's own
 # header comment.

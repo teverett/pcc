@@ -24,4 +24,13 @@ namespace rcc {
 // the linked program.
 std::unique_ptr<TargetLinker> makeM6502Linker(uint32_t baseAddress = kM6502BaseAddress);
 
+// Same instruction encoding, same GenericLinker machinery, but `--target=atari2600`'s own
+// zero-page/frame-storage layout (see M6502Codegen.h's own `zeroPageBase()`/`frameStackBase()`
+// comments) and its own distinct machine ID (`kM6502Atari2600CoffMachine`, so `--link` rejects
+// an accidental mix with a plain 6502 object instead of silently corrupting data) - see
+// M6502LinkerFactory.cpp's own `kAtari2600EntryAsm` comment for the entry sequence this links
+// in. A non-default `baseAddress` must be `$F000` (4K cartridge) or `$F800` (2K cartridge) to
+// produce a valid `--format=a26` image (see src/fileformat/atari2600/Atari2600RomFormat.h).
+std::unique_ptr<TargetLinker> makeAtari2600Linker(uint32_t baseAddress = kM6502Atari2600BaseAddress);
+
 }  // namespace rcc

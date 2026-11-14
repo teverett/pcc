@@ -28,6 +28,33 @@ constexpr const char *kEntryAsm =
     "halt:\n"
     "    jmp halt\n";
 
+// `--target=atari2600`'s own entry sequence: identical shape to kEntryAsm above, just with
+// every zero-page equate shifted up to M6502Codegen.h's `zeroPageBase()` ($0080, clear of the
+// TIA's own write-only registers mirrored across $0000-$003F - VSYNC/WSYNC/COLUBK/etc., real
+// addresses a plain 6502 object's own `ptr`/`ac`/etc. would otherwise alias and silently
+// trigger as a side effect of an ordinary pointer dereference) and `sp` seeded to
+// `frameStackBase()` ($00B0) instead of $0200, which isn't real RAM on this machine at all -
+// the Atari 2600 has only 128 bytes of RAM total, at $0080-$00FF.
+constexpr const char *kAtari2600EntryAsm =
+    "org 0\n"
+    "ptr = 128\n"
+    "ac = 130\n"
+    "bc = 132\n"
+    "cx = 134\n"
+    "dx = 136\n"
+    "fp = 138\n"
+    "sp = 140\n"
+    "aBase = 142\n"
+    "_start:\n"
+    "    ldai 176\n"
+    "    sta sp\n"
+    "    ldai 0\n"
+    "    sta sp+1\n"
+    "    jsr fn_main\n"
+    "    lda ac\n"
+    "halt:\n"
+    "    jmp halt\n";
+
 // Patches only the low/high byte of a 16-bit value.
 void patchAbs16Lo(std::vector<uint8_t> &image, uint32_t siteOffset, uint32_t value, uint32_t) {
     image[siteOffset] = static_cast<uint8_t>(image[siteOffset] + (value & 0xFF));
@@ -46,6 +73,18 @@ std::unique_ptr<TargetLinker> makeM6502Linker(uint32_t baseAddress) {
     config.relocPatchers[kM6502RelocAbs16Lo] = patchAbs16Lo;
     config.relocPatchers[kM6502RelocAbs16Hi] = patchAbs16Hi;
     config.outputFormats = {"raw", "coff", "elf", "aout", "dos33", "prodos", "prg", "atari"};
+    return std::make_unique<GenericLinker>(std::move(config));
+}
+
+std::unique_ptr<TargetLinker> makeAtari2600Linker(uint32_t baseAddress) {
+    GenericLinkerConfig config;
+    config.baseAddress = baseAddress;
+    config.machineType = kM6502Atari2600CoffMachine;
+    config.entryObject = assembleM6502Object(kAtari2600EntryAsm, kM6502Atari2600CoffMachine);
+    config.relocPatchers[kM6502RelocAbs16] = RelocKinds::patchAbs16;
+    config.relocPatchers[kM6502RelocAbs16Lo] = patchAbs16Lo;
+    config.relocPatchers[kM6502RelocAbs16Hi] = patchAbs16Hi;
+    config.outputFormats = {"raw", "coff", "elf", "aout", "a26"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

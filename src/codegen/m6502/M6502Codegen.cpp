@@ -14,13 +14,6 @@ namespace {
     throw std::runtime_error("line " + std::to_string(line) + ": " + msg);
 }
 
-// $0600: conventional bare-6502 load address, above zero page and the
-// hardware stack page $0100-$01FF.
-constexpr uint32_t kBaseAddress = 0x0600;
-
-// Frame storage bump allocator region, between the hardware stack page and
-// kBaseAddress so it never collides with either.
-constexpr uint32_t kFrameStackBase = 0x0200;
 }  // namespace
 
 // A literal element's decimal text, or a symbol element's label (a
@@ -277,21 +270,29 @@ std::string M6502Codegen::generate(const ir::Program &prog, bool objectMode) {
     // `objectMode` means no object file emits this entry sequence; the
     // linker synthesizes exactly one once every object is merged. An
     // object file's base is `org 0` - placement is the linker's job.
-    code_ << "org " << (objectMode ? 0 : kBaseAddress) << "\n\n";
+    code_ << "org " << (objectMode ? 0 : baseAddress()) << "\n\n";
     // Fixed zero-page pseudo-registers, bound via compile-time equate (not
     // the usual data-trailer layout) so every object declares them
     // identically regardless of where it's linked, with no relocation
     // needed for the equate itself. `fp`/`sp`: the software frame pointer
     // and the frame-stack bump allocator. `wac`/`wbc`/`wtmp`/`wtmp2`: the
-    // 8-byte wide-value buffers.
-    code_ << "ptr = 0\nac = 2\nbc = 4\ncx = 6\ndx = 8\nfp = 10\nsp = 12\naBase = 14\n";
-    code_ << "wac = 16\nwbc = 24\nwtmp = 32\nwtmp2 = 40\n\n";
+    // 8-byte wide-value buffers. See zeroPageBase()'s own comment for why
+    // this isn't always $0000.
+    {
+        uint32_t zp = zeroPageBase();
+        code_ << "ptr = " << zp << "\nac = " << (zp + 2) << "\nbc = " << (zp + 4) << "\ncx = " << (zp + 6)
+              << "\ndx = " << (zp + 8) << "\nfp = " << (zp + 10) << "\nsp = " << (zp + 12) << "\naBase = "
+              << (zp + 14) << "\n";
+        code_ << "wac = " << (zp + 16) << "\nwbc = " << (zp + 24) << "\nwtmp = " << (zp + 32) << "\nwtmp2 = "
+              << (zp + 40) << "\n\n";
+    }
     if (!objectMode) {
         code_ << "_start:\n";
         // One-time init of the frame-stack bump allocator before the first
         // call; genFunction()'s prologue only reads/advances `sp` after this.
-        code_ << "    ldai " << (kFrameStackBase & 0xFF) << "\n    sta sp\n";
-        code_ << "    ldai " << ((kFrameStackBase >> 8) & 0xFF) << "\n    sta sp+1\n";
+        uint32_t fsb = frameStackBase();
+        code_ << "    ldai " << (fsb & 0xFF) << "\n    sta sp\n";
+        code_ << "    ldai " << ((fsb >> 8) & 0xFF) << "\n    sta sp+1\n";
         code_ << "    jsr " << label(mainFn) << "\n";
         // The program's final result sits in ac/ac+1 at `halt` below. This
         // extra `lda` also leaves the low byte in the real A register.
@@ -1547,7 +1548,7 @@ std::optional<std::string> M6502Codegen::assembleInProcess(const std::string &as
     // `coff`/`elf`/`macho`/`aout`/`objraw`: builds one format-neutral
     // ObjectFile, then picks that format's FileFormatWriter to serialize it.
     if (auto kind = fileFormatKindFromName(format)) {
-        ObjectFile obj = assembleM6502Object(asmText);
+        ObjectFile obj = assembleM6502Object(asmText, atari2600_ ? kM6502Atari2600CoffMachine : kM6502CoffMachine);
         return makeFileFormatWriter(*kind)->write(obj);
     }
     return std::nullopt;

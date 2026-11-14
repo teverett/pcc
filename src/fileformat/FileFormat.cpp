@@ -19,6 +19,7 @@
 #include "fileformat/decb/DecbFormat.h"
 #include "fileformat/prg/PrgFormat.h"
 #include "fileformat/atari/AtariExeFormat.h"
+#include "fileformat/atari2600/Atari2600RomFormat.h"
 
 namespace rcc {
 
@@ -56,6 +57,8 @@ std::unique_ptr<FileFormatWriter> makeFileFormatWriter(FileFormatKind kind) {
             return std::make_unique<PrgFormatWriter>();
         case FileFormatKind::AtariExe:
             return std::make_unique<AtariExeFormatWriter>();
+        case FileFormatKind::Atari2600Rom:
+            return std::make_unique<Atari2600RomFormatWriter>();
     }
     return nullptr;
 }
@@ -94,6 +97,8 @@ std::unique_ptr<FileFormatReader> makeFileFormatReader(FileFormatKind kind) {
             return std::make_unique<PrgFormatReader>();
         case FileFormatKind::AtariExe:
             return std::make_unique<AtariExeFormatReader>();
+        case FileFormatKind::Atari2600Rom:
+            return std::make_unique<Atari2600RomFormatReader>();
     }
     return nullptr;
 }
@@ -116,6 +121,7 @@ std::optional<FileFormatKind> fileFormatKindFromName(const std::string &name) {
     if (name == "decb") return FileFormatKind::Decb;
     if (name == "prg") return FileFormatKind::Prg;
     if (name == "atari") return FileFormatKind::AtariExe;
+    if (name == "a26") return FileFormatKind::Atari2600Rom;
     return std::nullopt;
 }
 
@@ -153,6 +159,8 @@ std::string fileFormatName(FileFormatKind kind) {
             return "prg";
         case FileFormatKind::AtariExe:
             return "atari";
+        case FileFormatKind::Atari2600Rom:
+            return "a26";
     }
     return "";
 }
@@ -186,6 +194,7 @@ FileFormatKind detectFileFormat(const std::string &bytes) {
         0x5A38,  // z80
         0x6809,  // 6809
         0x6502,  // 6502
+        0x2600,  // atari2600
         0xC502,  // 65c02
         0x8080,  // 8080
         0x5708,  // stm8

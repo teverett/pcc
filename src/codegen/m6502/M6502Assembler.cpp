@@ -444,9 +444,9 @@ class Assembler {
 };
 
 // Builds the format-neutral ObjectFile from a completed object-mode Assembler.
-ObjectFile buildObjectFile(const Assembler &a) {
+ObjectFile buildObjectFile(const Assembler &a, uint16_t machineType) {
     ObjectFile obj;
-    obj.machineType = kM6502CoffMachine;
+    obj.machineType = machineType;
     const auto &bytesVec = a.bytes();
     obj.textBytes.assign(bytesVec.begin(), bytesVec.end());
 
@@ -478,11 +478,11 @@ std::string assembleM6502(const std::string &asmText) {
     return std::string(bytes.begin(), bytes.end());
 }
 
-ObjectFile assembleM6502Object(const std::string &asmText) {
+ObjectFile assembleM6502Object(const std::string &asmText, uint16_t machineType) {
     std::vector<Line> lines = parseProgram(asmText);
     Assembler assembler(/*allowExternal=*/true);
     assembler.run(lines);
-    return buildObjectFile(assembler);
+    return buildObjectFile(assembler, machineType);
 }
 
 }  // namespace rcc

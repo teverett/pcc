@@ -58,10 +58,29 @@ namespace rcc {
 // entry) minus that reserved size; its epilogue collapses `sp` back to
 // `fp` and restores the caller's `fp` via PHA/PLA, mirroring x86's
 // push/pop bp.
+//
+// `atari2600` (true for `--target=atari2600`) relocates every zero-page
+// pseudo-register and the frame-storage region, both normally free to
+// pick any convenient zero-page address on every other 6502 platform
+// this project supports (Apple II/VIC-20/C64/Atari 400 all have real RAM
+// at $0000-$00FF and $0200-$05FF). The Atari 2600 doesn't: $0000-$003F is
+// the TIA's own write-only register mirror (VSYNC/WSYNC/COLUBK/etc. -
+// see M6502LinkerFactory.cpp's own `kAtari2600EntryAsm` comment), and the
+// machine has only 128 bytes of real RAM total, at $0080-$00FF, shared
+// with the hardware stack itself via incomplete address decoding (same
+// physical bytes also appear at $0100-$01FF where JSR/PHA/PLA write) -
+// not a separate, safely-distinct $0200-$05FF region the way every other
+// target here has. `zeroPageBase()`/`frameStackBase()` below move both
+// regions into that real 128-byte window instead of colliding with TIA;
+// they don't and can't resolve the hardware-stack overlap, which is an
+// inherent property of the chip, not something software can route
+// around - a deeply-recursive or deeply-nested-expression program here
+// can still have its own frame storage and the real call stack collide.
 class M6502Codegen : public Backend {
    public:
+    explicit M6502Codegen(bool atari2600 = false) : atari2600_(atari2600) {}
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
-    std::string name() const override { return "6502"; }
+    std::string name() const override { return atari2600_ ? "atari2600" : "6502"; }
     TypeWidths typeWidths() const override { return {1, 2, 2, 4, 8}; }
     std::string sourceExtension() const override { return ".s65"; }
     std::vector<std::string> assembledFormats() const override {
@@ -75,6 +94,23 @@ class M6502Codegen : public Backend {
                                                   const std::string &format) const override;
 
    private:
+    // $0080 (clear of TIA's $0000-$003F mirror) for atari2600, $0000 (the
+    // ordinary convention) otherwise. The eight 2-byte pseudo-registers
+    // (ptr/ac/bc/cx/dx/fp/sp/aBase) plus the four 8-byte wide-value
+    // buffers (wac/wbc/wtmp/wtmp2 - see this class's own header comment)
+    // occupy [zeroPageBase(), zeroPageBase()+48).
+    uint32_t zeroPageBase() const { return atari2600_ ? 0x0080 : 0x0000; }
+    // Frame-storage bump-allocator region: right after the 48 bytes of
+    // pseudo-registers/wide buffers on atari2600 ($00B0, leaving
+    // $00B0-$00FF - 80 bytes - for every program's locals/params, shared
+    // with the real hardware stack per this class's own header comment),
+    // $0200 otherwise.
+    uint32_t frameStackBase() const { return atari2600_ ? 0x00B0 : 0x0200; }
+    // Whole-program (`--format=raw`, non-object) load address: the
+    // conventional 4K-cartridge base $F000 (see M6502LinkerFactory.cpp's
+    // own `kAtari2600BaseAddress` comment) for atari2600, $0600 otherwise.
+    uint32_t baseAddress() const { return atari2600_ ? 0xF000 : 0x0600; }
+
     int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > 2; }
     int wordCountOf(Type t) const { return widthOfType(t) / 2; }
@@ -244,6 +280,8 @@ class M6502Codegen : public Backend {
         irLabels_[id] = name;
         return name;
     }
+
+    bool atari2600_;
 
     std::ostringstream code_;
     std::vector<std::string> trailer_;  // "label: dblo e" / "dbhi e" data lines, emitted once at the end

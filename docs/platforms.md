@@ -112,6 +112,44 @@ pair - see `docs/using.md`.
   `ldxi` (immediate-only `LDX`, opcode `$A2`) was added specifically for
   it (see `M6502Assembler.cpp`'s own `encodeInstr()` comment); still no
   `STX`/`TAX`/indexed addressing or general X-register support.
+- **atari2600** — same 6502 instruction encoding and dialect as `6502`
+  above (the real Atari 2600 uses a 6507, electrically a 6502 with its
+  top address pins removed - no instruction-level difference this
+  compiler emits anything for), but a genuinely different memory map,
+  not just a different `--format`: the machine has only 128 bytes of RAM
+  total, at `$0080`-`$00FF`, and `$0000`-`$003F` is the TIA's own
+  write-only register mirror (`VSYNC`/`WSYNC`/`COLUBK`/etc.) rather than
+  RAM at all. Linking a plain `6502` object here (or vice versa) would
+  silently alias the compiler's own zero-page scratch cells onto TIA
+  hardware instead of failing to link, so `atari2600` gets its own
+  distinct machine ID (`kM6502Atari2600CoffMachine`) that `--link`
+  actively rejects a mismatch against - see `M6502Codegen.h`'s own
+  `zeroPageBase()`/`frameStackBase()` comments for exactly where
+  everything moves to ($0080-$00AF for the pseudo-registers/wide-value
+  buffers, $00B0-$00FF - 80 bytes - for the frame-storage bump
+  allocator) and why that's still not a full fix: the 2600's real
+  hardware stack (`JSR`/`PHA`/`PLA`) shares those same physical 128
+  bytes via incomplete address decoding, an inherent property of the
+  chip no software placement can route around. `--link --format=a26`
+  produces a bare, headerless 2048- or 4096-byte cartridge ROM image
+  (`--base=$F000` for 4K, `$F800` for 2K) with the NMI/RESET/IRQ vectors
+  written into its own last 6 bytes, loadable directly by any emulator
+  that reads a `.bin`/`.a26` file (Stella) - see `src/fileformat/
+  atari2600/Atari2600RomFormat.h`'s own header comment. No bankswitching
+  support (a program over 4096 bytes is rejected, not split across
+  banks) and no runtime library: real 2600 "graphics" means racing the
+  beam - writing TIA registers in cycle-exact sync with the TV scanline -
+  which no C compiler's ordinary codegen can promise, so there's no
+  text/sprite output a runtime library could offer. `examples/
+  6502-atari2600/` is the closest thing to a "hello world" that's
+  actually honest about that limit: a single inline-`asm` poke of
+  `COLUBK` (TIA's background-color register) followed by the halt loop
+  codegen emits after `main()` returns, painting the whole screen one
+  solid color on real/emulated hardware - verified in CI only against
+  that fixed register value and, separately
+  (`tests/run_atari2600_tests.sh`), by linking/running a plain
+  non-graphical program in py65's bare 6502 core, which simulates no
+  TIA/RIOT hardware at all.
 - **65c02** — WDC 65C02, same dialect/platform choices as `6502` plus the
   real CMOS-only instructions `M65C02Codegen.cpp`/`M65C02Assembler.cpp`
   support: `STZ`, used automatically by codegen itself to zero a zero-page
