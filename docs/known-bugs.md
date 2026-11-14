@@ -63,7 +63,7 @@ scaling with call depth) overwrites its own return address and/or
 local variables instead of whatever it meant to write, with no crash or
 diagnostic - just silently wrong behavior, typically an infinite loop
 once the corrupted return address or loop-counter local takes effect.
-`src/rt/trs80/`'s video RAM (`$3C00`-$3FFF`) and `src/rt/coleco/`'s VDP
+`src/rt/trs80/`'s video RAM (`$3C00`-`$3FFF`) and `src/rt/coleco/`'s VDP
 (behind ports, not direct memory addresses) sit nowhere near this, so
 neither is affected; `src/rt/cpc/`'s screen RAM genuinely does reach
 `$FFFF` on real hardware, so `cpc_cls()`/`cpc_set_pixel()` deliberately

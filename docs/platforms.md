@@ -94,9 +94,9 @@ pair - see `docs/using.md`.
   runtime library built on top of this target. `--link --format=prg`
   wraps the same linked bytes in the Commodore VIC-20/C64/PET load-
   address convention instead - see `src/rt/vic20/` (`--base=4097`,
-  $1001, the unexpanded VIC-20's own BASIC-program start address;
+  `$1001`, the unexpanded VIC-20's own BASIC-program start address;
   `examples/6502-vic20/` for a worked "hello world") and `src/rt/c64/`
-  (`--base=2049`, $0801, the C64's own BASIC-program start address;
+  (`--base=2049`, `$0801`, the C64's own BASIC-program start address;
   `examples/6502-c64/`) - both KERNAL call runtime libraries built on
   top of this target, duplicated between the two directories rather
   than shared even though they call the identical jump-table addresses
@@ -104,7 +104,7 @@ pair - see `docs/using.md`.
   --format=atari` wraps the same linked bytes in the Atari 400/800 DOS
   binary-load segment convention instead - see `src/rt/atari400/` for a
   CIO call runtime library built on top of this target (`--base=8192`,
-  $2000; `examples/6502-atari400/`). Atari's CIO needs an IOCB number in
+  `$2000`; `examples/6502-atari400/`). Atari's CIO needs an IOCB number in
   the X register, unlike every other 6502 runtime library here (which
   only ever touch the accumulator), so the assembler supports `ldxi`
   (immediate-only `LDX`, opcode `$A2`) for loading it (see
@@ -123,8 +123,8 @@ pair - see `docs/using.md`.
   distinct machine ID (`kM6502Atari2600CoffMachine`) that `--link`
   actively rejects a mismatch against - see `M6502Codegen.h`'s own
   `zeroPageBase()`/`frameStackBase()` comments for exactly where
-  everything moves to ($0080-$00AF for the pseudo-registers/wide-value
-  buffers, $00B0-$00FF - 80 bytes - for the frame-storage bump
+  everything moves to (`$0080`-`$00AF` for the pseudo-registers/wide-value
+  buffers, `$00B0`-`$00FF` - 80 bytes - for the frame-storage bump
   allocator) and why that's still not a full fix: the 2600's real
   hardware stack (`JSR`/`PHA`/`PLA`) shares those same physical 128
   bytes via incomplete address decoding, an inherent property of the
@@ -334,7 +334,7 @@ pair - see `docs/using.md`.
   Since a snapshot boots straight into user code and never runs the
   ROM's own reset sequence, `src/rt/zxspectrum/` only ever touches real
   hardware the ROM's own system variables have no part in: the ULA port
-  ($FE - border color, speaker toggle, and the keyboard's 8 half-rows,
+  (`$FE` - border color, speaker toggle, and the keyboard's 8 half-rows,
   each read via `IN A,(n)` with the half-row select byte preloaded into
   A, since a real Z80's `IN A,(n)`/`OUT (n),A` put that register on the
   address bus's own upper byte - see `Z80Assembler.h`'s own header
@@ -391,6 +391,31 @@ pair - see `docs/using.md`.
   leaving the screen bitmap's last 512 bytes (and the bottom ~48 of its
   200 scanlines) untouched - no other z80 platform here writes memory
   that close to `$FF00`, so none of them hit this.
+- **zx81** — like the other z80 machine platforms above, plain `--target=z80`,
+  no separate target. Unlike them, it gets no native `--format` at all:
+  the ZX81's own tape/file format (".p") is, by every source consulted,
+  a dump of a *saved BASIC program and its workspace*, resumed by
+  re-entering BASIC's own continuation logic (recalculating `D_FILE`/
+  `RAMTOP` after loading) - not a general, BASIC-independent CPU-state
+  snapshot the way `zx spectrum`'s `.sna` is, and no source agreed
+  closely enough on its exact header/field layout to implement with any
+  real confidence. `--format=raw` is the only output this platform
+  gets.
+  `src/rt/zx81/` is correspondingly thin: the ZX81 has no border, no
+  bitmap, no attribute memory, and no sound chip - its entire display
+  is generated live by the ROM from a character-code "display file"
+  during precisely-timed CPU windows (`SLOW` mode), with no pixel byte
+  this runtime could poke directly the way `zx spectrum`'s/`amstrad
+  cpc`'s own runtimes do. The only two primitives offered -
+  `zx81_display_on()`/`zx81_display_off()` (port `$FE`/`$FD`, enabling/
+  disabling the NMI generator that drives that display loop) and
+  `zx81_key_row()` (port `$FE`, read with the row-select byte preloaded
+  into `A`, the same hardware quirk `zx spectrum`'s own `zx_key_row()`
+  uses) - carry a real confidence caveat the other z80 runtimes here
+  don't: every source agreed on *what* those ports do, but also warned
+  that keyboard reading from machine code is unreliable outside `SLOW`
+  mode, with no official technical reference or ZX81 emulator available
+  in this project to verify either claim against.
 - **6809** — real Motorola 6809 assembly/machine code (`M6809Assembler.h`),
   a bare flat binary loaded/entered at `$3000` (12288). Big-endian, unlike
   every other target documented so far on this page. Values live in the
