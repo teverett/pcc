@@ -21,6 +21,14 @@ constexpr uint16_t kM6502CoffMachine = 0x6502;
 // `--target=8086-dos` against plain `8086`.
 constexpr uint16_t kM6502Atari2600CoffMachine = 0x2600;
 
+// `--target=2a03`'s own machine ID, same reasoning as
+// kM6502Atari2600CoffMachine above even though the 2A03's zero-page/
+// frame-storage layout is identical to plain 6502's (see M6502Codegen.h's
+// own header comment) - kept distinct anyway so a NROM-base-address
+// (`$8000`) object never silently links against a plain-6502 one
+// expecting `$0600`.
+constexpr uint16_t kM6502Nes2A03CoffMachine = 0x2A03;
+
 // Linked base address; matches the whole-program raw entry's kBaseAddress.
 constexpr uint32_t kM6502BaseAddress = 0x0600;
 // atari2600's own default link base: the conventional 4K-cartridge
@@ -28,6 +36,10 @@ constexpr uint32_t kM6502BaseAddress = 0x0600;
 // comment for why $F000 rather than the real $1000-$1FFF cartridge
 // range).
 constexpr uint32_t kM6502Atari2600BaseAddress = 0xF000;
+// 2a03's own default link base: NROM's fixed 32KB PRG-ROM window,
+// $8000-$FFFF (see M6502LinkerFactory.cpp's own `kNes2A03EntryAsm`
+// comment).
+constexpr uint32_t kM6502Nes2A03BaseAddress = 0x8000;
 
 // Three reloc kinds because LDA takes only an 8-bit immediate: loading a
 // 16-bit address into a register pair needs separate low/high-byte patches.

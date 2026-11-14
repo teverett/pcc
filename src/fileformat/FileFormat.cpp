@@ -20,6 +20,8 @@
 #include "fileformat/prg/PrgFormat.h"
 #include "fileformat/atari/AtariExeFormat.h"
 #include "fileformat/atari2600/Atari2600RomFormat.h"
+#include "fileformat/nes/NesRomFormat.h"
+#include "fileformat/sna/SnaFormat.h"
 
 namespace rcc {
 
@@ -59,6 +61,10 @@ std::unique_ptr<FileFormatWriter> makeFileFormatWriter(FileFormatKind kind) {
             return std::make_unique<AtariExeFormatWriter>();
         case FileFormatKind::Atari2600Rom:
             return std::make_unique<Atari2600RomFormatWriter>();
+        case FileFormatKind::NesRom:
+            return std::make_unique<NesRomFormatWriter>();
+        case FileFormatKind::Sna:
+            return std::make_unique<SnaFormatWriter>();
     }
     return nullptr;
 }
@@ -99,6 +105,10 @@ std::unique_ptr<FileFormatReader> makeFileFormatReader(FileFormatKind kind) {
             return std::make_unique<AtariExeFormatReader>();
         case FileFormatKind::Atari2600Rom:
             return std::make_unique<Atari2600RomFormatReader>();
+        case FileFormatKind::NesRom:
+            return std::make_unique<NesRomFormatReader>();
+        case FileFormatKind::Sna:
+            return std::make_unique<SnaFormatReader>();
     }
     return nullptr;
 }
@@ -122,6 +132,8 @@ std::optional<FileFormatKind> fileFormatKindFromName(const std::string &name) {
     if (name == "prg") return FileFormatKind::Prg;
     if (name == "atari") return FileFormatKind::AtariExe;
     if (name == "a26") return FileFormatKind::Atari2600Rom;
+    if (name == "nes") return FileFormatKind::NesRom;
+    if (name == "sna") return FileFormatKind::Sna;
     return std::nullopt;
 }
 
@@ -161,6 +173,10 @@ std::string fileFormatName(FileFormatKind kind) {
             return "atari";
         case FileFormatKind::Atari2600Rom:
             return "a26";
+        case FileFormatKind::NesRom:
+            return "nes";
+        case FileFormatKind::Sna:
+            return "sna";
     }
     return "";
 }
@@ -195,6 +211,7 @@ FileFormatKind detectFileFormat(const std::string &bytes) {
         0x6809,  // 6809
         0x6502,  // 6502
         0x2600,  // atari2600
+        0x2A03,  // 2a03
         0xC502,  // 65c02
         0x8080,  // 8080
         0x5708,  // stm8

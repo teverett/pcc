@@ -150,6 +150,38 @@ pair - see `docs/using.md`.
   (`tests/run_atari2600_tests.sh`), by linking/running a plain
   non-graphical program in py65's bare 6502 core, which simulates no
   TIA/RIOT hardware at all.
+- **2a03** — same 6502 instruction encoding and dialect as `6502` above
+  (the NES's 2A03 is electrically a 6502 core plus a built-in APU and
+  controller-I/O ports, and lacks BCD mode - no instruction-level
+  difference this codegen does anything with, since it never emits
+  `sed`/decimal `ADC`/`SBC` anyway). Unlike `atari2600`, there's no
+  memory-map hazard to work around: the NES has a real, uncontended 2KB
+  RAM at `$0000`-`$07FF`, so `2a03` reuses plain `6502`'s own zero-page/
+  frame-storage layout unchanged (see `M6502Codegen.h`'s own header
+  comment). It still gets its own distinct machine ID
+  (`kM6502Nes2A03CoffMachine`), the same `--link` cross-target-mismatch
+  protection as `atari2600`'s, kept even without a real hazard to guard
+  against, since `2a03`'s own fixed load address (`$8000`, NROM's PRG-
+  ROM window) differs from plain `6502`'s (`$0600`). `--link
+  --format=nes` produces a real iNES ROM image (the de facto standard
+  every NES emulator reads): a 16-byte header (signature, PRG-ROM size,
+  CHR-ROM size - always 0, meaning CHR RAM, since this project drives no
+  PPU graphics - and two mapper/mirroring flag bytes, always 0, mapper 0/
+  NROM) followed by a fixed, non-bankswitched 32KB PRG-ROM bank mapped
+  straight onto `$8000`-`$FFFF`, with the NMI/RESET/IRQ vectors written
+  into its own last 6 bytes - see `src/fileformat/nes/NesRomFormat.h`'s
+  own header comment. No bankswitching support (a program over 32762
+  bytes is rejected) and no runtime library: real NES graphics/sound
+  need the PPU/APU driven cycle-by-cycle in sync with the video signal,
+  the same "racing the beam" problem as the 2600's TIA, so there's no
+  text/sprite/audio output a runtime library could offer. `examples/
+  6502-2a03/` goes one step further than `atari2600`'s solid-color poke,
+  since there's real RAM to exercise: it sums `1..10` in an ordinary C
+  `for` loop, then pokes the result into a fixed zero-page scratch cell
+  so a test can read it back - verified in CI only against that
+  computed value and, separately (`tests/run_2a03_tests.sh`), by linking/
+  running a plain non-graphical program in py65's bare 6502 core, which
+  simulates no PPU/APU/mapper hardware at all.
 - **65c02** — WDC 65C02, same dialect/platform choices as `6502` plus the
   real CMOS-only instructions `M65C02Codegen.cpp`/`M65C02Assembler.cpp`
   support: `STZ`, used automatically by codegen itself to zero a zero-page
@@ -287,6 +319,41 @@ pair - see `docs/using.md`.
   address), which this backend's assembler didn't support until
   `src/rt/coleco/`'s own runtime library needed it - see
   `Z80Assembler.h`'s own header comment.
+- **zx spectrum** — like `z80-coleco`, the same `z80` backend under a
+  different machine convention rather than a separate `--target`: the
+  48K ZX Spectrum has a full, uncontended RAM window at `$4000`-`$FFFF`
+  and no memory-map hazard to work around (unlike the Atari 2600's TIA
+  or ColecoVision's 1KB RAM ceiling), so `--target=z80` already links at
+  this platform's own base. The only new piece is `--format=sna` (see
+  `docs/using.md`'s own `--format` row and
+  `src/fileformat/sna/SnaFormat.h`): a real `.sna` snapshot, the de
+  facto standard every Spectrum emulator (Fuse, ZEsarUX) loads directly
+  with no tape-loading step - a 27-byte register header (with no PC
+  field at all; every loader instead restores every other register,
+  sets SP, then executes one bare `RET`, popping the entry address from
+  a reserved cell this writer plants at `$FFFE`-`$FFFF` - the "bootstrap
+  trick" every `.sna`-writing tool uses) followed by a 49152-byte dump
+  of the whole 48K RAM window.
+  Since a snapshot boots straight into user code and never runs the
+  ROM's own reset sequence, `src/rt/zxspectrum/` only ever touches real
+  hardware the ROM's own system variables have no part in: the ULA port
+  ($FE - border color, speaker toggle, and the keyboard's 8 half-rows,
+  each read via `IN A,(n)` with the half-row select byte preloaded into
+  A, since a real Z80's `IN A,(n)`/`OUT (n),A` put that register on the
+  address bus's own upper byte - see `Z80Assembler.h`'s own header
+  comment, first added for `z80-coleco`'s port-mapped VDP), and the
+  screen's own two memory-mapped regions: attribute memory
+  (`$5800`-`$5AFF`, plain stores - no `asm{}` needed, like `z80-trs80`'s
+  video RAM) and the pixel bitmap (`$4000`-`$57FF`, using the real,
+  famously non-linear ZX Spectrum screen address formula, computed with
+  plain shifts/masks rather than a lookup table). Deliberately not
+  covered, each for a documented reason: the ROM's print routine
+  (`RST $16`, needs real system-variable state this project doesn't
+  fake), beeper tone/pitch generation and tape-signal decoding (both
+  need a precisely cycle-timed loop, the same "racing the beam" problem
+  `atari2600`/`2a03` describe), and the Kempston joystick (a common but
+  genuinely optional third-party add-on, not built into every real 48K
+  Spectrum).
 - **6809** — real Motorola 6809 assembly/machine code (`M6809Assembler.h`),
   a bare flat binary loaded/entered at `$3000` (12288). Big-endian, unlike
   every other target documented so far on this page. Values live in the

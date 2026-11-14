@@ -60,7 +60,7 @@ namespace rcc {
 // `fp` and restores the caller's `fp` via PHA/PLA, mirroring x86's
 // push/pop bp.
 //
-// `atari2600` (true for `--target=atari2600`) relocates every zero-page
+// `variant` (Atari2600 for `--target=atari2600`) relocates every zero-page
 // pseudo-register and the frame-storage region, both normally free to
 // pick any convenient zero-page address on every other 6502 platform
 // this project supports (Apple II/VIC-20/C64/Atari 400 all have real RAM
@@ -77,11 +77,29 @@ namespace rcc {
 // inherent property of the chip, not something software can route
 // around - a deeply-recursive or deeply-nested-expression program here
 // can still have its own frame storage and the real call stack collide.
+//
+// `Nes2A03` (for `--target=2a03`) needs no such relocation - the NES's
+// 2A03 is electrically a 6502 core (plus built-in APU/controller I/O, and
+// no BCD mode, which this codegen never emits anyway: no `sed`/decimal
+// ADC/SBC anywhere) with a real, uncontended 2KB RAM at $0000-$07FF, the
+// same zero-page/frame-storage layout every non-atari2600 platform here
+// already assumes. The only real difference is `baseAddress()` (NROM's
+// fixed PRG-ROM window at $8000, not $0600) and its own distinct machine
+// ID, kept for the same `--link` cross-target safety reason as
+// atari2600's, even without a real memory-map hazard to protect against.
 class M6502Codegen : public Backend {
    public:
-    explicit M6502Codegen(bool atari2600 = false) : atari2600_(atari2600) {}
+    enum class Variant { Plain, Atari2600, Nes2A03 };
+
+    explicit M6502Codegen(Variant variant = Variant::Plain) : variant_(variant) {}
     std::string generate(const ir::Program &prog, bool objectMode = false) override;
-    std::string name() const override { return atari2600_ ? "atari2600" : "6502"; }
+    std::string name() const override {
+        switch (variant_) {
+            case Variant::Atari2600: return "atari2600";
+            case Variant::Nes2A03: return "2a03";
+            default: return "6502";
+        }
+    }
     TypeWidths typeWidths() const override { return {1, 2, 2, 4, 8}; }
     std::string sourceExtension() const override { return ".s65"; }
     std::vector<std::string> assembledFormats() const override {
@@ -96,21 +114,30 @@ class M6502Codegen : public Backend {
 
    private:
     // $0080 (clear of TIA's $0000-$003F mirror) for atari2600, $0000 (the
-    // ordinary convention) otherwise. The eight 2-byte pseudo-registers
+    // ordinary convention, also used by 2a03 - see this class's own header
+    // comment) otherwise. The eight 2-byte pseudo-registers
     // (ptr/ac/bc/cx/dx/fp/sp/aBase) plus the four 8-byte wide-value
     // buffers (wac/wbc/wtmp/wtmp2 - see this class's own header comment)
     // occupy [zeroPageBase(), zeroPageBase()+48).
-    uint32_t zeroPageBase() const { return atari2600_ ? 0x0080 : 0x0000; }
+    uint32_t zeroPageBase() const { return variant_ == Variant::Atari2600 ? 0x0080 : 0x0000; }
     // Frame-storage bump-allocator region: right after the 48 bytes of
     // pseudo-registers/wide buffers on atari2600 ($00B0, leaving
     // $00B0-$00FF - 80 bytes - for every program's locals/params, shared
     // with the real hardware stack per this class's own header comment),
-    // $0200 otherwise.
-    uint32_t frameStackBase() const { return atari2600_ ? 0x00B0 : 0x0200; }
+    // $0200 otherwise (including 2a03).
+    uint32_t frameStackBase() const { return variant_ == Variant::Atari2600 ? 0x00B0 : 0x0200; }
     // Whole-program (`--format=raw`, non-object) load address: the
     // conventional 4K-cartridge base $F000 (see M6502LinkerFactory.cpp's
-    // own `kAtari2600BaseAddress` comment) for atari2600, $0600 otherwise.
-    uint32_t baseAddress() const { return atari2600_ ? 0xF000 : 0x0600; }
+    // own `kAtari2600BaseAddress` comment) for atari2600, NROM's fixed
+    // PRG-ROM window $8000 for 2a03 (see M6502LinkerFactory.cpp's own
+    // `kNes2A03BaseAddress` comment), $0600 otherwise.
+    uint32_t baseAddress() const {
+        switch (variant_) {
+            case Variant::Atari2600: return 0xF000;
+            case Variant::Nes2A03: return 0x8000;
+            default: return 0x0600;
+        }
+    }
 
     int widthOfType(Type t) const { return rcc::widthOf(t, typeWidths()); }
     bool isWide(Type t) const { return widthOfType(t) > 2; }
@@ -282,7 +309,7 @@ class M6502Codegen : public Backend {
         return name;
     }
 
-    bool atari2600_;
+    Variant variant_;
 
     std::ostringstream code_;
     std::vector<std::string> trailer_;  // "label: dblo e" / "dbhi e" data lines, emitted once at the end

@@ -2,7 +2,7 @@
 # Makefile - see apple2/Makefile, msdos/Makefile, trs80/Makefile, coleco/
 # Makefile, coco/Makefile, vic20/Makefile, c64/Makefile, and atari400/
 # Makefile.
-SUBDIRS := apple2 msdos trs80 coleco coco vic20 c64 atari400
+SUBDIRS := apple2 msdos trs80 coleco coco vic20 c64 atari400 zxspectrum
 
 .PHONY: all clean $(SUBDIRS)
 

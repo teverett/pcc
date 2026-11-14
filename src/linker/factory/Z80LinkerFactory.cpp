@@ -28,7 +28,7 @@ std::unique_ptr<TargetLinker> makeZ80Linker() {
     config.machineType = kZ80CoffMachine;
     config.entryObject = assembleZ80Object(kEntryAsm);
     config.relocPatchers[kZ80RelocAbs16] = RelocKinds::patchAbs16;
-    config.outputFormats = {"raw", "coff", "elf", "aout", "cmd"};
+    config.outputFormats = {"raw", "coff", "elf", "aout", "cmd", "sna"};
     return std::make_unique<GenericLinker>(std::move(config));
 }
 

@@ -119,8 +119,10 @@ jobs:
           make -C examples/6502-c64 test
           make -C examples/6502-atari400 test
           make -C examples/6502-atari2600 test
+          make -C examples/6502-2a03 test
           make -C examples/z80-trs80 test
           make -C examples/z80-coleco test
+          make -C examples/z80-zxspectrum test
 
       - name: Build and run macOS hello example
         if: matrix.name == 'macos'

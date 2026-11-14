@@ -192,7 +192,7 @@ void writeToBuildDir(const std::string &name, const std::string &content, bool b
 // independently valid on the command line). Used both for "unknown
 // --target" error messages and for --list-platforms.
 const std::vector<std::string> kTargetNames = {
-    "pdp1", "pdp7", "8086", "8088", "8086-dos", "6502", "65c02", "atari2600", "68000", "mc68328", "pdp11", "pdp10", "8080", "z80", "z80-coleco", "6809", "8008",
+    "pdp1", "pdp7", "8086", "8088", "8086-dos", "6502", "65c02", "atari2600", "2a03", "68000", "mc68328", "pdp11", "pdp10", "8080", "z80", "z80-coleco", "6809", "8008",
     "stm8", "stm32", "i386", "m16c", "m30626fjpfp", "pic16", "pic18", "r10000", "r4000", "cortex-m3",
     "cortex-m4", "cortex-m7", "8051", "8052", "8031", "8032", "armv7a", "armv8a", "powerpc", "sparc",
     "vax", "avr", "alpha", "saturn", "tms320c6713",
@@ -248,7 +248,8 @@ std::unique_ptr<rcc::Backend> makeBackend(const std::string &target) {
     if (target == "8086" || target == "8088") return std::make_unique<rcc::I8086Codegen>();
     if (target == "8086-dos") return std::make_unique<rcc::I8086Codegen>(/*dosAbi=*/true);
     if (target == "6502") return std::make_unique<rcc::M6502Codegen>();
-    if (target == "atari2600") return std::make_unique<rcc::M6502Codegen>(/*atari2600=*/true);
+    if (target == "atari2600") return std::make_unique<rcc::M6502Codegen>(rcc::M6502Codegen::Variant::Atari2600);
+    if (target == "2a03") return std::make_unique<rcc::M6502Codegen>(rcc::M6502Codegen::Variant::Nes2A03);
     if (target == "65c02") return std::make_unique<rcc::M65C02Codegen>();
     if (target == "68000") return std::make_unique<rcc::M68kCodegen>();
     if (target == "mc68328") return std::make_unique<rcc::MC68328Codegen>();
@@ -300,6 +301,9 @@ std::unique_ptr<rcc::TargetLinker> makeLinker(const std::string &target,
     }
     if (target == "atari2600") {
         return baseAddressWords ? rcc::makeAtari2600Linker(*baseAddressWords) : rcc::makeAtari2600Linker();
+    }
+    if (target == "2a03") {
+        return baseAddressWords ? rcc::makeNes2A03Linker(*baseAddressWords) : rcc::makeNes2A03Linker();
     }
     if (target == "65c02") {
         return baseAddressWords ? rcc::makeM65C02Linker(*baseAddressWords) : rcc::makeM65C02Linker();
@@ -733,8 +737,9 @@ int main(int argc, char **argv) {
         std::cerr << "--base requires --link\n";
         return 1;
     }
-    if (baseAddressWords && target != "pdp7" && target != "6502" && target != "65c02" && target != "atari2600") {
-        std::cerr << "--base is only supported for --target=pdp7/6502/65c02/atari2600 right now\n";
+    if (baseAddressWords && target != "pdp7" && target != "6502" && target != "65c02" && target != "atari2600" &&
+        target != "2a03") {
+        std::cerr << "--base is only supported for --target=pdp7/6502/65c02/atari2600/2a03 right now\n";
         return 1;
     }
 
@@ -844,8 +849,8 @@ int main(int argc, char **argv) {
     // Each target predefines its own macro (e.g. __PDP7__) for
     // #ifdef-style conditional code. An alias target (8088, 65c02,
     // mc68328, r4000, cortex-m4/m7, 8051/8052/8031/8032's siblings,
-    // atari2600) defines both its base target's macro and its own, so
-    // source gated on either the generic or the specific name keeps
+    // atari2600, 2a03) defines both its base target's macro and its own,
+    // so source gated on either the generic or the specific name keeps
     // working.
     std::map<std::string, std::string> predefinedMacros;
     if (target == "pdp1") {
@@ -865,6 +870,9 @@ int main(int argc, char **argv) {
     } else if (target == "atari2600") {
         predefinedMacros["__6502__"] = "1";
         predefinedMacros["__ATARI2600__"] = "1";
+    } else if (target == "2a03") {
+        predefinedMacros["__6502__"] = "1";
+        predefinedMacros["__2A03__"] = "1";
     } else if (target == "65c02") {
         predefinedMacros["__6502__"] = "1";
         predefinedMacros["__65C02__"] = "1";

@@ -33,4 +33,15 @@ std::unique_ptr<TargetLinker> makeM6502Linker(uint32_t baseAddress = kM6502BaseA
 // produce a valid `--format=a26` image (see src/fileformat/atari2600/Atari2600RomFormat.h).
 std::unique_ptr<TargetLinker> makeAtari2600Linker(uint32_t baseAddress = kM6502Atari2600BaseAddress);
 
+// Same instruction encoding, same GenericLinker machinery, and the same plain-6502 zero-page/
+// frame-storage layout (the NES's 2A03 has no memory-map hazard like the 2600's TIA - see
+// M6502Codegen.h's own header comment), but `--target=2a03`'s own distinct machine ID
+// (`kM6502Nes2A03CoffMachine`, so `--link` rejects an accidental mix with a plain 6502 object
+// expecting the `$0600` base instead of silently linking one at the wrong address) - see
+// M6502LinkerFactory.cpp's own `kNes2A03EntryAsm` comment for the entry sequence this links in.
+// A non-default `baseAddress` must leave room for a `$FFFA`-`$FFFF` vector table within the
+// cartridge's own PRG-ROM window to produce a valid `--format=nes` image (see src/fileformat/
+// nes/NesRomFormat.h).
+std::unique_ptr<TargetLinker> makeNes2A03Linker(uint32_t baseAddress = kM6502Nes2A03BaseAddress);
+
 }  // namespace rcc
